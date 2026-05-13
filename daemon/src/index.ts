@@ -8,8 +8,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import type { ServerWebSocket } from "bun";
-import { buildApp, VERSION } from "./app.ts";
+import { buildApp, VERSION, wsHandler } from "./app.ts";
 import { openDatabase } from "./adapters/sqlite/index.ts";
 
 const PORT = Number(process.env.VOID_OS_PORT ?? 7777);
@@ -44,17 +43,7 @@ const server = Bun.serve({
     }
     return app.fetch(req);
   },
-  websocket: {
-    open(ws: ServerWebSocket<unknown>) {
-      ws.send(JSON.stringify({ type: "hello", version: VERSION }));
-    },
-    message(ws: ServerWebSocket<unknown>, msg: string | Buffer) {
-      ws.send(typeof msg === "string" ? msg : msg.toString());
-    },
-    close() {
-      /* noop */
-    },
-  },
+  websocket: wsHandler,
 });
 
 console.log(`void-os daemon v${VERSION} listening on http://${server.hostname}:${server.port}`);
