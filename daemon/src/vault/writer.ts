@@ -19,6 +19,7 @@ export interface VaultWriter {
   replace_section(p: string, section: string, content: string, ctx: WriteCtx): Promise<void>;
   set_property(p: string, key: string, value: unknown, ctx: WriteCtx): Promise<void>;
   patch(p: string, old_string: string, new_string: string, ctx: WriteCtx): Promise<void>;
+  delete(p: string, ctx: WriteCtx): Promise<void>;
 }
 
 export interface VaultWriterOpts {
@@ -183,5 +184,21 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
     });
   }
 
-  return { read, create, append, replace_section, set_property, patch } as VaultWriter;
+  async function deleteOp(p: string, ctx: WriteCtx) {
+    const abs = resolve(p);
+    await mutex.runExclusive(abs, async () => {
+      const oldContent = await fs.readFile(abs, 'utf8'); // throws ENOENT if missing
+      await fs.unlink(abs);
+      recordVaultEvent(opts.db, {
+        type: 'vault.delete',
+        agent: ctx.agent,
+        run_id: ctx.run_id,
+        path: p,
+        sha_before: sha256Hex(oldContent),
+        sha_after: null,
+      });
+    });
+  }
+
+  return { read, create, append, replace_section, set_property, patch, delete: deleteOp } as VaultWriter;
 }

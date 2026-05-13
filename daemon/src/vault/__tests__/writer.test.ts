@@ -146,3 +146,20 @@ test('patch OLD_STRING_NOT_UNIQUE', async () => {
   fs.writeFileSync(path.join(v.root, 'a.md'), 'dup dup\n');
   await expect(w.patch('a.md', 'dup', 'X', CTX)).rejects.toThrow('OLD_STRING_NOT_UNIQUE');
 });
+
+test('delete removes file, emits vault.delete event', async () => {
+  fs.writeFileSync(path.join(v.root, 'a.md'), 'bye\n');
+  await w.delete('a.md', CTX);
+  expect(fs.existsSync(path.join(v.root, 'a.md'))).toBe(false);
+  const e = readEvents(v.db);
+  expect(e[0].type).toBe('vault.delete');
+  expect(e[0].payload).toEqual({
+    path: 'a.md',
+    sha_before: sha256Hex('bye\n'),
+    sha_after: null,
+  });
+});
+
+test('delete ENOENT on missing file', async () => {
+  await expect(w.delete('missing.md', CTX)).rejects.toThrow();
+});
