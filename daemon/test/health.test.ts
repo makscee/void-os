@@ -17,7 +17,7 @@ describe("GET /health", () => {
   test("returns 200 with { ok, version, sessions: 0 }", async () => {
     const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-"));
     const db = new Database(":memory:"); db.exec(SCHEMA);
-    const app = buildApp({ db, vaultRoot });
+    const app = await buildApp({ db, vaultRoot });
     const res = await app.fetch(new Request("http://localhost/health"));
 
     expect(res.status).toBe(200);

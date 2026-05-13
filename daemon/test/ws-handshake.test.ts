@@ -31,11 +31,11 @@ interface Ctx {
   url: string;
 }
 
-function startServer(): Ctx {
+async function startServer(): Promise<Ctx> {
   const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-ws-"));
   const db = new Database(":memory:");
   db.exec(SCHEMA);
-  const app = buildApp({ db, vaultRoot });
+  const app = await buildApp({ db, vaultRoot });
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -86,7 +86,7 @@ function collect(
 
 describe("VOS-78 daemon WS handshake (/events)", () => {
   let ctx: Ctx;
-  beforeEach(() => { ctx = startServer(); });
+  beforeEach(async () => { ctx = await startServer(); });
   afterEach(() => { ctx.server.stop(true); });
 
   test("first frame is {type:'hello', version:<semver>}", async () => {

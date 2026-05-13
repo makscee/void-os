@@ -38,7 +38,7 @@ describe("VOS-77 smoke: claudev → claude → MCP → daemon", () => {
     db.exec(SCHEMA);
 
     // 2. Start daemon on ephemeral port.
-    const app = buildApp({ db, vaultRoot });
+    const app = await buildApp({ db, vaultRoot });
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch });
 
     try {

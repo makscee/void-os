@@ -37,7 +37,11 @@ describe("sqlite migrations", () => {
       const applied = db
         .prepare("SELECT version FROM schema_migrations ORDER BY version")
         .all() as Array<{ version: string }>;
-      expect(applied.map((r) => r.version)).toEqual(["0001_init", "0002_runs_columns"]);
+      expect(applied.map((r) => r.version)).toEqual([
+        "0001_init",
+        "0002_runs_columns",
+        "0003_chat_lifecycle",
+      ]);
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -50,11 +54,15 @@ describe("sqlite migrations", () => {
     try {
       const db = openDatabase(dbPath);
 
-      // schema_migrations contains both migrations.
+      // schema_migrations contains all applied migrations.
       const applied = db
         .prepare("SELECT version FROM schema_migrations ORDER BY version")
         .all() as Array<{ version: string }>;
-      expect(applied.map((r) => r.version)).toEqual(["0001_init", "0002_runs_columns"]);
+      expect(applied.map((r) => r.version)).toEqual([
+        "0001_init",
+        "0002_runs_columns",
+        "0003_chat_lifecycle",
+      ]);
 
       // runs has the new columns.
       const cols = db
@@ -91,7 +99,7 @@ describe("sqlite migrations", () => {
       const rows = db2
         .prepare("SELECT version, applied_at FROM schema_migrations")
         .all() as Array<{ version: string; applied_at: number }>;
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(3);
       const row = rows.find((r) => r.version === "0001_init")!;
       expect(row.version).toBe("0001_init");
       expect(row.applied_at).toBe(firstRow.applied_at);
