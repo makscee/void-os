@@ -37,7 +37,40 @@ describe("sqlite migrations", () => {
       const applied = db
         .prepare("SELECT version FROM schema_migrations ORDER BY version")
         .all() as Array<{ version: string }>;
-      expect(applied.map((r) => r.version)).toEqual(["0001_init"]);
+      expect(applied.map((r) => r.version)).toEqual(["0001_init", "0002_runs_columns"]);
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("0002 adds session_id/exit_code/kill_reason columns and idx_runs_session", () => {
+    const dir = mkdtempSync(join(tmpdir(), "void-os-sqlite-"));
+    const dbPath = join(dir, "state.sqlite");
+    try {
+      const db = openDatabase(dbPath);
+
+      // schema_migrations contains both migrations.
+      const applied = db
+        .prepare("SELECT version FROM schema_migrations ORDER BY version")
+        .all() as Array<{ version: string }>;
+      expect(applied.map((r) => r.version)).toEqual(["0001_init", "0002_runs_columns"]);
+
+      // runs has the new columns.
+      const cols = db
+        .prepare("PRAGMA table_info(runs)")
+        .all() as Array<{ name: string }>;
+      const colNames = cols.map((c) => c.name);
+      expect(colNames).toContain("session_id");
+      expect(colNames).toContain("exit_code");
+      expect(colNames).toContain("kill_reason");
+
+      // idx_runs_session exists.
+      const idx = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='runs'")
+        .all() as Array<{ name: string }>;
+      expect(idx.map((r) => r.name)).toContain("idx_runs_session");
+
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -58,8 +91,8 @@ describe("sqlite migrations", () => {
       const rows = db2
         .prepare("SELECT version, applied_at FROM schema_migrations")
         .all() as Array<{ version: string; applied_at: number }>;
-      expect(rows).toHaveLength(1);
-      const row = rows[0]!;
+      expect(rows).toHaveLength(2);
+      const row = rows.find((r) => r.version === "0001_init")!;
       expect(row.version).toBe("0001_init");
       expect(row.applied_at).toBe(firstRow.applied_at);
       db2.close();
