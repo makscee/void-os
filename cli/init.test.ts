@@ -77,4 +77,19 @@ describe("provision()", () => {
     await provision({ home, prefix, dryRun: false, force: true })
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
   })
+
+  it("warns when plugin/dist is missing but does not throw", async () => {
+    const result = await provision({ home, prefix, dryRun: false, force: false })
+    expect(result.warnings.some((w) => w.includes("plugin build artifact missing"))).toBe(true)
+    expect(existsSync(join(home, ".obsidian/plugins/void-os"))).toBe(true) // dir from starter
+  })
+
+  it("copies plugin/dist contents into .obsidian/plugins/void-os when present", async () => {
+    mkdirSync(join(prefix, "plugin/dist"), { recursive: true })
+    writeFileSync(join(prefix, "plugin/dist/main.js"), "console.log('plugin')\n")
+    writeFileSync(join(prefix, "plugin/dist/manifest.json"), "{}\n")
+    await provision({ home, prefix, dryRun: false, force: false })
+    expect(existsSync(join(home, ".obsidian/plugins/void-os/main.js"))).toBe(true)
+    expect(existsSync(join(home, ".obsidian/plugins/void-os/manifest.json"))).toBe(true)
+  })
 })
