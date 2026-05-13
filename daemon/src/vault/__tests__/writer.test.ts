@@ -76,9 +76,10 @@ test('append emits vault.append event with sha_before/after', async () => {
   fs.writeFileSync(path.join(v.root, 'a.md'), 'old\n');
   await w.append('a.md', 'new', null, CTX);
   const e = readEvents(v.db);
-  expect(e[0].type).toBe('vault.append');
-  expect(e[0].payload.sha_before).toBe(sha256Hex('old\n'));
-  expect(e[0].payload.sha_after).toBe(sha256Hex('old\n\nnew\n'));
+  expect(e.length).toBeGreaterThan(0);
+  expect(e[0]!.type).toBe('vault.append');
+  expect(e[0]!.payload.sha_before).toBe(sha256Hex('old\n'));
+  expect(e[0]!.payload.sha_after).toBe(sha256Hex('old\n\nnew\n'));
 });
 
 test('replace_section swaps body, preserves other sections + frontmatter', async () => {
@@ -152,8 +153,9 @@ test('delete removes file, emits vault.delete event', async () => {
   await w.delete('a.md', CTX);
   expect(fs.existsSync(path.join(v.root, 'a.md'))).toBe(false);
   const e = readEvents(v.db);
-  expect(e[0].type).toBe('vault.delete');
-  expect(e[0].payload).toEqual({
+  expect(e.length).toBeGreaterThan(0);
+  expect(e[0]!.type).toBe('vault.delete');
+  expect(e[0]!.payload).toEqual({
     path: 'a.md',
     sha_before: sha256Hex('bye\n'),
     sha_after: null,
