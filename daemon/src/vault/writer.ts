@@ -18,6 +18,7 @@ export interface VaultWriter {
   append(p: string, content: string, section: string | null, ctx: WriteCtx): Promise<void>;
   replace_section(p: string, section: string, content: string, ctx: WriteCtx): Promise<void>;
   set_property(p: string, key: string, value: unknown, ctx: WriteCtx): Promise<void>;
+  patch(p: string, old_string: string, new_string: string, ctx: WriteCtx): Promise<void>;
 }
 
 export interface VaultWriterOpts {
@@ -153,5 +154,34 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
     });
   }
 
-  return { read, create, append, replace_section, set_property } as VaultWriter;
+  async function patch(p: string, old_string: string, new_string: string, ctx: WriteCtx) {
+    const abs = resolve(p);
+    await mutex.runExclusive(abs, async () => {
+      const oldContent = await fs.readFile(abs, 'utf8');
+      const first = oldContent.indexOf(old_string);
+      if (first === -1) {
+        const e: any = new Error('OLD_STRING_NOT_FOUND');
+        e.code = 'OLD_STRING_NOT_FOUND';
+        throw e;
+      }
+      const second = oldContent.indexOf(old_string, first + old_string.length);
+      if (second !== -1) {
+        const e: any = new Error('OLD_STRING_NOT_UNIQUE');
+        e.code = 'OLD_STRING_NOT_UNIQUE';
+        throw e;
+      }
+      const newContent = oldContent.slice(0, first) + new_string + oldContent.slice(first + old_string.length);
+      await atomicWrite(abs, newContent, tmpDir, { crashAfterTmpWrite });
+      recordVaultEvent(opts.db, {
+        type: 'vault.patch',
+        agent: ctx.agent,
+        run_id: ctx.run_id,
+        path: p,
+        sha_before: sha256Hex(oldContent),
+        sha_after: sha256Hex(newContent),
+      });
+    });
+  }
+
+  return { read, create, append, replace_section, set_property, patch } as VaultWriter;
 }

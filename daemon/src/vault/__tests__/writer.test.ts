@@ -130,3 +130,19 @@ test('set_property accepts non-string values without corruption', async () => {
   expect(parseFm(out).data.count).toBe(42);
   expect(parseFm(out).data.enabled).toBe(true);
 });
+
+test('patch replaces unique occurrence', async () => {
+  fs.writeFileSync(path.join(v.root, 'a.md'), 'foo bar baz\n');
+  await w.patch('a.md', 'bar', 'BAR', CTX);
+  expect(fs.readFileSync(path.join(v.root, 'a.md'), 'utf8')).toBe('foo BAR baz\n');
+});
+
+test('patch OLD_STRING_NOT_FOUND', async () => {
+  fs.writeFileSync(path.join(v.root, 'a.md'), 'x\n');
+  await expect(w.patch('a.md', 'missing', 'y', CTX)).rejects.toThrow('OLD_STRING_NOT_FOUND');
+});
+
+test('patch OLD_STRING_NOT_UNIQUE', async () => {
+  fs.writeFileSync(path.join(v.root, 'a.md'), 'dup dup\n');
+  await expect(w.patch('a.md', 'dup', 'X', CTX)).rejects.toThrow('OLD_STRING_NOT_UNIQUE');
+});
