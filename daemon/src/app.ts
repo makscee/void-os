@@ -35,16 +35,51 @@ export const buildApp = (deps: BuildAppDeps): Hono => {
 };
 
 /**
+ * VOS-79 T9: connected /events sockets + broadcast() fan-out.
+ *
+ * Shared module-level Set so wsHandler (open/close) and broadcast (orchestrator
+ * emit shim) reference the same client roster. One daemon process owns one
+ * roster; tests that boot multiple servers in-process share it too, which is
+ * fine — broadcasts are typed envelopes, not per-server state.
+ *
+ * Envelope shape: `{type, ts: <epoch ms>, ...payload}`. `payload` keys take
+ * precedence over the wrapper (so `chat_id`, `run_id`, etc. land at top level).
+ */
+const sockets = new Set<ServerWebSocket<unknown>>();
+
+export const broadcast = (
+  type: string,
+  payload: Record<string, unknown> = {},
+): void => {
+  const msg = JSON.stringify({ type, ts: Date.now(), ...payload });
+  for (const ws of sockets) {
+    try { ws.send(msg); } catch { /* socket dead — close handler will drain */ }
+  }
+};
+
+/**
+ * Test-only: drop all connected sockets without sending anything. Real wire
+ * closes happen via the `close` handler. Used by tests that share the module
+ * to avoid cross-test bleed.
+ */
+export const _resetBroadcastSockets = (): void => {
+  sockets.clear();
+};
+
+/**
  * WebSocket handler for /events. Exported so tests can mount it via
  * `Bun.serve({ websocket: wsHandler, ... })` without spawning the daemon.
  *
  * Wire protocol v1:
- *   open      → server sends {type:"hello", version:"<semver>"}
+ *   open      → server sends {type:"hello", version:"<semver>"}; socket joins
+ *               the broadcast set so it receives subsequent broadcast() frames.
  *   ping      → server replies {type:"pong"}
  *   unknown   → server ignores (no reply frame)
+ *   close     → socket leaves the broadcast set
  */
 export const wsHandler: WebSocketHandler<unknown> = {
   open(ws: ServerWebSocket<unknown>) {
+    sockets.add(ws);
     ws.send(JSON.stringify({ type: "hello", version: VERSION }));
   },
   message(ws: ServerWebSocket<unknown>, msg: string | Buffer) {
@@ -57,7 +92,7 @@ export const wsHandler: WebSocketHandler<unknown> = {
     }
     // unknown type: ignore in v1
   },
-  close() {
-    /* noop */
+  close(ws: ServerWebSocket<unknown>) {
+    sockets.delete(ws);
   },
 };
