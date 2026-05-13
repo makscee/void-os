@@ -1,0 +1,42 @@
+import { describe, it, expect, beforeEach, afterEach } from "bun:test"
+import { mkdtempSync, rmSync, existsSync, readFileSync, lstatSync, writeFileSync, mkdirSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { provision } from "./init"
+
+let tmpRoot: string
+let prefix: string
+let home: string
+
+beforeEach(() => {
+  tmpRoot = mkdtempSync(join(tmpdir(), "vos76-"))
+  prefix = join(tmpRoot, "prefix")
+  home = join(tmpRoot, "home")
+  // Build a minimal fake prefix mirroring the brewed layout.
+  mkdirSync(join(prefix, "vault-starter/agents/maya"), { recursive: true })
+  mkdirSync(join(prefix, "vault-starter/skills"), { recursive: true })
+  mkdirSync(join(prefix, "vault-starter/.void"), { recursive: true })
+  mkdirSync(join(prefix, "vault-starter/.claude"), { recursive: true })
+  mkdirSync(join(prefix, "vault-starter/.obsidian/plugins/void-os"), { recursive: true })
+  writeFileSync(join(prefix, "vault-starter/CLAUDE.md"), "# claude\n")
+  writeFileSync(join(prefix, "vault-starter/README.md"), "# vault\n")
+  writeFileSync(join(prefix, "vault-starter/agents/maya/agent.md"), "---\nname: maya\n---\n")
+  writeFileSync(join(prefix, "vault-starter/skills/.gitkeep"), "")
+  writeFileSync(join(prefix, "vault-starter/.void/.gitkeep"), "")
+  writeFileSync(join(prefix, "vault-starter/.claude/.gitkeep"), "")
+  writeFileSync(join(prefix, "vault-starter/.obsidian/plugins/void-os/.gitkeep"), "")
+})
+
+afterEach(() => {
+  rmSync(tmpRoot, { recursive: true, force: true })
+})
+
+describe("provision()", () => {
+  it("populates an empty target with vault-starter contents", async () => {
+    await provision({ home, prefix, dryRun: false, force: false })
+    expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
+    expect(existsSync(join(home, "agents/maya/agent.md"))).toBe(true)
+    expect(existsSync(join(home, ".void/.gitkeep"))).toBe(true)
+    expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
+  })
+})
