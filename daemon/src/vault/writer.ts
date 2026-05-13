@@ -15,6 +15,7 @@ export interface VaultWriter {
   read(p: string): Promise<{ content: string; sha: string }>;
   create(p: string, content: string, ctx: WriteCtx): Promise<void>;
   append(p: string, content: string, section: string | null, ctx: WriteCtx): Promise<void>;
+  replace_section(p: string, section: string, content: string, ctx: WriteCtx): Promise<void>;
 }
 
 export interface VaultWriterOpts {
@@ -104,5 +105,32 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
     });
   }
 
-  return { read, create, append } as VaultWriter;
+  async function replace_section(p: string, section: string, content: string, ctx: WriteCtx) {
+    const abs = resolve(p);
+    await mutex.runExclusive(abs, async () => {
+      const oldContent = await fs.readFile(abs, 'utf8');
+      const r = findSection(oldContent, section);
+      if (!r) {
+        const e: any = new Error('SECTION_NOT_FOUND');
+        e.code = 'SECTION_NOT_FOUND';
+        throw e;
+      }
+      const normalized = content.endsWith('\n') ? content : content + '\n';
+      const pre = oldContent.slice(0, r.bodyStart);
+      const post = oldContent.slice(r.bodyEnd);
+      const sep = post.length > 0 && !normalized.endsWith('\n\n') ? '\n' : '';
+      const newContent = pre + normalized + sep + post;
+      await atomicWrite(abs, newContent, tmpDir, { crashAfterTmpWrite });
+      recordVaultEvent(opts.db, {
+        type: 'vault.replace_section',
+        agent: ctx.agent,
+        run_id: ctx.run_id,
+        path: p,
+        sha_before: sha256Hex(oldContent),
+        sha_after: sha256Hex(newContent),
+      });
+    });
+  }
+
+  return { read, create, append, replace_section } as VaultWriter;
 }

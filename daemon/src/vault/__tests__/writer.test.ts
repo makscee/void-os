@@ -80,3 +80,24 @@ test('append emits vault.append event with sha_before/after', async () => {
   expect(e[0].payload.sha_before).toBe(sha256Hex('old\n'));
   expect(e[0].payload.sha_after).toBe(sha256Hex('old\n\nnew\n'));
 });
+
+test('replace_section swaps body, preserves other sections + frontmatter', async () => {
+  const src = '---\ntitle: t\n---\n\n## A\nold a\n\n## B\nold b\n';
+  fs.writeFileSync(path.join(v.root, 'a.md'), src);
+  await w.replace_section('a.md', 'A', 'new a body\n', CTX);
+  expect(fs.readFileSync(path.join(v.root, 'a.md'), 'utf8'))
+    .toBe('---\ntitle: t\n---\n\n## A\nnew a body\n\n## B\nold b\n');
+});
+
+test('replace_section last-section to EOF', async () => {
+  const src = '## A\nx\n## B\nold\n';
+  fs.writeFileSync(path.join(v.root, 'a.md'), src);
+  await w.replace_section('a.md', 'B', 'new\n', CTX);
+  expect(fs.readFileSync(path.join(v.root, 'a.md'), 'utf8'))
+    .toBe('## A\nx\n## B\nnew\n');
+});
+
+test('replace_section SECTION_NOT_FOUND', async () => {
+  fs.writeFileSync(path.join(v.root, 'a.md'), '# T\n');
+  await expect(w.replace_section('a.md', 'Missing', 'x', CTX)).rejects.toThrow('SECTION_NOT_FOUND');
+});
