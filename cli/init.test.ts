@@ -39,4 +39,42 @@ describe("provision()", () => {
     expect(existsSync(join(home, ".void/.gitkeep"))).toBe(true)
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
   })
+
+  it("refuses to clobber a non-empty non-void target", async () => {
+    mkdirSync(home, { recursive: true })
+    writeFileSync(join(home, "random.txt"), "user data\n")
+    await expect(
+      provision({ home, prefix, dryRun: false, force: false }),
+    ).rejects.toThrow(/refusing to clobber/)
+  })
+
+  it("treats target with .void marker as upgrade — does not require --force", async () => {
+    mkdirSync(join(home, ".void"), { recursive: true })
+    writeFileSync(join(home, ".void/.gitkeep"), "")
+    writeFileSync(join(home, "CLAUDE.md"), "user override\n")
+    await provision({ home, prefix, dryRun: false, force: false })
+    expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("user override\n")
+    expect(existsSync(join(home, "agents/maya/agent.md"))).toBe(true)
+  })
+
+  it("upgrade preserves nested user edits to agents/skills", async () => {
+    mkdirSync(join(home, ".void"), { recursive: true })
+    writeFileSync(join(home, ".void/.gitkeep"), "")
+    mkdirSync(join(home, "agents/maya"), { recursive: true })
+    writeFileSync(join(home, "agents/maya/agent.md"), "user-customized maya\n")
+    mkdirSync(join(home, "skills/my-skill"), { recursive: true })
+    writeFileSync(join(home, "skills/my-skill/SKILL.md"), "user skill\n")
+    await provision({ home, prefix, dryRun: false, force: false })
+    expect(readFileSync(join(home, "agents/maya/agent.md"), "utf8")).toBe("user-customized maya\n")
+    expect(readFileSync(join(home, "skills/my-skill/SKILL.md"), "utf8")).toBe("user skill\n")
+    // New files from starter that didn't exist before are still copied.
+    expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
+  })
+
+  it("--force overwrites existing files", async () => {
+    mkdirSync(home, { recursive: true })
+    writeFileSync(join(home, "CLAUDE.md"), "stale\n")
+    await provision({ home, prefix, dryRun: false, force: true })
+    expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
+  })
 })
