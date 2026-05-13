@@ -33,11 +33,11 @@ CREATE TABLE events (
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 interface Ctx { vaultRoot: string; db: Database; server: any; url: string }
 
-function startServer(): Ctx {
+async function startServer(): Promise<Ctx> {
   const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-wsbc-"));
   const db = new Database(":memory:");
   db.exec(SCHEMA);
-  const app = buildApp({ db, vaultRoot });
+  const app = await buildApp({ db, vaultRoot });
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -89,9 +89,9 @@ async function connect(url: string): Promise<{
 
 describe("VOS-79 WS broadcaster fans bus events to /events clients", () => {
   let ctx: Ctx;
-  beforeEach(() => {
+  beforeEach(async () => {
     _resetBroadcastSockets();
-    ctx = startServer();
+    ctx = await startServer();
   });
   afterEach(() => {
     ctx.server.stop(true);

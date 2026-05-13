@@ -3,36 +3,130 @@
  *
  * Split from index.ts so tests can drive `app.fetch` directly without
  * spinning up Bun.serve / binding a port.
+ *
+ * VOS-79 T8: buildApp is now `async` so it can lazily fetch the Anthropic
+ * key (titler) at startup. Production callers must `await buildApp(...)`.
+ * Tests can short-circuit the async wiring by injecting their own
+ * `orchestrator` + `titler` — when both are provided, no SDK key fetch
+ * occurs, keeping unit tests fully hermetic.
  */
 
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
+import * as path from "node:path";
+import Anthropic from "@anthropic-ai/sdk";
 import pkg from "../package.json" with { type: "json" };
 import { mountApi } from "./api/index.ts";
 import { chatsApi } from "./api/chats.ts";
 import { chatApi } from "./api/chat.ts";
 import { mountMcp } from "./adapters/mcp/index.ts";
+import { createEventBus } from "./events/index.ts";
+import { createCcSpawner } from "./adapters/cc/index.ts";
+import { makeCcSpawnerIter } from "./adapters/cc/spawner-iter.ts";
+import { makeChatRepo } from "./chat/repo.ts";
+import { makeSessionReplay } from "./chat/session-replay.ts";
+import { makeTitler, type Titler } from "./chat/titler.ts";
+import {
+  makeOrchestrator,
+  type Orchestrator,
+} from "./chat/orchestrator.ts";
+import { fetchAnthropicKey } from "./lib/anthropic-key.ts";
 
 export const VERSION = pkg.version;
 
 export interface BuildAppDeps {
   db: Database;
   vaultRoot: string;
+  // Test seams: when provided, the default real-wire pipeline is bypassed.
+  orchestrator?: Orchestrator;
+  titler?: Titler;
+  // Override the emit-to-clients fan-out (defaults to module-level broadcast()).
+  emit?: (type: string, payload: Record<string, unknown>) => void;
+  // Static chat-dispatch cwd. Defaults to VOID_OS_CHAT_CWD env or process.cwd().
+  chatCwd?: string;
+  // Default agent name for cc-spawner static deps. Overridden in production
+  // wiring once per-chat agent lookup lands; for now mirrors the chats.agent
+  // default ("maya").
+  defaultAgent?: string;
 }
 
-export const buildApp = (deps: BuildAppDeps): Hono => {
+export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   const app = new Hono();
   app.get("/", (c) => c.text(`void-os daemon v${VERSION}\n`));
   mountApi(app, { version: VERSION });
+
+  const emit = deps.emit ?? broadcast;
+
+  // Wire orchestrator + titler. Tests can inject both to skip SDK/key/cc
+  // construction entirely. Production path: real bus → real ccSpawner →
+  // spawner-iter → orchestrator; titler uses real Anthropic SDK if key
+  // resolution succeeds, otherwise a no-op stub so title generation simply
+  // fails-soft via chat.title_failed.
+  let orchestrator = deps.orchestrator;
+  let titler = deps.titler;
+
+  if (!orchestrator || !titler) {
+    const repo = makeChatRepo(deps.db);
+    const replay = makeSessionReplay(deps.db);
+
+    if (!titler) {
+      const sdk = await buildAnthropicSdk();
+      titler = makeTitler({ repo, sdk, replay, emit });
+    }
+
+    if (!orchestrator) {
+      const bus = createEventBus({ db: deps.db });
+      const tracesDir = path.join(deps.vaultRoot, ".traces");
+      const cc = createCcSpawner({ bus, db: deps.db, tracesDir });
+      const spawner = makeCcSpawnerIter({
+        cc,
+        bus,
+        agent: deps.defaultAgent ?? "maya",
+        cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
+      });
+      orchestrator = makeOrchestrator({
+        db: deps.db,
+        repo,
+        spawner,
+        emit,
+        titler,
+      });
+    }
+  }
+
   // VOS-79: chat-lifecycle HTTP surface. `chatsApi` owns list/create;
-  // `chatApi` owns per-chat routes (GET /chat/:id today, /messages and
-  // POST /chat/:id/message land in T4 and T9).
+  // `chatApi` owns per-chat routes (GET /chat/:id, /messages, POST /message).
   app.route("/", chatsApi(deps.db));
-  app.route("/", chatApi(deps.db));
+  app.route("/", chatApi(deps.db, { orchestrator }));
   mountMcp(app, { vaultRoot: deps.vaultRoot, db: deps.db });
   return app;
 };
+
+/**
+ * Build a real Anthropic SDK if `fetchAnthropicKey` resolves a key,
+ * otherwise return a stub whose `messages.create` rejects. The titler
+ * already catches and reports failures via `chat.title_failed`, so a
+ * missing key degrades to "no auto-titles" rather than crashing boot.
+ */
+async function buildAnthropicSdk(): Promise<
+  ConstructorParameters<typeof makeTitler>[0]["sdk"]
+> {
+  try {
+    const key = await fetchAnthropicKey();
+    return new Anthropic({ apiKey: key }) as unknown as ConstructorParameters<
+      typeof makeTitler
+    >[0]["sdk"];
+  } catch {
+    return {
+      messages: {
+        create: async () => {
+          throw new Error("anthropic key unavailable");
+        },
+      },
+    };
+  }
+}
 
 /**
  * VOS-79 T9: connected /events sockets + broadcast() fan-out.

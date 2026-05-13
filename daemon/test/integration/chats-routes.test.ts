@@ -1,4 +1,4 @@
-// Integration tests for chat-lifecycle HTTP routes (VOS-79 Task 3).
+// Integration tests for chat-lifecycle HTTP routes (VOS-79 Tasks 3 + 8).
 //
 // Drives the Hono app via `app.fetch` (no port). Migrations are loaded from
 // daemon/src/adapters/sqlite/migrations/, matching the pattern used by
@@ -12,6 +12,12 @@ import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildApp } from "../../src/app.ts";
+import type {
+  Orchestrator,
+  DispatchResult,
+} from "../../src/chat/orchestrator.ts";
+import { Conflict409 } from "../../src/chat/orchestrator.ts";
+import type { Titler } from "../../src/chat/titler.ts";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -23,7 +29,12 @@ const MIGRATIONS_DIR = join(
   "migrations",
 );
 
-function bootstrap() {
+interface BootstrapOpts {
+  orchestrator?: Orchestrator;
+  titler?: Titler;
+}
+
+async function bootstrap(opts: BootstrapOpts = {}) {
   const db = new Database(":memory:");
   for (const m of [
     "0001_init.sql",
@@ -33,12 +44,19 @@ function bootstrap() {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
   const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-"));
-  const app = buildApp({ db, vaultRoot });
+  // Inject a no-op titler by default so buildApp doesn't try fetchAnthropicKey.
+  const titler: Titler = opts.titler ?? { title: async () => {} };
+  const app = await buildApp({
+    db,
+    vaultRoot,
+    orchestrator: opts.orchestrator,
+    titler,
+  });
   return { app, db, vaultRoot };
 }
 
 test("POST /chats creates chat returning id+title+created_at", async () => {
-  const { app } = bootstrap();
+  const { app } = await bootstrap();
   const res = await app.request("/chats", {
     method: "POST",
     body: JSON.stringify({ agent: "maya" }),
@@ -56,7 +74,7 @@ test("POST /chats creates chat returning id+title+created_at", async () => {
 });
 
 test("GET /chats returns list sorted recent-first", async () => {
-  const { app } = bootstrap();
+  const { app } = await bootstrap();
   const a = (await (
     await app.request("/chats", {
       method: "POST",
@@ -91,7 +109,7 @@ test("GET /chats returns list sorted recent-first", async () => {
 });
 
 test("GET /chats on empty DB returns empty array", async () => {
-  const { app } = bootstrap();
+  const { app } = await bootstrap();
   const res = await app.request("/chats");
   expect(res.status).toBe(200);
   const body = (await res.json()) as unknown[];
@@ -100,13 +118,13 @@ test("GET /chats on empty DB returns empty array", async () => {
 });
 
 test("GET /chat/:id returns 404 when missing", async () => {
-  const { app } = bootstrap();
+  const { app } = await bootstrap();
   const res = await app.request("/chat/does-not-exist");
   expect(res.status).toBe(404);
 });
 
 test("GET /chat/:id returns row for existing", async () => {
-  const { app } = bootstrap();
+  const { app } = await bootstrap();
   const created = (await (
     await app.request("/chats", {
       method: "POST",
@@ -118,4 +136,127 @@ test("GET /chat/:id returns row for existing", async () => {
   expect(res.status).toBe(200);
   const body = (await res.json()) as { id: string };
   expect(body.id).toBe(created.id);
+});
+
+// ─── T8: POST /chat/:id/message ─────────────────────────────────────────
+
+test("POST /chat/:id/message — happy path returns {run_id, status}", async () => {
+  let captured: { chatId: string; text: string } | null = null;
+  const orch: Orchestrator = {
+    async dispatch(chatId, text): Promise<DispatchResult> {
+      captured = { chatId, text };
+      return { run_id: "run-abc", status: "done" };
+    },
+  };
+  const { app } = await bootstrap({ orchestrator: orch });
+  const created = (await (
+    await app.request("/chats", {
+      method: "POST",
+      body: JSON.stringify({ agent: "maya" }),
+      headers: { "content-type": "application/json" },
+    })
+  ).json()) as { id: string };
+  const res = await app.request(`/chat/${created.id}/message`, {
+    method: "POST",
+    body: JSON.stringify({ text: "hello" }),
+    headers: { "content-type": "application/json" },
+  });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as DispatchResult;
+  expect(body.run_id).toBe("run-abc");
+  expect(body.status).toBe("done");
+  expect(captured).toEqual({ chatId: created.id, text: "hello" });
+});
+
+test("POST /chat/:id/message — 404 when chat missing", async () => {
+  const orch: Orchestrator = {
+    async dispatch() {
+      throw new Error("should not be called");
+    },
+  };
+  const { app } = await bootstrap({ orchestrator: orch });
+  const res = await app.request("/chat/does-not-exist/message", {
+    method: "POST",
+    body: JSON.stringify({ text: "hi" }),
+    headers: { "content-type": "application/json" },
+  });
+  expect(res.status).toBe(404);
+  const body = (await res.json()) as { error: string };
+  expect(body.error).toBe("not_found");
+});
+
+test("POST /chat/:id/message — 409 when orchestrator throws Conflict409", async () => {
+  const orch: Orchestrator = {
+    async dispatch() {
+      throw new Conflict409("run-already-running");
+    },
+  };
+  const { app } = await bootstrap({ orchestrator: orch });
+  const created = (await (
+    await app.request("/chats", {
+      method: "POST",
+      body: JSON.stringify({ agent: "maya" }),
+      headers: { "content-type": "application/json" },
+    })
+  ).json()) as { id: string };
+  const res = await app.request(`/chat/${created.id}/message`, {
+    method: "POST",
+    body: JSON.stringify({ text: "hi" }),
+    headers: { "content-type": "application/json" },
+  });
+  expect(res.status).toBe(409);
+  const body = (await res.json()) as {
+    error: string;
+    current_run_id: string;
+  };
+  expect(body.error).toBe("run_in_progress");
+  expect(body.current_run_id).toBe("run-already-running");
+});
+
+test("POST /chat/:id/message — 500 on unexpected orchestrator error", async () => {
+  const orch: Orchestrator = {
+    async dispatch() {
+      throw new Error("spawner exploded");
+    },
+  };
+  const { app } = await bootstrap({ orchestrator: orch });
+  const created = (await (
+    await app.request("/chats", {
+      method: "POST",
+      body: JSON.stringify({ agent: "maya" }),
+      headers: { "content-type": "application/json" },
+    })
+  ).json()) as { id: string };
+  const res = await app.request(`/chat/${created.id}/message`, {
+    method: "POST",
+    body: JSON.stringify({ text: "hi" }),
+    headers: { "content-type": "application/json" },
+  });
+  expect(res.status).toBe(500);
+  const body = (await res.json()) as { error: string };
+  expect(body.error).toContain("spawner exploded");
+});
+
+test("POST /chat/:id/message — 400 when text missing/empty", async () => {
+  const orch: Orchestrator = {
+    async dispatch() {
+      throw new Error("should not be called");
+    },
+  };
+  const { app } = await bootstrap({ orchestrator: orch });
+  const created = (await (
+    await app.request("/chats", {
+      method: "POST",
+      body: JSON.stringify({ agent: "maya" }),
+      headers: { "content-type": "application/json" },
+    })
+  ).json()) as { id: string };
+  const res = await app.request(`/chat/${created.id}/message`, {
+    method: "POST",
+    body: JSON.stringify({ text: "   " }),
+    headers: { "content-type": "application/json" },
+  });
+  expect(res.status).toBe(400);
+  const body = (await res.json()) as { error: string };
+  expect(body.error).toBe("text_required");
 });

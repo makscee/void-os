@@ -34,7 +34,7 @@ const db = openDatabase(dbPath);
 // VOS-79 T10: sweep orphan running/pending runs left by a previous crash.
 bootRecovery(db);
 
-const app = buildApp({ db, vaultRoot });
+const app = await buildApp({ db, vaultRoot });
 
 const server = Bun.serve({
   hostname: HOST,

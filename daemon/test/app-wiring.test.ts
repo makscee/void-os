@@ -18,7 +18,7 @@ describe("buildApp wires /mcp alongside /health", () => {
   test("GET /health still works", async () => {
     const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-"));
     const db = new Database(":memory:"); db.exec(SCHEMA);
-    const app = buildApp({ db, vaultRoot });
+    const app = await buildApp({ db, vaultRoot });
     const res = await app.fetch(new Request("http://x/health"));
     expect(res.status).toBe(200);
     const body = await res.json() as { ok: boolean };
@@ -28,7 +28,7 @@ describe("buildApp wires /mcp alongside /health", () => {
   test("POST /mcp returns a valid JSON-RPC response shape", async () => {
     const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-"));
     const db = new Database(":memory:"); db.exec(SCHEMA);
-    const app = buildApp({ db, vaultRoot });
+    const app = await buildApp({ db, vaultRoot });
     const res = await app.fetch(
       new Request("http://x/mcp", {
         method: "POST",

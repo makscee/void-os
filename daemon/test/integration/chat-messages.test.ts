@@ -27,7 +27,7 @@ const MIGRATIONS_DIR = join(
   "migrations",
 );
 
-function bootstrap() {
+async function bootstrap() {
   const db = new Database(":memory:");
   for (const m of [
     "0001_init.sql",
@@ -37,12 +37,12 @@ function bootstrap() {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
   const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-"));
-  const app = buildApp({ db, vaultRoot });
+  const app = await buildApp({ db, vaultRoot });
   return { app, db, vaultRoot };
 }
 
 test("GET /chat/:id/messages returns [] for new chat with no session_id", async () => {
-  const { app } = bootstrap();
+  const { app } = await bootstrap();
   const created = (await (
     await app.request("/chats", {
       method: "POST",
@@ -58,7 +58,7 @@ test("GET /chat/:id/messages returns [] for new chat with no session_id", async 
 });
 
 test("GET /chat/:id/messages 404 for missing chat", async () => {
-  const { app } = bootstrap();
+  const { app } = await bootstrap();
   const res = await app.request("/chat/does-not-exist/messages");
   expect(res.status).toBe(404);
   const body = (await res.json()) as { error: string };
