@@ -92,4 +92,10 @@ describe("provision()", () => {
     expect(existsSync(join(home, ".obsidian/plugins/void-os/main.js"))).toBe(true)
     expect(existsSync(join(home, ".obsidian/plugins/void-os/manifest.json"))).toBe(true)
   })
+
+  it("--dry-run writes nothing but reports what would be copied", async () => {
+    const result = await provision({ home, prefix, dryRun: true, force: false })
+    expect(existsSync(home)).toBe(false)
+    expect(result.copied.length).toBeGreaterThan(0)
+  })
 })
