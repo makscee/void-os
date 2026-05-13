@@ -7,12 +7,14 @@ import { resolveVaultPath } from './paths';
 import { sha256Hex } from './sha';
 import { atomicWrite } from './atomic';
 import { recordVaultEvent } from './events';
+import { findSection } from './sections';
 
 export type WriteCtx = { agent: string; run_id: string };
 
 export interface VaultWriter {
   read(p: string): Promise<{ content: string; sha: string }>;
   create(p: string, content: string, ctx: WriteCtx): Promise<void>;
+  append(p: string, content: string, section: string | null, ctx: WriteCtx): Promise<void>;
 }
 
 export interface VaultWriterOpts {
@@ -33,6 +35,29 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
 
   function resolve(rel: string): string {
     return resolveVaultPath(rel, vaultRootReal);
+  }
+
+  function buildAppended(oldContent: string, addition: string, section: string | null): string {
+    const payload = addition.replace(/\s+$/, '') + '\n';
+    if (section === null) {
+      const pre = oldContent.endsWith('\n') ? oldContent : oldContent + '\n';
+      return pre + '\n' + payload;
+    }
+    const r = findSection(oldContent, section);
+    if (!r) {
+      const err: any = new Error('SECTION_NOT_FOUND');
+      err.code = 'SECTION_NOT_FOUND';
+      throw err;
+    }
+    const body = oldContent.slice(r.bodyStart, r.bodyEnd);
+    const trimmedBody = body.replace(/\s+$/, '');
+    const reconstructed = trimmedBody.length > 0 ? trimmedBody + '\n' : '';
+    const pre = oldContent.slice(0, r.bodyStart) + reconstructed;
+    const post = oldContent.slice(r.bodyEnd);
+    const sep = reconstructed.length > 0 ? '\n' : '';
+    // If post starts with a `## ` heading, separate appended payload from it with a blank line.
+    const trailingSep = post.length > 0 ? '\n' : '';
+    return pre + sep + payload + trailingSep + post;
   }
 
   async function read(p: string) {
@@ -62,5 +87,22 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
     });
   }
 
-  return { read, create } as VaultWriter;
+  async function append(p: string, content: string, section: string | null, ctx: WriteCtx) {
+    const abs = resolve(p);
+    await mutex.runExclusive(abs, async () => {
+      const oldContent = await fs.readFile(abs, 'utf8');
+      const newContent = buildAppended(oldContent, content, section);
+      await atomicWrite(abs, newContent, tmpDir, { crashAfterTmpWrite });
+      recordVaultEvent(opts.db, {
+        type: 'vault.append',
+        agent: ctx.agent,
+        run_id: ctx.run_id,
+        path: p,
+        sha_before: sha256Hex(oldContent),
+        sha_after: sha256Hex(newContent),
+      });
+    });
+  }
+
+  return { read, create, append } as VaultWriter;
 }
