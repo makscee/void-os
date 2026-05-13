@@ -98,4 +98,10 @@ describe("provision()", () => {
     expect(existsSync(home)).toBe(false)
     expect(result.copied.length).toBeGreaterThan(0)
   })
+
+  it("creates target/.claude/skills symlink → ../skills", async () => {
+    await provision({ home, prefix, dryRun: false, force: false })
+    const link = join(home, ".claude/skills")
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+  })
 })
