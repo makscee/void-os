@@ -1,0 +1,103 @@
+import { describe, expect, test, beforeEach } from "bun:test";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import { Hono } from "hono";
+import { Database } from "bun:sqlite";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { mountMcp } from "../src/adapters/mcp/index.ts";
+
+// Mirrors daemon/src/adapters/sqlite/migrations/0001_init.sql
+const SCHEMA = `
+CREATE TABLE events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL, chat_id TEXT, run_id TEXT, agent TEXT,
+  type TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}'
+);
+`;
+
+interface Ctx { vaultRoot: string; db: Database; app: Hono; server: { stop: () => void; port: number }; }
+
+async function startApp(): Promise<Ctx> {
+  const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-mcp-"));
+  fs.mkdirSync(path.join(vaultRoot, "notes"));
+  fs.writeFileSync(path.join(vaultRoot, "notes", "hello.md"), "marker-xyzzy");
+  const db = new Database(":memory:");
+  db.exec(SCHEMA);
+  const app = new Hono();
+  mountMcp(app, { vaultRoot, db });
+  const server = Bun.serve({ port: 0, fetch: app.fetch });
+  return { vaultRoot, db, app, server: { stop: () => server.stop(true), port: server.port as number } };
+}
+
+describe("mountMcp /mcp", () => {
+  let ctx: Ctx;
+  beforeEach(async () => { ctx = await startApp(); });
+
+  test("tools/list returns exactly vault.read", async () => {
+    const client = new Client({ name: "test", version: "0.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${ctx.server.port}/mcp`));
+    await client.connect(transport);
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).toEqual(["vault.read"]);
+    await client.close();
+    ctx.server.stop();
+  });
+
+  test("call vault.read returns file content", async () => {
+    const client = new Client({ name: "test", version: "0.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${ctx.server.port}/mcp`));
+    await client.connect(transport);
+    const result = await client.callTool({ name: "vault.read", arguments: { path: "notes/hello.md" } });
+    const content = result.content as Array<{ text: string }>;
+    expect(content[0]!.text).toBe("marker-xyzzy");
+    await client.close();
+    const row = ctx.db.prepare(
+      "SELECT type, data FROM events WHERE type='mcp.vault.read'",
+    ).get() as { type: string; data: string };
+    expect(row.type).toBe("mcp.vault.read");
+    expect(JSON.parse(row.data).ok).toBe(true);
+    ctx.server.stop();
+  });
+
+  test("call vault.read on escaping path returns isError", async () => {
+    const client = new Client({ name: "test", version: "0.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${ctx.server.port}/mcp`));
+    await client.connect(transport);
+    const result = await client.callTool({ name: "vault.read", arguments: { path: "../etc/passwd" } });
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ text: string }>;
+    expect(content[0]!.text).toContain("PATH_ESCAPES_VAULT_ROOT");
+    await client.close();
+    ctx.server.stop();
+  });
+
+  test("raw POST: initialize JSON-RPC envelope returns a parseable response", async () => {
+    // Bypasses the SDK client — proves the body-handling path is correct
+    // when a real Streamable-HTTP client POSTs a JSON-RPC envelope.
+    const res = await fetch(`http://127.0.0.1:${ctx.server.port}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "raw", version: "0" },
+        },
+      }),
+    });
+    expect(res.status).toBeLessThan(400);
+    const text = await res.text();
+    // Streamable HTTP servers may return JSON or SSE — in both, "jsonrpc"
+    // appears literally in the body.
+    expect(text).toContain("\"jsonrpc\"");
+    ctx.server.stop();
+  });
+});
