@@ -25,3 +25,22 @@ test('read returns content + sha, no event row', async () => {
 test('read throws ENOENT for missing file', async () => {
   await expect(w.read('missing.md')).rejects.toThrow();
 });
+
+test('create writes file, mkdir -p, emits vault.create event', async () => {
+  await w.create('sub/deep/a.md', 'hello', CTX);
+  expect(fs.readFileSync(path.join(v.root, 'sub/deep/a.md'), 'utf8')).toBe('hello');
+  const e = readEvents(v.db);
+  expect(e).toHaveLength(1);
+  expect(e[0]).toMatchObject({
+    type: 'vault.create',
+    agent: 'test',
+    run_id: 'r-test',
+    payload: { path: 'sub/deep/a.md', sha_before: null, sha_after: sha256Hex('hello') },
+  });
+});
+
+test('create fails EEXIST', async () => {
+  fs.writeFileSync(path.join(v.root, 'a.md'), 'x');
+  await expect(w.create('a.md', 'y', CTX)).rejects.toThrow('EEXIST');
+  expect(readEvents(v.db)).toEqual([]);
+});
