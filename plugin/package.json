@@ -1,0 +1,16 @@
+{
+  "name": "void-os-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run build.ts",
+    "dev": "bun run build.ts --watch",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "obsidian": "latest",
+    "typescript": "^5.4.0"
+  }
+}
