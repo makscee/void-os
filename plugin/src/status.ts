@@ -7,6 +7,6 @@ const LABELS: Record<ConnectionState, string> = {
 };
 
 export class StatusBar {
-  constructor(private el: HTMLElement) { this.update("offline"); }
+  constructor(private el: { setText(s: string): void }) { this.update("offline"); }
   update(s: ConnectionState) { this.el.setText(LABELS[s]); }
 }

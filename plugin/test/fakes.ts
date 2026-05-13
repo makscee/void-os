@@ -7,18 +7,18 @@ export class FakeClock {
   private timers: { at: number; fn: () => void; id: number; interval?: number }[] = [];
   private nextId = 1;
 
-  setTimeout = (fn: () => void, ms: number): any => {
+  setTimeout(fn: () => void, ms: number): any {
     const id = this.nextId++;
     this.timers.push({ at: this.now + ms, fn, id });
     return id;
-  };
-  clearTimeout = (id: any) => { this.timers = this.timers.filter((t) => t.id !== id); };
-  setInterval = (fn: () => void, ms: number): any => {
+  }
+  clearTimeout(id: any): any { this.timers = this.timers.filter((t) => t.id !== id); }
+  setInterval(fn: () => void, ms: number): any {
     const id = this.nextId++;
     this.timers.push({ at: this.now + ms, fn, id, interval: ms });
     return id;
-  };
-  clearInterval = (id: any) => { this.timers = this.timers.filter((t) => t.id !== id); };
+  }
+  clearInterval(id: any): any { this.timers = this.timers.filter((t) => t.id !== id); }
 
   advance(ms: number) {
     const target = this.now + ms;
@@ -61,10 +61,10 @@ export const makeFsm = () => {
     retryMs: 2000,
     pingMs: 10000,
     pongTimeoutMs: 25000,
-    setTimeout: clock.setTimeout,
-    clearTimeout: clock.clearTimeout,
-    setInterval: clock.setInterval,
-    clearInterval: clock.clearInterval,
+    setTimeout: clock.setTimeout.bind(clock) as any,
+    clearTimeout: clock.clearTimeout.bind(clock) as any,
+    setInterval: clock.setInterval.bind(clock) as any,
+    clearInterval: clock.clearInterval.bind(clock) as any,
   });
   return { fsm, ws, clock, states };
 };
