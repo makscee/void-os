@@ -16,7 +16,7 @@ export class Mutex {
     const sorted = [...new Set(keys)].sort();
     const acquire = (i: number): Promise<T> => {
       if (i === sorted.length) return fn();
-      return this.runExclusive(sorted[i], () => acquire(i + 1));
+      return this.runExclusive(sorted[i]!, () => acquire(i + 1));
     };
     return acquire(0);
   }

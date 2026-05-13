@@ -36,5 +36,5 @@ test('crashAfterTmpWrite throws, original intact, orphan in tmpDir, target dir u
   expect(fs.readdirSync(root).filter(f => f.startsWith('a.md.'))).toEqual([]);
   const orphans = fs.readdirSync(tmpDir).filter(f => f.startsWith('a.md.'));
   expect(orphans.length).toBe(1);
-  expect(fs.readFileSync(path.join(tmpDir, orphans[0]), 'utf8')).toBe('replacement');
+  expect(fs.readFileSync(path.join(tmpDir, orphans[0]!), 'utf8')).toBe('replacement');
 });
