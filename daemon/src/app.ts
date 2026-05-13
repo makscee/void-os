@@ -110,11 +110,11 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
  * missing key degrades to "no auto-titles" rather than crashing boot.
  */
 async function buildAnthropicSdk(): Promise<
-  ConstructorParameters<typeof makeTitler>[0]["sdk"]
+  Parameters<typeof makeTitler>[0]["sdk"]
 > {
   try {
     const key = await fetchAnthropicKey();
-    return new Anthropic({ apiKey: key }) as unknown as ConstructorParameters<
+    return new Anthropic({ apiKey: key }) as unknown as Parameters<
       typeof makeTitler
     >[0]["sdk"];
   } catch {

@@ -102,10 +102,10 @@ test("GET /chats returns list sorted recent-first", async () => {
   expect(Array.isArray(list)).toBe(true);
   expect(list.length).toBe(2);
   // Recent-first: b (created last) must come before a.
-  expect(list[0].id).toBe(b.id);
-  expect(list[1].id).toBe(a.id);
+  expect(list[0]!.id).toBe(b.id);
+  expect(list[1]!.id).toBe(a.id);
   // Shape sanity: list rows include last_msg (preview) field per repo contract.
-  expect(list[0]).toHaveProperty("last_msg");
+  expect(list[0]!).toHaveProperty("last_msg");
 });
 
 test("GET /chats on empty DB returns empty array", async () => {
@@ -165,7 +165,7 @@ test("POST /chat/:id/message — happy path returns {run_id, status}", async () 
   const body = (await res.json()) as DispatchResult;
   expect(body.run_id).toBe("run-abc");
   expect(body.status).toBe("done");
-  expect(captured).toEqual({ chatId: created.id, text: "hello" });
+  expect(captured!).toEqual({ chatId: created.id, text: "hello" });
 });
 
 test("POST /chat/:id/message — 404 when chat missing", async () => {

@@ -60,7 +60,7 @@ test("titler calls SDK once and sets title on first turn", async () => {
   });
 
   // Verify model id is Haiku 4.5
-  const args = sdkCreate.mock.calls[0][0] as any;
+  const args = (sdkCreate.mock.calls as any[])[0][0] as any;
   expect(args.model).toBe("claude-haiku-4-5-20251001");
   expect(typeof args.system).toBe("string");
   expect(Array.isArray(args.messages)).toBe(true);
@@ -185,7 +185,7 @@ test("replay messages tail (last 10) is passed to SDK", async () => {
     emit: () => {},
   });
   await titler.title("c1");
-  const args = sdkCreate.mock.calls[0][0] as any;
+  const args = (sdkCreate.mock.calls as any[])[0][0] as any;
   expect(args.messages.length).toBe(10);
   expect(args.messages[0].content).toBe("msg 5");
   expect(args.messages[9].content).toBe("msg 14");
