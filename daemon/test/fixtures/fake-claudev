@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Fake claudev for VOS-73 integration tests. Reads `--scenario <name>` from argv,
+# emits canned stream-json lines on stdout, echoes argv to stderr for resume
+# assertions, then exits per scenario.
+
+set -u
+scenario=""
+resume_id=""
+argv_capture=("$@")
+# The CC spawner passes the scenario via `-p "<args>"`. Re-tokenize that value
+# alongside the rest of argv so `--scenario <name>` reaches us regardless of
+# whether the caller flattened it into the -p payload.
+expanded=()
+i=0
+while [ $i -lt ${#argv_capture[@]} ]; do
+  cur="${argv_capture[$i]}"
+  if [ "$cur" = "-p" ]; then
+    i=$((i + 1))
+    # shellcheck disable=SC2206
+    inner=( ${argv_capture[$i]} )
+    expanded+=( "${inner[@]}" )
+  else
+    expanded+=( "$cur" )
+  fi
+  i=$((i + 1))
+done
+
+set -- "${expanded[@]}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --scenario) scenario="$2"; shift 2 ;;
+    --resume)   resume_id="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+# Echo argv to stderr so tests can assert --resume <id> was forwarded.
+echo "fake-claudev argv: ${argv_capture[*]}" >&2
+[ -n "$resume_id" ] && echo "fake-claudev resume: $resume_id" >&2
+
+sid="sess-${scenario:-default}-$$"
+[ -n "$resume_id" ] && sid="$resume_id"
+
+emit_system() { printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"; }
+emit_assistant_text() { printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$1"; }
+emit_tool_use() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"%s","name":"Bash","input":{}}]}}\n' "$1"; }
+emit_tool_result() { printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"%s","content":"ok"}]}}\n' "$1"; }
+emit_stop() { printf '{"type":"assistant","message":{"stop_reason":"end_turn"}}\n'; }
+
+case "$scenario" in
+  happy)
+    emit_system; emit_assistant_text "hi"; emit_stop; exit 0 ;;
+  tool-call)
+    emit_system; emit_tool_use "tool_1"; sleep 0.1; emit_tool_result "tool_1"; emit_stop; exit 0 ;;
+  resume)
+    emit_system; emit_assistant_text "resumed-$resume_id"; emit_stop; exit 0 ;;
+  silent)
+    # `exec` replaces bash with sleep so SIGTERM kills the actual stdout holder
+    # and Bun's stream readers see EOF promptly.
+    emit_system; exec sleep 60 ;;
+  crash)
+    echo "fake-claudev crashed on purpose" >&2; exit 1 ;;
+  *)
+    echo "fake-claudev: unknown scenario '$scenario'" >&2; exit 2 ;;
+esac
