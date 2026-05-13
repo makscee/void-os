@@ -6,7 +6,7 @@ import { Mutex } from './mutex';
 import { resolveVaultPath } from './paths';
 import { sha256Hex } from './sha';
 import { atomicWrite } from './atomic';
-import { recordVaultEvent } from './events';
+import { recordVaultEvent, recordMovePair } from './events';
 import { findSection } from './sections';
 import { parseFm, stringifyFm } from './frontmatter';
 
@@ -20,6 +20,7 @@ export interface VaultWriter {
   set_property(p: string, key: string, value: unknown, ctx: WriteCtx): Promise<void>;
   patch(p: string, old_string: string, new_string: string, ctx: WriteCtx): Promise<void>;
   delete(p: string, ctx: WriteCtx): Promise<void>;
+  move(from: string, to: string, ctx: WriteCtx): Promise<void>;
 }
 
 export interface VaultWriterOpts {
@@ -200,5 +201,21 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
     });
   }
 
-  return { read, create, append, replace_section, set_property, patch, delete: deleteOp } as VaultWriter;
+  async function move(from: string, to: string, ctx: WriteCtx) {
+    const fromAbs = resolve(from);
+    const toAbs = resolve(to);
+    await mutex.runExclusiveMany([fromAbs, toAbs], async () => {
+      if (fsSync.existsSync(toAbs)) {
+        const e: any = new Error('EEXIST');
+        e.code = 'EEXIST';
+        throw e;
+      }
+      const content = await fs.readFile(fromAbs, 'utf8'); // throws ENOENT if missing
+      await fs.mkdir(path.dirname(toAbs), { recursive: true });
+      await fs.rename(fromAbs, toAbs);
+      recordMovePair(opts.db, ctx, from, to, sha256Hex(content));
+    });
+  }
+
+  return { read, create, append, replace_section, set_property, patch, delete: deleteOp, move } as VaultWriter;
 }
