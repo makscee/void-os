@@ -2,19 +2,16 @@
  * void-os daemon entry point.
  *
  * Bun + Hono HTTP server with WebSocket upgrade on :7777.
- * Scaffold only — modules (api/, chat/, worker/, ...) land in T2.
+ * Thin: build app, start server.
  */
 
-import { Hono } from "hono";
 import type { ServerWebSocket } from "bun";
+import { buildApp, VERSION } from "./app.ts";
 
-const VERSION = "0.0.1";
 const PORT = Number(process.env.VOID_OS_PORT ?? 7777);
 const HOST = process.env.VOID_OS_HOST ?? "127.0.0.1";
 
-const app = new Hono();
-
-app.get("/", (c) => c.text(`void-os daemon v${VERSION}\n`));
+const app = buildApp();
 
 // Bun.serve handles WS upgrade natively. Route /events through the upgrade
 // path; everything else falls through to Hono's fetch.
