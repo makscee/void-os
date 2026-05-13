@@ -10,6 +10,8 @@ import type { Database } from "bun:sqlite";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import pkg from "../package.json" with { type: "json" };
 import { mountApi } from "./api/index.ts";
+import { chatsApi } from "./api/chats.ts";
+import { chatApi } from "./api/chat.ts";
 import { mountMcp } from "./adapters/mcp/index.ts";
 
 export const VERSION = pkg.version;
@@ -23,6 +25,11 @@ export const buildApp = (deps: BuildAppDeps): Hono => {
   const app = new Hono();
   app.get("/", (c) => c.text(`void-os daemon v${VERSION}\n`));
   mountApi(app, { version: VERSION });
+  // VOS-79: chat-lifecycle HTTP surface. `chatsApi` owns list/create;
+  // `chatApi` owns per-chat routes (GET /chat/:id today, /messages and
+  // POST /chat/:id/message land in T4 and T9).
+  app.route("/", chatsApi(deps.db));
+  app.route("/", chatApi(deps.db));
   mountMcp(app, { vaultRoot: deps.vaultRoot, db: deps.db });
   return app;
 };
