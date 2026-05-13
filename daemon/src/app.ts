@@ -6,14 +6,22 @@
  */
 
 import { Hono } from "hono";
+import type { Database } from "bun:sqlite";
 import pkg from "../package.json" with { type: "json" };
 import { mountApi } from "./api/index.ts";
+import { mountMcp } from "./adapters/mcp/index.ts";
 
 export const VERSION = pkg.version;
 
-export const buildApp = (): Hono => {
+export interface BuildAppDeps {
+  db: Database;
+  vaultRoot: string;
+}
+
+export const buildApp = (deps: BuildAppDeps): Hono => {
   const app = new Hono();
   app.get("/", (c) => c.text(`void-os daemon v${VERSION}\n`));
   mountApi(app, { version: VERSION });
+  mountMcp(app, { vaultRoot: deps.vaultRoot, db: deps.db });
   return app;
 };
