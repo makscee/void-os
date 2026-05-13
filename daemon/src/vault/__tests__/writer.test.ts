@@ -101,3 +101,32 @@ test('replace_section SECTION_NOT_FOUND', async () => {
   fs.writeFileSync(path.join(v.root, 'a.md'), '# T\n');
   await expect(w.replace_section('a.md', 'Missing', 'x', CTX)).rejects.toThrow('SECTION_NOT_FOUND');
 });
+
+test('set_property on file with existing FM', async () => {
+  fs.writeFileSync(path.join(v.root, 'a.md'), '---\ntitle: old\n---\n\nbody\n');
+  await w.set_property('a.md', 'title', 'new', CTX);
+  const out = fs.readFileSync(path.join(v.root, 'a.md'), 'utf8');
+  expect(out).toMatch(/^---\n/);
+  expect(out).toMatch(/title: new/);
+  expect(out).toMatch(/\nbody\n/);
+});
+
+test('set_property creates FM when missing, preserves body', async () => {
+  fs.writeFileSync(path.join(v.root, 'a.md'), 'just body\n');
+  await w.set_property('a.md', 'tags', ['x', 'y'], CTX);
+  const out = fs.readFileSync(path.join(v.root, 'a.md'), 'utf8');
+  expect(out).toMatch(/^---\n/);
+  const { parseFm } = await import('../frontmatter');
+  expect(parseFm(out).data.tags).toEqual(['x', 'y']);
+  expect(parseFm(out).body.trimEnd()).toBe('just body');
+});
+
+test('set_property accepts non-string values without corruption', async () => {
+  fs.writeFileSync(path.join(v.root, 'a.md'), 'b\n');
+  await w.set_property('a.md', 'count', 42, CTX);
+  await w.set_property('a.md', 'enabled', true, CTX);
+  const { parseFm } = await import('../frontmatter');
+  const out = fs.readFileSync(path.join(v.root, 'a.md'), 'utf8');
+  expect(parseFm(out).data.count).toBe(42);
+  expect(parseFm(out).data.enabled).toBe(true);
+});

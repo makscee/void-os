@@ -8,6 +8,7 @@ import { sha256Hex } from './sha';
 import { atomicWrite } from './atomic';
 import { recordVaultEvent } from './events';
 import { findSection } from './sections';
+import { parseFm, stringifyFm } from './frontmatter';
 
 export type WriteCtx = { agent: string; run_id: string };
 
@@ -16,6 +17,7 @@ export interface VaultWriter {
   create(p: string, content: string, ctx: WriteCtx): Promise<void>;
   append(p: string, content: string, section: string | null, ctx: WriteCtx): Promise<void>;
   replace_section(p: string, section: string, content: string, ctx: WriteCtx): Promise<void>;
+  set_property(p: string, key: string, value: unknown, ctx: WriteCtx): Promise<void>;
 }
 
 export interface VaultWriterOpts {
@@ -132,5 +134,24 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
     });
   }
 
-  return { read, create, append, replace_section } as VaultWriter;
+  async function set_property(p: string, key: string, value: unknown, ctx: WriteCtx) {
+    const abs = resolve(p);
+    await mutex.runExclusive(abs, async () => {
+      const oldContent = await fs.readFile(abs, 'utf8');
+      const { data, body } = parseFm(oldContent);
+      data[key] = value;
+      const newContent = stringifyFm(data, body);
+      await atomicWrite(abs, newContent, tmpDir, { crashAfterTmpWrite });
+      recordVaultEvent(opts.db, {
+        type: 'vault.set_property',
+        agent: ctx.agent,
+        run_id: ctx.run_id,
+        path: p,
+        sha_before: sha256Hex(oldContent),
+        sha_after: sha256Hex(newContent),
+      });
+    });
+  }
+
+  return { read, create, append, replace_section, set_property } as VaultWriter;
 }
