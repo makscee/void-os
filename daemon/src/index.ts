@@ -10,6 +10,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { buildApp, VERSION, wsHandler } from "./app.ts";
 import { openDatabase } from "./adapters/sqlite/index.ts";
+import { bootRecovery } from "./boot.ts";
 
 const PORT = Number(process.env.VOID_OS_PORT ?? 7777);
 const HOST = process.env.VOID_OS_HOST ?? "127.0.0.1";
@@ -29,6 +30,9 @@ if (!fs.existsSync(vaultRoot)) {
 
 const dbPath = process.env.VOID_OS_DB ?? path.join(path.dirname(vaultRoot), "state.sqlite");
 const db = openDatabase(dbPath);
+
+// VOS-79 T10: sweep orphan running/pending runs left by a previous crash.
+bootRecovery(db);
 
 const app = buildApp({ db, vaultRoot });
 
