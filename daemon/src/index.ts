@@ -2,26 +2,44 @@
  * void-os daemon entry point.
  *
  * Bun + Hono HTTP server with WebSocket upgrade on :7777.
- * Thin: build app, start server.
+ * Thin: open DB, resolve vault root, build app, start server.
  */
 
+import * as os from "node:os";
+import * as path from "node:path";
+import * as fs from "node:fs";
 import type { ServerWebSocket } from "bun";
 import { buildApp, VERSION } from "./app.ts";
+import { openDatabase } from "./adapters/sqlite/index.ts";
 
 const PORT = Number(process.env.VOID_OS_PORT ?? 7777);
 const HOST = process.env.VOID_OS_HOST ?? "127.0.0.1";
 
-const app = buildApp();
+function defaultVaultRoot(): string {
+  // brew install layout puts the vault under XDG-style state dir.
+  return process.env.VOID_OS_VAULT_ROOT
+    ?? path.join(os.homedir(), "Library", "Application Support", "void-os", "vault");
+}
 
-// Bun.serve handles WS upgrade natively. Route /events through the upgrade
-// path; everything else falls through to Hono's fetch.
+const vaultRoot = defaultVaultRoot();
+if (!fs.existsSync(vaultRoot)) {
+  console.error(`void-os: vault root does not exist: ${vaultRoot}`);
+  console.error("set VOID_OS_VAULT_ROOT or run void-os init");
+  process.exit(2);
+}
+
+const dbPath = process.env.VOID_OS_DB ?? path.join(path.dirname(vaultRoot), "state.sqlite");
+const db = openDatabase(dbPath);
+
+const app = buildApp({ db, vaultRoot });
+
 const server = Bun.serve({
   hostname: HOST,
   port: PORT,
   fetch(req, srv) {
     const url = new URL(req.url);
     if (url.pathname === "/events") {
-      if (srv.upgrade(req)) return; // upgraded, response handled by ws
+      if (srv.upgrade(req)) return;
       return new Response("expected WebSocket upgrade", { status: 426 });
     }
     return app.fetch(req);
@@ -31,7 +49,6 @@ const server = Bun.serve({
       ws.send(JSON.stringify({ type: "hello", version: VERSION }));
     },
     message(ws: ServerWebSocket<unknown>, msg: string | Buffer) {
-      // Echo for now. Real event multiplexing arrives with events module.
       ws.send(typeof msg === "string" ? msg : msg.toString());
     },
     close() {
@@ -41,3 +58,5 @@ const server = Bun.serve({
 });
 
 console.log(`void-os daemon v${VERSION} listening on http://${server.hostname}:${server.port}`);
+console.log(`  vault: ${vaultRoot}`);
+console.log(`  db:    ${dbPath}`);
