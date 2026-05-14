@@ -26,6 +26,12 @@ export interface TextMessage {
   role: "user" | "assistant";
   content: string;
   ts?: number;
+  /** True when this assistant turn's run was marked cancelled (ESC cancel).
+   *  Surfaced via LEFT JOIN runs in messages-repo.walk() so the plugin can
+   *  render a "stopped" badge on the cached server-truth entry without
+   *  relying on the optimistic pendingStoppedRunId path. Always omitted for
+   *  user entries. */
+  cancelled?: boolean;
 }
 
 /** A tool invocation block lifted out of an assistant turn's content[]. */

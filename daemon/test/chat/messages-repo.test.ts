@@ -195,3 +195,64 @@ test("appendToolUse with malformed JSON input falls back to raw string", () => {
   const out = repo.walk(chatId);
   expect((out[0] as any).input).toBe("not-json");
 });
+
+test("walk surfaces cancelled=true on assistant entries from cancelled runs", () => {
+  const db = freshDb();
+  const chatId = seedChat(db, "run-1");
+  const repo = makeMessagesRepo(db);
+
+  repo.appendUser(chatId, "run-1", "go", 1000);
+  repo.appendAssistant(chatId, "run-1", "partial answer", 1010);
+  // Simulate the orchestrator's terminal stamp for ESC cancel.
+  db.run("UPDATE runs SET status = 'cancelled', ended_at = ? WHERE id = ?", [
+    1020,
+    "run-1",
+  ]);
+
+  const out = repo.walk(chatId);
+  expect(out).toEqual([
+    { role: "user", content: "go", ts: 1000 },
+    {
+      role: "assistant",
+      content: "partial answer",
+      ts: 1010,
+      cancelled: true,
+    },
+  ]);
+});
+
+test("walk omits cancelled flag on assistant entries from done runs", () => {
+  const db = freshDb();
+  const chatId = seedChat(db, "run-1");
+  const repo = makeMessagesRepo(db);
+
+  repo.appendAssistant(chatId, "run-1", "all good", 1010);
+  db.run("UPDATE runs SET status = 'done', ended_at = ? WHERE id = ?", [
+    1020,
+    "run-1",
+  ]);
+
+  const out = repo.walk(chatId);
+  expect(out).toEqual([
+    { role: "assistant", content: "all good", ts: 1010 },
+  ]);
+  expect((out[0] as { cancelled?: boolean }).cancelled).toBeUndefined();
+});
+
+test("walk does not stamp cancelled on user rows from cancelled runs", () => {
+  const db = freshDb();
+  const chatId = seedChat(db, "run-1");
+  const repo = makeMessagesRepo(db);
+
+  repo.appendUser(chatId, "run-1", "go", 1000);
+  db.run("UPDATE runs SET status = 'cancelled', ended_at = ? WHERE id = ?", [
+    1020,
+    "run-1",
+  ]);
+
+  const out = repo.walk(chatId);
+  expect(out).toEqual([
+    { role: "user", content: "go", ts: 1000 },
+  ]);
+  expect((out[0] as { cancelled?: boolean }).cancelled).toBeUndefined();
+});

@@ -69,6 +69,11 @@ interface Row {
   tool_name: string | null;
   is_error: number;
   ts: number;
+  /** runs.status of the run this row belongs to. Surfaced via LEFT JOIN so
+   *  we can stamp `cancelled: true` onto assistant entries from a cancelled
+   *  run — the plugin's "(stopped)" badge picks this up after refetch. May
+   *  be null for legacy JSONL-imported rows where run_id was never set. */
+  run_status: string | null;
 }
 
 function parseInput(raw: string | null): unknown {
@@ -136,15 +141,23 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
       );
     },
     walk(chatId) {
+      // LEFT JOIN runs so we can surface the run's terminal status on each
+      // message row. The plugin uses `cancelled: true` on assistant entries
+      // to render a "(stopped)" badge from server truth (survives refetch +
+      // chat-switch cycles without relying on optimistic local state).
       const rows = db
         .query(
-          "SELECT role, content, tool_call_id, tool_name, is_error, ts FROM messages WHERE chat_id = ? ORDER BY ts ASC, ord ASC",
+          "SELECT m.role AS role, m.content AS content, m.tool_call_id AS tool_call_id, m.tool_name AS tool_name, m.is_error AS is_error, m.ts AS ts, r.status AS run_status FROM messages m LEFT JOIN runs r ON r.id = m.run_id WHERE m.chat_id = ? ORDER BY m.ts ASC, m.ord ASC",
         )
         .all(chatId) as Row[];
       const out: ReplayEntry[] = [];
       for (const r of rows) {
         if (r.role === "user" || r.role === "assistant") {
-          out.push({ role: r.role, content: r.content ?? "", ts: r.ts });
+          const entry: ReplayEntry = { role: r.role, content: r.content ?? "", ts: r.ts };
+          if (r.role === "assistant" && r.run_status === "cancelled") {
+            (entry as { cancelled?: boolean }).cancelled = true;
+          }
+          out.push(entry);
         } else if (r.role === "tool_use") {
           out.push({
             role: "tool_use",
