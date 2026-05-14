@@ -50,9 +50,27 @@ describe("ChatRoot integration (S2)", () => {
     const { ChatRoot } = await import("../src/chat/ChatRoot");
 
     const bus = new FrameBus();
-    // ChatApi is unused by the streaming path — no postMessage in this test.
-    const api = makeChatApi("http://test", (async () =>
-      new Response("{}", { status: 200 })) as any);
+    // VOS-80 part 2: daemon DB is canonical. GET /chat/:id/messages drives
+    // the post-run history (refetched after run.end). During the run, the
+    // live overlay shows tokens. After run.end, we expect the canonical
+    // assistant message ("Hello!") to land in the DOM via the refetch.
+    //
+    // First GET (initial mount) returns empty history. Subsequent GET
+    // (after run.end) returns the canonical turn.
+    let getMessagesCalls = 0;
+    const api = makeChatApi("http://test", (async (url: string, init?: RequestInit) => {
+      if (typeof url === "string" && url.includes("/messages") && (!init || init.method === "GET")) {
+        getMessagesCalls += 1;
+        const body = getMessagesCalls === 1
+          ? "[]"
+          : JSON.stringify([
+              { role: "user", content: "hi" },
+              { role: "assistant", content: "Hello!" },
+            ]);
+        return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    }) as any);
 
     const host = (globalThis as any).document.createElement("div");
     (globalThis as any).document.body.appendChild(host);

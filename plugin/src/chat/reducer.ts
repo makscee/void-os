@@ -1,28 +1,36 @@
 // Pure reducer for the chat thread state. Independent of React + assistant-ui
 // so it can be unit-tested in isolation (see test/chat-reducer.test.ts).
 //
-// Daemon wire shape (VOS-79 + S4 tool frames):
-//   chat.message_user  {chat_id, run_id, text}
-//   run.start          {chat_id, run_id, agent}
-//   chat.token         {chat_id, run_id, delta}             ← assistant streaming
-//   chat.tool_use      {chat_id, run_id, tool_call_id, name, input}
-//   chat.tool_result   {chat_id, run_id, tool_call_id, output, is_error}
-//   chat.completion    {chat_id, run_id}
-//   run.end            {chat_id, run_id, status}            ← terminal
-//   run.error          {chat_id, run_id, error}             ← terminal
+// VOS-80 part 2: DAEMON DB = SOURCE OF TRUTH. The reducer no longer
+// reconstructs chat history from chat.token / chat.tool_* deltas. Instead:
 //
-// Dedupe key per the plan is "msg_id". The daemon does not (yet) emit a
-// per-assistant-message id; one assistant message per run, keyed by `run_id`.
-// We use `run_id` as the stable id so re-subscribing mid-run is idempotent.
+//   - `messages` is a *cache* of GET /chat/:id/messages. It is replaced
+//     wholesale via the `refetched` action (which the runtime dispatches
+//     after run.end). The reducer never mutates `messages` from streaming
+//     frames.
+//   - `liveTokens` + `liveToolEvents` form a transient overlay that the
+//     runtime layers AFTER `messages` to show the currently-streaming turn.
+//     Both are cleared on run.end / run.error / set_chat / local_cancel.
+//   - WS frames are *invalidation signals*: run.start arms the overlay,
+//     chat.token / chat.tool_* feed it, run.end disarms it and tells the
+//     runtime to refetch.
+//
+// Wire shape unchanged:
+//   chat.message_user  {chat_id, run_id, text}      → user reconcile (kept)
+//   run.start          {chat_id, run_id, agent}     → arm overlay
+//   chat.token         {chat_id, run_id, delta}     → liveTokens
+//   chat.tool_use      {chat_id, run_id, tool_call_id, name, input}     → liveToolEvents
+//   chat.tool_result   {chat_id, run_id, tool_call_id, output, is_error}→ merge into liveToolEvents
+//   chat.completion    {chat_id, run_id}            → no-op (run.end is terminal)
+//   run.end            {chat_id, run_id, status}    → idle + clear overlay
+//   run.error          {chat_id, run_id, error}     → error + clear overlay
 
 import type { DaemonFrame } from "./bus";
 
 export type Role = "user" | "assistant";
 
-/** Inline parts on an assistant message. The leading text from chat.token
- *  deltas lives in `ChatMessage.text` for back-compat with S1/S2/S3 tests
- *  and is mirrored as the first TextPart in `parts`. Tool-call parts are
- *  appended in arrival order (preserves daemon's intra-turn ordering). */
+/** Inline parts on an assistant message. Tool parts are appended in arrival
+ *  order (preserves daemon's intra-turn ordering). */
 export type TextPart = { kind: "text"; text: string };
 export type ToolPart = {
   kind: "tool";
@@ -38,24 +46,24 @@ export type ToolPart = {
 export type AssistantPart = TextPart | ToolPart;
 
 export interface ChatMessage {
-  /** Stable id used for dedupe. For assistant rows = run_id. For user rows
-   *  we mint a synthetic id ("user-<run_id>") so reconciliation is trivial. */
+  /** Stable id used for dedupe. For server-sourced rows the daemon supplies
+   *  the role + content; we synthesize `replay-<role>-<index>` ids. For
+   *  optimistic user_send rows it's `user-temp-*`. For canonical user rows
+   *  it's `user-<run_id>`. */
   id: string;
   role: Role;
-  /** Concatenated assistant text (chat.token deltas). For user rows = body. */
+  /** Concatenated text. Assistant rows mirror the joined TextParts. */
   text: string;
-  /** assistant message becomes complete on chat.completion / run.end. */
+  /** Always true for refetched/replay rows; false only for optimistic
+   *  user_send rows awaiting reconciliation. */
   complete: boolean;
-  /** True when this assistant turn was terminated via cancel
-   *  (run.end{status:"cancelled"}). UI surfaces a "(stopped)" badge.
-   *  Partial text streamed so far is preserved. Undefined / false on
-   *  normal done/error completions. */
+  /** True when this assistant turn was terminated via cancel. UI surfaces
+   *  a "(stopped)" badge. Tagged by the refetched action when the runtime
+   *  passes `stoppedRunId` after a local_cancel-driven refetch. */
   cancelled?: boolean;
-  /** Assistant content parts in arrival order. Undefined for plain user rows. */
+  /** Assistant content parts in arrival order. Undefined for user rows. */
   parts?: AssistantPart[];
-  /** Marker for synthetic "queued" user bubbles (typed during a streaming
-   *  run, awaiting flush). Renders with reduced opacity + a "↻ queued" badge.
-   *  Never set on real (run-bound) user messages. */
+  /** Marker for synthetic "queued" user bubbles. */
   queued?: boolean;
 }
 
@@ -64,16 +72,11 @@ export type RunState = "idle" | "running" | "error";
 /** A user message that was typed while a run was streaming. Held locally until
  *  the active run ends, then flushed FIFO into POST /chat/:id/message. */
 export interface QueuedMessage {
-  /** Stable id used by the UI to render the queued bubble. Mint with a
-   *  "queued-" prefix so it never collides with optimistic user_send temp ids
-   *  (which start with "user-temp-") or canonical "user-<run_id>" ids. */
   id: string;
   text: string;
 }
 
-/** Replay items returned by GET /chat/:id/messages. Heterogeneous: text turns
- *  (user/assistant) plus tool_use/tool_result entries. Tool entries attach to
- *  the nearest preceding assistant message in the same turn. */
+/** Replay items returned by GET /chat/:id/messages. */
 export type ReplayMessage =
   | { role: "user" | "assistant"; content: string; ts?: number }
   | {
@@ -94,46 +97,55 @@ export type ReplayMessage =
 export interface ChatState {
   /** Chat id this state is bound to. Frames for other chats are ignored. */
   chatId: string | null;
+  /** Cache of GET /chat/:id/messages. Replaced wholesale by `refetched`.
+   *  Never mutated by streaming frames. */
   messages: ChatMessage[];
+  /** Overlay buffer for the currently-streaming assistant turn. Built from
+   *  chat.token deltas. Cleared on run.end / run.error / set_chat. */
+  liveTokens: string;
+  /** Overlay buffer for tool events in the current run. */
+  liveToolEvents: ToolPart[];
   runState: RunState;
   /** run_id of the currently-streaming assistant message, if any. */
   activeRunId: string | null;
-  /** Per-chat send queue (user typed while run was streaming). Persists across
-   *  set_chat so queued messages survive chat switches. The runtime renders
-   *  queued items for the active chat as faded "↻ queued" bubbles, and on
-   *  run.end pops the head + dispatches POST. */
+  /** Set by local_cancel; consumed by next refetched dispatch to tag the
+   *  last assistant entry from that run with cancelled=true. */
+  pendingStoppedRunId: string | null;
+  /** Per-chat send queue. */
   queues: Record<string, QueuedMessage[]>;
 }
 
 export const initialChatState = (chatId: string | null = null): ChatState => ({
   chatId,
   messages: [],
+  liveTokens: "",
+  liveToolEvents: [],
   runState: "idle",
   activeRunId: null,
+  pendingStoppedRunId: null,
   queues: {},
 });
 
-/** Local optimistic action: user has just submitted via the composer. We
- *  append the user bubble immediately so the UI is responsive; the daemon's
- *  echoing chat.message_user frame is then deduped by id. */
 export type LocalAction =
   | { kind: "set_chat"; chatId: string }
+  /** Replace `messages` with rows from GET /chat/:id/messages.
+   *  If `stoppedRunId` is set AND a recent assistant entry exists, the LAST
+   *  assistant entry is marked cancelled (visual cue after ESC). */
+  | { kind: "refetched"; chatId: string; messages: ReplayMessage[]; stoppedRunId?: string }
+  /** Back-compat alias for `refetched` — kept so legacy tests + the
+   *  one-shot initial hydrate effect in runtime.ts still work. Same payload. */
   | { kind: "hydrate"; chatId: string; messages: ReplayMessage[] }
   | { kind: "user_send"; text: string; tempId: string }
   | { kind: "enqueue"; chatId: string; id: string; text: string }
   | { kind: "dequeue"; chatId: string; id: string }
-  /** Optimistic cancel — fired after a successful POST /chat/:id/cancel
-   *  so the UI flips out of the "running" state immediately, without
-   *  waiting for the WS run.end roundtrip. The reducer marks the
-   *  in-flight assistant message complete + cancelled and flips runState
-   *  to idle. The eventual run.end{status:"cancelled"} frame is idempotent.
-   *  No-op if runState is not currently "running" (e.g. user mashed ESC
-   *  twice; cancel got a 409). */
+  /** Optimistic cancel — flips idle + clears overlay + arms pendingStoppedRunId
+   *  so the next refetched dispatch (triggered by run.end{cancelled}) tags
+   *  the partial assistant entry as cancelled. No-op when not running. */
   | { kind: "local_cancel" }
   | { kind: "frame"; frame: DaemonFrame };
 
 /** Normalize daemon `output` field — string or block array of {type:"text",text} —
- *  to a plain string. Defensive against unexpected shapes. */
+ *  to a plain string. */
 export function normalizeToolOutput(raw: unknown): string {
   if (typeof raw === "string") return raw;
   if (Array.isArray(raw)) {
@@ -150,138 +162,83 @@ export function normalizeToolOutput(raw: unknown): string {
   try { return JSON.stringify(raw); } catch { return String(raw); }
 }
 
-/** Append a text delta to the in-flight assistant message. Keeps `text` and
- *  the trailing TextPart in `parts` in sync. If the in-flight message has
- *  trailing tool parts, a fresh TextPart is started after them so chunked
- *  text + tools interleave correctly. */
-function upsertAssistantDelta(
-  msgs: ChatMessage[],
-  runId: string,
-  delta: string,
-): ChatMessage[] {
-  const idx = msgs.findIndex((m) => m.id === runId);
-  if (idx === -1) {
-    return [
-      ...msgs,
-      {
-        id: runId,
-        role: "assistant",
-        text: delta,
-        complete: false,
-        parts: [{ kind: "text", text: delta }],
-      },
-    ];
-  }
-  const next = msgs.slice();
-  const cur = next[idx];
-  const curParts = cur.parts ?? (cur.text ? [{ kind: "text" as const, text: cur.text }] : []);
-  let newParts: AssistantPart[];
-  const last = curParts[curParts.length - 1];
-  if (last && last.kind === "text") {
-    newParts = curParts.slice(0, -1).concat({ kind: "text", text: last.text + delta });
-  } else {
-    newParts = curParts.concat({ kind: "text", text: delta });
-  }
-  next[idx] = { ...cur, text: cur.text + delta, parts: newParts };
-  return next;
-}
-
-/** Ensure an assistant ChatMessage exists for `runId`. Returns updated msgs +
- *  the index of the (possibly-new) assistant row. */
-function ensureAssistant(
-  msgs: ChatMessage[],
-  runId: string,
-): { msgs: ChatMessage[]; idx: number } {
-  const idx = msgs.findIndex((m) => m.id === runId && m.role === "assistant");
-  if (idx !== -1) return { msgs, idx };
-  const next = msgs.concat({
-    id: runId,
-    role: "assistant",
-    text: "",
-    complete: false,
-    parts: [],
+/** Convert ReplayMessage[] to ChatMessage[]. Tool entries are attached to
+ *  the nearest preceding assistant message as TextPart/ToolPart entries. */
+function replayToMessages(rows: ReplayMessage[]): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  let lastAssistantIdx = -1;
+  rows.forEach((m, i) => {
+    if (m.role === "user" || m.role === "assistant") {
+      const msg: ChatMessage = {
+        id: `replay-${m.role}-${i}`,
+        role: m.role,
+        text: m.content,
+        complete: true,
+        parts: m.role === "assistant"
+          ? (m.content ? [{ kind: "text", text: m.content }] : [])
+          : undefined,
+      };
+      messages.push(msg);
+      if (m.role === "assistant") lastAssistantIdx = messages.length - 1;
+    } else if (m.role === "tool_use") {
+      if (lastAssistantIdx === -1) {
+        messages.push({
+          id: `replay-assistant-${i}`,
+          role: "assistant",
+          text: "",
+          complete: true,
+          parts: [],
+        });
+        lastAssistantIdx = messages.length - 1;
+      }
+      const a = messages[lastAssistantIdx];
+      const parts = (a.parts ?? []).concat({
+        kind: "tool",
+        toolCallId: m.tool_call_id,
+        name: m.name,
+        input: m.input ?? {},
+        isError: false,
+      });
+      messages[lastAssistantIdx] = { ...a, parts };
+    } else if (m.role === "tool_result") {
+      if (lastAssistantIdx === -1) {
+        messages.push({
+          id: `replay-assistant-${i}`,
+          role: "assistant",
+          text: "",
+          complete: true,
+          parts: [],
+        });
+        lastAssistantIdx = messages.length - 1;
+      }
+      const a = messages[lastAssistantIdx];
+      const parts = (a.parts ?? []).slice();
+      const pIdx = parts.findIndex(
+        (p) => p.kind === "tool" && p.toolCallId === m.tool_call_id,
+      );
+      const outText = normalizeToolOutput(m.output);
+      const isError = m.is_error === true;
+      if (pIdx === -1) {
+        parts.push({
+          kind: "tool",
+          toolCallId: m.tool_call_id,
+          name: "",
+          input: {},
+          output: outText,
+          isError,
+        });
+      } else {
+        const t = parts[pIdx] as ToolPart;
+        parts[pIdx] = { ...t, output: outText, isError };
+      }
+      messages[lastAssistantIdx] = { ...a, parts };
+    }
   });
-  return { msgs: next, idx: next.length - 1 };
-}
-
-function appendToolUse(
-  msgs: ChatMessage[],
-  runId: string,
-  toolCallId: string,
-  name: string,
-  input: Record<string, unknown>,
-): ChatMessage[] {
-  const { msgs: m, idx } = ensureAssistant(msgs, runId);
-  const cur = m[idx];
-  const curParts = cur.parts ?? (cur.text ? [{ kind: "text" as const, text: cur.text }] : []);
-  // Idempotent: if a tool part with this id already exists, leave it.
-  if (curParts.some((p) => p.kind === "tool" && p.toolCallId === toolCallId)) return m;
-  const newPart: ToolPart = { kind: "tool", toolCallId, name, input, isError: false };
-  const next = m.slice();
-  next[idx] = { ...cur, parts: curParts.concat(newPart) };
-  return next;
-}
-
-function applyToolResult(
-  msgs: ChatMessage[],
-  runId: string,
-  toolCallId: string,
-  output: unknown,
-  isError: boolean,
-): ChatMessage[] {
-  const { msgs: m, idx } = ensureAssistant(msgs, runId);
-  const cur = m[idx];
-  const curParts = cur.parts ?? (cur.text ? [{ kind: "text" as const, text: cur.text }] : []);
-  const outText = normalizeToolOutput(output);
-  const pIdx = curParts.findIndex(
-    (p) => p.kind === "tool" && p.toolCallId === toolCallId,
-  );
-  let nextParts: AssistantPart[];
-  if (pIdx === -1) {
-    // Defensive: tool_result without matching tool_use. Surface a stub.
-    nextParts = curParts.concat({
-      kind: "tool",
-      toolCallId,
-      name: "",
-      input: {},
-      output: outText,
-      isError,
-    });
-  } else {
-    const t = curParts[pIdx] as ToolPart;
-    nextParts = curParts.slice();
-    nextParts[pIdx] = { ...t, output: outText, isError };
-  }
-  const next = m.slice();
-  next[idx] = { ...cur, parts: nextParts };
-  return next;
-}
-
-function markAssistantComplete(
-  msgs: ChatMessage[],
-  runId: string,
-  opts: { cancelled?: boolean } = {},
-): ChatMessage[] {
-  const idx = msgs.findIndex((m) => m.id === runId);
-  if (idx === -1) return msgs;
-  const cur = msgs[idx];
-  const wantCancelled = opts.cancelled === true;
-  // Idempotent: if already complete AND cancelled flag already matches, no-op.
-  if (cur.complete && (cur.cancelled ?? false) === wantCancelled) return msgs;
-  const next = msgs.slice();
-  next[idx] = {
-    ...cur,
-    complete: true,
-    // Set cancelled flag explicitly when requested; preserve prior value
-    // otherwise (so a stray duplicate run.end{done} can't unset it).
-    cancelled: wantCancelled || cur.cancelled === true,
-  };
-  return next;
+  return messages;
 }
 
 /** Replace the optimistic user bubble (id starting with "user-temp-") with
- *  the canonical id derived from run_id, OR append if not present (e.g.
- *  reconnecting mid-run where we never optimistically appended). Idempotent. */
+ *  the canonical id derived from run_id, OR append if not present. Idempotent. */
 function reconcileUser(
   msgs: ChatMessage[],
   runId: string,
@@ -289,7 +246,6 @@ function reconcileUser(
 ): ChatMessage[] {
   const canonicalId = `user-${runId}`;
   if (msgs.some((m) => m.id === canonicalId)) return msgs;
-  // Try to swap a leading optimistic user bubble whose text matches.
   const idx = msgs.findIndex(
     (m) => m.role === "user" && m.id.startsWith("user-temp-") && m.text === text,
   );
@@ -301,19 +257,89 @@ function reconcileUser(
   return [...msgs, { id: canonicalId, role: "user", text, complete: true }];
 }
 
+/** Append delta to liveTokens overlay. */
+function appendLiveDelta(state: ChatState, delta: string): ChatState {
+  if (!delta) return state;
+  return { ...state, liveTokens: state.liveTokens + delta };
+}
+
+function appendLiveToolUse(
+  state: ChatState,
+  toolCallId: string,
+  name: string,
+  input: Record<string, unknown>,
+): ChatState {
+  if (state.liveToolEvents.some((p) => p.toolCallId === toolCallId)) return state;
+  const newPart: ToolPart = { kind: "tool", toolCallId, name, input, isError: false };
+  return { ...state, liveToolEvents: state.liveToolEvents.concat(newPart) };
+}
+
+function applyLiveToolResult(
+  state: ChatState,
+  toolCallId: string,
+  output: unknown,
+  isError: boolean,
+): ChatState {
+  const outText = normalizeToolOutput(output);
+  const idx = state.liveToolEvents.findIndex((p) => p.toolCallId === toolCallId);
+  if (idx === -1) {
+    return {
+      ...state,
+      liveToolEvents: state.liveToolEvents.concat({
+        kind: "tool",
+        toolCallId,
+        name: "",
+        input: {},
+        output: outText,
+        isError,
+      }),
+    };
+  }
+  const next = state.liveToolEvents.slice();
+  next[idx] = { ...next[idx], output: outText, isError };
+  return { ...state, liveToolEvents: next };
+}
+
+/** Clear all transient overlay state. Called on run.end / run.error /
+ *  set_chat / local_cancel. */
+function clearOverlay(state: ChatState): ChatState {
+  if (
+    state.liveTokens === "" &&
+    state.liveToolEvents.length === 0 &&
+    state.activeRunId === null
+  ) {
+    return state;
+  }
+  return {
+    ...state,
+    liveTokens: "",
+    liveToolEvents: [],
+    activeRunId: null,
+  };
+}
+
+/** Tag the LAST assistant entry in `messages` with cancelled=true. Used by
+ *  refetched when `stoppedRunId` is set. */
+function tagLastAssistantCancelled(msgs: ChatMessage[]): ChatMessage[] {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "assistant") {
+      const next = msgs.slice();
+      next[i] = { ...next[i], cancelled: true };
+      return next;
+    }
+  }
+  return msgs;
+}
+
 export function chatReducer(state: ChatState, action: LocalAction): ChatState {
   switch (action.kind) {
     case "set_chat": {
       if (state.chatId === action.chatId) return state;
-      // Preserve the per-chat queue map across chat switches — queued messages
-      // belong to the chat they were typed in, not the active session.
+      // Preserve queue map; reset everything else.
       return { ...initialChatState(action.chatId), queues: state.queues };
     }
     case "enqueue": {
       const cur = state.queues[action.chatId] ?? [];
-      // Idempotent guard: skip if this id is already queued (rapid double-fire
-      // protection — useful when assistant-ui's onNew fires twice for the same
-      // synthetic test event, or for any duplicate dispatch).
       if (cur.some((q) => q.id === action.id)) return state;
       return {
         ...state,
@@ -332,83 +358,32 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       else queues[action.chatId] = next;
       return { ...state, queues };
     }
-    case "hydrate": {
+    case "hydrate":
+    case "refetched": {
       // Stale-response guard: ignore if reducer has since switched away.
       if (state.chatId !== action.chatId) return state;
-      const messages: ChatMessage[] = [];
-      let lastAssistantIdx = -1;
-      action.messages.forEach((m, i) => {
-        if (m.role === "user" || m.role === "assistant") {
-          const msg: ChatMessage = {
-            id: `replay-${m.role}-${i}`,
-            role: m.role,
-            text: m.content,
-            complete: true,
-            parts: m.role === "assistant"
-              ? (m.content ? [{ kind: "text", text: m.content }] : [])
-              : undefined,
-          };
-          messages.push(msg);
-          if (m.role === "assistant") lastAssistantIdx = messages.length - 1;
-        } else if (m.role === "tool_use") {
-          if (lastAssistantIdx === -1) {
-            // Defensive: tool entry before any assistant turn — synthesize one.
-            messages.push({
-              id: `replay-assistant-${i}`,
-              role: "assistant",
-              text: "",
-              complete: true,
-              parts: [],
-            });
-            lastAssistantIdx = messages.length - 1;
-          }
-          const a = messages[lastAssistantIdx];
-          const parts = (a.parts ?? []).concat({
-            kind: "tool",
-            toolCallId: m.tool_call_id,
-            name: m.name,
-            input: m.input ?? {},
-            isError: false,
-          });
-          messages[lastAssistantIdx] = { ...a, parts };
-        } else if (m.role === "tool_result") {
-          if (lastAssistantIdx === -1) {
-            messages.push({
-              id: `replay-assistant-${i}`,
-              role: "assistant",
-              text: "",
-              complete: true,
-              parts: [],
-            });
-            lastAssistantIdx = messages.length - 1;
-          }
-          const a = messages[lastAssistantIdx];
-          const parts = (a.parts ?? []).slice();
-          const pIdx = parts.findIndex(
-            (p) => p.kind === "tool" && p.toolCallId === m.tool_call_id,
-          );
-          const outText = normalizeToolOutput(m.output);
-          const isError = m.is_error === true;
-          if (pIdx === -1) {
-            parts.push({
-              kind: "tool",
-              toolCallId: m.tool_call_id,
-              name: "",
-              input: {},
-              output: outText,
-              isError,
-            });
-          } else {
-            const t = parts[pIdx] as ToolPart;
-            parts[pIdx] = { ...t, output: outText, isError };
-          }
-          messages[lastAssistantIdx] = { ...a, parts };
-        }
-      });
-      return { ...state, messages };
+      let messages = replayToMessages(action.messages);
+      const isRefetch = action.kind === "refetched";
+      const stoppedRunId = isRefetch ? action.stoppedRunId : undefined;
+      const shouldTagStopped =
+        stoppedRunId !== undefined &&
+        (state.pendingStoppedRunId === stoppedRunId ||
+          state.pendingStoppedRunId === null && stoppedRunId !== "");
+      if (shouldTagStopped) {
+        messages = tagLastAssistantCancelled(messages);
+      }
+      return {
+        ...state,
+        messages,
+        // Refetch reflects the canonical post-run state — clear overlay so
+        // we don't double-render the streaming turn next to its persisted form.
+        liveTokens: isRefetch ? "" : state.liveTokens,
+        liveToolEvents: isRefetch ? [] : state.liveToolEvents,
+        pendingStoppedRunId: isRefetch ? null : state.pendingStoppedRunId,
+      };
     }
     case "user_send": {
-      // Optimistic append. Will be reconciled when chat.message_user echoes.
+      // Optimistic append. Reconciled when chat.message_user echoes.
       return {
         ...state,
         messages: [
@@ -418,30 +393,39 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       };
     }
     case "local_cancel": {
-      // Idempotent: only act while running and there's a tracked run id.
+      // Optimistic ESC flip: runState idle now, pendingStoppedRunId armed
+      // so the runtime renders the live overlay with a "(stopped)" badge
+      // and the next refetch will tag the persisted assistant entry.
+      //
+      // We INTENTIONALLY do not clear liveTokens/liveToolEvents here —
+      // they stay rendered (as a stopped overlay) until the daemon's
+      // run.end arrives, at which point the refetch replaces the entire
+      // turn with canonical state.
       if (state.runState !== "running") return state;
-      const rid = state.activeRunId;
-      const messages = rid
-        ? markAssistantComplete(state.messages, rid, { cancelled: true })
-        : state.messages;
       return {
         ...state,
-        messages,
         runState: "idle",
         activeRunId: null,
+        pendingStoppedRunId: state.activeRunId,
       };
     }
     case "frame": {
       const f = action.frame;
       const fChat = typeof f.chat_id === "string" ? f.chat_id : null;
-      // Drop frames not for our chat once a chat is bound.
       if (state.chatId && fChat && fChat !== state.chatId) return state;
       const runId = typeof f.run_id === "string" ? f.run_id : null;
 
       switch (f.type) {
         case "run.start": {
           if (!runId) return state;
-          return { ...state, runState: "running", activeRunId: runId };
+          // Fresh run starts: clear any stale overlay from a prior aborted run.
+          return {
+            ...state,
+            liveTokens: "",
+            liveToolEvents: [],
+            runState: "running",
+            activeRunId: runId,
+          };
         }
         case "chat.message_user": {
           if (!runId) return state;
@@ -451,8 +435,7 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         case "chat.token": {
           if (!runId) return state;
           const delta = typeof f.delta === "string" ? f.delta : "";
-          if (!delta) return state;
-          return { ...state, messages: upsertAssistantDelta(state.messages, runId, delta) };
+          return appendLiveDelta(state, delta);
         }
         case "chat.tool_use": {
           if (!runId) return state;
@@ -462,56 +445,41 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           const input = (f.input && typeof f.input === "object")
             ? (f.input as Record<string, unknown>)
             : {};
-          return {
-            ...state,
-            messages: appendToolUse(state.messages, runId, toolCallId, name, input),
-          };
+          return appendLiveToolUse(state, toolCallId, name, input);
         }
         case "chat.tool_result": {
           if (!runId) return state;
           const toolCallId = typeof f.tool_call_id === "string" ? f.tool_call_id : null;
           if (!toolCallId) return state;
           const isError = f.is_error === true;
-          return {
-            ...state,
-            messages: applyToolResult(state.messages, runId, toolCallId, f.output, isError),
-          };
+          return applyLiveToolResult(state, toolCallId, f.output, isError);
         }
         case "chat.completion": {
-          if (!runId) return state;
-          return { ...state, messages: markAssistantComplete(state.messages, runId) };
+          // No-op: run.end is the authoritative terminal frame, and the
+          // canonical content lives in the daemon DB (refetched after run.end).
+          return state;
         }
         case "run.end": {
           if (!runId) return state;
-          // run.end is the AUTHORITATIVE terminal frame regardless of status.
-          // - "done":      normal completion; chat.completion preceded.
-          // - "error":     spawner failure; flip runState to "error".
-          // - "cancelled": ESC interrupt; chat.completion is suppressed by
-          //                daemon (see VOS-80 e81eb72), so this frame is the
-          //                ONLY signal that the stream terminated. Mark the
-          //                in-flight assistant complete + cancelled so the UI
-          //                renders a "(stopped)" badge and freezes partial
-          //                text streamed so far.
           const status = typeof f.status === "string" ? f.status : "done";
+          // If runtime hasn't already armed pendingStoppedRunId via
+          // local_cancel, and the daemon says cancelled, arm it now so the
+          // refetch can tag the last assistant entry.
           const isCancel = status === "cancelled";
+          const pending =
+            state.pendingStoppedRunId ??
+            (isCancel ? runId : null);
           return {
-            ...state,
-            messages: markAssistantComplete(state.messages, runId, {
-              cancelled: isCancel,
-            }),
+            ...clearOverlay(state),
             runState: status === "error" ? "error" : "idle",
-            activeRunId:
-              state.activeRunId === runId ? null : state.activeRunId,
+            pendingStoppedRunId: pending,
           };
         }
         case "run.error": {
           if (!runId) return state;
           return {
-            ...state,
-            messages: markAssistantComplete(state.messages, runId),
+            ...clearOverlay(state),
             runState: "error",
-            activeRunId:
-              state.activeRunId === runId ? null : state.activeRunId,
           };
         }
         default:

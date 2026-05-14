@@ -52,6 +52,11 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
     const { ChatRoot } = await import("../src/chat/ChatRoot");
 
     const bus = new FrameBus();
+    // VOS-80 part 2: getMessages becomes the canonical history source after
+    // run.end. The first call (mount) returns empty; after the cancel-driven
+    // run.end the refetch yields the partial assistant turn the daemon
+    // persisted (under VOS-80 part 1's messages-table contract).
+    let getCalls = 0;
     const api = {
       async createChat() { return { id: "c1", title: "t", created_at: 0 }; },
       async postMessage() { return { run_id: "r1", status: "running" }; },
@@ -59,7 +64,11 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
         return { run_id: "r1", status: "cancelled" as const };
       },
       async listChats() { return []; },
-      async getMessages() { return []; },
+      async getMessages() {
+        getCalls += 1;
+        if (getCalls === 1) return [];
+        return [{ role: "assistant" as const, content: "partial reply" }];
+      },
     };
 
     const host = (globalThis as any).document.createElement("div");
@@ -128,12 +137,18 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
     const { ChatRoot } = await import("../src/chat/ChatRoot");
 
     const bus = new FrameBus();
+    // getMessages: empty on mount, canonical assistant turn after run.end.
+    let getCalls = 0;
     const api = {
       async createChat() { return { id: "c1", title: "t", created_at: 0 }; },
       async postMessage() { return { run_id: "r1", status: "running" }; },
       async cancel() { return { run_id: "r1", status: "cancelled" as const }; },
       async listChats() { return []; },
-      async getMessages() { return []; },
+      async getMessages() {
+        getCalls += 1;
+        if (getCalls === 1) return [];
+        return [{ role: "assistant" as const, content: "done answer" }];
+      },
     };
 
     const host = (globalThis as any).document.createElement("div");

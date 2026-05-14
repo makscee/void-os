@@ -1,3 +1,11 @@
+// VOS-80 part 2 — reducer base contract.
+//
+// Daemon DB is canonical. WS frames feed the live overlay (liveTokens +
+// liveToolEvents) and signal runState transitions. The reducer never
+// mutates `state.messages` from chat.token / chat.tool_* frames — those
+// flow into the overlay only. `state.messages` is replaced wholesale by
+// the `refetched` (and legacy `hydrate`) action.
+
 import { describe, test, expect } from "bun:test";
 import {
   chatReducer,
@@ -14,39 +22,44 @@ const seed = (): ChatState => initialChatState(CHAT);
 const frame = (f: DaemonFrame) => ({ kind: "frame" as const, frame: f });
 
 describe("chatReducer", () => {
-  test("run.start flips runState to running and pins activeRunId", () => {
+  test("run.start flips runState running + pins activeRunId + clears any stale overlay", () => {
     const s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
     expect(s.runState).toBe("running");
     expect(s.activeRunId).toBe(RUN);
+    expect(s.liveTokens).toBe("");
+    expect(s.liveToolEvents).toEqual([]);
   });
 
-  test("chat.token appends delta into a single assistant message keyed by run_id", () => {
+  test("chat.token deltas accumulate in liveTokens; messages array stays untouched", () => {
     let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
     s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "Hel" }));
     s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "lo" }));
     s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: " world" }));
-    const a = s.messages.find((m) => m.role === "assistant");
-    expect(a).toBeTruthy();
-    expect(a!.text).toBe("Hello world");
-    expect(a!.complete).toBe(false);
+    expect(s.liveTokens).toBe("Hello world");
+    // Critical invariant: messages is NOT mutated by token frames.
+    expect(s.messages.length).toBe(0);
   });
 
-  test("chat.completion marks the assistant message complete; runState stays running until run.end", () => {
+  test("chat.completion is a no-op; only run.end terminates the overlay", () => {
     let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
     s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "x" }));
+    const before = s;
     s = chatReducer(s, frame({ type: "chat.completion", chat_id: CHAT, run_id: RUN }));
-    expect(s.messages.find((m) => m.role === "assistant")!.complete).toBe(true);
+    expect(s).toBe(before);
     expect(s.runState).toBe("running");
     s = chatReducer(s, frame({ type: "run.end", chat_id: CHAT, run_id: RUN, status: "done" }));
     expect(s.runState).toBe("idle");
     expect(s.activeRunId).toBeNull();
+    expect(s.liveTokens).toBe("");
   });
 
-  test("run.error flips runState to error and clears activeRunId", () => {
+  test("run.error flips runState error + clears overlay", () => {
     let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "x" }));
     s = chatReducer(s, frame({ type: "run.error", chat_id: CHAT, run_id: RUN, error: "boom" }));
     expect(s.runState).toBe("error");
     expect(s.activeRunId).toBeNull();
+    expect(s.liveTokens).toBe("");
   });
 
   test("frames for a different chat_id are dropped", () => {
@@ -55,18 +68,16 @@ describe("chatReducer", () => {
     expect(after).toBe(before);
   });
 
-  test("dedupe: replaying tokens after subscribe re-mid-run does NOT double-render", () => {
-    // Simulates leaf reopened mid-run: we replay the same frames.
+  test("replaying same token frames mid-run extends liveTokens (no separate bubble)", () => {
     let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
-    const tokens = [{ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "Hi " }, { type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "there" }];
+    const tokens = [
+      { type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "Hi " },
+      { type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "there" },
+    ] as const;
     for (const t of tokens) s = chatReducer(s, frame(t));
-    const firstText = s.messages.find((m) => m.role === "assistant")!.text;
-    expect(firstText).toBe("Hi there");
-    // The same dedupe key (run_id) is reused; replay extends the SAME message.
-    // Real "dedupe" here means: we do not create a second assistant bubble.
-    for (const t of tokens) s = chatReducer(s, frame(t));
-    const assistants = s.messages.filter((m) => m.role === "assistant");
-    expect(assistants.length).toBe(1);
+    expect(s.liveTokens).toBe("Hi there");
+    // No message bubble created from tokens — that comes via refetch.
+    expect(s.messages.length).toBe(0);
   });
 
   test("optimistic user_send is reconciled by chat.message_user echo (no duplicate)", () => {
@@ -80,18 +91,20 @@ describe("chatReducer", () => {
     expect(users[0].id).toBe(`user-${RUN}`);
   });
 
-  test("set_chat resets state when binding to a new chat", () => {
+  test("set_chat resets state + clears overlay when binding to a new chat", () => {
     let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "x" }));
     s = chatReducer(s, { kind: "set_chat", chatId: "c2" });
     expect(s.chatId).toBe("c2");
     expect(s.messages).toEqual([]);
+    expect(s.liveTokens).toBe("");
     expect(s.runState).toBe("idle");
   });
 
-  test("hydrate replaces messages with replay rows (synthetic ids, complete=true)", () => {
+  test("refetched replaces messages with replay rows (synthetic ids, complete=true)", () => {
     let s = seed();
     s = chatReducer(s, {
-      kind: "hydrate",
+      kind: "refetched",
       chatId: CHAT,
       messages: [
         { role: "user", content: "hi" },
@@ -103,33 +116,38 @@ describe("chatReducer", () => {
     expect(s.messages[1]).toMatchObject({ id: "replay-assistant-1", role: "assistant", text: "hello!", complete: true });
   });
 
-  test("hydrate is ignored when chatId no longer matches (race-safety)", () => {
+  test("legacy `hydrate` action still works (same semantics as refetched)", () => {
+    let s = seed();
+    s = chatReducer(s, {
+      kind: "hydrate",
+      chatId: CHAT,
+      messages: [{ role: "user", content: "yo" }],
+    });
+    expect(s.messages.length).toBe(1);
+    expect(s.messages[0].text).toBe("yo");
+  });
+
+  test("refetched is ignored when chatId no longer matches (race-safety)", () => {
     let s = chatReducer(seed(), { kind: "set_chat", chatId: "c2" });
     const before = s;
     s = chatReducer(s, {
-      kind: "hydrate",
+      kind: "refetched",
       chatId: CHAT,
       messages: [{ role: "user", content: "stale" }],
     });
     expect(s).toBe(before);
   });
 
-  test("hydrate then live frames coexist (real run_ids vs synthetic replay ids)", () => {
-    let s = chatReducer(seed(), {
-      kind: "hydrate",
+  test("refetched also clears live overlay (canonical state takes over)", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "live" }));
+    expect(s.liveTokens).toBe("live");
+    s = chatReducer(s, {
+      kind: "refetched",
       chatId: CHAT,
-      messages: [
-        { role: "user", content: "old" },
-        { role: "assistant", content: "old reply" },
-      ],
+      messages: [{ role: "assistant", content: "canonical" }],
     });
-    s = chatReducer(s, frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
-    s = chatReducer(s, frame({ type: "chat.message_user", chat_id: CHAT, run_id: RUN, text: "new" }));
-    s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "ack" }));
-    expect(s.messages.length).toBe(4);
-    expect(s.messages[0].id).toBe("replay-user-0");
-    expect(s.messages[1].id).toBe("replay-assistant-1");
-    expect(s.messages[2].id).toBe(`user-${RUN}`);
-    expect(s.messages[3].id).toBe(RUN);
+    expect(s.liveTokens).toBe("");
+    expect(s.messages[0].text).toBe("canonical");
   });
 });

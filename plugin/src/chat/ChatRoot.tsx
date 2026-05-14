@@ -189,15 +189,45 @@ export function ChatRoot(props: ChatRootProps) {
   });
   const runtime = handle.runtime;
 
-  // Refresh chat list whenever a run terminates so last_msg / status update.
+  // Refresh chat list on run start AND any terminal frame. run.start updates
+  // the sidebar status dot; run.end/run.error refreshes last_msg + clears the
+  // dot. Debounced to ≥250ms to avoid network thrash when frames cluster.
+  const lastListRefreshAtRef = React.useRef(0);
+  const listRefreshTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedListRefresh = React.useCallback(() => {
+    const DEBOUNCE_MS = 250;
+    const now = Date.now();
+    const since = now - lastListRefreshAtRef.current;
+    if (since >= DEBOUNCE_MS) {
+      lastListRefreshAtRef.current = now;
+      bumpRefresh();
+      return;
+    }
+    if (listRefreshTimerRef.current != null) return;
+    listRefreshTimerRef.current = setTimeout(() => {
+      lastListRefreshAtRef.current = Date.now();
+      listRefreshTimerRef.current = null;
+      bumpRefresh();
+    }, DEBOUNCE_MS - since);
+  }, [bumpRefresh]);
   React.useEffect(() => {
     const off = props.bus.on((f) => {
-      if (f.type === "run.end" || f.type === "run.error") {
-        bumpRefresh();
+      if (
+        f.type === "run.start" ||
+        f.type === "run.end" ||
+        f.type === "run.error"
+      ) {
+        debouncedListRefresh();
       }
     });
-    return off;
-  }, [props.bus, bumpRefresh]);
+    return () => {
+      off();
+      if (listRefreshTimerRef.current != null) {
+        clearTimeout(listRefreshTimerRef.current);
+        listRefreshTimerRef.current = null;
+      }
+    };
+  }, [props.bus, debouncedListRefresh]);
 
   // Test hook: dispatch `vos-test-send` on window to drive the runtime's
   // append path under happy-dom (composer keyboard input is fragile there).

@@ -49,13 +49,25 @@ describe("ChatRoot live run indicators (VOS-80 regression)", () => {
     }
   };
 
-  const makeApi = () => ({
-    async createChat() { return { id: "c1", title: "t", created_at: 0 }; },
-    async postMessage() { return { run_id: "r1", status: "running" }; },
-    async cancel() { return { run_id: "rX", status: "cancelled" }; },
-    async listChats() { return []; },
-    async getMessages() { return []; },
-  });
+  const makeApi = () => {
+    // VOS-80 part 2: post-run.end the runtime refetches GET /chat/:id/messages
+    // to replace the live overlay with canonical state. First call (mount)
+    // → empty; subsequent calls → canonical assistant turn containing the
+    // streamed text. This lets the post-run assertion see "hello live" via
+    // the refetched messages, not the (now-cleared) overlay.
+    let calls = 0;
+    return {
+      async createChat() { return { id: "c1", title: "t", created_at: 0 }; },
+      async postMessage() { return { run_id: "r1", status: "running" }; },
+      async cancel() { return { run_id: "rX", status: "cancelled" }; },
+      async listChats() { return []; },
+      async getMessages() {
+        calls += 1;
+        if (calls === 1) return [];
+        return [{ role: "assistant" as const, content: "hello live" }];
+      },
+    };
+  };
 
   test("run.start + chat.token → pulse visible, ESC hint visible, streamed text in DOM", async () => {
     const React = await import("react");
