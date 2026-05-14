@@ -12,6 +12,7 @@ import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
 import { useChatRuntime } from "./runtime";
 import { ChatList } from "./ChatList";
+import { CostMeter } from "./CostMeter";
 import { BashTool } from "./tools/BashTool";
 import { GenericTool } from "./tools/GenericTool";
 
@@ -104,6 +105,12 @@ export function ChatRoot(props: ChatRootProps) {
   const [refreshKey, setRefreshKey] = React.useState(0);
   const bumpRefresh = React.useCallback(() => setRefreshKey((n) => n + 1), []);
 
+  // Inline "run in progress" notice — set when a send returns 409 from the
+  // daemon (another run is already streaming for this chat). Auto-clears on
+  // run.end/run.error for the active chat, on chat switch, and on next
+  // successful send (reset just before postMessage in onSendError handler).
+  const [runInProgressNotice, setRunInProgressNotice] = React.useState(false);
+
   const runtime = useChatRuntime({
     bus: props.bus,
     api: props.api,
@@ -114,15 +121,50 @@ export function ChatRoot(props: ChatRootProps) {
       await props.onChatIdMinted?.(id);
       bumpRefresh();
     },
+    onSendError: (_chatId, err) => {
+      // assistant-ui's ApiError carries `.status`. Duck-type to avoid the
+      // import cycle (api.ts is already imported via runtime; we don't want
+      // to bring the class into ChatRoot just for instanceof).
+      const status = (err as { status?: number })?.status;
+      if (status === 409) setRunInProgressNotice(true);
+    },
   });
 
   // Refresh chat list whenever a run terminates so last_msg / status update.
+  // Also clear the 409 notice — if the other run finished, send is safe.
   React.useEffect(() => {
     const off = props.bus.on((f) => {
-      if (f.type === "run.end" || f.type === "run.error") bumpRefresh();
+      if (f.type === "run.end" || f.type === "run.error") {
+        bumpRefresh();
+        if (f.chat_id === activeChatId) setRunInProgressNotice(false);
+      }
     });
     return off;
-  }, [props.bus, bumpRefresh]);
+  }, [props.bus, bumpRefresh, activeChatId]);
+
+  // Clear notice when the user switches chats — it's keyed on the active one.
+  React.useEffect(() => {
+    setRunInProgressNotice(false);
+  }, [activeChatId]);
+
+  // Test hook: dispatch `vos-test-send` on window to drive the runtime's
+  // append path under happy-dom (composer keyboard input is fragile there).
+  // No-op in production unless the event is fired.
+  React.useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ text: string }>).detail;
+      const text = detail?.text ?? "";
+      if (!text) return;
+      void runtime.thread.append({
+        role: "user",
+        content: [{ type: "text", text }],
+      });
+    };
+    (globalThis as { window?: Window }).window?.addEventListener("vos-test-send", handler as EventListener);
+    return () => {
+      (globalThis as { window?: Window }).window?.removeEventListener("vos-test-send", handler as EventListener);
+    };
+  }, [runtime]);
 
   const onNewChat = React.useCallback(async () => {
     const created = await props.api.createChat(props.defaultAgent);
@@ -142,13 +184,16 @@ export function ChatRoot(props: ChatRootProps) {
           renderer for toolName === "Bash" inside the assistant-ui store. */}
       <BashTool />
       <div className="vos:flex vos:flex-row vos:h-full vos:w-full">
-        <ChatList
-          api={props.api}
-          activeChatId={activeChatId}
-          onSelect={onSelect}
-          onNewChat={onNewChat}
-          refreshKey={refreshKey}
-        />
+        <div className="vos:flex vos:flex-col vos:h-full vos:w-[260px] vos:shrink-0 vos:bg-[var(--background-secondary)]">
+          <ChatList
+            api={props.api}
+            activeChatId={activeChatId}
+            onSelect={onSelect}
+            onNewChat={onNewChat}
+            refreshKey={refreshKey}
+          />
+          <CostMeter />
+        </div>
         <div className="vos:flex vos:flex-col vos:flex-1 vos:min-w-0 vos:min-h-0 vos:h-full">
           <ThreadPrimitive.Root className="vos:contents">
             <ThreadPrimitive.Viewport className="vos:flex-1 vos:overflow-y-auto vos:min-h-0 vos:flex vos:flex-col">
@@ -178,6 +223,14 @@ export function ChatRoot(props: ChatRootProps) {
                   Send
                 </ComposerPrimitive.Send>
               </ComposerPrimitive.Root>
+              {runInProgressNotice && (
+                <div
+                  data-testid="run-in-progress-notice"
+                  className="vos:mb-[var(--size-4-3)] vos:border-l-2 vos:border-[var(--text-error,#e35a5a)] vos:pl-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:text-xs vos:text-[var(--text-muted)]"
+                >
+                  Run in progress — wait or cancel
+                </div>
+              )}
             </div>
           </ThreadPrimitive.Root>
         </div>

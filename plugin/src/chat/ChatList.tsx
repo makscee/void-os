@@ -78,7 +78,7 @@ export function ChatList(props: ChatListProps) {
 
   return (
     <aside
-      className="vos:flex vos:flex-col vos:h-full vos:w-[260px] vos:shrink-0 vos:border-r vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-secondary)]"
+      className="vos:flex vos:flex-col vos:flex-1 vos:min-h-0 vos:w-full vos:border-r vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-secondary)]"
       data-testid="chat-list"
     >
       <div className="vos:flex vos:items-center vos:justify-between vos:px-[var(--size-4-3)] vos:h-9 vos:border-b vos:border-[var(--background-modifier-border)]">

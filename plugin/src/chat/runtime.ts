@@ -33,6 +33,10 @@ export interface ChatRuntimeDeps {
   onChatIdMinted?: (id: string) => void | Promise<void>;
   /** Default agent for newly-minted chats. */
   defaultAgent?: string;
+  /** Surface a send-time error (e.g. 409 run_in_progress) to the parent.
+   *  Receives the bound chatId at send-time + the thrown error. Best-effort:
+   *  failures here must not poison the runtime. */
+  onSendError?: (chatId: string, err: unknown) => void;
 }
 
 const toThreadMessage = (m: ChatMessage): ThreadMessageLike => {
@@ -147,9 +151,10 @@ export function useChatRuntime(deps: ChatRuntimeDeps) {
         // The daemon will not emit run.end since no run started.
         // eslint-disable-next-line no-console
         console.error("[void-os] postMessage failed", err);
+        try { deps.onSendError?.(chatId, err); } catch { /* swallow */ }
       }
     },
-    [deps.api, deps.defaultAgent, deps.onChatIdMinted],
+    [deps.api, deps.defaultAgent, deps.onChatIdMinted, deps.onSendError],
   );
 
   return useExternalStoreRuntime<ThreadMessageLike>({
