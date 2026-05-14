@@ -174,4 +174,42 @@ describe("CC spawner (fake claudev)", () => {
       teardown(dir, db);
     }
   });
+
+  // VOS-80: fast-cancel must terminate the subprocess quickly. With the
+  // default SIGTERM-5s-SIGKILL path, a CC subprocess that traps SIGTERM
+  // can keep streaming for up to 5s — defeating user cancel. The
+  // `{fast: true}` mode sends SIGINT with a 250ms SIGKILL grace, which
+  // even a SIGTERM-trapping CC cannot stall.
+  test("kill({fast: true}) terminates a parked subprocess within ~1s", async () => {
+    const { dir, db, bus, tracesDir } = setup();
+    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
+    let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
+    try {
+      // `silent` scenario parks on `exec sleep 60`. Without a kill it
+      // would never exit within the test timeout.
+      proc = await spawner.spawn({
+        prompt: "--scenario silent",
+        agent: "test",
+        cwd: dir,
+      });
+      await proc.sessionId(); // ensure spawn fully wired
+
+      const t0 = Date.now();
+      await proc.kill({ fast: true });
+      const elapsed = Date.now() - t0;
+
+      // Hard upper bound: well under the default 5s SIGTERM grace. SIGINT
+      // alone should kill `sleep` immediately; even worst-case 250ms grace
+      // + SIGKILL escalation keeps us under 1s.
+      expect(elapsed).toBeLessThan(1000);
+
+      const row = db.prepare(
+        "SELECT status, kill_reason FROM runs WHERE id=?",
+      ).get(proc.runId) as { status: string; kill_reason: string };
+      expect(row.status).toBe("cancelled");
+    } finally {
+      if (proc) { try { await proc.kill(); } catch { /* already dead */ } }
+      teardown(dir, db);
+    }
+  });
 });

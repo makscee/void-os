@@ -55,6 +55,7 @@ function freshDb(): Database {
     "0001_init.sql",
     "0002_runs_columns.sql",
     "0003_chat_lifecycle.sql",
+    "0004_messages.sql",
   ]) {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
@@ -74,8 +75,20 @@ function cannedSpawner(sessionId: string) {
       calls.push({ ...args });
       return (async function* () {
         yield { type: "system", session_id: sessionId };
-        yield { type: "assistant", content: "hello " };
-        yield { type: "assistant", content: "back" };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "hello " }],
+          },
+        };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "back" }],
+          },
+        };
       })();
     },
   };
@@ -162,11 +175,10 @@ test("full chat lifecycle: create → message → events streamed → title set 
   // ── Step 3: assert event sequence on the sink (what WS would see) ──
   const types = events.map((e) => e.t);
   // Required ordering: message_user before run.start before any token,
-  // and run.end after chat.completion.
+  // and run.end last (authoritative terminal frame).
   expect(types).toContain("chat.message_user");
   expect(types).toContain("run.start");
   expect(types).toContain("chat.token");
-  expect(types).toContain("chat.completion");
   expect(types).toContain("run.end");
 
   expect(types.indexOf("chat.message_user")).toBeLessThan(
@@ -175,7 +187,7 @@ test("full chat lifecycle: create → message → events streamed → title set 
   expect(types.indexOf("run.start")).toBeLessThan(
     types.indexOf("chat.token"),
   );
-  expect(types.indexOf("chat.completion")).toBeLessThan(
+  expect(types.indexOf("chat.token")).toBeLessThan(
     types.indexOf("run.end"),
   );
 
@@ -272,6 +284,7 @@ test("restart with orphan running run: bootRecovery flips to interrupted, last_r
     dispatch: async () => {
       throw new Error("orchestrator not used in restart test");
     },
+    cancel: async () => ({ cancelled: false, run_id: null }),
   };
   const app = await buildApp({
     db,

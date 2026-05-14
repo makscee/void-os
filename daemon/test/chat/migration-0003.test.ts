@@ -25,6 +25,7 @@ test("migration 0003 adds session_id, current_run_id columns to chats", () => {
     "0001_init.sql",
     "0002_runs_columns.sql",
     "0003_chat_lifecycle.sql",
+    "0004_messages.sql",
   ]);
 
   const cols = db.query("PRAGMA table_info(chats)").all() as Array<{

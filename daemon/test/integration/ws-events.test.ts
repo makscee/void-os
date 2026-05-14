@@ -124,18 +124,16 @@ describe("VOS-79 WS broadcaster fans bus events to /events clients", () => {
     broadcast("chat.message_user", { chat_id: "c1", run_id: "r1", text: "say hi" });
     broadcast("run.start", { chat_id: "c1", run_id: "r1", agent: "maya" });
     broadcast("chat.token", { chat_id: "c1", run_id: "r1", delta: "Hi" });
-    broadcast("chat.completion", { chat_id: "c1", run_id: "r1" });
     broadcast("run.end", { chat_id: "c1", run_id: "r1", status: "done" });
-    // 5 broadcasts + hello = 6 frames.
-    await waitFor(6, 1000);
+    // 4 broadcasts + hello = 5 frames.
+    await waitFor(5, 1000);
     ws.close();
-    expect(frames).toHaveLength(6);
+    expect(frames).toHaveLength(5);
     const types = frames.slice(1).map((f) => (JSON.parse(f) as { type: string }).type);
     expect(types).toEqual([
       "chat.message_user",
       "run.start",
       "chat.token",
-      "chat.completion",
       "run.end",
     ]);
   });

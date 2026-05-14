@@ -12,6 +12,7 @@ const EXPECTED_TABLES = [
   "agents",
   "schedules",
   "connected_folders",
+  "messages",
   "schema_migrations",
 ];
 
@@ -25,7 +26,7 @@ const listTables = (db: ReturnType<typeof openDatabase>): string[] => {
 };
 
 describe("sqlite migrations", () => {
-  test("applies 0001_init and creates all 7 tables + schema_migrations", () => {
+  test("applies 0001_init and creates all 8 tables + schema_migrations", () => {
     const dir = mkdtempSync(join(tmpdir(), "void-os-sqlite-"));
     const dbPath = join(dir, "state.sqlite");
     try {
@@ -41,6 +42,7 @@ describe("sqlite migrations", () => {
         "0001_init",
         "0002_runs_columns",
         "0003_chat_lifecycle",
+        "0004_messages",
       ]);
       db.close();
     } finally {
@@ -62,6 +64,7 @@ describe("sqlite migrations", () => {
         "0001_init",
         "0002_runs_columns",
         "0003_chat_lifecycle",
+        "0004_messages",
       ]);
 
       // runs has the new columns.
@@ -99,7 +102,7 @@ describe("sqlite migrations", () => {
       const rows = db2
         .prepare("SELECT version, applied_at FROM schema_migrations")
         .all() as Array<{ version: string; applied_at: number }>;
-      expect(rows).toHaveLength(3);
+      expect(rows).toHaveLength(4);
       const row = rows.find((r) => r.version === "0001_init")!;
       expect(row.version).toBe("0001_init");
       expect(row.applied_at).toBe(firstRow.applied_at);

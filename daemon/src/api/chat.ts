@@ -1,13 +1,14 @@
-// HTTP routes for a single chat (VOS-79 Tasks 3, 4, 8).
+// HTTP routes for a single chat (VOS-79 Tasks 3, 4, 8; VOS-80 S5 cancel).
 //
 // Routes:
 //   - GET  /chat/:id            → full chat row, or 404 {error:"not_found"}
 //   - GET  /chat/:id/messages   → sessionReplay walk over CC's JSONL DAG
 //   - POST /chat/:id/message    → user-send entrypoint; dispatches via orchestrator
+//   - POST /chat/:id/cancel     → interrupt the in-flight run for this chat
 //
 // The orchestrator is injected (optional) so tests can supply a mock and
-// production wires the real one in `buildApp`. When absent, the POST route
-// short-circuits to 500 — production wiring is responsible for providing it.
+// production wires the real one in `buildApp`. When absent, POST routes
+// short-circuit to 500 — production wiring is responsible for providing it.
 
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
@@ -83,6 +84,26 @@ export function chatApi(db: Database, opts: ChatApiOpts = {}): Hono {
       }
       return c.json({ error: String(e?.message ?? err) }, 500);
     }
+  });
+
+  // VOS-80 S5: interrupt the in-flight run for this chat.
+  // Status mapping:
+  //   200 — {run_id, status:"cancelled"} when an active run was cancelled
+  //   404 — {error:"not_found"}            chat does not exist
+  //   409 — {error:"no_active_run"}        no run in flight (idempotent: a
+  //                                        second cancel after run end lands here)
+  //   500 — orchestrator unavailable
+  app.post("/chat/:id/cancel", async (c) => {
+    if (!orchestrator) {
+      return c.json({ error: "orchestrator_unavailable" }, 500);
+    }
+    const id = c.req.param("id");
+    if (!repo.get(id)) return c.json({ error: "not_found" }, 404);
+    const result = await orchestrator.cancel(id);
+    if (!result.cancelled) {
+      return c.json({ error: "no_active_run" }, 409);
+    }
+    return c.json({ run_id: result.run_id, status: "cancelled" });
   });
 
   return app;

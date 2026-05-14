@@ -13,9 +13,11 @@ async function buildOnce() {
     entrypoints: ["src/main.ts"],
     outdir: out,
     format: "cjs",
-    target: "node",
+    target: "browser", // Obsidian renderer is browser-like (window/document)
     external: ["obsidian"],
     minify: !watch,
+    loader: { ".tsx": "tsx", ".ts": "ts" },
+    define: { "process.env.NODE_ENV": JSON.stringify(watch ? "development" : "production") },
   });
   if (!result.success) {
     console.error(result.logs);
@@ -23,7 +25,25 @@ async function buildOnce() {
     return;
   }
   copyFileSync("manifest.json", join(out, "manifest.json"));
-  copyFileSync("styles.css",   join(out, "styles.css"));
+
+  // Tailwind v4 CLI: compile chat stylesheet to styles.css alongside main.js.
+  // preflight off + `vos-` prefix + scoped @source live in src/chat/tailwind.css.
+  const tw = Bun.spawnSync({
+    cmd: [
+      "bunx",
+      "@tailwindcss/cli",
+      "-i", "src/chat/tailwind.css",
+      "-o", join(out, "styles.css"),
+      ...(watch ? [] : ["--minify"]),
+    ],
+    stderr: "inherit",
+    stdout: "inherit",
+  });
+  if (tw.exitCode !== 0) {
+    if (!watch) process.exit(tw.exitCode ?? 1);
+    return;
+  }
+
   console.log(`[void-os/plugin] built → ${out}`);
 }
 
@@ -37,6 +57,5 @@ if (watch) {
   const rebuild = debounce(() => { buildOnce().catch(console.error); });
   fsWatch("src", { recursive: true }, rebuild);
   fsWatch("manifest.json", rebuild);
-  fsWatch("styles.css",   rebuild);
   console.log("[void-os/plugin] watching src/...");
 }

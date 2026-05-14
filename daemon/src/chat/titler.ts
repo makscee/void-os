@@ -18,9 +18,12 @@ export interface ChatRepoLike {
   setTitle(id: string, title: string): boolean;
 }
 
-/** Minimal contract from `session-replay` (separate module). */
+/** Minimal contract from `session-replay` (separate module). The discriminator
+ * `role` is "user" | "assistant" | "tool_use" | "tool_result"; titler only
+ * consumes the text turns ({user, assistant}). `content` is present on text
+ * entries; tool entries omit it (and use tool_call_id/name/input/output). */
 export interface SessionReplayLike {
-  walk(chatId: string): ReadonlyArray<{ role: string; content: unknown }>;
+  walk(chatId: string): ReadonlyArray<{ role: string; content?: unknown }>;
 }
 
 /** Minimal contract from `@anthropic-ai/sdk` so tests can stub it. */
@@ -94,7 +97,13 @@ export function makeTitler({ repo, sdk, replay, emit }: TitlerDeps): Titler {
       if (row.title !== null) return;
       if (row.session_id === null) return;
 
-      const tail = replay.walk(chatId).slice(-TAIL_WINDOW);
+      // Titler only consumes text turns (user/assistant). tool_use /
+      // tool_result entries (S4) are filtered out — they have no `content`
+      // and would mislead the title generator.
+      const tail = replay
+        .walk(chatId)
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .slice(-TAIL_WINDOW);
       try {
         const res = await sdk.messages.create({
           model: TITLER_MODEL,
