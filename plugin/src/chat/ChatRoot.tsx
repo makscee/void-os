@@ -26,7 +26,7 @@ const TextPart = () => <MessagePartPrimitive.Text />;
 
 function MessageItem() {
   return (
-    <MessagePrimitive.Root className="vos:w-full vos:my-[var(--size-4-4)] vos:flex vos:flex-col vos-fade-in">
+    <MessagePrimitive.Root className="vos:w-full vos:my-[var(--size-4-2)] vos:flex vos:flex-col vos-fade-in">
       {/* User: right-aligned tinted bubble */}
       <MessagePrimitive.If user>
         <div className="vos:flex vos:justify-end">
@@ -37,17 +37,12 @@ function MessageItem() {
           </div>
         </div>
       </MessagePrimitive.If>
-      {/* Assistant: full-width, left-edge accent, no bg */}
+      {/* Assistant: full-width, left-edge accent, no bg, no label */}
       <MessagePrimitive.If assistant>
-        <div className="vos:flex vos:flex-col vos:gap-[var(--size-4-1)]">
-          <div className="vos:text-[11px] vos:uppercase vos:tracking-wider vos:text-[var(--text-muted)]">
-            assistant
-          </div>
-          <div
-            className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-[var(--size-4-3)] vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:leading-relaxed"
-          >
-            <MessagePrimitive.Parts components={{ Text: TextPart }} />
-          </div>
+        <div
+          className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-[var(--size-4-3)] vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:leading-relaxed"
+        >
+          <MessagePrimitive.Parts components={{ Text: TextPart }} />
         </div>
       </MessagePrimitive.If>
     </MessagePrimitive.Root>
@@ -64,7 +59,7 @@ function MessageItem() {
 function ThinkingIndicator() {
   return (
     <ThreadPrimitive.If running>
-      <div className="vos:w-full vos:my-[var(--size-4-4)] vos:flex vos:flex-col vos:gap-[var(--size-4-1)]">
+      <div className="vos:w-full vos:my-[var(--size-4-2)]">
         <div className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-[var(--size-4-3)]">
           <span className="vos-dots" aria-label="thinking">
             <span className="vos-dot" />
@@ -134,14 +129,16 @@ export function ChatRoot(props: ChatRootProps) {
         />
         <div className="vos:flex vos:flex-col vos:flex-1 vos:min-w-0 vos:h-full">
           <ThreadPrimitive.Root className="vos:flex vos:flex-col vos:h-full">
-            <ThreadPrimitive.Viewport className="vos:flex-1 vos:overflow-y-auto vos:px-4 vos:py-3">
-              <ThreadPrimitive.Empty>
-                <div className="vos:text-sm vos:text-[var(--text-muted)] vos:p-4">
-                  void-os chat — say hi.
-                </div>
-              </ThreadPrimitive.Empty>
-              <ThreadPrimitive.Messages components={{ Message: MessageItem }} />
-              <ThinkingIndicator />
+            <ThreadPrimitive.Viewport className="vos:flex-1 vos:overflow-y-auto vos:px-4 vos:py-3 vos:flex vos:flex-col">
+              <div className="vos:mt-auto vos:flex vos:flex-col">
+                <ThreadPrimitive.Empty>
+                  <div className="vos:text-sm vos:text-[var(--text-muted)] vos:p-4">
+                    void-os chat — say hi.
+                  </div>
+                </ThreadPrimitive.Empty>
+                <ThreadPrimitive.Messages components={{ Message: MessageItem }} />
+                <ThinkingIndicator />
+              </div>
             </ThreadPrimitive.Viewport>
             <ComposerPrimitive.Root
               className="vos:flex vos:items-end vos:gap-[var(--size-4-2)] vos:m-[var(--size-4-2)] vos:p-[var(--size-4-2)] vos:rounded-[var(--radius-m)] vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:shadow-[0_0_0_1px_var(--interactive-accent)]"
