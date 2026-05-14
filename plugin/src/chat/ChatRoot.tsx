@@ -11,7 +11,13 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
-import { useChatRuntime, QUEUED_MARKER, STOPPED_MARKER } from "./runtime";
+import {
+  useChatRuntime,
+  QUEUED_MARKER,
+  STOPPED_MARKER,
+  TIMEOUT_MARKER,
+  ERROR_MARKER,
+} from "./runtime";
 import { ChatList } from "./ChatList";
 import { CostMeter } from "./CostMeter";
 import { BashTool } from "./tools/BashTool";
@@ -71,6 +77,29 @@ function MarkdownText(props: { text?: string } & Record<string, unknown>) {
         className="vos-stopped vos:ml-[var(--size-4-1)] vos:text-[11px] vos:italic vos:text-[var(--text-error)] vos:align-baseline"
       >
         ↯ stopped
+      </span>
+    );
+  }
+  if (raw === TIMEOUT_MARKER) {
+    // Daemon's first_event/output/tool watchdog fired → CC never produced
+    // a usable reply. Renders in place of the missing assistant text.
+    return (
+      <span
+        data-testid="timeout-notice"
+        className="vos-timeout-notice vos:text-[12px] vos:italic vos:text-[var(--text-muted)]"
+      >
+        Claude didn&apos;t respond. Try again.
+      </span>
+    );
+  }
+  if (raw === ERROR_MARKER) {
+    // Generic run.error (non-timeout). Same muted treatment, different copy.
+    return (
+      <span
+        data-testid="error-notice"
+        className="vos-error-notice vos:text-[12px] vos:italic vos:text-[var(--text-muted)]"
+      >
+        Something went wrong. Try again.
       </span>
     );
   }

@@ -147,6 +147,62 @@ describe("chatReducer — cancel path (VOS-80 part 2)", () => {
     expect(a.cancelled ?? false).toBe(false);
   });
 
+  test("run.end{status:error,error:timeout} arms timeout errorNotice", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({
+      type: "run.end", chat_id: CHAT, run_id: RUN,
+      status: "error", error: "watchdog timeout (phase=first_event idle=15000)",
+    }));
+    expect(s.runState).toBe("error");
+    expect(s.errorNotice).toEqual({ kind: "timeout", runId: RUN });
+  });
+
+  test("run.end{status:error,error:other} arms generic errorNotice", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({
+      type: "run.end", chat_id: CHAT, run_id: RUN,
+      status: "error", error: "permission denied",
+    }));
+    expect(s.errorNotice).toEqual({ kind: "generic", runId: RUN });
+  });
+
+  test("run.end{status:done} clears any prior errorNotice", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({
+      type: "run.end", chat_id: CHAT, run_id: RUN,
+      status: "error", error: "timeout",
+    }));
+    expect(s.errorNotice?.kind).toBe("timeout");
+    // Next run starts fresh, errorNotice cleared.
+    s = chatReducer(s, frame({ type: "run.start", chat_id: CHAT, run_id: "r2", agent: "maya" }));
+    expect(s.errorNotice).toBeNull();
+  });
+
+  test("run.error frame arms errorNotice", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({ type: "run.error", chat_id: CHAT, run_id: RUN, error: "no_response timeout" }));
+    expect(s.runState).toBe("error");
+    expect(s.errorNotice).toEqual({ kind: "timeout", runId: RUN });
+  });
+
+  test("user_send clears errorNotice (user retry)", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({
+      type: "run.end", chat_id: CHAT, run_id: RUN,
+      status: "error", error: "timeout",
+    }));
+    expect(s.errorNotice).not.toBeNull();
+    s = chatReducer(s, { kind: "user_send", text: "retry", tempId: "t1" });
+    expect(s.errorNotice).toBeNull();
+  });
+
+  test("run.end{cancelled} does NOT arm errorNotice (cancelled is its own visual cue)", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({ type: "run.end", chat_id: CHAT, run_id: RUN, status: "cancelled" }));
+    expect(s.errorNotice).toBeNull();
+    expect(s.pendingStoppedRunId).toBe(RUN);
+  });
+
   test("refetched propagates server-truth cancelled flag (daemon LEFT JOIN runs)", () => {
     // Even without stoppedRunId armed locally, an assistant entry tagged
     // cancelled:true by the daemon should mark the ChatMessage cancelled.

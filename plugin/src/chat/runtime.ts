@@ -48,6 +48,12 @@ export interface ChatRuntimeDeps {
 
 export const QUEUED_MARKER = "vos-queued";
 export const STOPPED_MARKER = "vos-stopped";
+/** Inline marker for a synthetic assistant message that displays the
+ *  "Claude didn't respond. Try again." notice after a timeout/error run.end.
+ *  Distinct from STOPPED_MARKER (user-initiated cancel) — different copy,
+ *  different color. See ChatRoot MarkdownText for rendering. */
+export const TIMEOUT_MARKER = "vos-timeout";
+export const ERROR_MARKER = "vos-error";
 
 /** Minimum interval between getMessages refetches (run.end debounce).
  *  Per the VOS-80 part-2 plan: ≥200ms. We use 250ms as a slightly safer
@@ -276,6 +282,18 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
       );
       if (overlay) base.push(toThreadMessage(overlay));
     }
+    // Inline error notice (timeout / generic). Appended AFTER overlay so it
+    // sits where the missing assistant reply would have been. Cleared by
+    // run.start / set_chat / user_send / local_cancel via the reducer.
+    if (state.errorNotice) {
+      const marker =
+        state.errorNotice.kind === "timeout" ? TIMEOUT_MARKER : ERROR_MARKER;
+      base.push({
+        id: `notice-${state.errorNotice.runId}`,
+        role: "assistant",
+        content: [{ type: "text", text: marker }],
+      });
+    }
     if (!cid) return base;
     const q = state.queues[cid];
     if (!q || q.length === 0) return base;
@@ -292,6 +310,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     state.liveTokens,
     state.liveToolEvents,
     state.pendingStoppedRunId,
+    state.errorNotice,
     state.queues,
     state.chatId,
   ]);

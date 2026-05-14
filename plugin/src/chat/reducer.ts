@@ -103,6 +103,19 @@ export type ReplayMessage =
       ts?: number;
     };
 
+/** Inline error notice surfaced after a run.end{status:"error"} or run.error.
+ *  Distinct from `cancelled` (user-initiated) — this is a daemon-side failure
+ *  (typically first_event watchdog firing when CC never responded). The UI
+ *  renders a muted italic line in place of the missing assistant reply. */
+export interface ErrorNotice {
+  /** "timeout" → "Claude didn't respond. Try again." (first_event / output / tool watchdog).
+   *  "generic" → "Something went wrong. Try again." (other error). */
+  kind: "timeout" | "generic";
+  /** run_id the error belongs to. Cleared on the next run.start so the
+   *  notice doesn't leak across retries. */
+  runId: string;
+}
+
 export interface ChatState {
   /** Chat id this state is bound to. Frames for other chats are ignored. */
   chatId: string | null;
@@ -120,6 +133,9 @@ export interface ChatState {
   /** Set by local_cancel; consumed by next refetched dispatch to tag the
    *  last assistant entry from that run with cancelled=true. */
   pendingStoppedRunId: string | null;
+  /** Inline error notice for the last failed run. Cleared on the next
+   *  run.start / set_chat / user_send / local_cancel. */
+  errorNotice: ErrorNotice | null;
   /** Per-chat send queue. */
   queues: Record<string, QueuedMessage[]>;
 }
@@ -132,8 +148,21 @@ export const initialChatState = (chatId: string | null = null): ChatState => ({
   runState: "idle",
   activeRunId: null,
   pendingStoppedRunId: null,
+  errorNotice: null,
   queues: {},
 });
+
+/** Classify a run.end / run.error error string into a notice kind. The
+ *  daemon's first_event watchdog stamps the error with a "timeout" marker
+ *  (see cc-watchdog phase=first_event). */
+export function classifyError(raw: unknown): ErrorNotice["kind"] {
+  if (typeof raw !== "string") return "generic";
+  const s = raw.toLowerCase();
+  if (s.includes("timeout") || s.includes("first_event") || s.includes("no_response")) {
+    return "timeout";
+  }
+  return "generic";
+}
 
 export type LocalAction =
   | { kind: "set_chat"; chatId: string }
@@ -350,7 +379,7 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
   switch (action.kind) {
     case "set_chat": {
       if (state.chatId === action.chatId) return state;
-      // Preserve queue map; reset everything else.
+      // Preserve queue map; reset everything else (incl. errorNotice).
       return { ...initialChatState(action.chatId), queues: state.queues };
     }
     case "enqueue": {
@@ -399,8 +428,10 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
     }
     case "user_send": {
       // Optimistic append. Reconciled when chat.message_user echoes.
+      // Clear any prior errorNotice — a new user send is the user's retry.
       return {
         ...state,
+        errorNotice: null,
         messages: [
           ...state.messages,
           { id: action.tempId, role: "user", text: action.text, complete: true },
@@ -422,6 +453,7 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         runState: "idle",
         activeRunId: null,
         pendingStoppedRunId: state.activeRunId,
+        errorNotice: null,
       };
     }
     case "frame": {
@@ -434,12 +466,14 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         case "run.start": {
           if (!runId) return state;
           // Fresh run starts: clear any stale overlay from a prior aborted run.
+          // Also clear errorNotice — a new run is the user's retry / fresh attempt.
           return {
             ...state,
             liveTokens: "",
             liveToolEvents: [],
             runState: "running",
             activeRunId: runId,
+            errorNotice: null,
           };
         }
         case "chat.message_user": {
@@ -484,10 +518,18 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           const pending =
             state.pendingStoppedRunId ??
             (isCancel ? runId : null);
+          // Error-status terminals: surface an inline notice keyed off the
+          // error string. The first_event watchdog stamps "timeout"; other
+          // failures get the generic notice. done / cancelled clear notice.
+          const errorNotice =
+            status === "error"
+              ? { kind: classifyError(f.error), runId }
+              : null;
           return {
             ...clearOverlay(state),
             runState: status === "error" ? "error" : "idle",
             pendingStoppedRunId: pending,
+            errorNotice,
           };
         }
         case "run.error": {
@@ -495,6 +537,7 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           return {
             ...clearOverlay(state),
             runState: "error",
+            errorNotice: { kind: classifyError(f.error), runId },
           };
         }
         default:
