@@ -26,6 +26,7 @@ function freshDb(): Database {
     "0001_init.sql",
     "0002_runs_columns.sql",
     "0003_chat_lifecycle.sql",
+    "0004_messages.sql",
   ]) {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
