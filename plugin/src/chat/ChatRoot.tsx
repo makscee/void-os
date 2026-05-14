@@ -262,10 +262,13 @@ export function ChatRoot(props: ChatRootProps) {
     };
   }, [props.bus, debouncedListRefresh]);
 
-  // Test hook: dispatch `vos-test-send` on window to drive the runtime's
+  // Test-only hook: dispatch `vos-test-send` on window to drive the runtime's
   // append path under happy-dom (composer keyboard input is fragile there).
-  // No-op in production unless the event is fired.
+  // Gated behind NODE_ENV !== "production"; the plugin build (build.ts)
+  // statically replaces process.env.NODE_ENV with "production", so the
+  // listener is dead-code-eliminated by the minifier in the shipped bundle.
   React.useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
     const handler = (ev: Event) => {
       const detail = (ev as CustomEvent<{ text: string }>).detail;
       const text = detail?.text ?? "";
