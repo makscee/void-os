@@ -40,12 +40,9 @@ describe("chatReducer", () => {
     expect(s.messages.length).toBe(0);
   });
 
-  test("chat.completion is a no-op; only run.end terminates the overlay", () => {
+  test("run.end terminates the overlay (authoritative terminal frame)", () => {
     let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
     s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "x" }));
-    const before = s;
-    s = chatReducer(s, frame({ type: "chat.completion", chat_id: CHAT, run_id: RUN }));
-    expect(s).toBe(before);
     expect(s.runState).toBe("running");
     s = chatReducer(s, frame({ type: "run.end", chat_id: CHAT, run_id: RUN, status: "done" }));
     expect(s.runState).toBe("idle");

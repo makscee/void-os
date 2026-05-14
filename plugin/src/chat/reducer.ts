@@ -21,7 +21,6 @@
 //   chat.token         {chat_id, run_id, delta}     → liveTokens
 //   chat.tool_use      {chat_id, run_id, tool_call_id, name, input}     → liveToolEvents
 //   chat.tool_result   {chat_id, run_id, tool_call_id, output, is_error}→ merge into liveToolEvents
-//   chat.completion    {chat_id, run_id}            → no-op (run.end is terminal)
 //   run.end            {chat_id, run_id, status}    → idle + clear overlay
 //   run.error          {chat_id, run_id, error}     → error + clear overlay
 
@@ -574,11 +573,6 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           if (!toolCallId) return state;
           const isError = f.is_error === true;
           return applyLiveToolResult(state, toolCallId, f.output, isError);
-        }
-        case "chat.completion": {
-          // No-op: run.end is the authoritative terminal frame, and the
-          // canonical content lives in the daemon DB (refetched after run.end).
-          return state;
         }
         case "run.end": {
           if (!runId) return state;

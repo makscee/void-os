@@ -129,7 +129,7 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
     root.unmount();
   });
 
-  test("normal done path (chat.completion + run.end{done}) does NOT show stopped badge", async () => {
+  test("normal done path (run.end{done}) does NOT show stopped badge", async () => {
     const React = await import("react");
     const { createRoot } = await import("react-dom/client");
     const act = (React as any).act;
@@ -163,7 +163,6 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
     await act(async () => {
       bus.emit({ type: "run.start", chat_id: "c1", run_id: "r1", agent: "maya" });
       bus.emit({ type: "chat.token", chat_id: "c1", run_id: "r1", delta: "done answer" });
-      bus.emit({ type: "chat.completion", chat_id: "c1", run_id: "r1" });
       bus.emit({ type: "run.end", chat_id: "c1", run_id: "r1", status: "done" });
     });
     await flush(act);

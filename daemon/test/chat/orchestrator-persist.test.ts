@@ -3,8 +3,8 @@
 //
 // Validates the contract that GET /chat/:id/messages can read from DB:
 //   - user prompt at dispatch start → 'user' row.
-//   - assistant text accumulated, persisted ONCE at terminal (chat.completion
-//     or cancel/error finally) — UPSERT keyed on (chat_id, run_id).
+//   - assistant text accumulated, persisted ONCE at terminal (happy
+//     completion or cancel/error finally) — UPSERT keyed on (chat_id, run_id).
 //   - tool_use blocks → 'tool_use' rows emitted immediately as they arrive.
 //   - tool_result blocks → 'tool_result' rows emitted immediately.
 //   - On cancel mid-stream, partial assistant text is in messages table.

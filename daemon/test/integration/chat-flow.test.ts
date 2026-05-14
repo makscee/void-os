@@ -175,11 +175,10 @@ test("full chat lifecycle: create → message → events streamed → title set 
   // ── Step 3: assert event sequence on the sink (what WS would see) ──
   const types = events.map((e) => e.t);
   // Required ordering: message_user before run.start before any token,
-  // and run.end after chat.completion.
+  // and run.end last (authoritative terminal frame).
   expect(types).toContain("chat.message_user");
   expect(types).toContain("run.start");
   expect(types).toContain("chat.token");
-  expect(types).toContain("chat.completion");
   expect(types).toContain("run.end");
 
   expect(types.indexOf("chat.message_user")).toBeLessThan(
@@ -188,7 +187,7 @@ test("full chat lifecycle: create → message → events streamed → title set 
   expect(types.indexOf("run.start")).toBeLessThan(
     types.indexOf("chat.token"),
   );
-  expect(types.indexOf("chat.completion")).toBeLessThan(
+  expect(types.indexOf("chat.token")).toBeLessThan(
     types.indexOf("run.end"),
   );
 

@@ -47,8 +47,6 @@ describe("chatReducer — cancel path (VOS-80 part 2)", () => {
   test("run.end{done} clears overlay + idle + no pendingStoppedRunId", () => {
     let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
     s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "ok" }));
-    s = chatReducer(s, frame({ type: "chat.completion", chat_id: CHAT, run_id: RUN }));
-    // chat.completion is a no-op now — overlay still present until run.end.
     expect(s.liveTokens).toBe("ok");
     expect(s.runState).toBe("running");
     s = chatReducer(s, frame({ type: "run.end", chat_id: CHAT, run_id: RUN, status: "done" }));
@@ -56,14 +54,6 @@ describe("chatReducer — cancel path (VOS-80 part 2)", () => {
     expect(s.activeRunId).toBeNull();
     expect(s.liveTokens).toBe("");
     expect(s.pendingStoppedRunId).toBeNull();
-  });
-
-  test("run.end{done} without chat.completion still clears + idles (defensive)", () => {
-    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
-    s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "x" }));
-    s = chatReducer(s, frame({ type: "run.end", chat_id: CHAT, run_id: RUN, status: "done" }));
-    expect(s.runState).toBe("idle");
-    expect(s.liveTokens).toBe("");
   });
 
   test("local_cancel flips idle, KEEPS overlay (until run.end), arms pendingStoppedRunId", () => {

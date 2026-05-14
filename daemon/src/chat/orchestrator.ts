@@ -27,9 +27,10 @@
 //      or has no session yet).
 //
 // Bus event names emitted: run.start, run.end, run.error,
-//   chat.message_user, chat.token, chat.tool_use, chat.tool_result,
-//   chat.completion. These mirror VOS-73's cc-spawner vocabulary (run.*)
-//   and add chat.* for UI-facing stream surfaces.
+//   chat.message_user, chat.token, chat.tool_use, chat.tool_result.
+//   These mirror VOS-73's cc-spawner vocabulary (run.*) and add chat.*
+//   for UI-facing stream surfaces. run.end is the authoritative terminal
+//   frame; the canonical assistant text is in the messages table.
 //
 // chat.tool_use / chat.tool_result frame contract (consumed by plugin S4):
 //   { type: "chat.tool_use",   chat_id, run_id, tool_call_id, name, input }
@@ -345,7 +346,6 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             );
             repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
           }
-          emit("chat.completion", { chat_id: chatId, run_id: runId });
         }
       } catch (err) {
         // VOS-80 S5: a cancel may race with the iterator throwing (e.g.
@@ -376,8 +376,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // VOS-80 (a): non-happy terminal (cancel or error) — flush partial
         // assistant text into the canonical messages table BEFORE run.end
         // is broadcast. The happy path already did this in the try-block;
-        // here we cover the two failure modes where the chat.completion
-        // branch was skipped.
+        // here we cover the two failure modes where that branch was skipped.
         //
         // VOS-80 stopped-badge fix (b): on CANCEL we ALWAYS persist an
         // assistant row — even with empty content — so the LEFT JOIN in

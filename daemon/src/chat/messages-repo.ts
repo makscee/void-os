@@ -9,9 +9,10 @@
 //   - appendUser     → inserts a 'user' row.
 //   - appendAssistant→ UPSERT on (chat_id, run_id, role='assistant'): the
 //                      orchestrator streams tokens and the assistant text
-//                      grows; we call appendAssistant once at terminal (chat.completion,
-//                      cancel, or error finally) with the full accumulated
-//                      text and overwrite any prior row for this run.
+//                      grows; we call appendAssistant once at terminal
+//                      (happy completion, cancel, or error finally) with
+//                      the full accumulated text and overwrite any prior
+//                      row for this run.
 //   - appendToolUse  → inserts a 'tool_use' row, input is a JSON-stringified
 //                      payload. Caller stringifies; repo treats content as text.
 //   - appendToolResult→ inserts a 'tool_result' row, output normalized to text.

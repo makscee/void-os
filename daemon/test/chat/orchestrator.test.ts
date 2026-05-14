@@ -513,8 +513,8 @@ test("orchestrator: pure tool-call assistant turn emits NO chat.token", async ()
   await orch.dispatch(chat.id, "go");
   const tokens = events.filter((e) => e.t === "chat.token");
   expect(tokens.length).toBe(0);
-  // Still emits chat.completion since firstAssistantSeen flipped.
-  expect(events.some((e) => e.t === "chat.completion")).toBe(true);
+  // Run still terminates cleanly (run.end is the authoritative terminal frame).
+  expect(events.some((e) => e.t === "run.end")).toBe(true);
 });
 
 test("concurrent dispatch: second rejects with Conflict409 carrying current_run_id", async () => {
