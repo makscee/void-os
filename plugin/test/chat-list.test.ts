@@ -10,6 +10,7 @@ function stubApi(chats: ChatSummary[]): ChatApi {
   return {
     async createChat() { return { id: "new", title: "untitled", created_at: 0 }; },
     async postMessage() { return { run_id: "r", status: "running" }; },
+    async cancel() { return { run_id: "r", status: "cancelled" }; },
     async listChats() { return chats; },
     async getMessages() { return []; },
   };
@@ -149,6 +150,7 @@ describe("ChatList", () => {
     const api: ChatApi = {
       async createChat() { return { id: "x", title: "t", created_at: 0 }; },
       async postMessage() { return { run_id: "r", status: "running" }; },
+    async cancel() { return { run_id: "r", status: "cancelled" }; },
       async listChats() {
         calls++;
         return [{ id: `c${calls}`, agent: "maya", title: `t${calls}`, last_msg: null, updated_at: calls, last_run_status: null }];

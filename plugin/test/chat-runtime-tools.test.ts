@@ -44,6 +44,7 @@ describe("ChatRoot tool UI (S4)", () => {
     const api = {
       createChat: async () => ({ id: "c1", title: "t", created_at: 0 }),
       postMessage: async () => ({ run_id: "r", status: "running" }),
+      cancel: async () => ({ run_id: "r", status: "cancelled" }),
       listChats: async () => [],
       getMessages: async () => [
         { role: "user", content: "run ls please" },
@@ -100,6 +101,7 @@ describe("ChatRoot tool UI (S4)", () => {
     const api = {
       createChat: async () => ({ id: "c1", title: "t", created_at: 0 }),
       postMessage: async () => ({ run_id: "r1", status: "running" }),
+      cancel: async () => ({ run_id: "r1", status: "cancelled" }),
       listChats: async () => [],
       getMessages: async () => [],
     };
@@ -157,6 +159,7 @@ describe("ChatRoot tool UI (S4)", () => {
     const api = {
       createChat: async () => ({ id: "c1", title: "t", created_at: 0 }),
       postMessage: async () => ({ run_id: "r1", status: "running" }),
+      cancel: async () => ({ run_id: "r1", status: "cancelled" }),
       listChats: async () => [],
       getMessages: async () => [],
     };

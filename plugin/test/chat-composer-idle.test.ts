@@ -58,6 +58,7 @@ describe("ChatRoot composer in idle state (S5 regression guard)", () => {
       async postMessage(_id: string, _text: string) {
         return { run_id: "r1", status: "running" };
       },
+      async cancel() { return { run_id: "r1", status: "cancelled" }; },
       async listChats() { return []; },
       async getMessages() { return []; },
     };

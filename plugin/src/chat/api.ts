@@ -3,6 +3,9 @@
 // Routes used:
 //   POST /chats                  { agent? }   → { id, title, created_at }
 //   POST /chat/:id/message       { text }     → { run_id, status }
+//   POST /chat/:id/cancel        (no body)    → { run_id, status:"cancelled" }
+//                                              | 409 {error:"no_active_run"}
+//                                              | 404 {error:"not_found"}
 //   GET  /chats                                → ChatSummary[] (recent-first)
 //   GET  /chat/:id/messages                    → ReplayMessage[]
 //
@@ -38,6 +41,14 @@ export interface ChatSummary {
 export interface ChatApi {
   createChat(agent?: string): Promise<{ id: string; title: string; created_at: number }>;
   postMessage(chatId: string, text: string): Promise<{ run_id: string; status: string }>;
+  /** POST /chat/:id/cancel. Resolves with the cancel body on 200. Throws
+   *  ApiError on 404/500. For the 409 "no_active_run" case the caller usually
+   *  wants to treat it as a no-op rather than as a failure, so we surface a
+   *  shaped result `{noActiveRun: true}` instead of throwing. */
+  cancel(chatId: string): Promise<
+    | { run_id: string; status: string; noActiveRun?: false }
+    | { noActiveRun: true }
+  >;
   listChats(): Promise<ChatSummary[]>;
   getMessages(chatId: string): Promise<ReplayMessage[]>;
 }
@@ -141,6 +152,21 @@ export function makeChatApi(
         body: JSON.stringify({ text }),
       });
       return jsonOrThrow(res) as Promise<{ run_id: string; status: string }>;
+    },
+    async cancel(chatId) {
+      const res = await fetchImpl(
+        `${base}/chat/${encodeURIComponent(chatId)}/cancel`,
+        { method: "POST" },
+      );
+      // 409 = no active run. Treat as benign no-op so the runtime can keep
+      // moving (queue flush still fires via run.end echo from a prior run).
+      if (res.status === 409) {
+        // Drain body for parity with jsonOrThrow's body-read.
+        try { await res.text(); } catch { /* ignore */ }
+        return { noActiveRun: true };
+      }
+      const body = await jsonOrThrow(res);
+      return body as { run_id: string; status: string };
     },
     async listChats() {
       const res = await fetchImpl(`${base}/chats`, { method: "GET" });

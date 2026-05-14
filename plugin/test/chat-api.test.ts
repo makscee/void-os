@@ -212,4 +212,56 @@ describe("makeChatApi", () => {
     );
     await expect(api.getMessages("missing")).rejects.toBeInstanceOf(ApiError);
   });
+
+  test("cancel POSTs /chat/:id/cancel and returns body on 200", async () => {
+    let captured: { url: string; method?: string } = { url: "" };
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch((u, init) => {
+        captured = { url: u, method: init?.method };
+        return new Response(
+          JSON.stringify({ run_id: "r5", status: "cancelled" }),
+          { status: 200 },
+        );
+      }) as any,
+    );
+    const r = await api.cancel("c1");
+    expect(captured.url).toBe("http://test/chat/c1/cancel");
+    expect(captured.method).toBe("POST");
+    expect(r).toEqual({ run_id: "r5", status: "cancelled" });
+  });
+
+  test("cancel returns {noActiveRun:true} on 409 (no throw)", async () => {
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch(() =>
+        new Response(JSON.stringify({ error: "no_active_run" }), { status: 409 }),
+      ) as any,
+    );
+    const r = await api.cancel("c1");
+    expect(r).toEqual({ noActiveRun: true });
+  });
+
+  test("cancel throws ApiError on 404", async () => {
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch(() =>
+        new Response(JSON.stringify({ error: "not_found" }), { status: 404 }),
+      ) as any,
+    );
+    await expect(api.cancel("missing")).rejects.toBeInstanceOf(ApiError);
+  });
+
+  test("cancel encodes chatId", async () => {
+    let url = "";
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch((u) => {
+        url = u;
+        return new Response(JSON.stringify({ run_id: "r", status: "cancelled" }), { status: 200 });
+      }) as any,
+    );
+    await api.cancel("c/with slash");
+    expect(url).toBe("http://test/chat/c%2Fwith%20slash/cancel");
+  });
 });
