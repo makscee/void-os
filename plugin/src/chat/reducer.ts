@@ -78,7 +78,16 @@ export interface QueuedMessage {
 
 /** Replay items returned by GET /chat/:id/messages. */
 export type ReplayMessage =
-  | { role: "user" | "assistant"; content: string; ts?: number }
+  | {
+      role: "user" | "assistant";
+      content: string;
+      ts?: number;
+      /** Server-truth cancelled flag (daemon LEFT JOIN runs.status='cancelled')
+       *  surfaced on assistant entries only. The reducer propagates this onto
+       *  ChatMessage.cancelled so the "stopped" badge persists across refetch
+       *  and chat-switch cycles. */
+      cancelled?: boolean;
+    }
   | {
       role: "tool_use";
       tool_call_id: string;
@@ -178,6 +187,12 @@ function replayToMessages(rows: ReplayMessage[]): ChatMessage[] {
           ? (m.content ? [{ kind: "text", text: m.content }] : [])
           : undefined,
       };
+      // Server-truth cancelled flag (daemon LEFT JOIN runs.status='cancelled')
+      // on assistant entries. Survives without `pendingStoppedRunId` so the
+      // badge is durable across refetch and chat-switch.
+      if (m.role === "assistant" && m.cancelled === true) {
+        msg.cancelled = true;
+      }
       messages.push(msg);
       if (m.role === "assistant") lastAssistantIdx = messages.length - 1;
     } else if (m.role === "tool_use") {

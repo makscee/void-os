@@ -1,4 +1,4 @@
-// VOS-80 — ESC cancel optimistic flip + "(stopped)" badge.
+// VOS-80 — ESC cancel optimistic flip + "↯ stopped" badge.
 //
 // The live bug this guards: ESC POST 200 returned but the plugin's runState
 // stayed "running" until the WS run.end roundtrip OR a chat switch. The fix
@@ -6,7 +6,7 @@
 // immediately. We assert:
 //   - On ESC while running, after the cancel POST resolves, the ESC hint
 //     and 3-dot pulse disappear EVEN BEFORE any run.end frame fires.
-//   - The "(stopped)" badge appears on the in-flight assistant turn.
+//   - The "↯ stopped" badge appears on the in-flight assistant turn.
 //   - The eventual run.end{cancelled} frame is idempotent — badge stays,
 //     no double-cancelled flag flip, runState stays idle.
 //   - Partial assistant text streamed before ESC is preserved.
@@ -112,9 +112,9 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
     expect(host.querySelector("[aria-label='thinking']")).toBeNull();
     // Partial text preserved.
     expect(host.textContent).toContain("partial reply");
-    // "(stopped)" badge present.
+    // "↯ stopped" badge present.
     expect(host.querySelector("[data-testid='stopped-badge']")).toBeTruthy();
-    expect(host.textContent).toContain("(stopped)");
+    expect(host.textContent).toContain("stopped");
 
     // Now simulate the late run.end{cancelled} from the daemon — idempotent.
     await act(async () => {
@@ -171,7 +171,7 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
     expect(host.querySelector("[data-testid='stopped-badge']")).toBeNull();
     expect(host.querySelector("[data-testid='esc-hint']")).toBeNull();
     expect(host.textContent).toContain("done answer");
-    expect(host.textContent).not.toContain("(stopped)");
+    expect(host.textContent).not.toContain("↯ stopped");
 
     root.unmount();
   });

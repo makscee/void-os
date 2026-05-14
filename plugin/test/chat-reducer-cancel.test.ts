@@ -146,4 +146,25 @@ describe("chatReducer — cancel path (VOS-80 part 2)", () => {
     const a = s.messages.find((m) => m.role === "assistant")!;
     expect(a.cancelled ?? false).toBe(false);
   });
+
+  test("refetched propagates server-truth cancelled flag (daemon LEFT JOIN runs)", () => {
+    // Even without stoppedRunId armed locally, an assistant entry tagged
+    // cancelled:true by the daemon should mark the ChatMessage cancelled.
+    // This is what makes the badge survive chat-switch + re-mount.
+    const s = chatReducer(seed(), {
+      kind: "refetched",
+      chatId: CHAT,
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "partial", cancelled: true },
+        { role: "user", content: "next" },
+        { role: "assistant", content: "fresh answer" },
+      ],
+    });
+    const assistants = s.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0].cancelled).toBe(true);
+    // Second assistant entry from a non-cancelled run is NOT tagged.
+    expect(assistants[1].cancelled ?? false).toBe(false);
+  });
 });

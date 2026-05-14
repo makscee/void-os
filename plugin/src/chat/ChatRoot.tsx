@@ -61,12 +61,16 @@ function UserTextPart(props: { text?: string } & Record<string, unknown>) {
 function MarkdownText(props: { text?: string } & Record<string, unknown>) {
   const raw = typeof props.text === "string" ? props.text : "";
   if (raw === STOPPED_MARKER) {
+    // Inline badge — sits at the end of the assistant's last paragraph
+    // (toThreadMessage appends STOPPED_MARKER as the trailing text part).
+    // Italic + error-tinted 11px keeps it visually distinct from a normal
+    // cancellation completion AND from the timeout error notice (muted).
     return (
       <span
         data-testid="stopped-badge"
-        className="vos-stopped vos:mt-[var(--size-4-1)] vos:inline-flex vos:items-center vos:px-[var(--size-4-2)] vos:py-[2px] vos:rounded-[var(--radius-s)] vos:text-[11px] vos:text-[var(--text-muted)] vos:bg-[var(--background-secondary)] vos:border vos:border-[var(--background-modifier-border)]"
+        className="vos-stopped vos:ml-[var(--size-4-1)] vos:text-[11px] vos:italic vos:text-[var(--text-error)] vos:align-baseline"
       >
-        (stopped)
+        ↯ stopped
       </span>
     );
   }

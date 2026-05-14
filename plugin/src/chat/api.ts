@@ -73,7 +73,14 @@ function normalizeReplay(raw: unknown): ReplayMessage[] {
     const ts = typeof o.ts === "number" ? (o.ts as number) : undefined;
     if (role === "user" || role === "assistant") {
       if (typeof o.content !== "string") continue;
-      out.push({ role, content: o.content, ts });
+      const entry: ReplayMessage = { role, content: o.content, ts };
+      // Daemon's messages-repo stamps cancelled=true on assistant rows
+      // belonging to a cancelled run (VOS-80). Surface so the renderer
+      // shows the "stopped" badge from server truth.
+      if (role === "assistant" && o.cancelled === true) {
+        (entry as { cancelled?: boolean }).cancelled = true;
+      }
+      out.push(entry);
       continue;
     }
     if (role === "tool_use") {
