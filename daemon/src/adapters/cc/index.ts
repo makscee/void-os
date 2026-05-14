@@ -21,11 +21,21 @@ export interface CcSpawnRequest {
   settings?: unknown;
 }
 
+export interface KillOpts {
+  /** Fast-path cancel: skip SIGTERM grace; send SIGINT immediately, then
+   *  SIGKILL after FAST_KILL_GRACE_MS. CC traps SIGTERM and gracefully
+   *  flushes the in-flight stream (so the response continues to arrive
+   *  for ~5s), but SIGINT mimics Ctrl-C and aborts immediately. Used by
+   *  the user-initiated cancel (POST /chat/:id/cancel). Watchdog kills
+   *  still go through the default SIGTERM-then-SIGKILL path. */
+  fast?: boolean;
+}
+
 export interface CcProcess {
   runId: string;
   pid: number;
   sessionId(): Promise<string>;
-  kill(): Promise<void>;
+  kill(opts?: KillOpts): Promise<void>;
   wait(): Promise<{
     exitCode: number;
     sessionId?: string;
@@ -48,6 +58,10 @@ export interface ProbeResult {
 export const DEFAULT_OUTPUT_TIMEOUT_MS = 120_000;
 export const DEFAULT_TOOL_TIMEOUT_MS   = 1_800_000;
 export const KILL_GRACE_MS             = 5_000;
+/** Fast-cancel grace: SIGINT → wait this long → SIGKILL. Short because the
+ *  user has explicitly asked to stop, so we trade graceful-flush for
+ *  immediate termination. */
+export const FAST_KILL_GRACE_MS        = 250;
 export const DEFAULT_WATCHDOG_TICK_MS  = 5_000;
 
 export class NoSessionError extends Error {
@@ -322,17 +336,24 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         runId,
         pid: proc.pid,
         sessionId: () => sidPromise,
-        async kill() {
+        async kill(opts?: KillOpts) {
           killed = true;
-          proc.kill("SIGTERM");
-          // Mirror watchdog escalation: if SIGTERM is ignored, SIGKILL after grace.
+          // Fast-cancel: SIGINT (Ctrl-C semantics, CC aborts immediately),
+          // 250ms grace, then SIGKILL. Default: SIGTERM, 5s grace, SIGKILL
+          // (used by the watchdog where graceful drain is acceptable).
+          // VOS-80 fix: CC traps SIGTERM and flushes the in-flight response
+          // before exiting, so SIGTERM lets the entire reply finish even
+          // though the user pressed ESC. SIGINT bypasses that handler.
+          const initialSignal = opts?.fast ? "SIGINT" : "SIGTERM";
+          const grace = opts?.fast ? FAST_KILL_GRACE_MS : KILL_GRACE_MS;
+          proc.kill(initialSignal);
           const escalation = setTimeout(() => {
             try {
               process.kill(proc.pid, 0);          // alive?
               proc.kill("SIGKILL");
               deps.bus.emit({ type: "run.kill_escalated", runId, payload: {} });
             } catch { /* already gone */ }
-          }, KILL_GRACE_MS);
+          }, grace);
           try {
             await exitPromise;
           } finally {

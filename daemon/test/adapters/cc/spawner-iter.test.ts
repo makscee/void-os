@@ -178,4 +178,74 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     // regressions where finally is skipped.
     expect(true).toBe(true);
   });
+
+  // VOS-80 cancel-fast: cancel(runId) must invoke proc.kill({fast: true}),
+  // which routes the underlying spawner to SIGINT (250ms grace) instead of
+  // the default SIGTERM/5s grace. The default path lets CC trap SIGTERM
+  // and gracefully flush the full response — that defeats user-cancel.
+  test("cancel(runId) forwards {fast: true} to underlying CcProcess.kill", async () => {
+    const bus = makeBus();
+    const killCalls: Array<{ fast?: boolean }> = [];
+    let counter = 0;
+    const cc: CcSpawner = {
+      async spawn(_req: CcSpawnRequest): Promise<CcProcess> {
+        const runId = `run-${++counter}`;
+        queueMicrotask(() => {
+          bus.emit({
+            type: "cc.event",
+            runId,
+            payload: { eventType: "system", event: { type: "system", session_id: "sid-c" } },
+          });
+        });
+        return {
+          runId,
+          pid: -1,
+          sessionId: async () => "sid-c",
+          kill: async (opts) => {
+            killCalls.push(opts ?? {});
+            // Simulate process exit so the iterator drains naturally.
+            queueMicrotask(() =>
+              bus.emit({ type: "run.end", runId, payload: { exitCode: 137, reason: "killed" } }),
+            );
+          },
+          wait: async () => ({ exitCode: 137, reason: "killed" }),
+        };
+      },
+    };
+    const spawner = makeCcSpawnerIter({ cc, bus, agent: "maya", cwd: "/tmp" });
+
+    // Start iterating; need at least one yield so activeProcs is populated.
+    const iter = spawner.spawn({ chat_id: "c1", resume: null, prompt: "go" });
+    const it = iter[Symbol.asyncIterator]();
+    const first = await it.next();
+    expect(first.done).toBe(false);
+
+    // Now runId is registered. Fire cancel.
+    const result = await spawner.cancel!("run-1");
+    expect(result).toBe(true);
+
+    // Drain remaining events (run.end queued).
+    while (!(await it.next()).done) { /* drain */ }
+
+    expect(killCalls).toHaveLength(1);
+    expect(killCalls[0].fast).toBe(true);
+  });
+
+  test("cancel(unknown-runId) returns false without invoking kill", async () => {
+    const bus = makeBus();
+    const cc: CcSpawner = {
+      async spawn(_req: CcSpawnRequest): Promise<CcProcess> {
+        return {
+          runId: "run-x",
+          pid: -1,
+          sessionId: async () => "sid-x",
+          kill: async () => { throw new Error("should not be called"); },
+          wait: async () => ({ exitCode: 0, reason: "exited" }),
+        };
+      },
+    };
+    const spawner = makeCcSpawnerIter({ cc, bus, agent: "maya", cwd: "/tmp" });
+    const result = await spawner.cancel!("nope");
+    expect(result).toBe(false);
+  });
 });

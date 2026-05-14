@@ -25,7 +25,7 @@
  * so a thrown error here becomes a `run.error` bus emit at the chat layer.
  */
 
-import type { CcSpawner } from "./index.js";
+import type { CcSpawner, KillOpts } from "./index.js";
 import type { EventBus, DaemonEvent } from "../../events/index.js";
 import type {
   Spawner,
@@ -50,16 +50,24 @@ export interface SpawnerIterDeps {
  *
  * VOS-80 S5: `cancel(runId)` is wired to the matching `CcProcess.kill()`.
  * A shared per-iter map (`activeProcs`) tracks live runs; the orchestrator
- * looks the runId up via this adapter, the adapter forwards SIGTERM (with
- * SIGKILL grace) to the subprocess. The iterator's bus subscription
- * receives the resulting `run.end` and naturally drains.
+ * looks the runId up via this adapter, the adapter forwards SIGINT (with
+ * 250ms SIGKILL grace) via `kill({fast: true})` to the subprocess. The
+ * iterator's bus subscription receives the resulting `run.end` and
+ * naturally drains.
+ *
+ * Why SIGINT not SIGTERM: CC (anthropic-ai/claude CLI) traps SIGTERM and
+ * gracefully flushes the in-flight response stream before exiting, so a
+ * SIGTERM-based cancel lets the entire reply keep arriving for several
+ * seconds after the user pressed ESC. SIGINT mimics Ctrl-C and aborts
+ * immediately. Watchdog timeouts keep the SIGTERM-5s-SIGKILL path so
+ * naturally-stuck runs still get a chance to flush.
  */
 export function makeCcSpawnerIter(deps: SpawnerIterDeps): Spawner {
   // Per-spawner-instance map. Multiple chats running in parallel have
   // distinct runIds; cancel(runId) only touches the one. Populated by
   // iterate() once cc.spawn resolves; cleared when the iterator's finally
   // block runs (run.end or run.error or cancel-induced kill).
-  const activeProcs = new Map<string, { kill: () => Promise<void> }>();
+  const activeProcs = new Map<string, { kill: (opts?: KillOpts) => Promise<void> }>();
   return {
     spawn(args: SpawnArgs): AsyncIterable<SpawnerEvent> {
       return iterate(deps, args, activeProcs);
@@ -70,7 +78,7 @@ export function makeCcSpawnerIter(deps: SpawnerIterDeps): Spawner {
       // Fire-and-forget: kill resolves only after the process exits, but
       // we don't want to block the HTTP handler that long. The iterator's
       // bus subscription will fire run.end → finally → activeProcs.delete.
-      proc.kill().catch(() => {});
+      proc.kill({ fast: true }).catch(() => {});
       return true;
     },
   };
@@ -84,7 +92,7 @@ export function makeCcSpawnerIter(deps: SpawnerIterDeps): Spawner {
 async function* iterate(
   deps: SpawnerIterDeps,
   args: SpawnArgs,
-  activeProcs: Map<string, { kill: () => Promise<void> }>,
+  activeProcs: Map<string, { kill: (opts?: KillOpts) => Promise<void> }>,
 ): AsyncGenerator<SpawnerEvent, void, void> {
   const queue: SpawnerEvent[] = [];
   // Buffer for events that arrive before `cc.spawn` resolves (i.e. before
@@ -156,7 +164,7 @@ async function* iterate(
     runId = proc.runId;
     // Register for VOS-80 cancel: the spawner's `cancel(runId)` looks this
     // entry up and forwards to `CcProcess.kill()`.
-    activeProcs.set(runId, { kill: () => proc.kill() });
+    activeProcs.set(runId, { kill: (opts?: KillOpts) => proc.kill(opts) });
 
     // Drain pre-spawn buffer: any event whose runId matches retroactively
     // fires through the same handlers. This is the race window between

@@ -121,6 +121,13 @@ test("cancel(): in-flight run → run.end status='cancelled', partial text flush
     .get(result.run_id) as { status: string };
   expect(run.status).toBe("cancelled");
 
+  // VOS-80: ChatList sidebar dot reads `last_run_status` (derived from
+  // runs.status via SELECT … LIMIT 1). After cancel, the dot must reflect
+  // 'cancelled', not 'running' — that was the regression the original
+  // cancel endpoint left behind.
+  const listed = repo.list().find((c) => c.id === chat.id)!;
+  expect(listed.last_run_status).toBe("cancelled");
+
   // spawner.cancel was actually called.
   expect(spawner.wasKilled()).toBe(true);
 });
