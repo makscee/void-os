@@ -57,9 +57,6 @@ export interface ToolResultEntry {
  * pairs in the tool-call panel keyed by tool_call_id. */
 export type ReplayEntry = TextMessage | ToolUseEntry | ToolResultEntry;
 
-/** @deprecated Use ReplayEntry — kept for source-compat in tests. */
-export type Message = ReplayEntry;
-
 export interface SessionReplay {
   walk(chatId: string): ReplayEntry[];
 }
