@@ -37,6 +37,7 @@ test("walk reads single JSONL and filters to user/assistant via parent_uuid DAG"
   const projDir = join(tmp, "-tmp-fake");
   mkdirSync(projDir, { recursive: true });
   // Linear DAG: queue-op → attachment → user → assistant → attachment → user(resume) → assistant
+  // Real CC shape: text lives at message.content[] as array of blocks.
   writeFileSync(
     join(projDir, "sid-1.jsonl"),
     JSON.stringify({ uuid: "u0", type: "queue-operation" }) +
@@ -47,7 +48,7 @@ test("walk reads single JSONL and filters to user/assistant via parent_uuid DAG"
         uuid: "u2",
         parent_uuid: "u1",
         type: "user",
-        content: "hi",
+        message: { content: [{ type: "text", text: "hi" }] },
         ts: 1,
       }) +
       "\n" +
@@ -55,7 +56,7 @@ test("walk reads single JSONL and filters to user/assistant via parent_uuid DAG"
         uuid: "u3",
         parent_uuid: "u2",
         type: "assistant",
-        content: "hello",
+        message: { content: [{ type: "text", text: "hello" }] },
         ts: 2,
       }) +
       "\n" +
@@ -65,7 +66,7 @@ test("walk reads single JSONL and filters to user/assistant via parent_uuid DAG"
         uuid: "u5",
         parent_uuid: "u4",
         type: "user",
-        content: "again",
+        message: { content: [{ type: "text", text: "again" }] },
         ts: 3,
       }) +
       "\n" +
@@ -73,7 +74,7 @@ test("walk reads single JSONL and filters to user/assistant via parent_uuid DAG"
         uuid: "u6",
         parent_uuid: "u5",
         type: "assistant",
-        content: "hey",
+        message: { content: [{ type: "text", text: "hey" }] },
         ts: 4,
       }) +
       "\n",
@@ -145,7 +146,11 @@ test("malformed JSONL line skipped, other lines kept", () => {
   mkdirSync(projDir, { recursive: true });
   writeFileSync(
     join(projDir, "sid-x.jsonl"),
-    JSON.stringify({ uuid: "a", type: "user", content: "good" }) +
+    JSON.stringify({
+      uuid: "a",
+      type: "user",
+      message: { content: [{ type: "text", text: "good" }] },
+    }) +
       "\n" +
       "{not json" +
       "\n" +
@@ -153,7 +158,7 @@ test("malformed JSONL line skipped, other lines kept", () => {
         uuid: "b",
         parent_uuid: "a",
         type: "assistant",
-        content: "also good",
+        message: { content: [{ type: "text", text: "also good" }] },
       }) +
       "\n",
   );
@@ -167,6 +172,178 @@ test("malformed JSONL line skipped, other lines kept", () => {
     encodeCwd: () => "-tmp-bad",
   });
   expect(replay.walk(c.id).length).toBe(2);
+});
+
+test("assistant turn with multiple text blocks → concatenates", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-multi");
+  mkdirSync(projDir, { recursive: true });
+  writeFileSync(
+    join(projDir, "sid-m.jsonl"),
+    JSON.stringify({
+      uuid: "a",
+      type: "user",
+      message: { content: [{ type: "text", text: "q" }] },
+    }) +
+      "\n" +
+      JSON.stringify({
+        uuid: "b",
+        parent_uuid: "a",
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "part1 " },
+            { type: "text", text: "part2" },
+          ],
+        },
+      }) +
+      "\n",
+  );
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-m");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/multi",
+    encodeCwd: () => "-tmp-multi",
+  });
+  const msgs = replay.walk(c.id);
+  expect(msgs.map((m) => m.content)).toEqual(["q", "part1 part2"]);
+});
+
+test("assistant turn with mixed text + tool_use blocks → returns text only", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-mixed");
+  mkdirSync(projDir, { recursive: true });
+  writeFileSync(
+    join(projDir, "sid-mix.jsonl"),
+    JSON.stringify({
+      uuid: "a",
+      type: "user",
+      message: { content: [{ type: "text", text: "go" }] },
+    }) +
+      "\n" +
+      JSON.stringify({
+        uuid: "b",
+        parent_uuid: "a",
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "thinking..." },
+            { type: "tool_use", id: "t1", name: "bash", input: { cmd: "ls" } },
+          ],
+        },
+      }) +
+      "\n",
+  );
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-mix");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/mixed",
+    encodeCwd: () => "-tmp-mixed",
+  });
+  const msgs = replay.walk(c.id);
+  expect(msgs.map((m) => m.content)).toEqual(["go", "thinking..."]);
+});
+
+test("turn with only tool_use / tool_result blocks → filtered out", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-tools");
+  mkdirSync(projDir, { recursive: true });
+  writeFileSync(
+    join(projDir, "sid-t.jsonl"),
+    JSON.stringify({
+      uuid: "a",
+      type: "user",
+      message: { content: [{ type: "text", text: "do it" }] },
+    }) +
+      "\n" +
+      // Pure tool_use turn — no narration text.
+      JSON.stringify({
+        uuid: "b",
+        parent_uuid: "a",
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t1", name: "bash", input: { cmd: "ls" } },
+          ],
+        },
+      }) +
+      "\n" +
+      // Pure tool_result turn (CC encodes these as user-role records).
+      JSON.stringify({
+        uuid: "c",
+        parent_uuid: "b",
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "t1", content: "file1\n" },
+          ],
+        },
+      }) +
+      "\n" +
+      JSON.stringify({
+        uuid: "d",
+        parent_uuid: "c",
+        type: "assistant",
+        message: { content: [{ type: "text", text: "done" }] },
+      }) +
+      "\n",
+  );
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-t");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/tools",
+    encodeCwd: () => "-tmp-tools",
+  });
+  const msgs = replay.walk(c.id);
+  // Only the visible-text turns survive. tool_use + tool_result-only turns
+  // drop. S4 will surface those via separate event paths.
+  expect(msgs.map((m) => m.content)).toEqual(["do it", "done"]);
+  expect(msgs.map((m) => m.role)).toEqual(["user", "assistant"]);
+});
+
+test("legacy/defensive: message.content as plain string is handled", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-str");
+  mkdirSync(projDir, { recursive: true });
+  writeFileSync(
+    join(projDir, "sid-s.jsonl"),
+    JSON.stringify({
+      uuid: "a",
+      type: "user",
+      message: { content: "plain user string" },
+    }) +
+      "\n" +
+      JSON.stringify({
+        uuid: "b",
+        parent_uuid: "a",
+        type: "assistant",
+        message: { content: "plain assistant string" },
+      }) +
+      "\n",
+  );
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-s");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/str",
+    encodeCwd: () => "-tmp-str",
+  });
+  const msgs = replay.walk(c.id);
+  expect(msgs.map((m) => m.content)).toEqual([
+    "plain user string",
+    "plain assistant string",
+  ]);
 });
 
 test("realpath encoder: macOS /tmp resolves to -private-tmp-* slug", () => {

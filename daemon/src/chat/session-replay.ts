@@ -15,10 +15,11 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Database } from "bun:sqlite";
 import { makeChatRepo } from "./repo";
+import { extractTurnText } from "./util";
 
 export interface Message {
   role: "user" | "assistant";
-  content: unknown;
+  content: string;
   ts?: number;
 }
 
@@ -44,7 +45,7 @@ interface Record {
   uuid: string;
   parent_uuid?: string;
   type: string;
-  content?: unknown;
+  message?: unknown;
   ts?: number;
   [k: string]: unknown;
 }
@@ -118,9 +119,14 @@ export function makeSessionReplay(
       for (const id of pathIds) {
         const r = byId.get(id);
         if (!r || !VISIBLE_TYPES.has(r.type)) continue;
+        // CC JSONL records carry text at r.message.content[] as an array of
+        // blocks. Pure tool_use turns extract to "" — skip them; S4 will
+        // render tool calls separately via chat.tool_call/tool_result.
+        const content = extractTurnText(r);
+        if (!content) continue;
         msgs.push({
           role: r.type as "user" | "assistant",
-          content: r.content,
+          content,
           ts: r.ts,
         });
       }

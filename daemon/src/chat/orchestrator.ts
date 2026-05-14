@@ -34,6 +34,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { ChatRepo } from "./repo";
+import { extractTurnText } from "./util";
 
 /** Parsed stream event from claudev stdout JSONL. Shape is best-effort —
  * the spawner adapter normalizes to {type, ...}. */
@@ -56,19 +57,7 @@ export interface SpawnerEvent {
  * the event has no recognisable text content (e.g. a pure tool-call turn).
  */
 export function extractAssistantText(evt: SpawnerEvent): string {
-  const msg = (evt as { message?: { content?: unknown } }).message;
-  const blocks = msg && Array.isArray(msg.content) ? msg.content : null;
-  if (!blocks) return "";
-  let s = "";
-  for (const b of blocks) {
-    if (b && typeof b === "object") {
-      const block = b as { type?: unknown; text?: unknown };
-      if (block.type === "text" && typeof block.text === "string") {
-        s += block.text;
-      }
-    }
-  }
-  return s;
+  return extractTurnText(evt);
 }
 
 export interface SpawnArgs {
