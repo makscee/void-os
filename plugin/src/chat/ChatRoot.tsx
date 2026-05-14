@@ -207,7 +207,12 @@ export function ChatRoot(props: ChatRootProps) {
                 <ThinkingIndicator />
               </div>
             </ThreadPrimitive.Viewport>
-            <div className="vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)]">
+            {/* shrink-0: composer must never collapse under tight space —
+                otherwise a tall message list (or any layout quirk in the
+                parent flex-col context) can starve the composer of height
+                and make the textarea unfocusable. Regression caught in S5
+                after the sidebar restructure changed the flex graph. */}
+            <div className="vos:shrink-0 vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)]">
               <ComposerPrimitive.Root
                 className="vos:flex vos:items-end vos:gap-[var(--size-4-2)] vos:my-[var(--size-4-3)] vos:p-[var(--size-4-2)] vos:rounded-[var(--radius-m)] vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:shadow-[0_0_0_1px_var(--interactive-accent)]"
               >
