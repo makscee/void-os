@@ -98,6 +98,122 @@ describe("chatReducer — cancel path (VOS-80 part 2)", () => {
     expect(s1).toBe(s0);
   });
 
+  // VOS-80 stopped-badge fix (1): badge must appear IMMEDIATELY on ESC,
+  // not after the daemon round-trip. When overlay is empty (no tokens
+  // streamed yet), local_cancel synthesizes a placeholder cancelled
+  // assistant directly into messages so the bubble renders this frame.
+  test("local_cancel with empty overlay + tail=user: synthesizes cancelled assistant immediately", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    // Simulate a user prompt in messages (e.g. from an earlier refetch).
+    s = {
+      ...s,
+      messages: [
+        { id: "u1", role: "user", text: "test123", complete: true },
+      ],
+    };
+    s = chatReducer(s, { kind: "local_cancel" });
+    expect(s.runState).toBe("idle");
+    expect(s.pendingStoppedRunId).toBe(RUN);
+    // Synthesized cancelled assistant appended after the user prompt.
+    expect(s.messages).toHaveLength(2);
+    const last = s.messages[s.messages.length - 1];
+    expect(last.role).toBe("assistant");
+    expect(last.cancelled).toBe(true);
+    expect(last.text).toBe("");
+    expect(last.parts).toEqual([]);
+  });
+
+  test("local_cancel with empty overlay + tail=assistant: tags that assistant cancelled in place", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = {
+      ...s,
+      messages: [
+        { id: "a1", role: "assistant", text: "earlier reply", complete: true },
+      ],
+    };
+    s = chatReducer(s, { kind: "local_cancel" });
+    // No new bubble — the existing assistant is tagged cancelled in place.
+    expect(s.messages).toHaveLength(1);
+    expect(s.messages[0].cancelled).toBe(true);
+    expect(s.messages[0].text).toBe("earlier reply");
+  });
+
+  test("local_cancel with overlay content: does NOT synthesize (overlay handles bubble + badge)", () => {
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "streamed " }));
+    s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "text" }));
+    const before = s.messages.length;
+    s = chatReducer(s, { kind: "local_cancel" });
+    // messages array UNCHANGED — overlay (driven by pendingStoppedRunId +
+    // liveTokens) renders the partial bubble with badge. Adding to
+    // messages would double-bubble.
+    expect(s.messages).toHaveLength(before);
+    expect(s.pendingStoppedRunId).toBe(RUN);
+    expect(s.liveTokens).toBe("streamed text");
+  });
+
+  test("local_cancel synth + subsequent refetch with daemon-persisted empty cancelled row: no double-bubble", () => {
+    // Race scenario: ESC fires before any tokens. local_cancel synthesizes
+    // a placeholder. Daemon's finally-block now persists an empty
+    // cancelled assistant row (VOS-80 fix b). The refetch returns BOTH the
+    // user prompt AND the persisted empty cancelled row. replayToMessages
+    // wholesale-replaces messages — synthesized placeholder is discarded
+    // cleanly, daemon truth wins. Exactly one cancelled assistant entry.
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = {
+      ...s,
+      messages: [{ id: "u1", role: "user", text: "test123", complete: true }],
+    };
+    s = chatReducer(s, { kind: "local_cancel" });
+    // Optimistic synth present.
+    expect(s.messages.filter((m) => m.role === "assistant").length).toBe(1);
+
+    // Daemon's run.end + refetch lands.
+    s = chatReducer(s, frame({ type: "run.end", chat_id: CHAT, run_id: RUN, status: "cancelled" }));
+    s = chatReducer(s, {
+      kind: "refetched",
+      chatId: CHAT,
+      messages: [
+        { role: "user", content: "test123" },
+        // Daemon's persisted empty cancelled row, surfaced via JOIN.
+        { role: "assistant", content: "", cancelled: true },
+      ],
+      stoppedRunId: RUN,
+    });
+    // Exactly ONE cancelled assistant, no duplicates.
+    const cancelledAssistants = s.messages.filter(
+      (m) => m.role === "assistant" && m.cancelled === true,
+    );
+    expect(cancelledAssistants).toHaveLength(1);
+    expect(s.messages).toHaveLength(2);
+    expect(s.pendingStoppedRunId).toBeNull();
+  });
+
+  test("chat-switch + return mid-cancel: refetched empty cancelled row restores badge", () => {
+    // Bug 2 scenario: ESC → badge → switch chat → switch back. Optimistic
+    // state is gone (set_chat resets everything). On return, the daemon's
+    // persisted empty cancelled row hydrates the bubble back.
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, { kind: "local_cancel" });
+    // User switches chats — state is reset.
+    s = chatReducer(s, { kind: "set_chat", chatId: "c2" });
+    // ... and back.
+    s = chatReducer(s, { kind: "set_chat", chatId: CHAT });
+    // Hydrate with the daemon's persisted history.
+    s = chatReducer(s, {
+      kind: "hydrate",
+      chatId: CHAT,
+      messages: [
+        { role: "user", content: "test123" },
+        { role: "assistant", content: "", cancelled: true },
+      ],
+    });
+    const last = s.messages[s.messages.length - 1];
+    expect(last.role).toBe("assistant");
+    expect(last.cancelled).toBe(true);
+    expect(last.text).toBe("");
+  });
+
   test("run.end{error} flips error + clears overlay + no pendingStoppedRunId", () => {
     let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
     s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "p" }));

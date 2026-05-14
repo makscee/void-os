@@ -474,12 +474,57 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       // they stay rendered (as a stopped overlay) until the daemon's
       // run.end arrives, at which point the refetch replaces the entire
       // turn with canonical state.
+      //
+      // VOS-80 stopped-badge fix (1): when there is NO overlay content
+      // yet (ESC fired before any tokens/tools streamed), synthesize an
+      // empty cancelled assistant directly into `messages` so the badge
+      // appears within one frame of ESC — not after the daemon round-trip
+      // (run.end → refetch). When the refetch later lands, replayToMessages
+      // wholesale-replaces `messages` with daemon truth (which now carries
+      // a persisted empty cancelled row courtesy of the orchestrator
+      // finally block, tagged via the LEFT JOIN). Idempotent — no
+      // double-bubble.
+      //
+      // If overlay content DOES exist (partial-text cancel), the runtime's
+      // buildOverlay path already renders the partial bubble with badge
+      // (driven by pendingStoppedRunId). Synthesizing here would
+      // double-render. So we only synthesize when overlay is empty.
       if (state.runState !== "running") return state;
+      const runId = state.activeRunId;
+      const hasOverlay =
+        state.liveTokens !== "" || state.liveToolEvents.length > 0;
+      let messages = state.messages;
+      if (!hasOverlay && runId !== null) {
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          // Tail is an assistant row (rare — happens only if a prior turn's
+          // assistant is still the tail when ESC fires). Tag it cancelled
+          // in place so the badge attaches to the right bubble.
+          messages = messages.slice();
+          messages[messages.length - 1] = { ...last, cancelled: true };
+        } else {
+          // Tail is the user prompt (or empty) — append a synthetic empty
+          // cancelled assistant so the badge attaches to the cancelled
+          // turn, not to any prior assistant message above the user prompt.
+          messages = [
+            ...messages,
+            {
+              id: `assistant-cancelled-${runId}`,
+              role: "assistant",
+              text: "",
+              complete: true,
+              cancelled: true,
+              parts: [],
+            },
+          ];
+        }
+      }
       return {
         ...state,
+        messages,
         runState: "idle",
         activeRunId: null,
-        pendingStoppedRunId: state.activeRunId,
+        pendingStoppedRunId: runId,
         errorNotice: null,
       };
     }
