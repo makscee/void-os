@@ -134,6 +134,44 @@ describe("chatReducer — cancel path (VOS-80 part 2)", () => {
     expect(s.pendingStoppedRunId).toBeNull();
   });
 
+  test("refetched with stoppedRunId BUT no assistant row (ESC before any tokens): synthesizes empty cancelled assistant AFTER the user prompt", () => {
+    // Reproducer for the badge-on-wrong-message bug: ESC fires immediately
+    // after user sends "test123". Daemon never persists an assistant row
+    // (no tokens streamed → orchestrator's appendAssistant is skipped).
+    // The refetch returns only the prior successful turn + the new user
+    // prompt. Old behavior tagged the PRIOR assistant cancelled — wrong.
+    // New behavior appends a synthetic empty cancelled assistant entry
+    // AFTER the user prompt so the badge attaches to the correct turn.
+    let s = chatReducer(seed(), frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, { kind: "local_cancel" });
+    expect(s.pendingStoppedRunId).toBe(RUN);
+    s = chatReducer(s, {
+      kind: "refetched",
+      chatId: CHAT,
+      messages: [
+        { role: "user", content: "earlier prompt" },
+        { role: "assistant", content: "Hi. What task?" },
+        { role: "user", content: "test123" },
+      ],
+      stoppedRunId: RUN,
+    });
+    // Synthesized empty cancelled assistant appended at tail.
+    const last = s.messages[s.messages.length - 1];
+    expect(last.role).toBe("assistant");
+    expect(last.cancelled).toBe(true);
+    expect(last.parts).toEqual([]);
+    // PRIOR assistant ("Hi. What task?") is NOT tagged cancelled — that
+    // was the visual bug.
+    const prior = s.messages.find(
+      (m) => m.role === "assistant" && m !== last,
+    )!;
+    expect(prior.cancelled ?? false).toBe(false);
+    // Order: ...user "test123" → synthetic cancelled assistant
+    expect(s.messages[s.messages.length - 2].role).toBe("user");
+    expect((s.messages[s.messages.length - 2] as { text: string }).text).toBe("test123");
+    expect(s.pendingStoppedRunId).toBeNull();
+  });
+
   test("refetched without stoppedRunId leaves messages untagged", () => {
     let s = chatReducer(seed(), {
       kind: "refetched",

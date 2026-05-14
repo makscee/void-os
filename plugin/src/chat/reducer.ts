@@ -362,17 +362,44 @@ function clearOverlay(state: ChatState): ChatState {
   };
 }
 
-/** Tag the LAST assistant entry in `messages` with cancelled=true. Used by
- *  refetched when `stoppedRunId` is set. */
-function tagLastAssistantCancelled(msgs: ChatMessage[]): ChatMessage[] {
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === "assistant") {
-      const next = msgs.slice();
-      next[i] = { ...next[i], cancelled: true };
-      return next;
-    }
+/** Tag the cancelled run's assistant entry in `messages`. Used by refetched
+ *  when `stoppedRunId` is set.
+ *
+ *  Two shapes possible:
+ *   1. Daemon persisted an assistant row for the cancelled run (any tokens
+ *      streamed before ESC). The row is the LAST message in the array —
+ *      tag it cancelled=true so the renderer shows the "↯ stopped" badge.
+ *   2. No assistant row was persisted (ESC fired before any tokens, so the
+ *      daemon's appendAssistant skipped the empty turn). The LAST message
+ *      is then the user prompt that triggered the cancelled run. We
+ *      synthesize an empty cancelled assistant entry AFTER it so the
+ *      renderer attaches the badge to the correct turn — NOT to a prior
+ *      successful assistant message that happens to be above the user msg. */
+function tagLastAssistantCancelled(
+  msgs: ChatMessage[],
+  stoppedRunId: string,
+): ChatMessage[] {
+  if (msgs.length === 0) return msgs;
+  const last = msgs[msgs.length - 1];
+  if (last.role === "assistant") {
+    const next = msgs.slice();
+    next[next.length - 1] = { ...last, cancelled: true };
+    return next;
   }
-  return msgs;
+  // Last entry is the user prompt for the cancelled run — daemon never
+  // persisted an empty assistant row. Append a synthetic empty cancelled
+  // assistant; toThreadMessage renders it as the STOPPED_MARKER bubble.
+  return [
+    ...msgs,
+    {
+      id: `assistant-cancelled-${stoppedRunId}`,
+      role: "assistant",
+      text: "",
+      complete: true,
+      cancelled: true,
+      parts: [],
+    },
+  ];
 }
 
 export function chatReducer(state: ChatState, action: LocalAction): ChatState {
@@ -414,7 +441,7 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         (state.pendingStoppedRunId === stoppedRunId ||
           state.pendingStoppedRunId === null && stoppedRunId !== "");
       if (shouldTagStopped) {
-        messages = tagLastAssistantCancelled(messages);
+        messages = tagLastAssistantCancelled(messages, stoppedRunId);
       }
       return {
         ...state,
