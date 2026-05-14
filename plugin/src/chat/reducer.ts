@@ -48,9 +48,23 @@ export interface ChatMessage {
   complete: boolean;
   /** Assistant content parts in arrival order. Undefined for plain user rows. */
   parts?: AssistantPart[];
+  /** Marker for synthetic "queued" user bubbles (typed during a streaming
+   *  run, awaiting flush). Renders with reduced opacity + a "↻ queued" badge.
+   *  Never set on real (run-bound) user messages. */
+  queued?: boolean;
 }
 
 export type RunState = "idle" | "running" | "error";
+
+/** A user message that was typed while a run was streaming. Held locally until
+ *  the active run ends, then flushed FIFO into POST /chat/:id/message. */
+export interface QueuedMessage {
+  /** Stable id used by the UI to render the queued bubble. Mint with a
+   *  "queued-" prefix so it never collides with optimistic user_send temp ids
+   *  (which start with "user-temp-") or canonical "user-<run_id>" ids. */
+  id: string;
+  text: string;
+}
 
 /** Replay items returned by GET /chat/:id/messages. Heterogeneous: text turns
  *  (user/assistant) plus tool_use/tool_result entries. Tool entries attach to
@@ -79,6 +93,11 @@ export interface ChatState {
   runState: RunState;
   /** run_id of the currently-streaming assistant message, if any. */
   activeRunId: string | null;
+  /** Per-chat send queue (user typed while run was streaming). Persists across
+   *  set_chat so queued messages survive chat switches. The runtime renders
+   *  queued items for the active chat as faded "↻ queued" bubbles, and on
+   *  run.end pops the head + dispatches POST. */
+  queues: Record<string, QueuedMessage[]>;
 }
 
 export const initialChatState = (chatId: string | null = null): ChatState => ({
@@ -86,6 +105,7 @@ export const initialChatState = (chatId: string | null = null): ChatState => ({
   messages: [],
   runState: "idle",
   activeRunId: null,
+  queues: {},
 });
 
 /** Local optimistic action: user has just submitted via the composer. We
@@ -95,6 +115,8 @@ export type LocalAction =
   | { kind: "set_chat"; chatId: string }
   | { kind: "hydrate"; chatId: string; messages: ReplayMessage[] }
   | { kind: "user_send"; text: string; tempId: string }
+  | { kind: "enqueue"; chatId: string; id: string; text: string }
+  | { kind: "dequeue"; chatId: string; id: string }
   | { kind: "frame"; frame: DaemonFrame };
 
 /** Normalize daemon `output` field — string or block array of {type:"text",text} —
@@ -257,7 +279,32 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
   switch (action.kind) {
     case "set_chat": {
       if (state.chatId === action.chatId) return state;
-      return initialChatState(action.chatId);
+      // Preserve the per-chat queue map across chat switches — queued messages
+      // belong to the chat they were typed in, not the active session.
+      return { ...initialChatState(action.chatId), queues: state.queues };
+    }
+    case "enqueue": {
+      const cur = state.queues[action.chatId] ?? [];
+      // Idempotent guard: skip if this id is already queued (rapid double-fire
+      // protection — useful when assistant-ui's onNew fires twice for the same
+      // synthetic test event, or for any duplicate dispatch).
+      if (cur.some((q) => q.id === action.id)) return state;
+      return {
+        ...state,
+        queues: {
+          ...state.queues,
+          [action.chatId]: [...cur, { id: action.id, text: action.text }],
+        },
+      };
+    }
+    case "dequeue": {
+      const cur = state.queues[action.chatId] ?? [];
+      const next = cur.filter((q) => q.id !== action.id);
+      if (next.length === cur.length) return state;
+      const queues = { ...state.queues };
+      if (next.length === 0) delete queues[action.chatId];
+      else queues[action.chatId] = next;
+      return { ...state, queues };
     }
     case "hydrate": {
       // Stale-response guard: ignore if reducer has since switched away.

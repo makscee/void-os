@@ -40,6 +40,15 @@
     to   { opacity: 1; }
   }
 
+  /* Queued user bubble: composed inline in ChatRoot's UserTextPart. The
+     wrapper span gets .vos-queued + opacity:0.6 (inline). This class is
+     reserved here so the bubble can be targeted from other rules later
+     (animations on flush, etc.) without touching JSX. */
+  .vos-queued {
+    /* opacity applied inline so React state changes flow without a
+       re-render of the wrapping bubble div. */
+  }
+
   /* Markdown rendering for assistant messages. Scoped under .vos-md so it
      never leaks into Obsidian's own UI. Uses Obsidian theme CSS vars so it
      adapts to light/dark automatically. */

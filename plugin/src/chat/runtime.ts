@@ -2,10 +2,12 @@
 //   - Daemon WS frames (via FrameBus)              → reducer state
 //   - assistant-ui's `useExternalStoreRuntime`     ← reducer state
 //   - Composer "send" (onNew)                      → POST /chat/:id/message
+//                                                    OR enqueue if running
 //
-// Composer enabled/disabled is gated on `state.runState` (echoed by daemon
-// via run.start / run.end / run.error) per the binding decision in the task
-// file: "use daemon run-state echo, not local guess".
+// Composer is ALWAYS enabled (VOS-80 reframe). When a run is in flight we
+// route sends into a per-chat local queue. On `run.end` (any status) we pop
+// the queue head and POST it, kicking off the next run. ESC inside the
+// composer fires POST /chat/:id/cancel (no-op on 409 "no_active_run").
 
 import { useEffect, useMemo, useReducer, useRef, useCallback } from "react";
 import {
@@ -39,6 +41,12 @@ export interface ChatRuntimeDeps {
   onSendError?: (chatId: string, err: unknown) => void;
 }
 
+/** Marker prefix injected into queued bubble text so the renderer can
+ *  surface a "↻ queued" badge + faded opacity. The actual text after the
+ *  marker is the user's typed body. Kept here as a single-token sentinel to
+ *  avoid leaking a richer ThreadMessageLike shape just for one visual cue. */
+export const QUEUED_MARKER = "vos-queued";
+
 const toThreadMessage = (m: ChatMessage): ThreadMessageLike => {
   if (m.role === "assistant" && m.parts && m.parts.length > 0) {
     const content = m.parts.map((p) => {
@@ -61,10 +69,13 @@ const toThreadMessage = (m: ChatMessage): ThreadMessageLike => {
     }) as ThreadMessageLike["content"];
     return { id: m.id, role: m.role, content };
   }
+  // Queued user bubbles get the marker prefixed so ChatRoot's TextPart can
+  // strip it and render the badge.
+  const text = m.queued ? `${QUEUED_MARKER}${m.text}` : m.text;
   return {
     id: m.id,
     role: m.role,
-    content: [{ type: "text", text: m.text }],
+    content: [{ type: "text", text }],
   };
 };
 
@@ -80,7 +91,17 @@ function extractText(msg: AppendMessage): string {
     .join("");
 }
 
-export function useChatRuntime(deps: ChatRuntimeDeps) {
+export interface ChatRuntimeHandle {
+  runtime: ReturnType<typeof useExternalStoreRuntime<ThreadMessageLike>>;
+  /** Cancel the active run for the bound chat. Returns true if the daemon
+   *  reported a cancel; false if there was no active run (409). Errors bubble.
+   *  Use this from an ESC keydown handler bound to the composer textarea. */
+  cancel: () => Promise<boolean>;
+  /** True while a run is streaming. Drives the ESC hint visibility. */
+  isRunning: boolean;
+}
+
+export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
   const [state, dispatch] = useReducer(
     chatReducer,
     deps.chatId,
@@ -89,6 +110,14 @@ export function useChatRuntime(deps: ChatRuntimeDeps) {
 
   // Track latest chatId in a ref so onNew (callback identity stable) sees it.
   const chatIdRef = useRef<string | null>(deps.chatId);
+  // Track previous runState so we can detect transitions running → !running
+  // and trigger the queue flush exactly once per terminal frame.
+  const prevRunStateRef = useRef(state.runState);
+  // Re-entrancy guard for flushQueue: when run.end arrives we POST the next
+  // queued message; that POST kicks a fresh run.start frame which can race
+  // with the flush logic. The ref prevents overlapping flushes.
+  const flushingRef = useRef(false);
+
   useEffect(() => {
     chatIdRef.current = deps.chatId;
     if (!deps.chatId) return;
@@ -118,11 +147,54 @@ export function useChatRuntime(deps: ChatRuntimeDeps) {
     return off;
   }, [deps.bus]);
 
-  // Build assistant-ui-shaped messages.
-  const messages = useMemo(
-    () => state.messages.map(toThreadMessage),
-    [state.messages],
-  );
+  // Queue flush on run.end (any terminal status — done, error, cancelled).
+  // Detect by transition: prev runState === "running", new !== "running".
+  useEffect(() => {
+    const prev = prevRunStateRef.current;
+    prevRunStateRef.current = state.runState;
+    if (prev !== "running" || state.runState === "running") return;
+    const chatId = chatIdRef.current;
+    if (!chatId) return;
+    if (flushingRef.current) return;
+    const head = (state.queues[chatId] ?? [])[0];
+    if (!head) return;
+
+    flushingRef.current = true;
+    // Optimistically promote queued bubble to a real optimistic user_send:
+    // pop from queue, append as user_send so the bubble loses its "queued"
+    // styling immediately. Reducer's reconcileUser will swap the temp id for
+    // the canonical "user-<run_id>" when chat.message_user echoes.
+    dispatch({ kind: "dequeue", chatId, id: head.id });
+    const tempId = `user-temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    dispatch({ kind: "user_send", text: head.text, tempId });
+
+    deps.api.postMessage(chatId, head.text)
+      .catch((err: unknown) => {
+        // eslint-disable-next-line no-console
+        console.error("[void-os] queue-flush postMessage failed", err);
+        try { deps.onSendError?.(chatId, err); } catch { /* swallow */ }
+      })
+      .finally(() => {
+        flushingRef.current = false;
+      });
+  }, [state.runState, state.queues, deps.api, deps.onSendError]);
+
+  // Build assistant-ui-shaped messages — merge in queued items for the active
+  // chat as synthetic user bubbles AT THE END (queued items always trail any
+  // currently-streaming assistant reply).
+  const messages = useMemo(() => {
+    const base = state.messages.map(toThreadMessage);
+    const cid = state.chatId;
+    if (!cid) return base;
+    const q = state.queues[cid];
+    if (!q || q.length === 0) return base;
+    const queuedThread: ThreadMessageLike[] = q.map((qm) => ({
+      id: qm.id,
+      role: "user" as const,
+      content: [{ type: "text" as const, text: `${QUEUED_MARKER}${qm.text}` }],
+    }));
+    return base.concat(queuedThread);
+  }, [state.messages, state.queues, state.chatId]);
 
   const onNew = useCallback(
     async (msg: AppendMessage) => {
@@ -139,6 +211,18 @@ export function useChatRuntime(deps: ChatRuntimeDeps) {
         await deps.onChatIdMinted?.(chatId);
       }
 
+      // If a run is streaming for this chat, enqueue instead of POSTing.
+      // The flush effect will pop + POST on run.end.
+      // Note: we read prevRunStateRef rather than state.runState directly so
+      // multiple sends inside the same render aren't all dispatched as POSTs
+      // when state hasn't yet committed.
+      const runningNow = prevRunStateRef.current === "running";
+      if (runningNow) {
+        const qid = `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        dispatch({ kind: "enqueue", chatId, id: qid, text });
+        return;
+      }
+
       // Optimistic user bubble. Reconciled when daemon echoes chat.message_user.
       const tempId = `user-temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       dispatch({ kind: "user_send", text, tempId });
@@ -146,9 +230,6 @@ export function useChatRuntime(deps: ChatRuntimeDeps) {
       try {
         await deps.api.postMessage(chatId, text);
       } catch (err) {
-        // Roll the composer state back to idle so the user can retry. The
-        // optimistic user bubble stays visible — they can see what they sent.
-        // The daemon will not emit run.end since no run started.
         // eslint-disable-next-line no-console
         console.error("[void-os] postMessage failed", err);
         try { deps.onSendError?.(chatId, err); } catch { /* swallow */ }
@@ -157,13 +238,31 @@ export function useChatRuntime(deps: ChatRuntimeDeps) {
     [deps.api, deps.defaultAgent, deps.onChatIdMinted, deps.onSendError],
   );
 
-  return useExternalStoreRuntime<ThreadMessageLike>({
+  const cancel = useCallback(async () => {
+    const chatId = chatIdRef.current;
+    if (!chatId) return false;
+    try {
+      const r = await deps.api.cancel(chatId);
+      if ("noActiveRun" in r && r.noActiveRun) return false;
+      return true;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[void-os] cancel failed", err);
+      try { deps.onSendError?.(chatId, err); } catch { /* swallow */ }
+      return false;
+    }
+  }, [deps.api, deps.onSendError]);
+
+  const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages,
-    isRunning: state.runState === "running",
-    isDisabled: state.runState === "running",
+    // Composer is always enabled. We no longer gate isRunning/isDisabled on
+    // runState — sends made during a run are enqueued, not blocked.
+    isRunning: false,
     onNew,
     convertMessage: (m) => m,
   });
+
+  return { runtime, cancel, isRunning: state.runState === "running" };
 }
 
 // Re-exported for tests.

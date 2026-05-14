@@ -10,7 +10,7 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
-import { useChatRuntime } from "./runtime";
+import { useChatRuntime, QUEUED_MARKER } from "./runtime";
 import { ChatList } from "./ChatList";
 import { CostMeter } from "./CostMeter";
 import { BashTool } from "./tools/BashTool";
@@ -24,10 +24,30 @@ export interface ChatRootProps {
   defaultAgent?: string;
 }
 
-// MessagePrimitive.Parts wants a `FunctionComponent<TextMessagePart>` for Text;
-// MessagePartPrimitive.Text is a forwardRef HTMLSpan primitive. Wrap it.
-// Used for user messages — they're plain text, no markdown rendering needed.
-const TextPart = () => <MessagePartPrimitive.Text />;
+// User TextPart: detect the queued marker in the part text, strip it, and
+// render a small "↻ queued" badge alongside. Plain user messages render as
+// before (a bare text span). assistant-ui forwards the part text via props.
+function UserTextPart(props: { text?: string } & Record<string, unknown>) {
+  const raw = typeof props.text === "string" ? props.text : "";
+  const isQueued = raw.startsWith(QUEUED_MARKER);
+  if (!isQueued) return <MessagePartPrimitive.Text />;
+  const stripped = raw.slice(QUEUED_MARKER.length);
+  return (
+    <span
+      data-testid="queued-content"
+      className="vos-queued"
+      style={{ opacity: 0.6 }}
+    >
+      <span
+        data-testid="queued-badge"
+        className="vos:mr-[var(--size-4-2)] vos:text-xs vos:text-[var(--text-muted)]"
+      >
+        ↻ queued
+      </span>
+      <span>{stripped}</span>
+    </span>
+  );
+}
 
 // Assistant Text part: render markdown. `MarkdownTextPrimitive` reads the
 // current part's text via assistant-ui context, so no props need forwarding.
@@ -45,7 +65,7 @@ function MessageItem() {
           <div
             className="vos:max-w-[85%] vos:rounded-[var(--radius-m)] vos:px-[var(--size-4-3)] vos:py-[var(--size-4-2)] vos:bg-[var(--background-secondary)] vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:leading-relaxed"
           >
-            <MessagePrimitive.Parts components={{ Text: TextPart }} />
+            <MessagePrimitive.Parts components={{ Text: UserTextPart }} />
           </div>
         </div>
       </MessagePrimitive.If>
@@ -105,13 +125,7 @@ export function ChatRoot(props: ChatRootProps) {
   const [refreshKey, setRefreshKey] = React.useState(0);
   const bumpRefresh = React.useCallback(() => setRefreshKey((n) => n + 1), []);
 
-  // Inline "run in progress" notice — set when a send returns 409 from the
-  // daemon (another run is already streaming for this chat). Auto-clears on
-  // run.end/run.error for the active chat, on chat switch, and on next
-  // successful send (reset just before postMessage in onSendError handler).
-  const [runInProgressNotice, setRunInProgressNotice] = React.useState(false);
-
-  const runtime = useChatRuntime({
+  const handle = useChatRuntime({
     bus: props.bus,
     api: props.api,
     chatId: activeChatId,
@@ -121,31 +135,18 @@ export function ChatRoot(props: ChatRootProps) {
       await props.onChatIdMinted?.(id);
       bumpRefresh();
     },
-    onSendError: (_chatId, err) => {
-      // assistant-ui's ApiError carries `.status`. Duck-type to avoid the
-      // import cycle (api.ts is already imported via runtime; we don't want
-      // to bring the class into ChatRoot just for instanceof).
-      const status = (err as { status?: number })?.status;
-      if (status === 409) setRunInProgressNotice(true);
-    },
   });
+  const runtime = handle.runtime;
 
   // Refresh chat list whenever a run terminates so last_msg / status update.
-  // Also clear the 409 notice — if the other run finished, send is safe.
   React.useEffect(() => {
     const off = props.bus.on((f) => {
       if (f.type === "run.end" || f.type === "run.error") {
         bumpRefresh();
-        if (f.chat_id === activeChatId) setRunInProgressNotice(false);
       }
     });
     return off;
-  }, [props.bus, bumpRefresh, activeChatId]);
-
-  // Clear notice when the user switches chats — it's keyed on the active one.
-  React.useEffect(() => {
-    setRunInProgressNotice(false);
-  }, [activeChatId]);
+  }, [props.bus, bumpRefresh]);
 
   // Test hook: dispatch `vos-test-send` on window to drive the runtime's
   // append path under happy-dom (composer keyboard input is fragile there).
@@ -212,7 +213,25 @@ export function ChatRoot(props: ChatRootProps) {
                 parent flex-col context) can starve the composer of height
                 and make the textarea unfocusable. Regression caught in S5
                 after the sidebar restructure changed the flex graph. */}
-            <div className="vos:shrink-0 vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)]">
+            <div
+              className="vos:shrink-0 vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)]"
+              onKeyDownCapture={(e) => {
+                // ESC = cancel active run. Only fires when textarea is focused
+                // AND a run is currently streaming. We don't steal ESC
+                // globally — the keydown comes from inside the composer
+                // wrapper, so ChatList / Obsidian's command palette are
+                // unaffected.
+                if (e.key !== "Escape") return;
+                const target = e.target as HTMLElement | null;
+                const isTextarea =
+                  target?.tagName === "TEXTAREA" ||
+                  (target as { isContentEditable?: boolean })?.isContentEditable === true;
+                if (!isTextarea) return;
+                if (!handle.isRunning) return;
+                e.preventDefault();
+                void handle.cancel();
+              }}
+            >
               <ComposerPrimitive.Root
                 className="vos:flex vos:items-end vos:gap-[var(--size-4-2)] vos:my-[var(--size-4-3)] vos:p-[var(--size-4-2)] vos:rounded-[var(--radius-m)] vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:shadow-[0_0_0_1px_var(--interactive-accent)]"
               >
@@ -228,12 +247,12 @@ export function ChatRoot(props: ChatRootProps) {
                   Send
                 </ComposerPrimitive.Send>
               </ComposerPrimitive.Root>
-              {runInProgressNotice && (
+              {handle.isRunning && (
                 <div
-                  data-testid="run-in-progress-notice"
-                  className="vos:mb-[var(--size-4-3)] vos:border-l-2 vos:border-[var(--text-error,#e35a5a)] vos:pl-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:text-xs vos:text-[var(--text-muted)]"
+                  data-testid="esc-hint"
+                  className="vos:mb-[var(--size-4-3)] vos:px-[var(--size-4-2)] vos:text-[11px] vos:text-[var(--text-muted)] vos:leading-none"
                 >
-                  Run in progress — wait or cancel
+                  ESC to interrupt
                 </div>
               )}
             </div>
