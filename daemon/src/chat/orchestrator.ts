@@ -378,10 +378,28 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // is broadcast. The happy path already did this in the try-block;
         // here we cover the two failure modes where the chat.completion
         // branch was skipped.
-        if (
-          (status === "cancelled" || status === "error") &&
-          lastAssistantText
-        ) {
+        //
+        // VOS-80 stopped-badge fix (b): on CANCEL we ALWAYS persist an
+        // assistant row — even with empty content — so the LEFT JOIN in
+        // messages-repo.walk() can stamp `cancelled: true` on a concrete
+        // row. Without this, ESC-before-first-token loses its "↯ stopped"
+        // badge on chat-switch / remount (refetch returns only the user
+        // prompt, no cancelled marker). Empty content renders as
+        // STOPPED_MARKER on the plugin via toThreadMessage. We do NOT do
+        // this for the error path: an error before any tokens stream
+        // should NOT inject a phantom empty assistant row into history;
+        // the errorNotice surface in the plugin handles that case.
+        if (status === "cancelled") {
+          messages.appendAssistant(
+            chatId,
+            runId,
+            lastAssistantText,
+            Date.now(),
+          );
+          if (lastAssistantText) {
+            repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
+          }
+        } else if (status === "error" && lastAssistantText) {
           messages.appendAssistant(
             chatId,
             runId,

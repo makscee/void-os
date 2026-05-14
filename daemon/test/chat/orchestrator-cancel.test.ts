@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeChatRepo } from "../../src/chat/repo";
 import { makeOrchestrator } from "../../src/chat/orchestrator";
+import { makeMessagesRepo } from "../../src/chat/messages-repo";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -308,6 +309,124 @@ test("cancel(): mid-tool-call — terminates cleanly without is_error frame leak
   // Partial assistant text persisted.
   expect(repo.get(chat.id)!.last_msg).toBe("checking...");
   expect(repo.get(chat.id)!.current_run_id).toBeNull();
+});
+
+// VOS-80 stopped-badge fix (b): persist an empty cancelled-marker row when
+// ESC fires before any tokens stream, so chat-switch / remount preserves
+// the "↯ stopped" bubble. The plugin's "(stopped)" badge is derived from
+// the LEFT JOIN runs.status='cancelled', which requires a row to attach to.
+test("cancel() before any tokens: persists empty assistant row tagged cancelled via JOIN", async () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+
+  const events: Array<{ t: string; p: any }> = [];
+  // Spawner that parks BEFORE emitting any assistant token. Just `system`
+  // (session_id) — then waits to be cancelled.
+  let killed = false;
+  const spawner = {
+    cancel(_runId: string): Promise<boolean> {
+      killed = true;
+      return Promise.resolve(true);
+    },
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-empty-cancel" };
+        // Park indefinitely — no assistant tokens emitted before cancel.
+        while (!killed) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+      })();
+    },
+  };
+
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+
+  const dispatchP = orch.dispatch(chat.id, "test123");
+  // Wait until run.start has fired (so spawner is parked, but no tokens yet).
+  await waitFor(() => events.some((e) => e.t === "run.start"), 1000);
+  expect(events.some((e) => e.t === "chat.token")).toBe(false);
+
+  const result = await orch.cancel(chat.id);
+  expect(result.cancelled).toBe(true);
+  await dispatchP;
+
+  // The assistant row exists with empty content + cancelled flag set via JOIN.
+  const messages = makeMessagesRepo(db);
+  const walk = messages.walk(chat.id);
+  // Expect: [user "test123", assistant {content: "", cancelled: true}].
+  expect(walk).toHaveLength(2);
+  expect((walk[0] as { role: string }).role).toBe("user");
+  expect(walk[0]).toMatchObject({ role: "user", content: "test123" });
+  expect(walk[1]).toMatchObject({
+    role: "assistant",
+    content: "",
+    cancelled: true,
+  });
+});
+
+// Regression: partial-text cancel must STILL persist the streamed text
+// (not regress the (a) flush path).
+test("cancel() with partial tokens: assistant row carries streamed text + cancelled flag", async () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+
+  const events: Array<{ t: string; p: any }> = [];
+  let killed = false;
+  const spawner = {
+    cancel(_runId: string): Promise<boolean> {
+      killed = true;
+      return Promise.resolve(true);
+    },
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-partial-cancel" };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "partial answer" }],
+          },
+        };
+        while (!killed) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+      })();
+    },
+  };
+
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+
+  const dispatchP = orch.dispatch(chat.id, "go");
+  await waitFor(() => events.some((e) => e.t === "chat.token"), 1000);
+
+  await orch.cancel(chat.id);
+  await dispatchP;
+
+  const messages = makeMessagesRepo(db);
+  const walk = messages.walk(chat.id);
+  // user "go" + assistant "partial answer" (cancelled).
+  expect(walk).toHaveLength(2);
+  expect(walk[1]).toMatchObject({
+    role: "assistant",
+    content: "partial answer",
+    cancelled: true,
+  });
+  // last_msg preserved.
+  expect(repo.get(chat.id)!.last_msg).toBe("partial answer");
 });
 
 // ── helper ───────────────────────────────────────────────────────────────
