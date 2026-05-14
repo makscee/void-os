@@ -57,16 +57,46 @@ function normalizeReplay(raw: unknown): ReplayMessage[] {
   const out: ReplayMessage[] = [];
   for (const r of raw) {
     if (!r || typeof r !== "object") continue;
-    const role = (r as { role?: unknown }).role;
-    const content = (r as { content?: unknown }).content;
-    if (role !== "user" && role !== "assistant") continue;
-    if (typeof content !== "string") continue;
-    const ts = (r as { ts?: unknown }).ts;
-    out.push({
-      role,
-      content,
-      ts: typeof ts === "number" ? ts : undefined,
-    });
+    const o = r as Record<string, unknown>;
+    const role = o.role;
+    const ts = typeof o.ts === "number" ? (o.ts as number) : undefined;
+    if (role === "user" || role === "assistant") {
+      if (typeof o.content !== "string") continue;
+      out.push({ role, content: o.content, ts });
+      continue;
+    }
+    if (role === "tool_use") {
+      const toolCallId = o.tool_call_id;
+      const name = o.name;
+      if (typeof toolCallId !== "string" || typeof name !== "string") continue;
+      const input =
+        o.input && typeof o.input === "object" && !Array.isArray(o.input)
+          ? (o.input as Record<string, unknown>)
+          : {};
+      out.push({ role: "tool_use", tool_call_id: toolCallId, name, input, ts });
+      continue;
+    }
+    if (role === "tool_result") {
+      const toolCallId = o.tool_call_id;
+      if (typeof toolCallId !== "string") continue;
+      // output may be a plain string or an Anthropic-style content block
+      // array; pass through and let the reducer flatten for display.
+      const output: string | Array<{ type?: string; text?: string }> =
+        typeof o.output === "string"
+          ? (o.output as string)
+          : Array.isArray(o.output)
+            ? (o.output as Array<{ type?: string; text?: string }>)
+            : "";
+      const isError = o.is_error === true;
+      out.push({
+        role: "tool_result",
+        tool_call_id: toolCallId,
+        output,
+        is_error: isError,
+        ts,
+      });
+      continue;
+    }
   }
   return out;
 }

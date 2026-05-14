@@ -131,6 +131,70 @@ describe("makeChatApi", () => {
     ]);
   });
 
+  test("getMessages preserves tool_use and tool_result replay entries", async () => {
+    // Real daemon shape: heterogeneous array with tool entries interleaved.
+    // Regression: prior normalizer dropped non-user/assistant rows, which
+    // made the S4 tool panel disappear after reload (hydrate had no tools).
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch(() =>
+        new Response(
+          JSON.stringify([
+            { role: "user", content: "ls /tmp" },
+            {
+              role: "tool_use",
+              tool_call_id: "tu1",
+              name: "Bash",
+              input: { command: "ls /tmp" },
+            },
+            {
+              role: "tool_result",
+              tool_call_id: "tu1",
+              output: "file1\nfile2",
+              is_error: false,
+            },
+            {
+              role: "tool_result",
+              tool_call_id: "tu2",
+              output: [{ type: "text", text: "blocky" }],
+              is_error: true,
+            },
+            { role: "assistant", content: "done" },
+            { role: "tool_use", name: "Bash" }, // dropped — no tool_call_id
+            { role: "tool_result" }, // dropped — no tool_call_id
+          ]),
+          { status: 200 },
+        ),
+      ) as any,
+    );
+    const rows = await api.getMessages("c1");
+    expect(rows).toEqual([
+      { role: "user", content: "ls /tmp", ts: undefined },
+      {
+        role: "tool_use",
+        tool_call_id: "tu1",
+        name: "Bash",
+        input: { command: "ls /tmp" },
+        ts: undefined,
+      },
+      {
+        role: "tool_result",
+        tool_call_id: "tu1",
+        output: "file1\nfile2",
+        is_error: false,
+        ts: undefined,
+      },
+      {
+        role: "tool_result",
+        tool_call_id: "tu2",
+        output: [{ type: "text", text: "blocky" }],
+        is_error: true,
+        ts: undefined,
+      },
+      { role: "assistant", content: "done", ts: undefined },
+    ]);
+  });
+
   test("getMessages encodes chatId", async () => {
     let url = "";
     const api = makeChatApi(
