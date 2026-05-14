@@ -27,14 +27,22 @@
 //      or has no session yet).
 //
 // Bus event names emitted: run.start, run.end, run.error,
-//   chat.message_user, chat.token, chat.tool_call, chat.tool_result,
+//   chat.message_user, chat.token, chat.tool_use, chat.tool_result,
 //   chat.completion. These mirror VOS-73's cc-spawner vocabulary (run.*)
 //   and add chat.* for UI-facing stream surfaces.
+//
+// chat.tool_use / chat.tool_result frame contract (consumed by plugin S4):
+//   { type: "chat.tool_use",   chat_id, run_id, tool_call_id, name, input }
+//   { type: "chat.tool_result", chat_id, run_id, tool_call_id, output, is_error }
+// Source of truth — tool_use blocks live on assistant-role events at
+// evt.message.content[]; tool_result blocks live on user-role events at
+// evt.message.content[]. The wire envelope is added by app.ts broadcast()
+// (prepends {type, ts, ...payload}).
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { ChatRepo } from "./repo";
-import { extractTurnText } from "./util";
+import { extractTurnText, extractToolUses, extractToolResults } from "./util";
 
 /** Parsed stream event from claudev stdout JSONL. Shape is best-effort —
  * the spawner adapter normalizes to {type, ...}. */
@@ -176,9 +184,9 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           } else if (evt.type === "assistant") {
             firstAssistantSeen = true;
             // CC stream-json shape: text lives in evt.message.content[] as
-            // {type:"text", text}. Pure tool-call assistant turns have no
-            // text blocks — skip the emit so the wire stays clean (tool_use
-            // rendering is a separate event).
+            // {type:"text", text}, possibly interleaved with tool_use blocks.
+            // Pure tool-call assistant turns have no text blocks — skip the
+            // chat.token emit but still surface their tool_use blocks below.
             const text = extractAssistantText(evt);
             if (text) {
               lastAssistantText += text;
@@ -188,20 +196,31 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 delta: text,
               });
             }
-          } else if (evt.type === "tool_use") {
-            emit("chat.tool_call", {
-              chat_id: chatId,
-              run_id: runId,
-              tool: evt.name,
-              input: evt.input,
-            });
-          } else if (evt.type === "tool_result") {
-            emit("chat.tool_result", {
-              chat_id: chatId,
-              run_id: runId,
-              tool: evt.name,
-              output: evt.output,
-            });
+            // Surface every tool_use block in this assistant turn as a
+            // dedicated WS frame (S4 tool-call panel hydration).
+            for (const tu of extractToolUses(evt)) {
+              emit("chat.tool_use", {
+                chat_id: chatId,
+                run_id: runId,
+                tool_call_id: tu.tool_call_id,
+                name: tu.name,
+                input: tu.input,
+              });
+            }
+          } else if (evt.type === "user") {
+            // User-role events with tool_result content[] carry the model's
+            // tool output for the next assistant turn. They are NOT user
+            // messages (chat.message_user was already emitted for the prompt
+            // at dispatch start) — they only surface as chat.tool_result.
+            for (const tr of extractToolResults(evt)) {
+              emit("chat.tool_result", {
+                chat_id: chatId,
+                run_id: runId,
+                tool_call_id: tr.tool_call_id,
+                output: tr.output,
+                is_error: tr.is_error,
+              });
+            }
           }
         }
         if (firstAssistantSeen) {

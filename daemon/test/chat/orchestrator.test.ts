@@ -239,6 +239,250 @@ test("orchestrator: assistant with multiple text blocks emits one delta + persis
   expect(repo.get(chat.id)!.last_msg).toBe("alpha beta");
 });
 
+// ── VOS-80 S4: tool_use / tool_result WS frames ─────────────────────────
+
+test("orchestrator: assistant tool_use block → chat.tool_use frame with id/name/input", async () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+  const events: Array<{ t: string; p: any }> = [];
+  const spawner = {
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-tu" };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "let me check " },
+              {
+                type: "tool_use",
+                id: "u_1",
+                name: "vault.read",
+                input: { path: "x" },
+              },
+            ],
+          },
+        };
+      })();
+    },
+  };
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+  const result = await orch.dispatch(chat.id, "go");
+  const tu = events.filter((e) => e.t === "chat.tool_use");
+  expect(tu.length).toBe(1);
+  expect(tu[0]!.p).toEqual({
+    chat_id: chat.id,
+    run_id: result.run_id,
+    tool_call_id: "u_1",
+    name: "vault.read",
+    input: { path: "x" },
+  });
+  // text block still surfaces as chat.token in the same turn.
+  const tokens = events.filter((e) => e.t === "chat.token");
+  expect(tokens.length).toBe(1);
+  expect(tokens[0]!.p.delta).toBe("let me check ");
+});
+
+test("orchestrator: user tool_result block → chat.tool_result frame", async () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+  const events: Array<{ t: string; p: any }> = [];
+  const spawner = {
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-tr" };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "tool_use", id: "u_1", name: "bash", input: { cmd: "ls" } },
+            ],
+          },
+        };
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "u_1", content: "file1\n" },
+            ],
+          },
+        };
+      })();
+    },
+  };
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+  const result = await orch.dispatch(chat.id, "ls");
+  const tr = events.filter((e) => e.t === "chat.tool_result");
+  expect(tr.length).toBe(1);
+  expect(tr[0]!.p).toEqual({
+    chat_id: chat.id,
+    run_id: result.run_id,
+    tool_call_id: "u_1",
+    output: "file1\n",
+    is_error: false,
+  });
+});
+
+test("orchestrator: tool_result with is_error=true surfaces is_error on frame", async () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+  const events: Array<{ t: string; p: any }> = [];
+  const spawner = {
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-err" };
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "u_1",
+                content: "ENOENT",
+                is_error: true,
+              },
+            ],
+          },
+        };
+      })();
+    },
+  };
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+  await orch.dispatch(chat.id, "x");
+  const tr = events.filter((e) => e.t === "chat.tool_result");
+  expect(tr.length).toBe(1);
+  expect(tr[0]!.p.is_error).toBe(true);
+  expect(tr[0]!.p.output).toBe("ENOENT");
+});
+
+test("orchestrator: multiple tool_use blocks in one assistant turn emit multiple frames in order", async () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+  const events: Array<{ t: string; p: any }> = [];
+  const spawner = {
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-multi-tu" };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "tool_use", id: "u_1", name: "a", input: {} },
+              { type: "tool_use", id: "u_2", name: "b", input: { k: 2 } },
+            ],
+          },
+        };
+      })();
+    },
+  };
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+  await orch.dispatch(chat.id, "x");
+  const tu = events.filter((e) => e.t === "chat.tool_use");
+  expect(tu.length).toBe(2);
+  expect(tu.map((e) => e.p.tool_call_id)).toEqual(["u_1", "u_2"]);
+  expect(tu.map((e) => e.p.name)).toEqual(["a", "b"]);
+});
+
+test("orchestrator: malformed tool_use (no id) emits NO frame", async () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+  const events: Array<{ t: string; p: any }> = [];
+  const spawner = {
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-bad" };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "tool_use", name: "x", input: {} }],
+          },
+        };
+      })();
+    },
+  };
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+  await orch.dispatch(chat.id, "x");
+  expect(events.filter((e) => e.t === "chat.tool_use").length).toBe(0);
+});
+
+test("orchestrator: user tool_result does NOT emit a chat.message_user echo of tool output", async () => {
+  // tool_result lives in user-role records — they must NOT be confused for
+  // a user-typed message. chat.message_user only fires once per dispatch
+  // for the actual prompt text.
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+  const events: Array<{ t: string; p: any }> = [];
+  const spawner = {
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-no-echo" };
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "u_1", content: "out" },
+            ],
+          },
+        };
+      })();
+    },
+  };
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+  await orch.dispatch(chat.id, "prompt");
+  const userMsgs = events.filter((e) => e.t === "chat.message_user");
+  expect(userMsgs.length).toBe(1);
+  expect(userMsgs[0]!.p.text).toBe("prompt");
+});
+
 test("orchestrator: pure tool-call assistant turn emits NO chat.token", async () => {
   const db = freshDb();
   const repo = makeChatRepo(db);
