@@ -11,6 +11,8 @@ import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
 import { useChatRuntime } from "./runtime";
 import { ChatList } from "./ChatList";
+import { BashTool } from "./tools/BashTool";
+import { GenericTool } from "./tools/GenericTool";
 
 export interface ChatRootProps {
   bus: FrameBus;
@@ -42,7 +44,14 @@ function MessageItem() {
         <div
           className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-[var(--size-4-3)] vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:leading-relaxed"
         >
-          <MessagePrimitive.Parts components={{ Text: TextPart }} />
+          <MessagePrimitive.Parts
+            components={{
+              Text: TextPart,
+              // Bash registers itself globally via makeAssistantToolUI (rendered
+              // once below). Any other tool name falls back to the generic block.
+              tools: { Fallback: GenericTool },
+            }}
+          />
         </div>
       </MessagePrimitive.If>
     </MessagePrimitive.Root>
@@ -119,6 +128,10 @@ export function ChatRoot(props: ChatRootProps) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      {/* Tool UI registration. `BashTool` is from makeAssistantToolUI — it
+          renders nothing visible itself; its mount side-effect registers a
+          renderer for toolName === "Bash" inside the assistant-ui store. */}
+      <BashTool />
       <div className="vos:flex vos:flex-row vos:h-full vos:w-full">
         <ChatList
           api={props.api}
