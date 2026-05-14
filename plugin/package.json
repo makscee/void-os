@@ -9,8 +9,20 @@
     "test": "bun test"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.0",
     "@types/bun": "latest",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "happy-dom": "^20.9.0",
     "obsidian": "latest",
+    "tailwindcss": "^4.3.0",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@assistant-ui/react": "^0.14.5",
+    "@assistant-ui/react-markdown": "^0.14.0",
+    "lucide-react": "^1.14.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
   }
 }
