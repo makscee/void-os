@@ -26,10 +26,17 @@ export class ReconnectFSM {
   private clrI: typeof clearInterval;
 
   constructor(private d: Deps) {
-    this.setT = d.setTimeout ?? setTimeout;
-    this.clrT = d.clearTimeout ?? clearTimeout;
-    this.setI = d.setInterval ?? setInterval;
-    this.clrI = d.clearInterval ?? clearInterval;
+    // Native browser timers (setTimeout/clearTimeout/setInterval/clearInterval)
+    // must be invoked with `this === globalThis` in Electron's renderer; storing
+    // them as instance properties and calling `this.setI(...)` rebinds `this`
+    // to the FSM and throws "Illegal invocation". Bind native fallbacks to
+    // globalThis at capture time. Injected (test) timers are pre-bound by the
+    // caller and used as-is.
+    const g: any = globalThis;
+    this.setT = d.setTimeout ?? setTimeout.bind(g);
+    this.clrT = d.clearTimeout ?? clearTimeout.bind(g);
+    this.setI = d.setInterval ?? setInterval.bind(g);
+    this.clrI = d.clearInterval ?? clearInterval.bind(g);
     d.client.on((e) => this.onEvent(e));
   }
 
