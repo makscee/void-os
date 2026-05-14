@@ -127,10 +127,10 @@ export function ChatRoot(props: ChatRootProps) {
           onNewChat={onNewChat}
           refreshKey={refreshKey}
         />
-        <div className="vos:flex vos:flex-col vos:flex-1 vos:min-w-0 vos:h-full">
-          <ThreadPrimitive.Root className="vos:flex vos:flex-col vos:h-full">
-            <ThreadPrimitive.Viewport className="vos:flex-1 vos:overflow-y-auto vos:px-4 vos:py-3 vos:flex vos:flex-col">
-              <div className="vos:mt-auto vos:flex vos:flex-col">
+        <div className="vos:flex vos:flex-col vos:flex-1 vos:min-w-0 vos:min-h-0 vos:h-full">
+          <ThreadPrimitive.Root className="vos:contents">
+            <ThreadPrimitive.Viewport className="vos:flex-1 vos:overflow-y-auto vos:min-h-0 vos:flex vos:flex-col">
+              <div className="vos:mt-auto vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)] vos:py-[var(--size-4-3)] vos:flex vos:flex-col">
                 <ThreadPrimitive.Empty>
                   <div className="vos:text-sm vos:text-[var(--text-muted)] vos:p-4">
                     void-os chat — say hi.
@@ -140,21 +140,23 @@ export function ChatRoot(props: ChatRootProps) {
                 <ThinkingIndicator />
               </div>
             </ThreadPrimitive.Viewport>
-            <ComposerPrimitive.Root
-              className="vos:flex vos:items-end vos:gap-[var(--size-4-2)] vos:m-[var(--size-4-2)] vos:p-[var(--size-4-2)] vos:rounded-[var(--radius-m)] vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:shadow-[0_0_0_1px_var(--interactive-accent)]"
-            >
-              <ComposerPrimitive.Input
-                rows={1}
-                autoFocus
-                placeholder="Message"
-                className="vos:flex-1 vos:bg-transparent vos:resize-none vos:outline-none vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:text-[var(--text-normal)] placeholder:vos:text-[var(--text-muted)]"
-              />
-              <ComposerPrimitive.Send
-                className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)] disabled:vos:bg-[var(--background-modifier-form-field)] disabled:vos:text-[var(--text-faint)] disabled:vos:cursor-not-allowed"
+            <div className="vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)]">
+              <ComposerPrimitive.Root
+                className="vos:flex vos:items-end vos:gap-[var(--size-4-2)] vos:my-[var(--size-4-3)] vos:p-[var(--size-4-2)] vos:rounded-[var(--radius-m)] vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:shadow-[0_0_0_1px_var(--interactive-accent)]"
               >
-                Send
-              </ComposerPrimitive.Send>
-            </ComposerPrimitive.Root>
+                <ComposerPrimitive.Input
+                  rows={1}
+                  autoFocus
+                  placeholder="Message"
+                  className="vos:flex-1 vos:bg-transparent vos:resize-none vos:outline-none vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:text-[var(--text-normal)] placeholder:vos:text-[var(--text-muted)]"
+                />
+                <ComposerPrimitive.Send
+                  className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)] disabled:vos:bg-[var(--background-modifier-form-field)] disabled:vos:text-[var(--text-faint)] disabled:vos:cursor-not-allowed"
+                >
+                  Send
+                </ComposerPrimitive.Send>
+              </ComposerPrimitive.Root>
+            </div>
           </ThreadPrimitive.Root>
         </div>
       </div>
