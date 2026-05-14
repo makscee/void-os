@@ -15,16 +15,43 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Database } from "bun:sqlite";
 import { makeChatRepo } from "./repo";
-import { extractTurnText } from "./util";
+import { extractTurnText, extractToolUses, extractToolResults } from "./util";
 
-export interface Message {
+/** A visible text turn (user prompt or assistant narration). */
+export interface TextMessage {
   role: "user" | "assistant";
   content: string;
   ts?: number;
 }
 
+/** A tool invocation block lifted out of an assistant turn's content[]. */
+export interface ToolUseEntry {
+  role: "tool_use";
+  tool_call_id: string;
+  name: string;
+  input: unknown;
+  ts?: number;
+}
+
+/** A tool result block lifted out of a user-role turn's content[]. */
+export interface ToolResultEntry {
+  role: "tool_result";
+  tool_call_id: string;
+  output: unknown;
+  is_error: boolean;
+  ts?: number;
+}
+
+/** Discriminated union surfaced to /chat/:id/messages. The plugin S4 panel
+ * walks this list, rendering text turns inline and {tool_use, tool_result}
+ * pairs in the tool-call panel keyed by tool_call_id. */
+export type ReplayEntry = TextMessage | ToolUseEntry | ToolResultEntry;
+
+/** @deprecated Use ReplayEntry — kept for source-compat in tests. */
+export type Message = ReplayEntry;
+
 export interface SessionReplay {
-  walk(chatId: string): Message[];
+  walk(chatId: string): ReplayEntry[];
 }
 
 export interface ReplayOpts {
@@ -53,21 +80,47 @@ interface Record {
 function collectVisible(
   ids: string[],
   byId: Map<string, Record>,
-): Message[] {
-  const msgs: Message[] = [];
+): ReplayEntry[] {
+  const msgs: ReplayEntry[] = [];
   for (const id of ids) {
     const r = byId.get(id);
     if (!r || !VISIBLE_TYPES.has(r.type)) continue;
-    // CC JSONL records carry text at r.message.content[] as an array of
-    // blocks. Pure tool_use turns extract to "" — skip them; S4 will render
-    // tool calls separately via chat.tool_call/tool_result.
-    const content = extractTurnText(r);
-    if (!content) continue;
-    msgs.push({
-      role: r.type as "user" | "assistant",
-      content,
-      ts: r.ts,
-    });
+    const role = r.type as "user" | "assistant";
+
+    // Per-turn surface order matches the content[] block order so the S4
+    // panel can render text + tool_use as they were emitted:
+    //   1. text portion (if any) as a TextMessage
+    //   2. each tool_use block (assistant turns only, in block order)
+    //   3. each tool_result block (user turns only, in block order)
+    // A turn yielding zero entries (e.g. an empty user record) is skipped.
+    const text = extractTurnText(r);
+    if (text) {
+      msgs.push({ role, content: text, ts: r.ts });
+    }
+    if (role === "assistant") {
+      for (const tu of extractToolUses(r)) {
+        msgs.push({
+          role: "tool_use",
+          tool_call_id: tu.tool_call_id,
+          name: tu.name,
+          input: tu.input,
+          ts: r.ts,
+        });
+      }
+    } else {
+      // role === "user": surface tool_result blocks (CC encodes them on
+      // user-role records). The user's typed prompt is the text branch
+      // above; tool_result is the separate entry.
+      for (const tr of extractToolResults(r)) {
+        msgs.push({
+          role: "tool_result",
+          tool_call_id: tr.tool_call_id,
+          output: tr.output,
+          is_error: tr.is_error,
+          ts: r.ts,
+        });
+      }
+    }
   }
   return msgs;
 }
@@ -142,15 +195,21 @@ export function makeSessionReplay(
 
       // Defense-in-depth: newer CC builds emit visible turns with no
       // parent_uuid (the chain runs through queue-operation/attachment records
-      // that we filter out by type). When the DAG walk recovers fewer visible
-      // turns than the file actually contains, fall back to file-order
-      // traversal of every visible record. The JSONL is append-only, so file
-      // order is chronological for the visible-turn subsequence.
-      const totalVisible = order.reduce((n, id) => {
+      // that we filter out by type). When the DAG walk reaches fewer visible
+      // records than the file actually contains, fall back to file-order
+      // traversal of every visible record. We count *records* (not output
+      // entries), since one record can emit multiple ReplayEntries (text +
+      // N tool_use, or multiple tool_result blocks). The JSONL is append-only,
+      // so file order is chronological for the visible-turn subsequence.
+      const totalVisibleRecords = order.reduce((n, id) => {
         const r = byId.get(id);
         return r && VISIBLE_TYPES.has(r.type) ? n + 1 : n;
       }, 0);
-      if (dagMsgs.length >= totalVisible) return dagMsgs;
+      const dagVisibleRecords = pathIds.reduce((n, id) => {
+        const r = byId.get(id);
+        return r && VISIBLE_TYPES.has(r.type) ? n + 1 : n;
+      }, 0);
+      if (dagVisibleRecords >= totalVisibleRecords) return dagMsgs;
       return collectVisible(order, byId);
     },
   };

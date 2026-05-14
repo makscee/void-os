@@ -93,7 +93,7 @@ test("walk reads single JSONL and filters to user/assistant via parent_uuid DAG"
   const msgs = replay.walk(c.id);
   // 4 visible messages: u2,u3,u5,u6 — attachments and queue-op stripped.
   expect(msgs.length).toBe(4);
-  expect(msgs.map((m) => m.content)).toEqual(["hi", "hello", "again", "hey"]);
+  expect(msgs.map((m) => (m as any).content)).toEqual(["hi", "hello", "again", "hey"]);
   expect(msgs.map((m) => m.role)).toEqual([
     "user",
     "assistant",
@@ -209,7 +209,7 @@ test("assistant turn with multiple text blocks → concatenates", () => {
     encodeCwd: () => "-tmp-multi",
   });
   const msgs = replay.walk(c.id);
-  expect(msgs.map((m) => m.content)).toEqual(["q", "part1 part2"]);
+  expect(msgs.map((m) => (m as any).content)).toEqual(["q", "part1 part2"]);
 });
 
 test("assistant turn with mixed text + tool_use blocks → returns text only", () => {
@@ -247,10 +247,10 @@ test("assistant turn with mixed text + tool_use blocks → returns text only", (
     encodeCwd: () => "-tmp-mixed",
   });
   const msgs = replay.walk(c.id);
-  expect(msgs.map((m) => m.content)).toEqual(["go", "thinking..."]);
+  expect(msgs.map((m) => (m as any).content)).toEqual(["go", "thinking..."]);
 });
 
-test("turn with only tool_use / tool_result blocks → filtered out", () => {
+test("turn with only tool_use / tool_result blocks → surfaced as tool entries (S4)", () => {
   const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
   const projDir = join(tmp, "-tmp-tools");
   mkdirSync(projDir, { recursive: true });
@@ -304,10 +304,228 @@ test("turn with only tool_use / tool_result blocks → filtered out", () => {
     encodeCwd: () => "-tmp-tools",
   });
   const msgs = replay.walk(c.id);
-  // Only the visible-text turns survive. tool_use + tool_result-only turns
-  // drop. S4 will surface those via separate event paths.
-  expect(msgs.map((m) => m.content)).toEqual(["do it", "done"]);
-  expect(msgs.map((m) => m.role)).toEqual(["user", "assistant"]);
+  // S4 contract: visible-text turns + tool_use + tool_result interleaved.
+  // Order: user("do it") → tool_use(t1) → tool_result(t1) → assistant("done").
+  expect(msgs.map((m) => m.role)).toEqual([
+    "user",
+    "tool_use",
+    "tool_result",
+    "assistant",
+  ]);
+  expect((msgs[0] as any).content).toBe("do it");
+  expect(msgs[1]).toMatchObject({
+    role: "tool_use",
+    tool_call_id: "t1",
+    name: "bash",
+    input: { cmd: "ls" },
+  });
+  expect(msgs[2]).toMatchObject({
+    role: "tool_result",
+    tool_call_id: "t1",
+    output: "file1\n",
+    is_error: false,
+  });
+  expect((msgs[3] as any).content).toBe("done");
+});
+
+test("assistant turn with mixed text + tool_use → both text entry AND tool_use entry surface", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-mix2");
+  mkdirSync(projDir, { recursive: true });
+  writeFileSync(
+    join(projDir, "sid-x.jsonl"),
+    JSON.stringify({
+      uuid: "a",
+      type: "user",
+      message: { content: [{ type: "text", text: "go" }] },
+    }) +
+      "\n" +
+      JSON.stringify({
+        uuid: "b",
+        parent_uuid: "a",
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "thinking..." },
+            { type: "tool_use", id: "t1", name: "bash", input: { cmd: "ls" } },
+          ],
+        },
+      }) +
+      "\n",
+  );
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-x");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/mix2",
+    encodeCwd: () => "-tmp-mix2",
+  });
+  const msgs = replay.walk(c.id);
+  expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "tool_use"]);
+  expect((msgs[1] as any).content).toBe("thinking...");
+  expect(msgs[2]).toMatchObject({
+    role: "tool_use",
+    tool_call_id: "t1",
+    name: "bash",
+  });
+});
+
+test("tool_result with is_error=true → surfaces is_error on replay entry", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-err");
+  mkdirSync(projDir, { recursive: true });
+  writeFileSync(
+    join(projDir, "sid-e.jsonl"),
+    JSON.stringify({
+      uuid: "a",
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "t1",
+            content: "ENOENT",
+            is_error: true,
+          },
+        ],
+      },
+    }) + "\n",
+  );
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-e");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/err",
+    encodeCwd: () => "-tmp-err",
+  });
+  const msgs = replay.walk(c.id);
+  expect(msgs.length).toBe(1);
+  expect(msgs[0]).toMatchObject({
+    role: "tool_result",
+    tool_call_id: "t1",
+    output: "ENOENT",
+    is_error: true,
+  });
+});
+
+test("fallback (file-order) honors tool_use + tool_result interleaving", () => {
+  // Newer CC builds: visible turns have no parent_uuid chain. Fallback must
+  // still emit tool entries from each turn, not just text.
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-fb-tools");
+  mkdirSync(projDir, { recursive: true });
+  const lines = [
+    JSON.stringify({
+      uuid: "v1",
+      type: "user",
+      message: { content: [{ type: "text", text: "ls please" }] },
+    }),
+    JSON.stringify({
+      uuid: "v2",
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "t1", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+    }),
+    JSON.stringify({
+      uuid: "v3",
+      type: "user",
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "t1", content: "file1\n" },
+        ],
+      },
+    }),
+    JSON.stringify({
+      uuid: "v4",
+      type: "assistant",
+      message: { content: [{ type: "text", text: "found one file" }] },
+    }),
+  ];
+  writeFileSync(join(projDir, "sid-fb.jsonl"), lines.join("\n") + "\n");
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-fb");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/fb-tools",
+    encodeCwd: () => "-tmp-fb-tools",
+  });
+  const msgs = replay.walk(c.id);
+  expect(msgs.map((m) => m.role)).toEqual([
+    "user",
+    "tool_use",
+    "tool_result",
+    "assistant",
+  ]);
+});
+
+test("DAG-walk path honors tool_use + tool_result entries", () => {
+  // Chain is intact via parent_uuid — DAG walk must surface tool entries
+  // exactly as the fallback would. Same expected output as the file-order
+  // case above.
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-dag-tools");
+  mkdirSync(projDir, { recursive: true });
+  const lines = [
+    JSON.stringify({
+      uuid: "v1",
+      type: "user",
+      message: { content: [{ type: "text", text: "ls" }] },
+    }),
+    JSON.stringify({
+      uuid: "v2",
+      parent_uuid: "v1",
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "t1", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+    }),
+    JSON.stringify({
+      uuid: "v3",
+      parent_uuid: "v2",
+      type: "user",
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "t1", content: "ok" },
+        ],
+      },
+    }),
+    JSON.stringify({
+      uuid: "v4",
+      parent_uuid: "v3",
+      type: "assistant",
+      message: { content: [{ type: "text", text: "done" }] },
+    }),
+  ];
+  writeFileSync(join(projDir, "sid-dt.jsonl"), lines.join("\n") + "\n");
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-dt");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/dag-tools",
+    encodeCwd: () => "-tmp-dag-tools",
+  });
+  const msgs = replay.walk(c.id);
+  expect(msgs.map((m) => m.role)).toEqual([
+    "user",
+    "tool_use",
+    "tool_result",
+    "assistant",
+  ]);
+  expect(msgs[1]).toMatchObject({ tool_call_id: "t1", name: "bash" });
+  expect(msgs[2]).toMatchObject({ tool_call_id: "t1", output: "ok" });
 });
 
 test("legacy/defensive: message.content as plain string is handled", () => {
@@ -340,7 +558,7 @@ test("legacy/defensive: message.content as plain string is handled", () => {
     encodeCwd: () => "-tmp-str",
   });
   const msgs = replay.walk(c.id);
-  expect(msgs.map((m) => m.content)).toEqual([
+  expect(msgs.map((m) => (m as any).content)).toEqual([
     "plain user string",
     "plain assistant string",
   ]);
@@ -395,7 +613,7 @@ test("fallback: visible records with no parent_uuid → file-order traversal ret
   });
   const msgs = replay.walk(c.id);
   expect(msgs.length).toBe(4);
-  expect(msgs.map((m) => m.content)).toEqual(["hi", "hello", "again", "hey"]);
+  expect(msgs.map((m) => (m as any).content)).toEqual(["hi", "hello", "again", "hey"]);
   expect(msgs.map((m) => m.role)).toEqual([
     "user",
     "assistant",
@@ -404,9 +622,10 @@ test("fallback: visible records with no parent_uuid → file-order traversal ret
   ]);
 });
 
-test("fallback skips empty-content turns (pure tool_use) in degenerate-chain mode", () => {
-  // Even when falling back to file order, extractTurnText filtering still
-  // applies — pure tool_use turns must not surface as empty messages.
+test("fallback: pure tool_use turn surfaces as tool_use entry (NOT dropped) in degenerate-chain mode", () => {
+  // Even when falling back to file order, pure tool_use turns must surface
+  // as tool_use entries — not silently dropped (S4 panel hydration depends
+  // on every tool call being reachable on reopen).
   const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
   const projDir = join(tmp, "-tmp-degen-tools");
   mkdirSync(projDir, { recursive: true });
@@ -431,19 +650,19 @@ test("fallback skips empty-content turns (pure tool_use) in degenerate-chain mod
       message: { content: [{ type: "text", text: "done" }] },
     }),
   ];
-  writeFileSync(join(projDir, "sid-dt.jsonl"), lines.join("\n") + "\n");
+  writeFileSync(join(projDir, "sid-dt2.jsonl"), lines.join("\n") + "\n");
   const db = freshDb();
   const repo = makeChatRepo(db);
   const c = repo.create({ agent: "maya" });
-  repo.setSession(c.id, "sid-dt");
+  repo.setSession(c.id, "sid-dt2");
   const replay = makeSessionReplay(db, {
     projectsRoot: tmp,
     cwd: "/tmp/degen-tools",
     encodeCwd: () => "-tmp-degen-tools",
   });
   const msgs = replay.walk(c.id);
-  // Pure tool_use turn (v2) drops; only v1 + v3 surface.
-  expect(msgs.map((m) => m.content)).toEqual(["do it", "done"]);
+  expect(msgs.map((m) => m.role)).toEqual(["user", "tool_use", "assistant"]);
+  expect(msgs[1]).toMatchObject({ tool_call_id: "t1", name: "bash" });
 });
 
 test("DAG walk preferred when chain is intact and covers all visible records", () => {
@@ -481,7 +700,7 @@ test("DAG walk preferred when chain is intact and covers all visible records", (
     encodeCwd: () => "-tmp-intact",
   });
   const msgs = replay.walk(c.id);
-  expect(msgs.map((m) => m.content)).toEqual(["q", "a"]);
+  expect(msgs.map((m) => (m as any).content)).toEqual(["q", "a"]);
 });
 
 test("realpath encoder: macOS /tmp resolves to -private-tmp-* slug", () => {
