@@ -80,30 +80,30 @@ export function ChatList(props: ChatListProps) {
       className="vos:flex vos:flex-col vos:h-full vos:w-[260px] vos:shrink-0 vos:border-r vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-secondary)]"
       data-testid="chat-list"
     >
-      <div className="vos:flex vos:items-center vos:justify-between vos:px-3 vos:py-2 vos:border-b vos:border-[var(--background-modifier-border)]">
-        <span className="vos:text-[11px] vos:uppercase vos:tracking-wider vos:text-[var(--text-muted)] vos:font-medium">
+      <div className="vos:flex vos:items-center vos:justify-between vos:px-[var(--size-4-3)] vos:h-9 vos:border-b vos:border-[var(--background-modifier-border)]">
+        <span className="vos:text-[11px] vos:uppercase vos:tracking-wider vos:text-[var(--text-muted)] vos:font-normal vos:leading-none">
           Chats
         </span>
         <button
           type="button"
           onClick={() => { void onNewChat(); }}
-          className="vos:px-2 vos:py-0.5 vos:rounded vos:text-xs vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)]"
+          className="vos:inline-flex vos:items-center vos:h-6 vos:px-[var(--size-4-2)] vos:rounded-[var(--radius-s)] vos:text-[11px] vos:leading-none vos:text-[var(--text-muted)] vos:bg-transparent vos:border vos:border-[var(--background-modifier-border)] hover:vos:bg-[var(--background-modifier-hover)] hover:vos:text-[var(--text-normal)]"
           data-testid="new-chat-btn"
         >
           + New
         </button>
       </div>
-      <div className="vos:flex-1 vos:overflow-y-auto">
+      <div className="vos:flex-1 vos:overflow-y-auto vos:py-[var(--size-4-1)]">
         {loading && (
-          <div className="vos:p-3 vos:text-xs vos:text-[var(--text-muted)]">loading…</div>
+          <div className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-2)] vos:text-xs vos:text-[var(--text-muted)]">loading…</div>
         )}
         {error && !loading && (
-          <div className="vos:p-3 vos:text-xs vos:text-[var(--text-error,#e35a5a)]">
+          <div className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-2)] vos:text-xs vos:text-[var(--text-error,#e35a5a)]">
             {error}
           </div>
         )}
         {!loading && !error && visible.length === 0 && (
-          <div className="vos:p-3 vos:text-xs vos:text-[var(--text-muted)]">
+          <div className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-2)] vos:text-xs vos:text-[var(--text-muted)]">
             No chats yet — click + New
           </div>
         )}
@@ -119,14 +119,19 @@ export function ChatList(props: ChatListProps) {
               data-chat-id={c.id}
               data-active={active ? "true" : "false"}
               className={
-                "vos:w-full vos:text-left vos:pl-3 vos:pr-2 vos:py-2 vos:flex vos:items-center vos:gap-2 vos:border-l-2 " +
+                "vos:w-full vos:text-left vos:pl-[10px] vos:pr-[var(--size-4-2)] vos:min-h-[30px] vos:flex vos:items-center vos:gap-[var(--size-4-2)] vos:border-l-2 " +
                 (active
                   ? "vos:border-[var(--interactive-accent)] vos:bg-[var(--background-modifier-active-hover)]"
                   : "vos:border-transparent hover:vos:bg-[var(--background-modifier-hover)]")
               }
             >
               <span className="vos:flex-1 vos:min-w-0">
-                <span className="vos:block vos:text-[13px] vos:leading-[1.35] vos:text-[var(--text-normal)] vos:truncate">
+                <span
+                  className={
+                    "vos:block vos:text-[13px] vos:leading-[1.4] vos:truncate " +
+                    (active ? "vos:text-[var(--text-normal)]" : "vos:text-[var(--text-muted)]")
+                  }
+                >
                   {preview(c)}
                 </span>
               </span>

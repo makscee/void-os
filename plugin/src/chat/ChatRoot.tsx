@@ -26,12 +26,12 @@ const TextPart = () => <MessagePartPrimitive.Text />;
 
 function MessageItem() {
   return (
-    <MessagePrimitive.Root className="vos:w-full vos:my-3 vos:flex vos:flex-col">
+    <MessagePrimitive.Root className="vos:w-full vos:my-[var(--size-4-4)] vos:flex vos:flex-col vos-fade-in">
       {/* User: right-aligned tinted bubble */}
       <MessagePrimitive.If user>
         <div className="vos:flex vos:justify-end">
           <div
-            className="vos:max-w-[85%] vos:rounded-lg vos:px-3 vos:py-2 vos:bg-[var(--background-secondary)] vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:leading-relaxed"
+            className="vos:max-w-[85%] vos:rounded-[var(--radius-m)] vos:px-[var(--size-4-3)] vos:py-[var(--size-4-2)] vos:bg-[var(--background-secondary)] vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:leading-relaxed"
           >
             <MessagePrimitive.Parts components={{ Text: TextPart }} />
           </div>
@@ -39,12 +39,12 @@ function MessageItem() {
       </MessagePrimitive.If>
       {/* Assistant: full-width, left-edge accent, no bg */}
       <MessagePrimitive.If assistant>
-        <div className="vos:flex vos:flex-col vos:gap-1">
+        <div className="vos:flex vos:flex-col vos:gap-[var(--size-4-1)]">
           <div className="vos:text-[11px] vos:uppercase vos:tracking-wider vos:text-[var(--text-muted)]">
             assistant
           </div>
           <div
-            className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-3 vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:leading-relaxed"
+            className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-[var(--size-4-3)] vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:leading-relaxed"
           >
             <MessagePrimitive.Parts components={{ Text: TextPart }} />
           </div>
@@ -64,8 +64,8 @@ function MessageItem() {
 function ThinkingIndicator() {
   return (
     <ThreadPrimitive.If running>
-      <div className="vos:w-full vos:my-3 vos:flex vos:flex-col vos:gap-1">
-        <div className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-3">
+      <div className="vos:w-full vos:my-[var(--size-4-4)] vos:flex vos:flex-col vos:gap-[var(--size-4-1)]">
+        <div className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-[var(--size-4-3)]">
           <span className="vos-dots" aria-label="thinking">
             <span className="vos-dot" />
             <span className="vos-dot" />
@@ -144,16 +144,16 @@ export function ChatRoot(props: ChatRootProps) {
               <ThinkingIndicator />
             </ThreadPrimitive.Viewport>
             <ComposerPrimitive.Root
-              className="vos:flex vos:items-end vos:gap-2 vos:m-2 vos:p-2 vos:rounded vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:ring-1 focus-within:vos:ring-[var(--interactive-accent)]"
+              className="vos:flex vos:items-end vos:gap-[var(--size-4-2)] vos:m-[var(--size-4-2)] vos:p-[var(--size-4-2)] vos:rounded-[var(--radius-m)] vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:shadow-[0_0_0_1px_var(--interactive-accent)]"
             >
               <ComposerPrimitive.Input
                 rows={1}
                 autoFocus
                 placeholder="Message"
-                className="vos:flex-1 vos:bg-transparent vos:resize-none vos:outline-none vos:px-2 vos:py-1 vos:text-[var(--text-normal)] placeholder:vos:text-[var(--text-muted)]"
+                className="vos:flex-1 vos:bg-transparent vos:resize-none vos:outline-none vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:text-[var(--text-normal)] placeholder:vos:text-[var(--text-muted)]"
               />
               <ComposerPrimitive.Send
-                className="vos:px-3 vos:py-1 vos:rounded vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent disabled:vos:bg-[var(--background-modifier-hover)] disabled:vos:text-[var(--text-muted)] disabled:vos:cursor-not-allowed"
+                className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)] disabled:vos:bg-[var(--background-modifier-form-field)] disabled:vos:text-[var(--text-faint)] disabled:vos:cursor-not-allowed"
               >
                 Send
               </ComposerPrimitive.Send>
