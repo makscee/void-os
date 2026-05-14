@@ -1,4 +1,4 @@
-import { Plugin, type WorkspaceLeaf } from "obsidian";
+import { Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
 import { ChatView, CHAT_VIEW_TYPE } from "./view";
 import { WsClient, type WsEvent, type WsPort } from "./ws-client";
 import { ReconnectFSM } from "./reconnect";
@@ -6,6 +6,48 @@ import { StatusBar } from "./status";
 import { FrameBus, type DaemonFrame } from "./chat/bus";
 import { makeChatApi } from "./chat/api";
 import { makeSettingsStore, type SettingsStore } from "./chat/settings";
+
+/** Adapt Obsidian's `requestUrl` (Electron main-process HTTP, no CORS) to the
+ *  `fetch`-shaped seam consumed by makeChatApi.
+ *
+ *  Why: the Obsidian renderer enforces browser CORS; the daemon is local-only
+ *  and (intentionally) does not emit Access-Control-Allow-Origin headers, so
+ *  any preflighted POST from the renderer is rejected. requestUrl bypasses
+ *  this because it runs out-of-process.
+ *
+ *  Only the surface our ChatApi actually touches is implemented:
+ *  - method, headers (lowercased keys), body (string)
+ *  - response.ok, response.status, response.text()
+ */
+function requestUrlAsFetch(): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = (init?.method ?? "GET").toUpperCase();
+    const headers: Record<string, string> = {};
+    if (init?.headers) {
+      const h = init.headers as Record<string, string>;
+      for (const k of Object.keys(h)) headers[k.toLowerCase()] = h[k];
+    }
+    const contentType = headers["content-type"];
+    const body = typeof init?.body === "string" ? init.body : undefined;
+
+    const r = await requestUrl({
+      url,
+      method,
+      headers,
+      contentType,
+      body,
+      throw: false,
+    });
+
+    const text = r.text ?? "";
+    return {
+      ok: r.status >= 200 && r.status < 300,
+      status: r.status,
+      text: async () => text,
+    } as Response;
+  }) as unknown as typeof fetch;
+}
 
 const DAEMON_HTTP = "http://127.0.0.1:7777";
 const DAEMON_WS = "ws://127.0.0.1:7777/events";
@@ -48,7 +90,7 @@ export default class VoidOsPlugin extends Plugin {
       saveData: (d) => this.saveData(d),
     });
     this.bus = new FrameBus();
-    const api = makeChatApi(DAEMON_HTTP);
+    const api = makeChatApi(DAEMON_HTTP, requestUrlAsFetch());
 
     // Single WebSocket — FSM owns reconnect, FrameBus piggybacks on frames.
     const wsClient = new WsClient(DAEMON_WS);
