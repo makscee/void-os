@@ -1,0 +1,4 @@
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme) prefix(vos);
+@import "tailwindcss/utilities.css" layer(utilities) prefix(vos);
+@source "/Users/admin/void-os-wt/VOS-80/plugin/src/chat/**/*.{ts,tsx}";
