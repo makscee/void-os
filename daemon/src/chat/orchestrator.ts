@@ -75,9 +75,19 @@ export interface SpawnArgs {
 }
 
 /** Narrow contract — async iterable of parsed events. The real CcSpawner
- * is bridged to this shape by the wiring layer. */
+ * is bridged to this shape by the wiring layer.
+ *
+ * `cancel(runId)` is optional — when present, the orchestrator's
+ * `cancel(chatId)` calls into it to terminate the underlying subprocess.
+ * The spawner-iter adapter (VOS-80) implements this by calling
+ * `CcProcess.kill()` (SIGTERM → SIGKILL grace) on the matching runId. A
+ * spawner without `cancel` is treated as un-cancellable: orchestrator's
+ * `cancel()` still flips the cancel-request flag, but the underlying
+ * iterator must terminate on its own (test fakes do this via a `killed`
+ * polling loop). Returns true if the runId was known + signalled. */
 export interface Spawner {
   spawn(args: SpawnArgs): AsyncIterable<SpawnerEvent>;
+  cancel?(runId: string): Promise<boolean>;
 }
 
 export interface TitlerLike {
@@ -94,11 +104,20 @@ export interface OrchestratorDeps {
 
 export interface DispatchResult {
   run_id: string;
-  status: "done" | "error";
+  status: "done" | "error" | "cancelled";
+}
+
+/** Result of `cancel(chatId)`. `cancelled=true` when an in-flight run was
+ * found and signalled; `cancelled=false` when no active run exists (HTTP
+ * layer maps this to 409 no_active_run — idempotent). */
+export interface CancelResult {
+  cancelled: boolean;
+  run_id: string | null;
 }
 
 export interface Orchestrator {
   dispatch(chatId: string, text: string): Promise<DispatchResult>;
+  cancel(chatId: string): Promise<CancelResult>;
 }
 
 /** 409 conflict — another dispatch holds the lock. HTTP layer (T9) maps
@@ -118,7 +137,40 @@ const TERMINAL_STATUSES = new Set(["done", "error", "cancelled"]);
 export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const { db, repo, spawner, emit, titler } = deps;
 
+  // Per-run cancel registry. Populated by dispatch() at run.start time and
+  // consulted in both the streaming loop (after-yield bail) and the finally
+  // block (status="cancelled" instead of "done"). `cancel(chatId)` looks
+  // up the current_run_id, flips the flag, and forwards to spawner.cancel
+  // if available — so the subprocess actually receives SIGTERM/SIGKILL and
+  // the for-await loop unblocks. Cleared on run end.
+  const cancelRequested = new Set<string>();
+
   return {
+    async cancel(chatId) {
+      const chat = repo.get(chatId);
+      if (!chat || !chat.current_run_id) {
+        return { cancelled: false, run_id: null };
+      }
+      const runId = chat.current_run_id;
+      if (cancelRequested.has(runId)) {
+        // Already cancelled in flight — return the run_id so callers can
+        // log it, but cancelled=false flags this as a duplicate (the HTTP
+        // layer still surfaces it as 200 only if the run was *just* terminated;
+        // subsequent calls after the run finishes hit the no-current_run_id
+        // branch above and return cancelled=false). The flag-already-set
+        // case is rare (concurrent cancel requests) — treat it as "yes, the
+        // first one already took effect" so the second call is idempotent.
+        return { cancelled: true, run_id: runId };
+      }
+      cancelRequested.add(runId);
+      // Best-effort: signal the underlying spawner. If the spawner exposes
+      // no cancel hook (legacy test fakes), the orchestrator still records
+      // intent so the post-stream finally block stamps status="cancelled".
+      if (spawner.cancel) {
+        await spawner.cancel(runId).catch(() => false);
+      }
+      return { cancelled: true, run_id: runId };
+    },
     async dispatch(chatId, text) {
       const chat = repo.get(chatId);
       if (!chat) {
@@ -158,7 +210,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
       });
 
       // Phase 2: spawn + drain. Errors here MUST land in finally.
-      let status: "done" | "error" = "done";
+      let status: "done" | "error" | "cancelled" = "done";
       let errorMessage: string | null = null;
       let firstAssistantSeen = false;
       let lastAssistantText = "";
@@ -173,6 +225,12 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           prompt: text,
         });
         for await (const evt of stream) {
+          // VOS-80 S5: cancel-bail. The for-await may already have a buffered
+          // event that arrived before SIGTERM landed; drop further events so
+          // the run terminates promptly without surfacing post-cancel tokens.
+          if (cancelRequested.has(runId)) {
+            break;
+          }
           if (evt.type === "system" && typeof evt.session_id === "string") {
             // Double gate: in-memory boolean + the IS NULL check on the
             // canonical row. Across runs (--resume), claudev re-emits the
@@ -223,21 +281,41 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
           }
         }
-        if (firstAssistantSeen) {
+        if (firstAssistantSeen && !cancelRequested.has(runId)) {
           emit("chat.completion", { chat_id: chatId, run_id: runId });
           if (lastAssistantText) {
             repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
           }
         }
       } catch (err) {
-        status = "error";
-        errorMessage = err instanceof Error ? err.message : String(err);
-        emit("run.error", {
-          chat_id: chatId,
-          run_id: runId,
-          error: errorMessage,
-        });
+        // VOS-80 S5: a cancel may race with the iterator throwing (e.g.
+        // spawner-iter propagates "cancelled" sentinel via throw). When
+        // cancelRequested is set for this run, the error path was caused
+        // by cancel — don't surface it as run.error.
+        if (cancelRequested.has(runId)) {
+          // swallowed: finally block handles status="cancelled" + run.end
+        } else {
+          status = "error";
+          errorMessage = err instanceof Error ? err.message : String(err);
+          emit("run.error", {
+            chat_id: chatId,
+            run_id: runId,
+            error: errorMessage,
+          });
+        }
       } finally {
+        // VOS-80 S5: cancel-late override. The cancel signal can land any
+        // time during dispatch; finally is the single point where we know
+        // the run is over and can stamp the terminal status correctly.
+        // Persist whatever assistant text was streamed before the bail so
+        // mid-stream interrupts don't drop visible tokens.
+        if (cancelRequested.has(runId)) {
+          status = "cancelled";
+          errorMessage = null;
+          if (lastAssistantText) {
+            repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
+          }
+        }
         // Phase 3: cleanup, atomic. Always clear the lock and stamp end.
         const endedAt = Date.now();
         const cleanup = db.transaction(() => {
@@ -267,6 +345,8 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           status,
           error: errorMessage,
         });
+        // Drop cancel-request flag — run is terminal, no further bail needed.
+        cancelRequested.delete(runId);
       }
 
       // Phase 4: fire-and-forget titler on the FIRST successful turn.

@@ -47,11 +47,31 @@ export interface SpawnerIterDeps {
 
 /**
  * Build a `Spawner` (orchestrator-shaped) backed by a bus-emitting `CcSpawner`.
+ *
+ * VOS-80 S5: `cancel(runId)` is wired to the matching `CcProcess.kill()`.
+ * A shared per-iter map (`activeProcs`) tracks live runs; the orchestrator
+ * looks the runId up via this adapter, the adapter forwards SIGTERM (with
+ * SIGKILL grace) to the subprocess. The iterator's bus subscription
+ * receives the resulting `run.end` and naturally drains.
  */
 export function makeCcSpawnerIter(deps: SpawnerIterDeps): Spawner {
+  // Per-spawner-instance map. Multiple chats running in parallel have
+  // distinct runIds; cancel(runId) only touches the one. Populated by
+  // iterate() once cc.spawn resolves; cleared when the iterator's finally
+  // block runs (run.end or run.error or cancel-induced kill).
+  const activeProcs = new Map<string, { kill: () => Promise<void> }>();
   return {
     spawn(args: SpawnArgs): AsyncIterable<SpawnerEvent> {
-      return iterate(deps, args);
+      return iterate(deps, args, activeProcs);
+    },
+    async cancel(runId: string): Promise<boolean> {
+      const proc = activeProcs.get(runId);
+      if (!proc) return false;
+      // Fire-and-forget: kill resolves only after the process exits, but
+      // we don't want to block the HTTP handler that long. The iterator's
+      // bus subscription will fire run.end → finally → activeProcs.delete.
+      proc.kill().catch(() => {});
+      return true;
     },
   };
 }
@@ -64,6 +84,7 @@ export function makeCcSpawnerIter(deps: SpawnerIterDeps): Spawner {
 async function* iterate(
   deps: SpawnerIterDeps,
   args: SpawnArgs,
+  activeProcs: Map<string, { kill: () => Promise<void> }>,
 ): AsyncGenerator<SpawnerEvent, void, void> {
   const queue: SpawnerEvent[] = [];
   // Buffer for events that arrive before `cc.spawn` resolves (i.e. before
@@ -133,6 +154,9 @@ async function* iterate(
       resumeFrom: args.resume ?? undefined,
     });
     runId = proc.runId;
+    // Register for VOS-80 cancel: the spawner's `cancel(runId)` looks this
+    // entry up and forwards to `CcProcess.kill()`.
+    activeProcs.set(runId, { kill: () => proc.kill() });
 
     // Drain pre-spawn buffer: any event whose runId matches retroactively
     // fires through the same handlers. This is the race window between
@@ -168,5 +192,6 @@ async function* iterate(
     unsubEvent();
     unsubEnd();
     unsubErr();
+    if (runId !== null) activeProcs.delete(runId);
   }
 }

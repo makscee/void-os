@@ -284,6 +284,7 @@ test("restart with orphan running run: bootRecovery flips to interrupted, last_r
     dispatch: async () => {
       throw new Error("orchestrator not used in restart test");
     },
+    cancel: async () => ({ cancelled: false, run_id: null }),
   };
   const app = await buildApp({
     db,

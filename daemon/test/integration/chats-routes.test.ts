@@ -147,6 +147,9 @@ test("POST /chat/:id/message — happy path returns {run_id, status}", async () 
       captured = { chatId, text };
       return { run_id: "run-abc", status: "done" };
     },
+    async cancel() {
+      return { cancelled: false, run_id: null };
+    },
   };
   const { app } = await bootstrap({ orchestrator: orch });
   const created = (await (
@@ -173,6 +176,9 @@ test("POST /chat/:id/message — 404 when chat missing", async () => {
     async dispatch() {
       throw new Error("should not be called");
     },
+    async cancel() {
+      return { cancelled: false, run_id: null };
+    },
   };
   const { app } = await bootstrap({ orchestrator: orch });
   const res = await app.request("/chat/does-not-exist/message", {
@@ -189,6 +195,9 @@ test("POST /chat/:id/message — 409 when orchestrator throws Conflict409", asyn
   const orch: Orchestrator = {
     async dispatch() {
       throw new Conflict409("run-already-running");
+    },
+    async cancel() {
+      return { cancelled: false, run_id: null };
     },
   };
   const { app } = await bootstrap({ orchestrator: orch });
@@ -218,6 +227,9 @@ test("POST /chat/:id/message — 500 on unexpected orchestrator error", async ()
     async dispatch() {
       throw new Error("spawner exploded");
     },
+    async cancel() {
+      return { cancelled: false, run_id: null };
+    },
   };
   const { app } = await bootstrap({ orchestrator: orch });
   const created = (await (
@@ -241,6 +253,9 @@ test("POST /chat/:id/message — 400 when text missing/empty", async () => {
   const orch: Orchestrator = {
     async dispatch() {
       throw new Error("should not be called");
+    },
+    async cancel() {
+      return { cancelled: false, run_id: null };
     },
   };
   const { app } = await bootstrap({ orchestrator: orch });
