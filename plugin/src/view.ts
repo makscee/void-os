@@ -22,7 +22,16 @@ export class ChatView extends ItemView {
   async onOpen() {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
+    // Obsidian's view-content has its own padding + display; override so the
+    // chat layout owns the full pane height (composer can pin bottom, etc.).
+    container.style.padding = "0";
+    container.style.display = "flex";
+    container.style.flexDirection = "column";
+    container.style.minHeight = "0";
     const mount = container.createDiv({ cls: "void-os-chat-root" });
+    mount.style.flex = "1";
+    mount.style.minHeight = "0";
+    mount.style.display = "flex";
     this.root = createRoot(mount);
     if (this.deps) {
       this.root.render(React.createElement(ChatRoot, this.deps()));
