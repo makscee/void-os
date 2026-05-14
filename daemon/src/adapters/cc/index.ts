@@ -18,6 +18,11 @@ export interface CcSpawnRequest {
   resumeFrom?: string;
   outputTimeoutMs?: number;
   toolTimeoutMs?: number;
+  /** VOS-80 fix: pre-first-event ceiling. Caps how long the user can wait
+   *  for the indicator to unstick when CC --resume hangs in claudev
+   *  auth/setup (the bug — produces banner noise only, no stream-json).
+   *  Defaults to DEFAULT_FIRST_EVENT_TIMEOUT_MS. */
+  firstEventTimeoutMs?: number;
   settings?: unknown;
 }
 
@@ -57,6 +62,12 @@ export interface ProbeResult {
 
 export const DEFAULT_OUTPUT_TIMEOUT_MS = 120_000;
 export const DEFAULT_TOOL_TIMEOUT_MS   = 1_800_000;
+/** VOS-80 fix: pre-first-event watchdog ceiling. Picked to comfortably exceed
+ *  normal cold-start latency (claudev auth + CC SDK init: typically <5s) while
+ *  unsticking the indicator quickly in the resume-hang failure mode. The
+ *  original idle threshold (120s) is preserved for the post-first-event
+ *  phase (mid-stream token gaps), so a slow model response is unaffected. */
+export const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 15_000;
 export const KILL_GRACE_MS             = 5_000;
 /** Fast-cancel grace: SIGINT → wait this long → SIGKILL. Short because the
  *  user has explicitly asked to stop, so we trade graceful-flush for
@@ -154,6 +165,7 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       const started = now();
       const outputTimeoutMs = req.outputTimeoutMs ?? DEFAULT_OUTPUT_TIMEOUT_MS;
       const toolTimeoutMs   = req.toolTimeoutMs   ?? DEFAULT_TOOL_TIMEOUT_MS;
+      const firstEventTimeoutMs = req.firstEventTimeoutMs ?? DEFAULT_FIRST_EVENT_TIMEOUT_MS;
 
       const tracePath = join(deps.tracesDir, `${runId}.jsonl`);
       const traceStream = createWriteStream(tracePath, { flags: "a" });
@@ -269,7 +281,12 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         now,
         outputTimeoutMs,
         toolTimeoutMs,
-        lastEventTs: () => parser.lastEventTs() || started,
+        firstEventTimeoutMs,
+        startedAt: started,
+        // Raw parser timestamp (0 until the first parsed event). The
+        // watchdog itself handles the pre-first-event branch using
+        // `startedAt` + `firstEventTimeoutMs` — no fallback collapse here.
+        lastEventTs: () => parser.lastEventTs(),
         inToolCall: () => parser.inToolCall(),
         onTimeout: (info) => {
           timedOut = true;
@@ -280,6 +297,10 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
               lastEventType: parser.lastEventType(),
               idleMs: info.idleMs,
               threshold: info.threshold,
+              // VOS-80 fix: surface which timeout phase fired so traces +
+              // tests can tell a resume-hang ("first_event") apart from a
+              // mid-stream stall ("output") or a stuck tool call ("tool").
+              phase: info.phase,
             },
           });
           proc.kill("SIGTERM");
