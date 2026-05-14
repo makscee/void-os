@@ -41,10 +41,34 @@ export interface SpawnerEvent {
   type: string;
   session_id?: string;
   content?: unknown;
+  message?: unknown;
   name?: string;
   input?: unknown;
   output?: unknown;
   [k: string]: unknown;
+}
+
+/**
+ * Extract concatenated text from a CC stream-json `assistant` event. Per the
+ * SDK shape, assistant events carry `{ message: { content: [{type:"text",
+ * text}, {type:"tool_use", ...}, ...] } }`. We only sum text blocks; tool_use
+ * blocks are surfaced separately via the `tool_use` event path. Returns "" if
+ * the event has no recognisable text content (e.g. a pure tool-call turn).
+ */
+export function extractAssistantText(evt: SpawnerEvent): string {
+  const msg = (evt as { message?: { content?: unknown } }).message;
+  const blocks = msg && Array.isArray(msg.content) ? msg.content : null;
+  if (!blocks) return "";
+  let s = "";
+  for (const b of blocks) {
+    if (b && typeof b === "object") {
+      const block = b as { type?: unknown; text?: unknown };
+      if (block.type === "text" && typeof block.text === "string") {
+        s += block.text;
+      }
+    }
+  }
+  return s;
 }
 
 export interface SpawnArgs {
@@ -162,12 +186,19 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
           } else if (evt.type === "assistant") {
             firstAssistantSeen = true;
-            if (typeof evt.content === "string") lastAssistantText += evt.content;
-            emit("chat.token", {
-              chat_id: chatId,
-              run_id: runId,
-              delta: evt.content,
-            });
+            // CC stream-json shape: text lives in evt.message.content[] as
+            // {type:"text", text}. Pure tool-call assistant turns have no
+            // text blocks — skip the emit so the wire stays clean (tool_use
+            // rendering is a separate event).
+            const text = extractAssistantText(evt);
+            if (text) {
+              lastAssistantText += text;
+              emit("chat.token", {
+                chat_id: chatId,
+                run_id: runId,
+                delta: text,
+              });
+            }
           } else if (evt.type === "tool_use") {
             emit("chat.tool_call", {
               chat_id: chatId,

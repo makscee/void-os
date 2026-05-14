@@ -74,8 +74,20 @@ function cannedSpawner(sessionId: string) {
       calls.push({ ...args });
       return (async function* () {
         yield { type: "system", session_id: sessionId };
-        yield { type: "assistant", content: "hello " };
-        yield { type: "assistant", content: "back" };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "hello " }],
+          },
+        };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "back" }],
+          },
+        };
       })();
     },
   };

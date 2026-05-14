@@ -15,7 +15,11 @@ import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeChatRepo } from "../../src/chat/repo";
-import { makeOrchestrator, Conflict409 } from "../../src/chat/orchestrator";
+import {
+  makeOrchestrator,
+  Conflict409,
+  extractAssistantText,
+} from "../../src/chat/orchestrator";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -68,7 +72,10 @@ function fakeSpawner(opts: FakeSpawnerOpts = {}) {
       const throwMid = opts.throwMid;
       return (async function* () {
         yield { type: "system", session_id: sid };
-        yield { type: "assistant", content: "Hi" };
+        yield {
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "Hi" }] },
+        };
         if (throwMid) throw new Error("stream blew up");
         yield { type: "tool_use", name: "vault.read", input: { path: "x" } };
       })();
@@ -112,9 +119,157 @@ test("happy path: lock acquired, run inserted, sessionCaptured, cleanup", async 
   expect(types).toContain("run.start");
   expect(types).toContain("run.end");
 
+  // chat.token carries non-empty delta extracted from message.content[].
+  const tokens = events
+    .filter((e) => e.t === "chat.token")
+    .map((e) => (e.p as { delta: string }).delta);
+  expect(tokens.length).toBe(1);
+  expect(tokens[0]).toBe("Hi");
+
+  // Persisted last_msg snippet reflects the assembled assistant text.
+  expect(afterChat.last_msg).toBe("Hi");
+
   // Wait one microtask for fire-and-forget titler
   await new Promise((r) => setTimeout(r, 5));
   expect(titler.title).toHaveBeenCalledTimes(1);
+});
+
+// ── extractAssistantText unit coverage ─────────────────────────────────
+
+test("extractAssistantText: single text block", () => {
+  expect(
+    extractAssistantText({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
+    } as any),
+  ).toBe("hello");
+});
+
+test("extractAssistantText: multiple text blocks concatenate", () => {
+  expect(
+    extractAssistantText({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "foo " },
+          { type: "text", text: "bar" },
+        ],
+      },
+    } as any),
+  ).toBe("foo bar");
+});
+
+test("extractAssistantText: mixed text + tool_use blocks return only text", () => {
+  expect(
+    extractAssistantText({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "thinking: " },
+          { type: "tool_use", id: "u_1", name: "vault.read", input: {} },
+          { type: "text", text: "done" },
+        ],
+      },
+    } as any),
+  ).toBe("thinking: done");
+});
+
+test("extractAssistantText: missing message returns empty string", () => {
+  expect(extractAssistantText({ type: "assistant" } as any)).toBe("");
+});
+
+test("extractAssistantText: empty content array returns empty string", () => {
+  expect(
+    extractAssistantText({
+      type: "assistant",
+      message: { role: "assistant", content: [] },
+    } as any),
+  ).toBe("");
+});
+
+test("extractAssistantText: tool-use-only content returns empty string", () => {
+  expect(
+    extractAssistantText({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "u_1", name: "x", input: {} }],
+      },
+    } as any),
+  ).toBe("");
+});
+
+// ── orchestrator-level: multi-block assistant + empty/tool-only turns ──
+
+test("orchestrator: assistant with multiple text blocks emits one delta + persists full text", async () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+  const events: Array<{ t: string; p: any }> = [];
+  const spawner = {
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-multi" };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "alpha " },
+              { type: "text", text: "beta" },
+            ],
+          },
+        };
+      })();
+    },
+  };
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+  await orch.dispatch(chat.id, "go");
+  const tokens = events.filter((e) => e.t === "chat.token");
+  expect(tokens.length).toBe(1);
+  expect(tokens[0]!.p.delta).toBe("alpha beta");
+  expect(repo.get(chat.id)!.last_msg).toBe("alpha beta");
+});
+
+test("orchestrator: pure tool-call assistant turn emits NO chat.token", async () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const chat = repo.create({ agent: "maya" });
+  const events: Array<{ t: string; p: any }> = [];
+  const spawner = {
+    spawn() {
+      return (async function* () {
+        yield { type: "system", session_id: "sid-tool-only" };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "u_1", name: "x", input: {} }],
+          },
+        };
+      })();
+    },
+  };
+  const orch = makeOrchestrator({
+    db,
+    repo,
+    spawner,
+    emit: (t, p) => events.push({ t, p }),
+    titler: { title: async () => {} },
+  });
+  await orch.dispatch(chat.id, "go");
+  const tokens = events.filter((e) => e.t === "chat.token");
+  expect(tokens.length).toBe(0);
+  // Still emits chat.completion since firstAssistantSeen flipped.
+  expect(events.some((e) => e.t === "chat.completion")).toBe(true);
 });
 
 test("concurrent dispatch: second rejects with Conflict409 carrying current_run_id", async () => {
