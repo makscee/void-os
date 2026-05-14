@@ -140,6 +140,68 @@ describe("ChatList", () => {
     root.unmount();
   });
 
+  test("polls listChats while any row is running, stops when none are", async () => {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const act = (React as any).act;
+    const { ChatList } = await import("../src/chat/ChatList");
+
+    // First fetch returns a running row; subsequent fetches return cancelled.
+    // The poll should re-fetch and replace state with the cancelled snapshot.
+    let calls = 0;
+    const api: ChatApi = {
+      async createChat() { return { id: "x", title: "t", created_at: 0 }; },
+      async postMessage() { return { run_id: "r", status: "running" }; },
+      async cancel() { return { run_id: "r", status: "cancelled" }; },
+      async listChats() {
+        calls++;
+        return [{
+          id: "c1",
+          agent: "maya",
+          title: "T",
+          last_msg: "hello",
+          updated_at: 1,
+          last_run_status: calls === 1 ? "running" : "cancelled",
+        }];
+      },
+      async getMessages() { return []; },
+    };
+
+    const host = (globalThis as any).document.createElement("div");
+    (globalThis as any).document.body.appendChild(host);
+    const root = createRoot(host);
+
+    await act(async () => {
+      root.render(React.createElement(ChatList, {
+        api, activeChatId: null, onSelect: () => {}, onNewChat: () => {},
+      }));
+    });
+    await flush(act);
+    expect(calls).toBe(1);
+    // First render: dot status is running.
+    let dot = host.querySelector("[data-status]");
+    expect(dot?.getAttribute("data-status")).toBe("running");
+
+    // Advance ~POLL_MS by sleeping in real time. Test file is already
+    // tolerant of small timing variance via the flush loop.
+    await act(async () => { await new Promise((r) => setTimeout(r, 3200)); });
+    await flush(act);
+
+    // Poll fired at least once; status flipped to cancelled.
+    expect(calls).toBeGreaterThanOrEqual(2);
+    dot = host.querySelector("[data-status]");
+    expect(dot?.getAttribute("data-status")).toBe("cancelled");
+
+    // Poll should now stop since no row is running. Snapshot calls and wait
+    // another interval — count must not grow.
+    const callsAfterStop = calls;
+    await act(async () => { await new Promise((r) => setTimeout(r, 3200)); });
+    await flush(act);
+    expect(calls).toBe(callsAfterStop);
+
+    root.unmount();
+  }, 15000);
+
   test("re-fetches when refreshKey changes", async () => {
     const React = await import("react");
     const { createRoot } = await import("react-dom/client");

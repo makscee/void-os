@@ -14,6 +14,10 @@
 //   - Refresh: parent passes a `refreshKey` that changes whenever a new
 //     chat is minted or a run finishes; we re-fetch on changes. Simpler
 //     than wiring the bus through here.
+//   - Polling safety-net: when any row reports last_run_status="running"
+//     we poll listChats every POLL_MS as a fallback for dropped/late
+//     run.end frames (WS reconnect edge, debounce trailing-edge races).
+//     Stops as soon as no row is running. Cheap (one GET / 3s).
 
 import * as React from "react";
 import type { ChatApi, ChatSummary } from "./api";
@@ -26,6 +30,11 @@ export interface ChatListProps {
   /** Bumping this triggers a re-fetch of /chats. */
   refreshKey?: number;
 }
+
+/** Polling interval while any chat row reports running. Picked to be slow
+ *  enough to be free (one GET / interval) but fast enough that a stuck dot
+ *  resolves within a couple seconds at worst. */
+const POLL_MS = 3000;
 
 const PREVIEW_MAX = 80;
 
@@ -73,6 +82,23 @@ export function ChatList(props: ChatListProps) {
       });
     return () => { cancelled = true; };
   }, [api, refreshKey]);
+
+  // Polling fallback: while any chat row reads as "running", re-fetch on
+  // POLL_MS interval. Guards against missed run.end frames (WS drop /
+  // debounce trailing-edge races) leaving the sidebar dot stuck pulsing.
+  // Stops as soon as the next fetch returns no running rows.
+  const anyRunning = chats.some((c) => c.last_run_status === "running");
+  React.useEffect(() => {
+    if (!anyRunning) return;
+    let cancelled = false;
+    const id = setInterval(() => {
+      api.listChats()
+        .then((rows) => { if (!cancelled) setChats(rows); })
+        .catch(() => { /* swallow: next tick retries; loading/error UI
+                          is driven by the refreshKey path, not polling. */ });
+    }, POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [api, anyRunning]);
 
   const visible = chats.filter((c) => !isEmpty(c));
 
