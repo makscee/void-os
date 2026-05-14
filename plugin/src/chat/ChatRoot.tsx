@@ -1,32 +1,22 @@
 import * as React from "react";
-import { useState, useCallback } from "react";
 import {
   AssistantRuntimeProvider,
-  useExternalStoreRuntime,
   ThreadPrimitive,
   ComposerPrimitive,
   MessagePrimitive,
   MessagePartPrimitive,
-  type ThreadMessageLike,
 } from "@assistant-ui/react";
-import type { AppendMessage } from "@assistant-ui/react";
 
-/**
- * S1 no-op runtime: keeps an empty message list and ignores send.
- * S2 will replace this with the daemon WS adapter (see VOS-80 plan).
- */
-function useNoopRuntime() {
-  const [messages] = useState<ThreadMessageLike[]>([]);
-  const onNew = useCallback(async (_msg: AppendMessage) => {
-    // intentionally a no-op for S1 — daemon wiring in S2
-  }, []);
-  return useExternalStoreRuntime<ThreadMessageLike>({
-    messages,
-    isRunning: false,
-    isSendDisabled: true, // disable send button per S1 acceptance
-    onNew,
-    convertMessage: (m) => m,
-  });
+import type { FrameBus } from "./bus";
+import type { ChatApi } from "./api";
+import { useChatRuntime } from "./runtime";
+
+export interface ChatRootProps {
+  bus: FrameBus;
+  api: ChatApi;
+  chatId: string | null;
+  onChatIdMinted?: (id: string) => void | Promise<void>;
+  defaultAgent?: string;
 }
 
 // MessagePrimitive.Parts wants a `FunctionComponent<TextMessagePart>` for Text;
@@ -41,8 +31,8 @@ function MessageItem() {
   );
 }
 
-export function ChatRoot() {
-  const runtime = useNoopRuntime();
+export function ChatRoot(props: ChatRootProps) {
+  const runtime = useChatRuntime(props);
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="vos:flex vos:flex-col vos:h-full vos:w-full">
@@ -50,7 +40,7 @@ export function ChatRoot() {
           <ThreadPrimitive.Viewport className="vos:flex-1 vos:overflow-y-auto vos:px-4 vos:py-2">
             <ThreadPrimitive.Empty>
               <div className="vos:text-sm vos:opacity-60 vos:p-4">
-                void-os chat — daemon wiring lands in S2.
+                void-os chat — say hi.
               </div>
             </ThreadPrimitive.Empty>
             <ThreadPrimitive.Messages components={{ Message: MessageItem }} />
@@ -59,12 +49,11 @@ export function ChatRoot() {
             <ComposerPrimitive.Input
               rows={1}
               autoFocus
-              placeholder="Message (disabled — S2)"
+              placeholder="Message"
               className="vos:flex-1 vos:bg-transparent vos:resize-none vos:outline-none vos:px-2 vos:py-1"
             />
             <ComposerPrimitive.Send
-              disabled
-              className="vos:px-3 vos:py-1 vos:rounded vos:border vos:opacity-50"
+              className="vos:px-3 vos:py-1 vos:rounded vos:border vos:opacity-100"
             >
               Send
             </ComposerPrimitive.Send>
