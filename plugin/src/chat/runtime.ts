@@ -97,8 +97,16 @@ export interface ChatRuntimeHandle {
    *  reported a cancel; false if there was no active run (409). Errors bubble.
    *  Use this from an ESC keydown handler bound to the composer textarea. */
   cancel: () => Promise<boolean>;
-  /** True while a run is streaming. Drives the ESC hint visibility. */
+  /** True while a run is streaming. Drives the ESC hint visibility, the 3-dot
+   *  pulse, and the swap-in custom Send button when assistant-ui's built-in
+   *  Send is disabled-while-running. SAME source of truth as the
+   *  isRunning prop fed to useExternalStoreRuntime — keep them aligned. */
   isRunning: boolean;
+  /** Imperative send. Mirrors composer Send: enqueues if a run is in flight,
+   *  POSTs otherwise. Used by our custom always-on Send button (rendered
+   *  in place of ComposerPrimitive.Send while running, since assistant-ui's
+   *  built-in Send becomes null/disabled when thread.isRunning && !queue). */
+  send: (text: string) => Promise<void>;
 }
 
 export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
@@ -196,9 +204,11 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     return base.concat(queuedThread);
   }, [state.messages, state.queues, state.chatId]);
 
-  const onNew = useCallback(
-    async (msg: AppendMessage) => {
-      const text = extractText(msg).trim();
+  // Core send path. Used by both onNew (assistant-ui composer flow) and the
+  // imperative `send()` exposed on the handle (custom always-on Send button).
+  const sendText = useCallback(
+    async (rawText: string) => {
+      const text = rawText.trim();
       if (!text) return;
 
       // Mint a chat lazily if none pinned yet (avoids fresh-install UX cliff).
@@ -238,6 +248,13 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     [deps.api, deps.defaultAgent, deps.onChatIdMinted, deps.onSendError],
   );
 
+  const onNew = useCallback(
+    async (msg: AppendMessage) => {
+      await sendText(extractText(msg));
+    },
+    [sendText],
+  );
+
   const cancel = useCallback(async () => {
     const chatId = chatIdRef.current;
     if (!chatId) return false;
@@ -253,16 +270,28 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     }
   }, [deps.api, deps.onSendError]);
 
+  // SOURCE OF TRUTH for "a run is in flight". Drives:
+  //   - assistant-ui's internal `thread.isRunning` (via useExternalStoreRuntime)
+  //     which gates: ThreadPrimitive.If running (3-dot pulse), live streaming
+  //     assistant bubble render path, auto-status indicators.
+  //   - our handle.isRunning (consumed by ChatRoot): ESC hint visibility, ESC
+  //     keydown guard, custom Send-button swap-in.
+  // Both MUST be derived from the same reactive value (state.runState) so
+  // every indicator + handler stays in sync. The composer remains ALWAYS
+  // writable because we never pass `isDisabled`.
+  const isRunning = state.runState === "running";
+
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages,
-    // Composer is always enabled. We no longer gate isRunning/isDisabled on
-    // runState — sends made during a run are enqueued, not blocked.
-    isRunning: false,
+    isRunning,
+    // Intentionally NO isDisabled — composer textarea must stay writable while
+    // running so the user can type the next message; that send is then routed
+    // into the local queue via onNew/sendText.
     onNew,
     convertMessage: (m) => m,
   });
 
-  return { runtime, cancel, isRunning: state.runState === "running" };
+  return { runtime, cancel, isRunning, send: sendText };
 }
 
 // Re-exported for tests.

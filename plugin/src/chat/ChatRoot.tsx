@@ -5,6 +5,7 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   MessagePartPrimitive,
+  useAui,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 
@@ -108,6 +109,40 @@ function ThinkingIndicator() {
         </div>
       </div>
     </ThreadPrimitive.If>
+  );
+}
+
+// Custom Send button rendered ONLY while a run is streaming.
+//
+// Why: assistant-ui's built-in `ComposerPrimitive.Send` returns null whenever
+// `thread.isRunning && !thread.capabilities.queue` — and the external-store
+// runtime hardcodes `queue: false`. So the moment we (correctly) tell
+// assistant-ui that a run is in flight, the default Send button vanishes.
+//
+// We replace it with a tiny button that reads the composer's current text
+// out of assistant-ui's store, hands it to the runtime's imperative `send()`
+// (which enqueues during a run, POSTs otherwise), then clears the input.
+//
+// The composer textarea (`ComposerPrimitive.Input`) stays a normal,
+// always-writable textarea — only the Send button gets swapped.
+function QueueSendButton(props: { send: (text: string) => Promise<void> }) {
+  const aui = useAui();
+  const onClick = React.useCallback(() => {
+    const composer = aui.composer();
+    const text = composer.getState().text;
+    if (!text.trim()) return;
+    composer.setText("");
+    void props.send(text);
+  }, [aui, props]);
+  return (
+    <button
+      type="button"
+      data-testid="queue-send"
+      onClick={onClick}
+      className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)]"
+    >
+      Send
+    </button>
   );
 }
 
@@ -241,11 +276,15 @@ export function ChatRoot(props: ChatRootProps) {
                   placeholder="Message"
                   className="vos:flex-1 vos:bg-transparent vos:resize-none vos:outline-none vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:text-[var(--text-normal)] placeholder:vos:text-[var(--text-muted)]"
                 />
-                <ComposerPrimitive.Send
-                  className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)] disabled:vos:bg-[var(--background-modifier-form-field)] disabled:vos:text-[var(--text-faint)] disabled:vos:cursor-not-allowed"
-                >
-                  Send
-                </ComposerPrimitive.Send>
+                {handle.isRunning ? (
+                  <QueueSendButton send={handle.send} />
+                ) : (
+                  <ComposerPrimitive.Send
+                    className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)] disabled:vos:bg-[var(--background-modifier-form-field)] disabled:vos:text-[var(--text-faint)] disabled:vos:cursor-not-allowed"
+                  >
+                    Send
+                  </ComposerPrimitive.Send>
+                )}
               </ComposerPrimitive.Root>
               {handle.isRunning && (
                 <div
