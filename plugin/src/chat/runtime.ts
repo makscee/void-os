@@ -64,8 +64,26 @@ export function useChatRuntime(deps: ChatRuntimeDeps) {
   const chatIdRef = useRef<string | null>(deps.chatId);
   useEffect(() => {
     chatIdRef.current = deps.chatId;
-    if (deps.chatId) dispatch({ kind: "set_chat", chatId: deps.chatId });
-  }, [deps.chatId]);
+    if (!deps.chatId) return;
+    dispatch({ kind: "set_chat", chatId: deps.chatId });
+    // Hydrate from history. Race-safety lives in two layers:
+    //   1) chatIdRef check on resolve;
+    //   2) hydrate reducer ignores if state.chatId moved on.
+    const requested = deps.chatId;
+    let cancelled = false;
+    deps.api.getMessages(requested)
+      .then((rows) => {
+        if (cancelled) return;
+        if (chatIdRef.current !== requested) return;
+        dispatch({ kind: "hydrate", chatId: requested, messages: rows });
+      })
+      .catch((err: unknown) => {
+        // History fetch is best-effort; log + carry on with empty thread.
+        // eslint-disable-next-line no-console
+        console.error("[void-os] getMessages failed", err);
+      });
+    return () => { cancelled = true; };
+  }, [deps.chatId, deps.api]);
 
   // Subscribe to bus once.
   useEffect(() => {
