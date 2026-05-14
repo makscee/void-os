@@ -1,13 +1,15 @@
 // Pure reducer for the chat thread state. Independent of React + assistant-ui
 // so it can be unit-tested in isolation (see test/chat-reducer.test.ts).
 //
-// Daemon wire shape (VOS-79):
+// Daemon wire shape (VOS-79 + S4 tool frames):
 //   chat.message_user  {chat_id, run_id, text}
 //   run.start          {chat_id, run_id, agent}
-//   chat.token         {chat_id, run_id, delta}    ← assistant streaming
+//   chat.token         {chat_id, run_id, delta}             ← assistant streaming
+//   chat.tool_use      {chat_id, run_id, tool_call_id, name, input}
+//   chat.tool_result   {chat_id, run_id, tool_call_id, output, is_error}
 //   chat.completion    {chat_id, run_id}
-//   run.end            {chat_id, run_id, status}   ← terminal
-//   run.error          {chat_id, run_id, error}    ← terminal
+//   run.end            {chat_id, run_id, status}            ← terminal
+//   run.error          {chat_id, run_id, error}             ← terminal
 //
 // Dedupe key per the plan is "msg_id". The daemon does not (yet) emit a
 // per-assistant-message id; one assistant message per run, keyed by `run_id`.
@@ -17,27 +19,58 @@ import type { DaemonFrame } from "./bus";
 
 export type Role = "user" | "assistant";
 
+/** Inline parts on an assistant message. The leading text from chat.token
+ *  deltas lives in `ChatMessage.text` for back-compat with S1/S2/S3 tests
+ *  and is mirrored as the first TextPart in `parts`. Tool-call parts are
+ *  appended in arrival order (preserves daemon's intra-turn ordering). */
+export type TextPart = { kind: "text"; text: string };
+export type ToolPart = {
+  kind: "tool";
+  toolCallId: string;
+  name: string;
+  /** JSON-able object as emitted by the daemon. */
+  input: Record<string, unknown>;
+  /** Normalized string output once tool_result lands. `undefined` while running. */
+  output?: string;
+  /** True when daemon flagged the tool result as an error. Defaults to false. */
+  isError: boolean;
+};
+export type AssistantPart = TextPart | ToolPart;
+
 export interface ChatMessage {
   /** Stable id used for dedupe. For assistant rows = run_id. For user rows
    *  we mint a synthetic id ("user-<run_id>") so reconciliation is trivial. */
   id: string;
   role: Role;
+  /** Concatenated assistant text (chat.token deltas). For user rows = body. */
   text: string;
   /** assistant message becomes complete on chat.completion / run.end. */
   complete: boolean;
+  /** Assistant content parts in arrival order. Undefined for plain user rows. */
+  parts?: AssistantPart[];
 }
 
 export type RunState = "idle" | "running" | "error";
 
-/** Shape used by `hydrate` — daemon-replayed history rows. The daemon does
- *  not preserve per-message run_ids in the JSONL session log (titler /
- *  resumability live elsewhere), so we synthesize stable `replay-{role}-{i}`
- *  ids. New runs after replay use real run_ids and coexist. */
-export interface ReplayMessage {
-  role: Role;
-  content: string;
-  ts?: number;
-}
+/** Replay items returned by GET /chat/:id/messages. Heterogeneous: text turns
+ *  (user/assistant) plus tool_use/tool_result entries. Tool entries attach to
+ *  the nearest preceding assistant message in the same turn. */
+export type ReplayMessage =
+  | { role: "user" | "assistant"; content: string; ts?: number }
+  | {
+      role: "tool_use";
+      tool_call_id: string;
+      name: string;
+      input: Record<string, unknown>;
+      ts?: number;
+    }
+  | {
+      role: "tool_result";
+      tool_call_id: string;
+      output: string | Array<{ type?: string; text?: string }>;
+      is_error?: boolean;
+      ts?: number;
+    };
 
 export interface ChatState {
   /** Chat id this state is bound to. Frames for other chats are ignored. */
@@ -64,6 +97,28 @@ export type LocalAction =
   | { kind: "user_send"; text: string; tempId: string }
   | { kind: "frame"; frame: DaemonFrame };
 
+/** Normalize daemon `output` field — string or block array of {type:"text",text} —
+ *  to a plain string. Defensive against unexpected shapes. */
+export function normalizeToolOutput(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((p) => {
+        if (p && typeof p === "object" && typeof (p as { text?: unknown }).text === "string") {
+          return (p as { text: string }).text;
+        }
+        return "";
+      })
+      .join("");
+  }
+  if (raw == null) return "";
+  try { return JSON.stringify(raw); } catch { return String(raw); }
+}
+
+/** Append a text delta to the in-flight assistant message. Keeps `text` and
+ *  the trailing TextPart in `parts` in sync. If the in-flight message has
+ *  trailing tool parts, a fresh TextPart is started after them so chunked
+ *  text + tools interleave correctly. */
 function upsertAssistantDelta(
   msgs: ChatMessage[],
   runId: string,
@@ -71,10 +126,99 @@ function upsertAssistantDelta(
 ): ChatMessage[] {
   const idx = msgs.findIndex((m) => m.id === runId);
   if (idx === -1) {
-    return [...msgs, { id: runId, role: "assistant", text: delta, complete: false }];
+    return [
+      ...msgs,
+      {
+        id: runId,
+        role: "assistant",
+        text: delta,
+        complete: false,
+        parts: [{ kind: "text", text: delta }],
+      },
+    ];
   }
   const next = msgs.slice();
-  next[idx] = { ...next[idx], text: next[idx].text + delta };
+  const cur = next[idx];
+  const curParts = cur.parts ?? (cur.text ? [{ kind: "text" as const, text: cur.text }] : []);
+  let newParts: AssistantPart[];
+  const last = curParts[curParts.length - 1];
+  if (last && last.kind === "text") {
+    newParts = curParts.slice(0, -1).concat({ kind: "text", text: last.text + delta });
+  } else {
+    newParts = curParts.concat({ kind: "text", text: delta });
+  }
+  next[idx] = { ...cur, text: cur.text + delta, parts: newParts };
+  return next;
+}
+
+/** Ensure an assistant ChatMessage exists for `runId`. Returns updated msgs +
+ *  the index of the (possibly-new) assistant row. */
+function ensureAssistant(
+  msgs: ChatMessage[],
+  runId: string,
+): { msgs: ChatMessage[]; idx: number } {
+  const idx = msgs.findIndex((m) => m.id === runId && m.role === "assistant");
+  if (idx !== -1) return { msgs, idx };
+  const next = msgs.concat({
+    id: runId,
+    role: "assistant",
+    text: "",
+    complete: false,
+    parts: [],
+  });
+  return { msgs: next, idx: next.length - 1 };
+}
+
+function appendToolUse(
+  msgs: ChatMessage[],
+  runId: string,
+  toolCallId: string,
+  name: string,
+  input: Record<string, unknown>,
+): ChatMessage[] {
+  const { msgs: m, idx } = ensureAssistant(msgs, runId);
+  const cur = m[idx];
+  const curParts = cur.parts ?? (cur.text ? [{ kind: "text" as const, text: cur.text }] : []);
+  // Idempotent: if a tool part with this id already exists, leave it.
+  if (curParts.some((p) => p.kind === "tool" && p.toolCallId === toolCallId)) return m;
+  const newPart: ToolPart = { kind: "tool", toolCallId, name, input, isError: false };
+  const next = m.slice();
+  next[idx] = { ...cur, parts: curParts.concat(newPart) };
+  return next;
+}
+
+function applyToolResult(
+  msgs: ChatMessage[],
+  runId: string,
+  toolCallId: string,
+  output: unknown,
+  isError: boolean,
+): ChatMessage[] {
+  const { msgs: m, idx } = ensureAssistant(msgs, runId);
+  const cur = m[idx];
+  const curParts = cur.parts ?? (cur.text ? [{ kind: "text" as const, text: cur.text }] : []);
+  const outText = normalizeToolOutput(output);
+  const pIdx = curParts.findIndex(
+    (p) => p.kind === "tool" && p.toolCallId === toolCallId,
+  );
+  let nextParts: AssistantPart[];
+  if (pIdx === -1) {
+    // Defensive: tool_result without matching tool_use. Surface a stub.
+    nextParts = curParts.concat({
+      kind: "tool",
+      toolCallId,
+      name: "",
+      input: {},
+      output: outText,
+      isError,
+    });
+  } else {
+    const t = curParts[pIdx] as ToolPart;
+    nextParts = curParts.slice();
+    nextParts[pIdx] = { ...t, output: outText, isError };
+  }
+  const next = m.slice();
+  next[idx] = { ...cur, parts: nextParts };
   return next;
 }
 
@@ -118,12 +262,76 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
     case "hydrate": {
       // Stale-response guard: ignore if reducer has since switched away.
       if (state.chatId !== action.chatId) return state;
-      const messages: ChatMessage[] = action.messages.map((m, i) => ({
-        id: `replay-${m.role}-${i}`,
-        role: m.role,
-        text: m.content,
-        complete: true,
-      }));
+      const messages: ChatMessage[] = [];
+      let lastAssistantIdx = -1;
+      action.messages.forEach((m, i) => {
+        if (m.role === "user" || m.role === "assistant") {
+          const msg: ChatMessage = {
+            id: `replay-${m.role}-${i}`,
+            role: m.role,
+            text: m.content,
+            complete: true,
+            parts: m.role === "assistant"
+              ? (m.content ? [{ kind: "text", text: m.content }] : [])
+              : undefined,
+          };
+          messages.push(msg);
+          if (m.role === "assistant") lastAssistantIdx = messages.length - 1;
+        } else if (m.role === "tool_use") {
+          if (lastAssistantIdx === -1) {
+            // Defensive: tool entry before any assistant turn — synthesize one.
+            messages.push({
+              id: `replay-assistant-${i}`,
+              role: "assistant",
+              text: "",
+              complete: true,
+              parts: [],
+            });
+            lastAssistantIdx = messages.length - 1;
+          }
+          const a = messages[lastAssistantIdx];
+          const parts = (a.parts ?? []).concat({
+            kind: "tool",
+            toolCallId: m.tool_call_id,
+            name: m.name,
+            input: m.input ?? {},
+            isError: false,
+          });
+          messages[lastAssistantIdx] = { ...a, parts };
+        } else if (m.role === "tool_result") {
+          if (lastAssistantIdx === -1) {
+            messages.push({
+              id: `replay-assistant-${i}`,
+              role: "assistant",
+              text: "",
+              complete: true,
+              parts: [],
+            });
+            lastAssistantIdx = messages.length - 1;
+          }
+          const a = messages[lastAssistantIdx];
+          const parts = (a.parts ?? []).slice();
+          const pIdx = parts.findIndex(
+            (p) => p.kind === "tool" && p.toolCallId === m.tool_call_id,
+          );
+          const outText = normalizeToolOutput(m.output);
+          const isError = m.is_error === true;
+          if (pIdx === -1) {
+            parts.push({
+              kind: "tool",
+              toolCallId: m.tool_call_id,
+              name: "",
+              input: {},
+              output: outText,
+              isError,
+            });
+          } else {
+            const t = parts[pIdx] as ToolPart;
+            parts[pIdx] = { ...t, output: outText, isError };
+          }
+          messages[lastAssistantIdx] = { ...a, parts };
+        }
+      });
       return { ...state, messages };
     }
     case "user_send": {
@@ -158,6 +366,29 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           const delta = typeof f.delta === "string" ? f.delta : "";
           if (!delta) return state;
           return { ...state, messages: upsertAssistantDelta(state.messages, runId, delta) };
+        }
+        case "chat.tool_use": {
+          if (!runId) return state;
+          const toolCallId = typeof f.tool_call_id === "string" ? f.tool_call_id : null;
+          const name = typeof f.name === "string" ? f.name : "";
+          if (!toolCallId) return state;
+          const input = (f.input && typeof f.input === "object")
+            ? (f.input as Record<string, unknown>)
+            : {};
+          return {
+            ...state,
+            messages: appendToolUse(state.messages, runId, toolCallId, name, input),
+          };
+        }
+        case "chat.tool_result": {
+          if (!runId) return state;
+          const toolCallId = typeof f.tool_call_id === "string" ? f.tool_call_id : null;
+          if (!toolCallId) return state;
+          const isError = f.is_error === true;
+          return {
+            ...state,
+            messages: applyToolResult(state.messages, runId, toolCallId, f.output, isError),
+          };
         }
         case "chat.completion": {
           if (!runId) return state;

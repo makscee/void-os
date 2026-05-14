@@ -35,11 +35,34 @@ export interface ChatRuntimeDeps {
   defaultAgent?: string;
 }
 
-const toThreadMessage = (m: ChatMessage): ThreadMessageLike => ({
-  id: m.id,
-  role: m.role,
-  content: [{ type: "text", text: m.text }],
-});
+const toThreadMessage = (m: ChatMessage): ThreadMessageLike => {
+  if (m.role === "assistant" && m.parts && m.parts.length > 0) {
+    const content = m.parts.map((p) => {
+      if (p.kind === "text") {
+        return { type: "text" as const, text: p.text };
+      }
+      // Tool part → assistant-ui's "tool-call" content shape. `result` is the
+      // normalized string output; `args` is the input JSON object. Tool UIs
+      // registered via makeAssistantToolUI dispatch on `toolName`.
+      // `args` is widened from Record<string, unknown> to assistant-ui's
+      // ReadonlyJSONObject — daemon input is JSON-derived so this is safe.
+      return {
+        type: "tool-call" as const,
+        toolCallId: p.toolCallId,
+        toolName: p.name,
+        args: p.input,
+        result: p.output,
+        isError: p.isError,
+      };
+    }) as ThreadMessageLike["content"];
+    return { id: m.id, role: m.role, content };
+  }
+  return {
+    id: m.id,
+    role: m.role,
+    content: [{ type: "text", text: m.text }],
+  };
+};
 
 // assistant-ui passes AppendMessage on send — we extract a plain string.
 function extractText(msg: AppendMessage): string {
