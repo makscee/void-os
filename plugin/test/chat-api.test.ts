@@ -68,4 +68,84 @@ describe("makeChatApi", () => {
     await api.postMessage("c/with slash", "x");
     expect(url).toBe("http://test/chat/c%2Fwith%20slash/message");
   });
+
+  test("listChats GETs /chats and normalizes summaries", async () => {
+    let captured = "";
+    let method = "";
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch((url, init) => {
+        captured = url;
+        method = (init?.method ?? "GET").toUpperCase();
+        return new Response(
+          JSON.stringify([
+            { id: "c1", agent: "maya", title: null, last_msg: "hi", updated_at: 100, last_run_status: "done" },
+            { id: "c2", agent: "maya", title: "Trip", last_msg: "ok", updated_at: 50, last_run_status: null },
+            { junk: true }, // dropped — no string id
+          ]),
+          { status: 200 },
+        );
+      }) as any,
+    );
+    const rows = await api.listChats();
+    expect(method).toBe("GET");
+    expect(captured).toBe("http://test/chats");
+    expect(rows.length).toBe(2);
+    expect(rows[0]).toEqual({
+      id: "c1", agent: "maya", title: null, last_msg: "hi", updated_at: 100, last_run_status: "done",
+    });
+    expect(rows[1].title).toBe("Trip");
+    expect(rows[1].last_run_status).toBeNull();
+  });
+
+  test("listChats tolerates non-array body", async () => {
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch(() => new Response("null", { status: 200 })) as any,
+    );
+    expect(await api.listChats()).toEqual([]);
+  });
+
+  test("getMessages GETs /chat/:id/messages and normalizes replay rows", async () => {
+    let url = "";
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch((u) => {
+        url = u;
+        return new Response(
+          JSON.stringify([
+            { role: "user", content: "hi", ts: 1 },
+            { role: "assistant", content: "hello" },
+            { role: "system", content: "ignored" }, // dropped
+            { role: "user" }, // no string content — dropped
+          ]),
+          { status: 200 },
+        );
+      }) as any,
+    );
+    const rows = await api.getMessages("c1");
+    expect(url).toBe("http://test/chat/c1/messages");
+    expect(rows).toEqual([
+      { role: "user", content: "hi", ts: 1 },
+      { role: "assistant", content: "hello", ts: undefined },
+    ]);
+  });
+
+  test("getMessages encodes chatId", async () => {
+    let url = "";
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch((u) => { url = u; return new Response("[]", { status: 200 }); }) as any,
+    );
+    await api.getMessages("c/with slash");
+    expect(url).toBe("http://test/chat/c%2Fwith%20slash/messages");
+  });
+
+  test("getMessages surfaces ApiError on non-2xx", async () => {
+    const api = makeChatApi(
+      "http://test",
+      fakeFetch(() => new Response(JSON.stringify({ error: "not_found" }), { status: 404 })) as any,
+    );
+    await expect(api.getMessages("missing")).rejects.toBeInstanceOf(ApiError);
+  });
 });

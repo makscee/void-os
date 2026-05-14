@@ -87,4 +87,49 @@ describe("chatReducer", () => {
     expect(s.messages).toEqual([]);
     expect(s.runState).toBe("idle");
   });
+
+  test("hydrate replaces messages with replay rows (synthetic ids, complete=true)", () => {
+    let s = seed();
+    s = chatReducer(s, {
+      kind: "hydrate",
+      chatId: CHAT,
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello!" },
+      ],
+    });
+    expect(s.messages.length).toBe(2);
+    expect(s.messages[0]).toMatchObject({ id: "replay-user-0", role: "user", text: "hi", complete: true });
+    expect(s.messages[1]).toMatchObject({ id: "replay-assistant-1", role: "assistant", text: "hello!", complete: true });
+  });
+
+  test("hydrate is ignored when chatId no longer matches (race-safety)", () => {
+    let s = chatReducer(seed(), { kind: "set_chat", chatId: "c2" });
+    const before = s;
+    s = chatReducer(s, {
+      kind: "hydrate",
+      chatId: CHAT,
+      messages: [{ role: "user", content: "stale" }],
+    });
+    expect(s).toBe(before);
+  });
+
+  test("hydrate then live frames coexist (real run_ids vs synthetic replay ids)", () => {
+    let s = chatReducer(seed(), {
+      kind: "hydrate",
+      chatId: CHAT,
+      messages: [
+        { role: "user", content: "old" },
+        { role: "assistant", content: "old reply" },
+      ],
+    });
+    s = chatReducer(s, frame({ type: "run.start", chat_id: CHAT, run_id: RUN, agent: "maya" }));
+    s = chatReducer(s, frame({ type: "chat.message_user", chat_id: CHAT, run_id: RUN, text: "new" }));
+    s = chatReducer(s, frame({ type: "chat.token", chat_id: CHAT, run_id: RUN, delta: "ack" }));
+    expect(s.messages.length).toBe(4);
+    expect(s.messages[0].id).toBe("replay-user-0");
+    expect(s.messages[1].id).toBe("replay-assistant-1");
+    expect(s.messages[2].id).toBe(`user-${RUN}`);
+    expect(s.messages[3].id).toBe(RUN);
+  });
 });

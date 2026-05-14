@@ -29,6 +29,16 @@ export interface ChatMessage {
 
 export type RunState = "idle" | "running" | "error";
 
+/** Shape used by `hydrate` — daemon-replayed history rows. The daemon does
+ *  not preserve per-message run_ids in the JSONL session log (titler /
+ *  resumability live elsewhere), so we synthesize stable `replay-{role}-{i}`
+ *  ids. New runs after replay use real run_ids and coexist. */
+export interface ReplayMessage {
+  role: Role;
+  content: string;
+  ts?: number;
+}
+
 export interface ChatState {
   /** Chat id this state is bound to. Frames for other chats are ignored. */
   chatId: string | null;
@@ -50,6 +60,7 @@ export const initialChatState = (chatId: string | null = null): ChatState => ({
  *  echoing chat.message_user frame is then deduped by id. */
 export type LocalAction =
   | { kind: "set_chat"; chatId: string }
+  | { kind: "hydrate"; chatId: string; messages: ReplayMessage[] }
   | { kind: "user_send"; text: string; tempId: string }
   | { kind: "frame"; frame: DaemonFrame };
 
@@ -103,6 +114,17 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
     case "set_chat": {
       if (state.chatId === action.chatId) return state;
       return initialChatState(action.chatId);
+    }
+    case "hydrate": {
+      // Stale-response guard: ignore if reducer has since switched away.
+      if (state.chatId !== action.chatId) return state;
+      const messages: ChatMessage[] = action.messages.map((m, i) => ({
+        id: `replay-${m.role}-${i}`,
+        role: m.role,
+        text: m.content,
+        complete: true,
+      }));
+      return { ...state, messages };
     }
     case "user_send": {
       // Optimistic append. Will be reconciled when chat.message_user echoes.
