@@ -11,7 +11,7 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
-import { useChatRuntime, QUEUED_MARKER } from "./runtime";
+import { useChatRuntime, QUEUED_MARKER, STOPPED_MARKER } from "./runtime";
 import { ChatList } from "./ChatList";
 import { CostMeter } from "./CostMeter";
 import { BashTool } from "./tools/BashTool";
@@ -53,9 +53,25 @@ function UserTextPart(props: { text?: string } & Record<string, unknown>) {
 // Assistant Text part: render markdown. `MarkdownTextPrimitive` reads the
 // current part's text via assistant-ui context, so no props need forwarding.
 // `vos-md` scopes our markdown CSS to this wrapper only.
-const MarkdownText = () => (
-  <MarkdownTextPrimitive className="vos-md" smooth={false} />
-);
+//
+// Special-case: a part whose text === STOPPED_MARKER is the cancellation
+// sentinel appended by toThreadMessage. Render a small "(stopped)" badge
+// instead of the marker body so the user sees a visual confirmation that
+// ESC took effect on this turn.
+function MarkdownText(props: { text?: string } & Record<string, unknown>) {
+  const raw = typeof props.text === "string" ? props.text : "";
+  if (raw === STOPPED_MARKER) {
+    return (
+      <span
+        data-testid="stopped-badge"
+        className="vos-stopped vos:mt-[var(--size-4-1)] vos:inline-flex vos:items-center vos:px-[var(--size-4-2)] vos:py-[2px] vos:rounded-[var(--radius-s)] vos:text-[11px] vos:text-[var(--text-muted)] vos:bg-[var(--background-secondary)] vos:border vos:border-[var(--background-modifier-border)]"
+      >
+        (stopped)
+      </span>
+    );
+  }
+  return <MarkdownTextPrimitive className="vos-md" smooth={false} />;
+}
 
 function MessageItem() {
   return (

@@ -45,9 +45,25 @@ export interface ChatRuntimeDeps {
  *  surface a "↻ queued" badge + faded opacity. The actual text after the
  *  marker is the user's typed body. Kept here as a single-token sentinel to
  *  avoid leaking a richer ThreadMessageLike shape just for one visual cue. */
+/** Mirror sentinel for cancelled assistant messages — see STOPPED_MARKER
+ *  export below. */
 export const QUEUED_MARKER = "vos-queued";
 
+/** Marker prefix on a synthetic trailing assistant text part when the run
+ *  ended in status="cancelled". The assistant TextPart renderer strips the
+ *  marker and emits a small "(stopped)" badge. Kept as a single-token
+ *  sentinel for symmetry with QUEUED_MARKER. */
+export const STOPPED_MARKER = "vos-stopped";
+
 const toThreadMessage = (m: ChatMessage): ThreadMessageLike => {
+  if (m.role === "assistant" && m.cancelled && (!m.parts || m.parts.length === 0)) {
+    // Cancelled before any tokens streamed: emit lone marker so badge renders.
+    return {
+      id: m.id,
+      role: "assistant",
+      content: [{ type: "text", text: STOPPED_MARKER }],
+    };
+  }
   if (m.role === "assistant" && m.parts && m.parts.length > 0) {
     const content = m.parts.map((p) => {
       if (p.kind === "text") {
@@ -67,6 +83,14 @@ const toThreadMessage = (m: ChatMessage): ThreadMessageLike => {
         isError: p.isError,
       };
     }) as ThreadMessageLike["content"];
+    // Cancelled run with streamed parts: append a STOPPED_MARKER text part so
+    // the renderer surfaces a "(stopped)" badge after the partial text/tools.
+    if (m.cancelled) {
+      (content as Array<{ type: "text"; text: string }>).push({
+        type: "text",
+        text: STOPPED_MARKER,
+      });
+    }
     return { id: m.id, role: m.role, content };
   }
   // Queued user bubbles get the marker prefixed so ChatRoot's TextPart can
@@ -261,6 +285,13 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     try {
       const r = await deps.api.cancel(chatId);
       if ("noActiveRun" in r && r.noActiveRun) return false;
+      // OPTIMISTIC FLIP: the daemon will broadcast run.end{cancelled} via WS,
+      // but that has a round-trip latency the user perceives as "ESC did
+      // nothing for a beat". Flipping locally as soon as the cancel POST
+      // returns 200 makes ESC feel instant. The eventual run.end frame is
+      // idempotent against this local transition (reducer's
+      // markAssistantComplete is idempotent + state already idle).
+      dispatch({ kind: "local_cancel" });
       return true;
     } catch (err) {
       // eslint-disable-next-line no-console

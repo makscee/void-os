@@ -46,6 +46,11 @@ export interface ChatMessage {
   text: string;
   /** assistant message becomes complete on chat.completion / run.end. */
   complete: boolean;
+  /** True when this assistant turn was terminated via cancel
+   *  (run.end{status:"cancelled"}). UI surfaces a "(stopped)" badge.
+   *  Partial text streamed so far is preserved. Undefined / false on
+   *  normal done/error completions. */
+  cancelled?: boolean;
   /** Assistant content parts in arrival order. Undefined for plain user rows. */
   parts?: AssistantPart[];
   /** Marker for synthetic "queued" user bubbles (typed during a streaming
@@ -117,6 +122,14 @@ export type LocalAction =
   | { kind: "user_send"; text: string; tempId: string }
   | { kind: "enqueue"; chatId: string; id: string; text: string }
   | { kind: "dequeue"; chatId: string; id: string }
+  /** Optimistic cancel — fired after a successful POST /chat/:id/cancel
+   *  so the UI flips out of the "running" state immediately, without
+   *  waiting for the WS run.end roundtrip. The reducer marks the
+   *  in-flight assistant message complete + cancelled and flips runState
+   *  to idle. The eventual run.end{status:"cancelled"} frame is idempotent.
+   *  No-op if runState is not currently "running" (e.g. user mashed ESC
+   *  twice; cancel got a 409). */
+  | { kind: "local_cancel" }
   | { kind: "frame"; frame: DaemonFrame };
 
 /** Normalize daemon `output` field — string or block array of {type:"text",text} —
@@ -244,12 +257,25 @@ function applyToolResult(
   return next;
 }
 
-function markAssistantComplete(msgs: ChatMessage[], runId: string): ChatMessage[] {
+function markAssistantComplete(
+  msgs: ChatMessage[],
+  runId: string,
+  opts: { cancelled?: boolean } = {},
+): ChatMessage[] {
   const idx = msgs.findIndex((m) => m.id === runId);
   if (idx === -1) return msgs;
-  if (msgs[idx].complete) return msgs;
+  const cur = msgs[idx];
+  const wantCancelled = opts.cancelled === true;
+  // Idempotent: if already complete AND cancelled flag already matches, no-op.
+  if (cur.complete && (cur.cancelled ?? false) === wantCancelled) return msgs;
   const next = msgs.slice();
-  next[idx] = { ...next[idx], complete: true };
+  next[idx] = {
+    ...cur,
+    complete: true,
+    // Set cancelled flag explicitly when requested; preserve prior value
+    // otherwise (so a stray duplicate run.end{done} can't unset it).
+    cancelled: wantCancelled || cur.cancelled === true,
+  };
   return next;
 }
 
@@ -391,6 +417,20 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         ],
       };
     }
+    case "local_cancel": {
+      // Idempotent: only act while running and there's a tracked run id.
+      if (state.runState !== "running") return state;
+      const rid = state.activeRunId;
+      const messages = rid
+        ? markAssistantComplete(state.messages, rid, { cancelled: true })
+        : state.messages;
+      return {
+        ...state,
+        messages,
+        runState: "idle",
+        activeRunId: null,
+      };
+    }
     case "frame": {
       const f = action.frame;
       const fChat = typeof f.chat_id === "string" ? f.chat_id : null;
@@ -443,10 +483,22 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         }
         case "run.end": {
           if (!runId) return state;
+          // run.end is the AUTHORITATIVE terminal frame regardless of status.
+          // - "done":      normal completion; chat.completion preceded.
+          // - "error":     spawner failure; flip runState to "error".
+          // - "cancelled": ESC interrupt; chat.completion is suppressed by
+          //                daemon (see VOS-80 e81eb72), so this frame is the
+          //                ONLY signal that the stream terminated. Mark the
+          //                in-flight assistant complete + cancelled so the UI
+          //                renders a "(stopped)" badge and freezes partial
+          //                text streamed so far.
           const status = typeof f.status === "string" ? f.status : "done";
+          const isCancel = status === "cancelled";
           return {
             ...state,
-            messages: markAssistantComplete(state.messages, runId),
+            messages: markAssistantComplete(state.messages, runId, {
+              cancelled: isCancel,
+            }),
             runState: status === "error" ? "error" : "idle",
             activeRunId:
               state.activeRunId === runId ? null : state.activeRunId,
