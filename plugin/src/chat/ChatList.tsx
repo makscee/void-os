@@ -37,11 +37,12 @@ function preview(s: ChatSummary): string {
   return cleaned.slice(0, PREVIEW_MAX - 1) + "…";
 }
 
-/** Hide rows where the chat has never been used (no title, no msg, no run). */
+/** Hide rows with no readable content. A chat with a `done` run but blank
+ *  last_msg (e.g. spawn produced no text) is still useless to display. */
 function isEmpty(s: ChatSummary): boolean {
   const t = (s.title ?? "").trim();
   const m = (s.last_msg ?? "").trim();
-  return !t && !m && s.last_run_status == null;
+  return !t && !m;
 }
 
 /** Color for the run-status chip. Returns null for statuses we don't show. */
@@ -93,7 +94,7 @@ export function ChatList(props: ChatListProps) {
           + New
         </button>
       </div>
-      <div className="vos:flex-1 vos:overflow-y-auto vos:py-[var(--size-4-1)]">
+      <div className="vos:flex-1 vos:overflow-y-auto vos:flex vos:flex-col vos:gap-[2px] vos:py-[var(--size-4-2)] vos:px-[var(--size-4-1)]">
         {loading && (
           <div className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-2)] vos:text-xs vos:text-[var(--text-muted)]">loading…</div>
         )}
@@ -119,7 +120,7 @@ export function ChatList(props: ChatListProps) {
               data-chat-id={c.id}
               data-active={active ? "true" : "false"}
               className={
-                "vos:w-full vos:text-left vos:pl-[10px] vos:pr-[var(--size-4-2)] vos:min-h-[30px] vos:flex vos:items-center vos:gap-[var(--size-4-2)] vos:border-l-2 " +
+                "vos:w-full vos:text-left vos:pl-[10px] vos:pr-[var(--size-4-2)] vos:py-[var(--size-4-2)] vos:min-h-[34px] vos:flex vos:items-center vos:gap-[var(--size-4-2)] vos:rounded-[var(--radius-s)] vos:border-l-2 " +
                 (active
                   ? "vos:border-[var(--interactive-accent)] vos:bg-[var(--background-modifier-active-hover)]"
                   : "vos:border-transparent hover:vos:bg-[var(--background-modifier-hover)]")
