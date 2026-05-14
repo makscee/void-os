@@ -50,6 +50,28 @@ interface Record {
   [k: string]: unknown;
 }
 
+function collectVisible(
+  ids: string[],
+  byId: Map<string, Record>,
+): Message[] {
+  const msgs: Message[] = [];
+  for (const id of ids) {
+    const r = byId.get(id);
+    if (!r || !VISIBLE_TYPES.has(r.type)) continue;
+    // CC JSONL records carry text at r.message.content[] as an array of
+    // blocks. Pure tool_use turns extract to "" — skip them; S4 will render
+    // tool calls separately via chat.tool_call/tool_result.
+    const content = extractTurnText(r);
+    if (!content) continue;
+    msgs.push({
+      role: r.type as "user" | "assistant",
+      content,
+      ts: r.ts,
+    });
+  }
+  return msgs;
+}
+
 export function makeSessionReplay(
   db: Database,
   opts: ReplayOpts = {},
@@ -101,36 +123,35 @@ export function makeSessionReplay(
       const leaves = order.filter((id) => !hasChild.has(id));
       // Single conversation thread: take the latest leaf in file order.
       const leaf = leaves[leaves.length - 1];
-      if (!leaf) return [];
 
       // Pass 3: walk leaf → root via parent_uuid, dedupe cycles, then reverse.
       const pathIds: string[] = [];
-      const seen = new Set<string>();
-      let cur: string | undefined = leaf;
-      while (cur && !seen.has(cur)) {
-        seen.add(cur);
-        pathIds.push(cur);
-        const r = byId.get(cur);
-        cur = r?.parent_uuid;
+      if (leaf) {
+        const seen = new Set<string>();
+        let cur: string | undefined = leaf;
+        while (cur && !seen.has(cur)) {
+          seen.add(cur);
+          pathIds.push(cur);
+          const r = byId.get(cur);
+          cur = r?.parent_uuid;
+        }
+        pathIds.reverse();
       }
-      pathIds.reverse();
 
-      const msgs: Message[] = [];
-      for (const id of pathIds) {
+      const dagMsgs = collectVisible(pathIds, byId);
+
+      // Defense-in-depth: newer CC builds emit visible turns with no
+      // parent_uuid (the chain runs through queue-operation/attachment records
+      // that we filter out by type). When the DAG walk recovers fewer visible
+      // turns than the file actually contains, fall back to file-order
+      // traversal of every visible record. The JSONL is append-only, so file
+      // order is chronological for the visible-turn subsequence.
+      const totalVisible = order.reduce((n, id) => {
         const r = byId.get(id);
-        if (!r || !VISIBLE_TYPES.has(r.type)) continue;
-        // CC JSONL records carry text at r.message.content[] as an array of
-        // blocks. Pure tool_use turns extract to "" — skip them; S4 will
-        // render tool calls separately via chat.tool_call/tool_result.
-        const content = extractTurnText(r);
-        if (!content) continue;
-        msgs.push({
-          role: r.type as "user" | "assistant",
-          content,
-          ts: r.ts,
-        });
-      }
-      return msgs;
+        return r && VISIBLE_TYPES.has(r.type) ? n + 1 : n;
+      }, 0);
+      if (dagMsgs.length >= totalVisible) return dagMsgs;
+      return collectVisible(order, byId);
     },
   };
 }

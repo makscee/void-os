@@ -346,6 +346,144 @@ test("legacy/defensive: message.content as plain string is handled", () => {
   ]);
 });
 
+test("fallback: visible records with no parent_uuid → file-order traversal returns all", () => {
+  // Newer CC builds emit visible turns with parent_uuid undefined; the chain
+  // runs through queue-operation/attachment records we filter out by type.
+  // DAG walk would yield 1 message (the latest leaf only). Fallback recovers
+  // every visible turn in file order.
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-degen");
+  mkdirSync(projDir, { recursive: true });
+  const lines = [
+    JSON.stringify({ uuid: "qo1", type: "queue-operation" }),
+    JSON.stringify({ uuid: "at1", type: "attachment" }),
+    JSON.stringify({
+      uuid: "v1",
+      type: "user",
+      message: { content: [{ type: "text", text: "hi" }] },
+      ts: 1,
+    }),
+    JSON.stringify({
+      uuid: "v2",
+      type: "assistant",
+      message: { content: [{ type: "text", text: "hello" }] },
+      ts: 2,
+    }),
+    JSON.stringify({ uuid: "at2", type: "attachment" }),
+    JSON.stringify({
+      uuid: "v3",
+      type: "user",
+      message: { content: [{ type: "text", text: "again" }] },
+      ts: 3,
+    }),
+    JSON.stringify({
+      uuid: "v4",
+      type: "assistant",
+      message: { content: [{ type: "text", text: "hey" }] },
+      ts: 4,
+    }),
+  ];
+  writeFileSync(join(projDir, "sid-d.jsonl"), lines.join("\n") + "\n");
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-d");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/degen",
+    encodeCwd: () => "-tmp-degen",
+  });
+  const msgs = replay.walk(c.id);
+  expect(msgs.length).toBe(4);
+  expect(msgs.map((m) => m.content)).toEqual(["hi", "hello", "again", "hey"]);
+  expect(msgs.map((m) => m.role)).toEqual([
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+  ]);
+});
+
+test("fallback skips empty-content turns (pure tool_use) in degenerate-chain mode", () => {
+  // Even when falling back to file order, extractTurnText filtering still
+  // applies — pure tool_use turns must not surface as empty messages.
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-degen-tools");
+  mkdirSync(projDir, { recursive: true });
+  const lines = [
+    JSON.stringify({
+      uuid: "v1",
+      type: "user",
+      message: { content: [{ type: "text", text: "do it" }] },
+    }),
+    JSON.stringify({
+      uuid: "v2",
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "t1", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+    }),
+    JSON.stringify({
+      uuid: "v3",
+      type: "assistant",
+      message: { content: [{ type: "text", text: "done" }] },
+    }),
+  ];
+  writeFileSync(join(projDir, "sid-dt.jsonl"), lines.join("\n") + "\n");
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-dt");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/degen-tools",
+    encodeCwd: () => "-tmp-degen-tools",
+  });
+  const msgs = replay.walk(c.id);
+  // Pure tool_use turn (v2) drops; only v1 + v3 surface.
+  expect(msgs.map((m) => m.content)).toEqual(["do it", "done"]);
+});
+
+test("DAG walk preferred when chain is intact and covers all visible records", () => {
+  // Sanity: the original DAG-chain test case is already covered above; this
+  // adds an explicit assertion that when DAG walk recovers ALL visible turns,
+  // the fallback is NOT invoked (so e.g. an out-of-DAG orphan is correctly
+  // ignored). Here u_orphan has no parent and is unreachable from the DAG,
+  // but DAG walk yields {u2, u3} == 2 visible — equal to total visible (2)
+  // because u_orphan is queue-operation, not visible.
+  const tmp = mkdtempSync(join(tmpdir(), "vos79-replay-"));
+  const projDir = join(tmp, "-tmp-intact");
+  mkdirSync(projDir, { recursive: true });
+  const lines = [
+    JSON.stringify({ uuid: "u_orphan", type: "queue-operation" }),
+    JSON.stringify({
+      uuid: "u2",
+      type: "user",
+      message: { content: [{ type: "text", text: "q" }] },
+    }),
+    JSON.stringify({
+      uuid: "u3",
+      parent_uuid: "u2",
+      type: "assistant",
+      message: { content: [{ type: "text", text: "a" }] },
+    }),
+  ];
+  writeFileSync(join(projDir, "sid-i.jsonl"), lines.join("\n") + "\n");
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  repo.setSession(c.id, "sid-i");
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/intact",
+    encodeCwd: () => "-tmp-intact",
+  });
+  const msgs = replay.walk(c.id);
+  expect(msgs.map((m) => m.content)).toEqual(["q", "a"]);
+});
+
 test("realpath encoder: macOS /tmp resolves to -private-tmp-* slug", () => {
   // Use a real tmpdir so realpath has something to resolve. On macOS
   // mkdtempSync(tmpdir()) usually returns /var/folders/... which is itself a
