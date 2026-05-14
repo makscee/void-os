@@ -5,7 +5,12 @@
 //     `onSelect(id)` and `onNewChat()`. The parent owns chatId.
 //   - Title fallback: when daemon `title` is null (titler offline), preview
 //     a truncated `last_msg`.
-//   - Run-status badge: a tiny dot whose color reflects last_run_status.
+//   - Truly empty chats (no title, no last_msg, never run) are filtered out
+//     so a stale "+ New" click doesn't pollute the rail.
+//   - Run-status: a tiny chip on the right edge, only when last_run_status
+//     is interesting (running / error). `done` is the boring default and
+//     gets no marker. The status span is always rendered (with data-status)
+//     so tests can introspect it.
 //   - Refresh: parent passes a `refreshKey` that changes whenever a new
 //     chat is minted or a run finishes; we re-fetch on changes. Simpler
 //     than wiring the bus through here.
@@ -22,23 +27,29 @@ export interface ChatListProps {
   refreshKey?: number;
 }
 
-const PREVIEW_MAX = 60;
+const PREVIEW_MAX = 80;
 
 function preview(s: ChatSummary): string {
   const raw = s.title ?? s.last_msg ?? "";
   const cleaned = raw.replace(/\s+/g, " ").trim();
-  if (!cleaned) return "(empty chat)";
+  if (!cleaned) return "New chat";
   if (cleaned.length <= PREVIEW_MAX) return cleaned;
   return cleaned.slice(0, PREVIEW_MAX - 1) + "…";
 }
 
-function badgeColor(status: string | null): string {
+/** Hide rows where the chat has never been used (no title, no msg, no run). */
+function isEmpty(s: ChatSummary): boolean {
+  const t = (s.title ?? "").trim();
+  const m = (s.last_msg ?? "").trim();
+  return !t && !m && s.last_run_status == null;
+}
+
+/** Color for the run-status chip. Returns null for statuses we don't show. */
+function chipColor(status: string | null): string | null {
   switch (status) {
     case "running": return "var(--interactive-accent)";
     case "error":   return "var(--text-error, #e35a5a)";
-    case "done":    return "var(--text-faint, #888)";
-    case "cancelled": return "var(--text-muted)";
-    default:        return "transparent";
+    default:        return null; // done / cancelled / null → no chip
   }
 }
 
@@ -62,19 +73,21 @@ export function ChatList(props: ChatListProps) {
     return () => { cancelled = true; };
   }, [api, refreshKey]);
 
+  const visible = chats.filter((c) => !isEmpty(c));
+
   return (
     <aside
       className="vos:flex vos:flex-col vos:h-full vos:w-[260px] vos:shrink-0 vos:border-r vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-secondary)]"
       data-testid="chat-list"
     >
       <div className="vos:flex vos:items-center vos:justify-between vos:px-3 vos:py-2 vos:border-b vos:border-[var(--background-modifier-border)]">
-        <span className="vos:text-[11px] vos:uppercase vos:tracking-wider vos:text-[var(--text-muted)]">
-          chats
+        <span className="vos:text-[11px] vos:uppercase vos:tracking-wider vos:text-[var(--text-muted)] vos:font-medium">
+          Chats
         </span>
         <button
           type="button"
           onClick={() => { void onNewChat(); }}
-          className="vos:px-2 vos:py-0.5 vos:rounded vos:text-xs vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:opacity-90"
+          className="vos:px-2 vos:py-0.5 vos:rounded vos:text-xs vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)]"
           data-testid="new-chat-btn"
         >
           + New
@@ -89,13 +102,14 @@ export function ChatList(props: ChatListProps) {
             {error}
           </div>
         )}
-        {!loading && !error && chats.length === 0 && (
+        {!loading && !error && visible.length === 0 && (
           <div className="vos:p-3 vos:text-xs vos:text-[var(--text-muted)]">
-            no chats yet
+            No chats yet — click + New
           </div>
         )}
-        {!loading && chats.map((c) => {
+        {!loading && visible.map((c) => {
           const active = c.id === activeChatId;
+          const chip = chipColor(c.last_run_status);
           return (
             <button
               key={c.id}
@@ -103,30 +117,28 @@ export function ChatList(props: ChatListProps) {
               onClick={() => onSelect(c.id)}
               data-testid="chat-row"
               data-chat-id={c.id}
+              data-active={active ? "true" : "false"}
               className={
-                "vos:w-full vos:text-left vos:px-3 vos:py-2 vos:flex vos:items-start vos:gap-2 vos:border-b vos:border-[var(--background-modifier-border)] " +
+                "vos:w-full vos:text-left vos:pl-3 vos:pr-2 vos:py-2 vos:flex vos:items-center vos:gap-2 vos:border-l-2 " +
                 (active
-                  ? "vos:bg-[var(--background-modifier-hover)]"
-                  : "hover:vos:bg-[var(--background-modifier-hover)]")
+                  ? "vos:border-[var(--interactive-accent)] vos:bg-[var(--background-modifier-active-hover)]"
+                  : "vos:border-transparent hover:vos:bg-[var(--background-modifier-hover)]")
               }
             >
-              <span
-                aria-hidden
-                className={
-                  "vos:mt-1.5 vos:inline-block vos:w-2 vos:h-2 vos:rounded-full vos:shrink-0 " +
-                  (c.last_run_status === "running" ? "vos-run-dot" : "")
-                }
-                style={{ backgroundColor: badgeColor(c.last_run_status) }}
-                data-status={c.last_run_status ?? "none"}
-              />
               <span className="vos:flex-1 vos:min-w-0">
-                <span className="vos:block vos:text-sm vos:text-[var(--text-normal)] vos:truncate">
+                <span className="vos:block vos:text-[13px] vos:leading-[1.35] vos:text-[var(--text-normal)] vos:truncate">
                   {preview(c)}
                 </span>
-                <span className="vos:block vos:text-[11px] vos:text-[var(--text-muted)]">
-                  {c.agent}
-                </span>
               </span>
+              <span
+                aria-hidden
+                data-status={c.last_run_status ?? "none"}
+                className={
+                  "vos:inline-block vos:w-1.5 vos:h-1.5 vos:rounded-full vos:shrink-0 " +
+                  (c.last_run_status === "running" ? "vos-run-dot" : "")
+                }
+                style={{ backgroundColor: chip ?? "transparent" }}
+              />
             </button>
           );
         })}
