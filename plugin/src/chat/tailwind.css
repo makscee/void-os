@@ -39,4 +39,77 @@
     from { opacity: 0; }
     to   { opacity: 1; }
   }
+
+  /* Markdown rendering for assistant messages. Scoped under .vos-md so it
+     never leaks into Obsidian's own UI. Uses Obsidian theme CSS vars so it
+     adapts to light/dark automatically. */
+  .vos-md > :first-child { margin-top: 0; }
+  .vos-md > :last-child  { margin-bottom: 0; }
+  .vos-md p {
+    margin: 0 0 0.6em 0;
+    line-height: 1.55;
+  }
+  .vos-md ul,
+  .vos-md ol {
+    margin: 0 0 0.6em 0;
+    padding-left: 1.4em;
+    line-height: 1.55;
+  }
+  .vos-md ul { list-style: disc; }
+  .vos-md ol { list-style: decimal; }
+  .vos-md li { margin-bottom: 0.15em; }
+  .vos-md li > ul,
+  .vos-md li > ol { margin: 0.15em 0 0.15em 0; }
+  .vos-md strong { font-weight: 600; color: var(--text-normal); }
+  .vos-md em { font-style: italic; }
+  .vos-md a {
+    color: var(--text-accent);
+    text-decoration: none;
+  }
+  .vos-md a:hover { text-decoration: underline; }
+  .vos-md code {
+    background-color: var(--background-secondary);
+    font-family: var(--font-monospace);
+    font-size: 0.9em;
+    padding: 0.1em 0.35em;
+    border-radius: var(--radius-s);
+  }
+  .vos-md pre {
+    background-color: var(--background-secondary);
+    padding: 0.7em 0.9em;
+    border-radius: var(--radius-m);
+    overflow-x: auto;
+    font-family: var(--font-monospace);
+    font-size: 0.9em;
+    margin: 0 0 0.6em 0;
+    line-height: 1.45;
+  }
+  .vos-md pre code {
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    font-size: 1em;
+  }
+  .vos-md h1,
+  .vos-md h2,
+  .vos-md h3 {
+    color: var(--text-normal);
+    font-weight: 600;
+    line-height: 1.25;
+    margin: 0.8em 0 0.35em 0;
+  }
+  .vos-md h1 { font-size: 1.3em; }
+  .vos-md h2 { font-size: 1.15em; }
+  .vos-md h3 { font-size: 1.05em; }
+  .vos-md blockquote {
+    border-left: 2px solid var(--text-faint);
+    padding-left: 0.8em;
+    color: var(--text-muted);
+    margin: 0 0 0.6em 0;
+  }
+  .vos-md hr {
+    border: 0;
+    border-top: 1px solid var(--background-modifier-border);
+    margin: 0.8em 0;
+  }
 }

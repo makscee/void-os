@@ -6,6 +6,7 @@ import {
   MessagePrimitive,
   MessagePartPrimitive,
 } from "@assistant-ui/react";
+import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
@@ -24,7 +25,15 @@ export interface ChatRootProps {
 
 // MessagePrimitive.Parts wants a `FunctionComponent<TextMessagePart>` for Text;
 // MessagePartPrimitive.Text is a forwardRef HTMLSpan primitive. Wrap it.
+// Used for user messages — they're plain text, no markdown rendering needed.
 const TextPart = () => <MessagePartPrimitive.Text />;
+
+// Assistant Text part: render markdown. `MarkdownTextPrimitive` reads the
+// current part's text via assistant-ui context, so no props need forwarding.
+// `vos-md` scopes our markdown CSS to this wrapper only.
+const MarkdownText = () => (
+  <MarkdownTextPrimitive className="vos-md" smooth={false} />
+);
 
 function MessageItem() {
   return (
@@ -42,11 +51,11 @@ function MessageItem() {
       {/* Assistant: full-width, left-edge accent, no bg, no label */}
       <MessagePrimitive.If assistant>
         <div
-          className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-[var(--size-4-3)] vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:leading-relaxed"
+          className="vos:border-l-2 vos:border-[var(--interactive-accent)] vos:pl-[var(--size-4-3)] vos:text-[var(--text-normal)] vos:leading-relaxed"
         >
           <MessagePrimitive.Parts
             components={{
-              Text: TextPart,
+              Text: MarkdownText,
               // Bash registers itself globally via makeAssistantToolUI (rendered
               // once below). Any other tool name falls back to the generic block.
               tools: { Fallback: GenericTool },
