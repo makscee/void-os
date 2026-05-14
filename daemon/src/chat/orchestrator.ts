@@ -42,6 +42,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { ChatRepo } from "./repo";
+import { makeMessagesRepo, type MessagesRepo } from "./messages-repo";
 import { extractTurnText, extractToolUses, extractToolResults } from "./util";
 
 /** Parsed stream event from claudev stdout JSONL. Shape is best-effort —
@@ -136,6 +137,11 @@ const TERMINAL_STATUSES = new Set(["done", "error", "cancelled"]);
 
 export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const { db, repo, spawner, emit, titler } = deps;
+  // VOS-80 architecture (a): canonical messages store. Wired off the same
+  // db handle as `repo`, so all persistence shares one connection (and
+  // therefore the same per-statement txn semantics). Constructed lazily
+  // per orchestrator so tests with multiple orchestrators don't share state.
+  const messages: MessagesRepo = makeMessagesRepo(db);
 
   // Per-run cancel registry. Populated by dispatch() at run.start time and
   // consulted in both the streaming loop (after-yield bail) and the finally
@@ -202,6 +208,11 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
       });
       acquire(); // may throw Conflict409 — propagates to caller, no cleanup needed (txn rolled back).
 
+      // VOS-80 (a): persist the user prompt immediately — before spawning CC.
+      // GET /chat/:id/messages reads from the messages table, so the user
+      // turn must be visible the moment dispatch is accepted.
+      messages.appendUser(chatId, runId, text, startedAt);
+
       emit("chat.message_user", { chat_id: chatId, run_id: runId, text });
       emit("run.start", {
         chat_id: chatId,
@@ -257,6 +268,24 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             // Surface every tool_use block in this assistant turn as a
             // dedicated WS frame (S4 tool-call panel hydration).
             for (const tu of extractToolUses(evt)) {
+              // VOS-80 (a): persist immediately so replay can render tool
+              // blocks even if the run is cancelled before completion.
+              const tuTs = typeof evt.ts === "number" ? evt.ts : Date.now();
+              const inputJson = (() => {
+                try {
+                  return JSON.stringify(tu.input);
+                } catch {
+                  return String(tu.input);
+                }
+              })();
+              messages.appendToolUse(
+                chatId,
+                runId,
+                tu.tool_call_id,
+                tu.name,
+                inputJson,
+                tuTs,
+              );
               emit("chat.tool_use", {
                 chat_id: chatId,
                 run_id: runId,
@@ -271,6 +300,26 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             // messages (chat.message_user was already emitted for the prompt
             // at dispatch start) — they only surface as chat.tool_result.
             for (const tr of extractToolResults(evt)) {
+              // VOS-80 (a): normalize output to text and persist immediately.
+              const outText =
+                typeof tr.output === "string"
+                  ? tr.output
+                  : (() => {
+                      try {
+                        return JSON.stringify(tr.output);
+                      } catch {
+                        return String(tr.output);
+                      }
+                    })();
+              const trTs = typeof evt.ts === "number" ? evt.ts : Date.now();
+              messages.appendToolResult(
+                chatId,
+                runId,
+                tr.tool_call_id,
+                outText,
+                tr.is_error,
+                trTs,
+              );
               emit("chat.tool_result", {
                 chat_id: chatId,
                 run_id: runId,
@@ -282,10 +331,21 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           }
         }
         if (firstAssistantSeen && !cancelRequested.has(runId)) {
-          emit("chat.completion", { chat_id: chatId, run_id: runId });
+          // VOS-80 (a): persist assistant row + derive last_msg from same
+          // text in one logical write. last_msg is now derived from the
+          // canonical messages row (single source of truth) — the explicit
+          // setLastMsg call below preserves the 200-char preview shape so
+          // existing list-view consumers don't break.
           if (lastAssistantText) {
+            messages.appendAssistant(
+              chatId,
+              runId,
+              lastAssistantText,
+              Date.now(),
+            );
             repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
           }
+          emit("chat.completion", { chat_id: chatId, run_id: runId });
         }
       } catch (err) {
         // VOS-80 S5: a cancel may race with the iterator throwing (e.g.
@@ -312,9 +372,23 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (cancelRequested.has(runId)) {
           status = "cancelled";
           errorMessage = null;
-          if (lastAssistantText) {
-            repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
-          }
+        }
+        // VOS-80 (a): non-happy terminal (cancel or error) — flush partial
+        // assistant text into the canonical messages table BEFORE run.end
+        // is broadcast. The happy path already did this in the try-block;
+        // here we cover the two failure modes where the chat.completion
+        // branch was skipped.
+        if (
+          (status === "cancelled" || status === "error") &&
+          lastAssistantText
+        ) {
+          messages.appendAssistant(
+            chatId,
+            runId,
+            lastAssistantText,
+            Date.now(),
+          );
+          repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
         }
         // Phase 3: cleanup, atomic. Always clear the lock and stamp end.
         const endedAt = Date.now();
