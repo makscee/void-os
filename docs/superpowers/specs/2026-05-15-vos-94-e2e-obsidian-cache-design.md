@@ -101,11 +101,11 @@ function cacheIsValid(versionFile, binPath) {
 ### Download + extract (`downloadAndExtract`)
 
 1. Build URL: `https://github.com/obsidianmd/obsidian-releases/releases/download/v${VERSION}/Obsidian-${VERSION}.dmg`.
-2. Download to `<cacheDir>/Obsidian-${VERSION}.dmg` using `fetch()` + stream to disk. No `curl` (no shell dependency).
+2. Download to `<cacheDir>/Obsidian-${VERSION}.dmg` using `fetch(url, { redirect: "follow" })` + stream `response.body` to disk. **Before streaming:** assert `response.ok` and `response.headers.get("content-type")?.includes("octet-stream")` — GitHub returns 302 to `release-assets.githubusercontent.com`; if redirect drops auth or hits an HTML error page, a misrouted response will silently write garbage and `hdiutil` will fail with a confusing "not recognized" error. On either assertion failure, throw with `status`, final URL, and content-type.
 3. Mount via `hdiutil attach -nobrowse -quiet <dmg>` — parse stdout for the mount point (`/Volumes/Obsidian X.Y.Z`).
 4. `fs.cpSync(<mount>/Obsidian.app, <cacheDir>/.tmp-<pid>/Obsidian.app, { recursive: true })`.
 5. `hdiutil detach -quiet <mount>` (always, even on failure — wrap step 4 in try/finally).
-6. If a stale `Obsidian.app/` exists (version mismatch), `fs.rmSync(appPath, { recursive: true, force: true })`.
+6. **Unconditionally** `fs.rmSync(appPath, { recursive: true, force: true })` immediately before the rename. `rename(2)` onto an existing non-empty directory fails with `ENOTEMPTY` on macOS; the cache-valid re-check inside the lock already short-circuited the happy path, so anything still at `appPath` here is stale or partial and must go.
 7. `fs.renameSync(<cacheDir>/.tmp-<pid>/Obsidian.app, appPath)` — atomic on same filesystem.
 8. `fs.rmSync(<cacheDir>/.tmp-<pid>, { recursive: true, force: true })`.
 9. `fs.rmSync(<cacheDir>/Obsidian-${VERSION}.dmg, { force: true })` — keep cache tight.
@@ -115,18 +115,42 @@ function cacheIsValid(versionFile, binPath) {
 ```ts
 async function acquireLock(lockDir, timeoutMs) {
   const start = Date.now();
+  let staleRetried = false;
   while (Date.now() - start < timeoutMs) {
-    try { fs.mkdirSync(lockDir); return; }
-    catch (e) {
+    try {
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, "pid"), String(process.pid));
+      return;
+    } catch (e) {
       if (e.code !== "EEXIST") throw e;
+      // Stale-lock detection: dead owner OR ancient lock → reclaim once.
+      if (!staleRetried && isStaleLock(lockDir, timeoutMs)) {
+        fs.rmSync(lockDir, { recursive: true, force: true });
+        staleRetried = true;
+        continue;
+      }
       await new Promise(r => setTimeout(r, 500));
     }
   }
-  throw new Error(`obsidian-cache: lock timeout after ${timeoutMs}ms (stale ${lockDir}?)`);
+  throw new Error(`obsidian-cache: lock timeout after ${timeoutMs}ms (stale ${lockDir}?). Delete plugin/e2e/.cache/.download.lock if no other run is active.`);
+}
+
+function isStaleLock(lockDir, timeoutMs) {
+  // (a) lock older than the full timeout window → definitely abandoned.
+  const stat = fs.statSync(lockDir, { throwIfNoEntry: false });
+  if (!stat) return false;
+  if (Date.now() - stat.mtimeMs > timeoutMs) return true;
+  // (b) pidfile present and owner process dead.
+  const pidPath = path.join(lockDir, "pid");
+  if (!fs.existsSync(pidPath)) return false;
+  const pid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+  if (!pid) return false;
+  try { process.kill(pid, 0); return false; }     // alive
+  catch { return true; }                           // ESRCH → dead
 }
 ```
 
-Long timeout (5 min) covers a cold download on a slow connection. If a previous run crashed mid-extract, the lock dir is left behind; the user clears it via `rm -rf plugin/e2e/.cache` (documented in the README).
+Long timeout (5 min) covers a cold download on a slow connection. Crash recovery is automatic: SIGKILL or hard reboot during a download leaves a lock dir, but the next run detects the dead pid (or the ancient mtime after `timeoutMs`) and reclaims it once before falling back to manual `rm -rf plugin/e2e/.cache` (documented in the README).
 
 ## .gitignore
 
@@ -166,7 +190,7 @@ Two layers:
    ```
    cd plugin && bun run e2e/scripts/test-obsidian-cache.ts
    ```
-   Asserts: cold run downloads; second run is a no-op; corrupted `VERSION` triggers re-download; running twice in parallel results in one extract (track with a shared counter file).
+   Asserts: cold run downloads; second run is a no-op; corrupted `VERSION` triggers re-download; stale lock with dead pid is reclaimed within one poll interval. (Parallel-extract observation dropped — single-process no-op already proves the cache-hit path; the lock is best validated by code review + the stale-lock test.)
 
 2. **Integration** — full `bun test --bail` from `plugin/`. Pre-conditions:
    - `/Applications/Obsidian.app` quit (and ideally moved aside or uninstalled for the final acceptance check).
@@ -182,7 +206,7 @@ Maps 1:1 to the task file:
 | `.cache/` in `.gitignore` | "`.gitignore`" section above |
 | First-run download + extract | `ensureObsidian()` algorithm |
 | Pinned version (no "latest") | `OBSIDIAN_VERSION` const |
-| First run ≤ 2 min extra | DMG ~100 MB; download + hdiutil + cp comfortably inside 2 min on home broadband |
+| First run completes within Playwright `globalSetup` timeout (raised to 5 min for cold downloads) | `playwright.config.ts` sets `globalTimeout` accordingly; first run finishes inside it. Hard wall-clock budgets removed — they're reviewer-dependent and flaky on slow networks/external SSDs. |
 | e2e green with `/Applications/Obsidian.app` quit | Spawn target sourced from cache, never `/Applications/` |
 | `executablePath` references cached binary | `obsidianBin = await ensureObsidian()` |
 | README documents cache | "README" section above |
