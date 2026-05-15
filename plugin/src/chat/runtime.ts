@@ -44,6 +44,9 @@ export interface ChatRuntimeDeps {
   onChatIdMinted?: (id: string) => void | Promise<void>;
   defaultAgent?: string;
   onSendError?: (chatId: string, err: unknown) => void;
+  /** Receives transient toast strings ("question already resolved", buttons-only
+   *  inert hint, etc.). ChatRoot wires this to its in-chat toast surface. */
+  onComposerToast?: (text: string) => void;
 }
 
 export const QUEUED_MARKER = "vos-queued";
@@ -143,6 +146,9 @@ export interface ChatRuntimeHandle {
   cancel: () => Promise<boolean>;
   isRunning: boolean;
   send: (text: string) => Promise<void>;
+  /** Mirror of reducer state.pendingAskUser, exposed for ChatRoot composer-mode
+   *  branching. */
+  pendingAskUser: ChatState["pendingAskUser"];
 }
 
 export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
@@ -329,6 +335,41 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
         await deps.onChatIdMinted?.(chatId);
       }
 
+      // ask_user routing. Read directly from `state.pendingAskUser` — the
+      // callback's dep array includes it, so the latest reducer snapshot is
+      // captured on every commit. React's commit phase has already flushed
+      // before any user-driven send call lands here.
+      const pending = state.pendingAskUser;
+      if (pending) {
+        if (pending.options && pending.options.length > 0) {
+          // Buttons-only mode — Send is hidden but Enter can still fire. Inert.
+          deps.onComposerToast?.("Pick one of the options above to continue.");
+          return;
+        }
+        // Free-form answer mode.
+        try {
+          const r = await deps.api.answer(chatId, pending.toolUseId, text);
+          if (!r.ok) {
+            if (r.status === 409) {
+              dispatch({ kind: "local_answer_409" });
+              deps.onComposerToast?.("Question already resolved.");
+              return;
+            }
+            deps.onComposerToast?.(`Couldn't send (${r.status}).`);
+            return;
+          }
+          // Success: composer-clearing is the caller's job (mirrors
+          // QueueSendButton). Reducer clears pendingAskUser when the matching
+          // tool_result frame lands.
+          return;
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error("[void-os] /answer failed", err);
+          deps.onComposerToast?.("Couldn't send — try again.");
+          return;
+        }
+      }
+
       const runningNow = prevRunStateRef.current === "running";
       if (runningNow) {
         const qid = `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -347,7 +388,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
         try { deps.onSendError?.(chatId, err); } catch { /* swallow */ }
       }
     },
-    [deps.api, deps.defaultAgent, deps.onChatIdMinted, deps.onSendError],
+    [deps, state.pendingAskUser],
   );
 
   const onNew = useCallback(
@@ -382,7 +423,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     convertMessage: (m) => m,
   });
 
-  return { runtime, cancel, isRunning, send: sendText };
+  return { runtime, cancel, isRunning, send: sendText, pendingAskUser: state.pendingAskUser };
 }
 
 // Re-exported for tests.
