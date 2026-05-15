@@ -14,6 +14,22 @@ export function cacheIsValid(versionFile: string, binPath: string, expected: str
   return fs.readFileSync(versionFile, "utf8").trim() === expected;
 }
 
+export function isStaleLock(lockDir: string, timeoutMs: number): boolean {
+  const stat = fs.statSync(lockDir, { throwIfNoEntry: false });
+  if (!stat) return false;
+  if (Date.now() - stat.mtimeMs > timeoutMs) return true;
+  const pidPath = path.join(lockDir, "pid");
+  if (!fs.existsSync(pidPath)) return false;
+  const pid = parseInt(fs.readFileSync(pidPath, "utf8").trim(), 10);
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return false;                   // alive (or EPERM — treat as alive)
+  } catch (e: any) {
+    return e?.code === "ESRCH";     // ESRCH = no such process → stale
+  }
+}
+
 export async function ensureObsidian(): Promise<string> {
   if (process.platform !== "darwin") {
     throw new Error(

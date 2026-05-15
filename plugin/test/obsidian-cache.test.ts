@@ -21,6 +21,7 @@ describe("ensureObsidian platform guard", () => {
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
 import { cacheIsValid } from "../e2e/obsidian-cache";
 
 describe("cacheIsValid", () => {
@@ -61,3 +62,55 @@ describe("cacheIsValid", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+import { isStaleLock } from "../e2e/obsidian-cache";
+
+describe("isStaleLock", () => {
+  function mkLockDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "voscache-lock-"));
+  }
+
+  test("returns false when lock dir does not exist", () => {
+    const tmp = path.join(os.tmpdir(), `voscache-missing-${Date.now()}`);
+    expect(isStaleLock(tmp, 60_000)).toBe(false);
+  });
+
+  test("returns false when lock fresh and no pidfile", () => {
+    const lock = mkLockDir();
+    try { expect(isStaleLock(lock, 60_000)).toBe(false); }
+    finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  });
+
+  test("returns true when mtime older than timeout window", () => {
+    const lock = mkLockDir();
+    const ancient = new Date(Date.now() - 120_000);
+    fs.utimesSync(lock, ancient, ancient);
+    try { expect(isStaleLock(lock, 60_000)).toBe(true); }
+    finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  });
+
+  test("returns true when pidfile names a dead pid", () => {
+    const lock = mkLockDir();
+    // PID 1 is init/launchd; sending signal 0 from a non-root user fails with EPERM,
+    // not ESRCH, so use a guaranteed-dead pid: fork a child, capture pid, wait, then probe.
+    const child = spawnSyncNode(); // helper below
+    fs.writeFileSync(path.join(lock, "pid"), String(child.pid));
+    try { expect(isStaleLock(lock, 60_000)).toBe(true); }
+    finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  });
+
+  test("returns false when pidfile names a live pid", () => {
+    const lock = mkLockDir();
+    fs.writeFileSync(path.join(lock, "pid"), String(process.pid));
+    try { expect(isStaleLock(lock, 60_000)).toBe(false); }
+    finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  });
+});
+
+// Spawn a node child, wait for it to exit, return its pid. Guarantees ESRCH on later probe.
+function spawnSyncNode(): { pid: number } {
+  const r = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+  if (r.status !== 0) throw new Error("helper child failed");
+  // r.pid is the now-exited pid.
+  return { pid: r.pid! };
+}
