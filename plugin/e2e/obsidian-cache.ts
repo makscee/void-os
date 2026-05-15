@@ -30,6 +30,30 @@ export function isStaleLock(lockDir: string, timeoutMs: number): boolean {
   }
 }
 
+export async function acquireLock(lockDir: string, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  let staleRetried = false;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, "pid"), String(process.pid));
+      return;
+    } catch (e: any) {
+      if (e?.code !== "EEXIST") throw e;
+      if (!staleRetried && isStaleLock(lockDir, timeoutMs)) {
+        fs.rmSync(lockDir, { recursive: true, force: true });
+        staleRetried = true;
+        continue;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw new Error(
+    `obsidian-cache: lock timeout after ${timeoutMs}ms (stale ${lockDir}?). ` +
+      `Delete plugin/e2e/.cache/.download.lock if no other run is active.`,
+  );
+}
+
 export async function ensureObsidian(): Promise<string> {
   if (process.platform !== "darwin") {
     throw new Error(

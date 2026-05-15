@@ -114,3 +114,47 @@ function spawnSyncNode(): { pid: number } {
   // r.pid is the now-exited pid.
   return { pid: r.pid! };
 }
+
+import { acquireLock } from "../e2e/obsidian-cache";
+
+describe("acquireLock", () => {
+  test("acquires fresh lock and writes pidfile", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "voscache-acq-"));
+    const lockDir = path.join(cacheDir, ".download.lock");
+    try {
+      await acquireLock(lockDir, 5_000);
+      expect(fs.existsSync(lockDir)).toBe(true);
+      expect(fs.readFileSync(path.join(lockDir, "pid"), "utf8").trim()).toBe(String(process.pid));
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("times out when an already-locked dir is owned by a live foreign pid", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "voscache-acq2-"));
+    const lockDir = path.join(cacheDir, ".download.lock");
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(path.join(lockDir, "pid"), String(process.pid)); // self = live
+    try {
+      const start = Date.now();
+      await expect(acquireLock(lockDir, 1_500)).rejects.toThrow(/lock timeout/);
+      expect(Date.now() - start).toBeGreaterThanOrEqual(1_500);
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("reclaims a stale (dead-pid) lock once", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "voscache-acq3-"));
+    const lockDir = path.join(cacheDir, ".download.lock");
+    fs.mkdirSync(lockDir);
+    const r = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    fs.writeFileSync(path.join(lockDir, "pid"), String(r.pid));
+    try {
+      await acquireLock(lockDir, 5_000);
+      expect(fs.readFileSync(path.join(lockDir, "pid"), "utf8").trim()).toBe(String(process.pid));
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+});
