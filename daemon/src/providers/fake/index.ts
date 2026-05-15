@@ -31,8 +31,10 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
         resolveDone = res;
       });
       let sessionId: string | undefined;
+      let started = false;
 
       async function* gen(): AsyncGenerator<ProviderEvent> {
+        started = true;
         let raw: string;
         try {
           raw = await readFile(scriptPath, "utf8");
@@ -60,6 +62,7 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
         async cancel() {
           if (cancelled) return false;
           cancelled = true;
+          if (!started) resolveDone({ reason: "cancel" });
           return true;
         },
         done,

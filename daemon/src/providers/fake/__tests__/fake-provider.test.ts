@@ -49,6 +49,32 @@ describe("makeFakeProvider", () => {
     expect(result.reason).toBe("cancel");
   });
 
+  test("cancel before first iteration resolves done with reason=cancel", async () => {
+    const scriptPath = tmpJsonl([
+      JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }),
+    ]);
+    const provider = makeFakeProvider({ scriptPath });
+    const handle = provider.spawn({ runId: "r4", prompt: "p", cwd: "/tmp" });
+    await handle.cancel();
+    const result = await Promise.race([
+      handle.done,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("deadlock: done did not resolve within 1s")), 1000)),
+    ]);
+    expect(result.reason).toBe("cancel");
+  });
+
+  test("empty script resolves done with reason=exit immediately", async () => {
+    const scriptPath = tmpJsonl([]);
+    const provider = makeFakeProvider({ scriptPath });
+    const handle = provider.spawn({ runId: "r5", prompt: "p", cwd: "/tmp" });
+    const seen: string[] = [];
+    for await (const ev of handle.events) seen.push(ev.type);
+    expect(seen).toEqual([]);
+    const result = await handle.done;
+    expect(result.reason).toBe("exit");
+    expect(result.exitCode).toBe(0);
+  });
+
   test("missing script => done resolves reason=error", async () => {
     const provider = makeFakeProvider({ scriptPath: "/tmp/does-not-exist-vos93.jsonl" });
     const handle = provider.spawn({ runId: "r3", prompt: "p", cwd: "/tmp" });
