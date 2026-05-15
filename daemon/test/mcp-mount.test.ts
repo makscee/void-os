@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { mountMcp } from "../src/adapters/mcp/index.ts";
+import { createEventBus } from "../src/events/index.ts";
 
 // Mirrors daemon/src/adapters/sqlite/migrations/0001_init.sql
 const SCHEMA = `
@@ -26,7 +27,8 @@ async function startApp(): Promise<Ctx> {
   const db = new Database(":memory:");
   db.exec(SCHEMA);
   const app = new Hono();
-  mountMcp(app, { vaultRoot, db });
+  const bus = createEventBus({ db });
+  mountMcp(app, { vaultRoot, db, bus });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   return { vaultRoot, db, app, server: { stop: () => server.stop(true), port: server.port as number } };
 }
@@ -35,12 +37,13 @@ describe("mountMcp /mcp", () => {
   let ctx: Ctx;
   beforeEach(async () => { ctx = await startApp(); });
 
-  test("tools/list returns exactly vault.read", async () => {
+  test("tools/list returns vault.read and ask_user", async () => {
     const client = new Client({ name: "test", version: "0.0.0" });
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${ctx.server.port}/mcp`));
     await client.connect(transport);
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(["vault.read"]);
+    // VOS-88 T7: ask_user joins vault.read on the tools list.
+    expect(tools.map((t) => t.name).sort()).toEqual(["ask_user", "vault.read"]);
     await client.close();
     ctx.server.stop();
   });
