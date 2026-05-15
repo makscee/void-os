@@ -39,7 +39,7 @@
 
 ---
 
-## Task 1: Scaffold `obsidian-cache.ts` with platform guard
+### Task 1: Scaffold `obsidian-cache.ts` with platform guard
 
 **Files:**
 - Create: `plugin/e2e/obsidian-cache.ts`
@@ -123,7 +123,7 @@ git commit -m "feat(VOS-94): scaffold obsidian-cache module + platform guard"
 
 ---
 
-## Task 2: `cacheIsValid` helper
+### Task 2: `cacheIsValid` helper
 
 **Files:**
 - Modify: `plugin/e2e/obsidian-cache.ts`
@@ -216,7 +216,7 @@ git commit -m "feat(VOS-94): cacheIsValid helper"
 
 ---
 
-## Task 3: `isStaleLock` heuristic
+### Task 3: `isStaleLock` heuristic
 
 **Files:**
 - Modify: `plugin/e2e/obsidian-cache.ts`
@@ -334,7 +334,7 @@ git commit -m "feat(VOS-94): isStaleLock heuristic (pid liveness + mtime fallbac
 
 ---
 
-## Task 4: `acquireLock` with stale reclaim
+### Task 4: `acquireLock` with stale reclaim
 
 **Files:**
 - Modify: `plugin/e2e/obsidian-cache.ts`
@@ -446,7 +446,7 @@ git commit -m "feat(VOS-94): acquireLock with stale-pid reclaim"
 
 ---
 
-## Task 5: `buildDmgUrl` + content-type guard helpers
+### Task 5: `buildDmgUrl` + content-type guard helpers
 
 **Files:**
 - Modify: `plugin/e2e/obsidian-cache.ts`
@@ -531,7 +531,7 @@ git commit -m "feat(VOS-94): URL builder + DMG response guard"
 
 ---
 
-## Task 6: `downloadAndExtract` (network + hdiutil) + full `ensureObsidian`
+### Task 6: `downloadAndExtract` (network + hdiutil) + full `ensureObsidian`
 
 **Files:**
 - Modify: `plugin/e2e/obsidian-cache.ts`
@@ -659,7 +659,7 @@ git commit -m "feat(VOS-94): downloadAndExtract + full ensureObsidian wiring"
 
 ---
 
-## Task 7: Manual integration self-test script
+### Task 7: Manual integration self-test script
 
 **Files:**
 - Create: `plugin/e2e/scripts/test-obsidian-cache.ts`
@@ -755,7 +755,7 @@ git commit -m "test(VOS-94): manual integration self-test for obsidian-cache"
 
 ---
 
-## Task 8: Wire `globalSetup.ts` to use the cached binary
+### Task 8: Wire `globalSetup.ts` to use the cached binary
 
 **Files:**
 - Modify: `plugin/e2e/globalSetup.ts:154`
@@ -825,7 +825,7 @@ git commit -m "feat(VOS-94): globalSetup uses cached Obsidian binary"
 
 ---
 
-## Task 9: `.gitignore` + `playwright.config.ts` timeout bump
+### Task 9: `.gitignore` + `playwright.config.ts` timeout bump
 
 **Files:**
 - Modify: `plugin/e2e/.gitignore`
@@ -901,7 +901,7 @@ git commit -m "chore(VOS-94): gitignore .cache/ + raise Playwright globalTimeout
 
 ---
 
-## Task 10: README update
+### Task 10: README update
 
 **Files:**
 - Modify: `plugin/e2e/README.md`
@@ -955,7 +955,7 @@ git commit -m "docs(VOS-94): e2e README — Obsidian binary cache"
 
 ---
 
-## Task 11: Full acceptance verification
+### Task 11: Full acceptance verification
 
 **Files:** none (verification only)
 
