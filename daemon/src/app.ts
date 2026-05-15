@@ -24,10 +24,11 @@ import { chatApi } from "./api/chat.ts";
 import { mountMcp, pendingRegistry } from "./adapters/mcp/index.ts";
 import { mountAnswerRoute } from "./api/answer.ts";
 import { createEventBus } from "./events/index.ts";
-import { makeClaudeCodeProviderComposed } from "./providers/claude-code/index.ts";
+import { makeProvider } from "./providers/factory.ts";
 import { makeChatRepo } from "./chat/repo.ts";
 import { makeSessionReplay } from "./chat/session-replay.ts";
 import { makeTitler, type Titler } from "./chat/titler.ts";
+import { makeTitlerStub } from "./chat/titler-stub.ts";
 import {
   makeOrchestrator,
   type Orchestrator,
@@ -78,13 +79,20 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     const replay = makeSessionReplay(deps.db);
 
     if (!titler) {
-      const sdk = await buildAnthropicSdk();
-      titler = makeTitler({ repo, sdk, replay, emit });
+      const useStub =
+        process.env.VOS_TITLER === "stub" ||
+        (process.env.VOS_TITLER == null && process.env.VOS_PROVIDER === "fake");
+      if (useStub) {
+        titler = makeTitlerStub();
+      } else {
+        const sdk = await buildAnthropicSdk();
+        titler = makeTitler({ repo, sdk, replay, emit });
+      }
     }
 
     if (!orchestrator) {
       const tracesDir = path.join(deps.vaultRoot, ".traces");
-      const provider = makeClaudeCodeProviderComposed({
+      const provider = makeProvider(process.env, {
         bus,
         db: deps.db,
         tracesDir,

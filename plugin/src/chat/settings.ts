@@ -4,15 +4,18 @@
 
 export interface VoidOsSettings {
   chatId: string | null;
+  daemonUrl?: string;
 }
 
 export const DEFAULT_SETTINGS: VoidOsSettings = {
   chatId: null,
+  // daemonUrl omitted on purpose: undefined ⇒ caller uses built-in default
 };
 
 export interface SettingsStore {
   get(): VoidOsSettings;
   setChatId(id: string): Promise<void>;
+  setDaemonUrl(url: string | undefined): Promise<void>;
 }
 
 export interface SettingsIO {
@@ -27,6 +30,10 @@ export async function makeSettingsStore(io: SettingsIO): Promise<SettingsStore> 
     get: () => current,
     async setChatId(id: string) {
       current = { ...current, chatId: id };
+      await io.saveData(current);
+    },
+    async setDaemonUrl(url: string | undefined) {
+      current = { ...current, daemonUrl: url };
       await io.saveData(current);
     },
   };

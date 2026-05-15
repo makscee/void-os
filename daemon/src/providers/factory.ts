@@ -1,0 +1,44 @@
+/**
+ * Provider factory — dispatches on VOS_PROVIDER env.
+ *
+ * Default: "claude-code" (production). e2e sets "fake".
+ */
+import type { Provider } from "./types.ts";
+import { makeClaudeCodeProviderComposed } from "./claude-code/index.ts";
+import { makeFakeProvider } from "./fake/index.ts";
+import type { Database } from "bun:sqlite";
+import type { EventBus } from "../events/index.ts";
+
+export interface ProviderEnv {
+  VOS_PROVIDER?: string;
+  VOS_FAKE_SCRIPT?: string;
+}
+
+export interface ProviderDeps {
+  bus: EventBus;
+  db: Database;
+  tracesDir: string;
+  agent: string;
+  cwd: string;
+}
+
+export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
+  const kind = env.VOS_PROVIDER ?? "claude-code";
+  if (kind === "claude-code") {
+    return makeClaudeCodeProviderComposed({
+      bus: deps.bus,
+      db: deps.db,
+      tracesDir: deps.tracesDir,
+      agent: deps.agent,
+      cwd: deps.cwd,
+    });
+  }
+  if (kind === "fake") {
+    const scriptPath = env.VOS_FAKE_SCRIPT;
+    if (!scriptPath) {
+      throw new Error("VOS_PROVIDER=fake requires VOS_FAKE_SCRIPT env var");
+    }
+    return makeFakeProvider({ scriptPath });
+  }
+  throw new Error(`unknown provider: ${kind}`);
+}

@@ -1,0 +1,10 @@
+# Per-run build output written by globalSetup.
+fixtures/vault/.obsidian/plugins/void-os/*
+!fixtures/vault/.obsidian/plugins/void-os/.gitkeep
+
+# Per-run resolved settings.
+fixtures/vault/.obsidian/plugins/void-os/data.json
+
+# Playwright artifacts.
+playwright-report/
+test-results/

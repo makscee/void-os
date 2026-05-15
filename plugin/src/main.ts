@@ -9,6 +9,8 @@ import { makeSettingsStore, type SettingsStore } from "./chat/settings";
 import { makeAgentsApi } from "./agents/api";
 import { openAgentPicker, makeRealAgentPickerFactory, defaultOnError } from "./agents/picker";
 import type { AgentListEntry } from "./agents/types";
+import { VoidOsSettingsTab } from "./settings-tab";
+import { DEFAULT_RETRY_MS, DEFAULT_PING_MS, DEFAULT_PONG_TIMEOUT_MS } from "./config.ts";
 
 /** Adapt Obsidian's `requestUrl` (Electron main-process HTTP, no CORS) to the
  *  `fetch`-shaped seam consumed by makeChatApi.
@@ -52,11 +54,13 @@ function requestUrlAsFetch(): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-const DAEMON_HTTP = "http://127.0.0.1:7777";
-const DAEMON_WS = "ws://127.0.0.1:7777/events";
-const RETRY_MS = 2000;
-const PING_MS = 10000;
-const PONG_TIMEOUT_MS = 25000;
+const DEFAULT_DAEMON_HTTP = "http://127.0.0.1:7777";
+
+function deriveDaemonUrls(settings: { daemonUrl?: string }): { http: string; ws: string } {
+  const http = settings.daemonUrl?.trim() || DEFAULT_DAEMON_HTTP;
+  const ws = http.replace(/^http/i, "ws").replace(/\/+$/, "") + "/events";
+  return { http, ws };
+}
 
 /** Wraps a WsPort so a single underlying handler is multiplexed:
  *  - the original consumer (ReconnectFSM) sees every event verbatim;
@@ -92,9 +96,11 @@ export default class VoidOsPlugin extends Plugin {
       loadData: () => this.loadData(),
       saveData: (d) => this.saveData(d),
     });
+    const urls = deriveDaemonUrls(this.settings.get());
+    this.addSettingTab(new VoidOsSettingsTab(this.app, this));
     this.bus = new FrameBus();
-    const api = makeChatApi(DAEMON_HTTP, requestUrlAsFetch());
-    const agentsApi = makeAgentsApi(DAEMON_HTTP, requestUrlAsFetch());
+    const api = makeChatApi(urls.http, requestUrlAsFetch());
+    const agentsApi = makeAgentsApi(urls.http, requestUrlAsFetch());
     const pickerFactory = makeRealAgentPickerFactory(this.app);
 
     const openPicker = (): Promise<AgentListEntry | null> =>
@@ -105,7 +111,7 @@ export default class VoidOsPlugin extends Plugin {
       });
 
     // Single WebSocket — FSM owns reconnect, FrameBus piggybacks on frames.
-    const wsClient = new WsClient(DAEMON_WS);
+    const wsClient = new WsClient(urls.ws);
     const tapped = tapFrames(wsClient, this.bus);
 
     this.registerView(CHAT_VIEW_TYPE, (leaf: WorkspaceLeaf) =>
@@ -119,13 +125,15 @@ export default class VoidOsPlugin extends Plugin {
       })),
     );
 
-    const statusBar = new StatusBar(this.addStatusBarItem());
+    const statusBarEl = this.addStatusBarItem();
+    statusBarEl.setAttribute("data-testid", "vos-status-bar");
+    const statusBar = new StatusBar(statusBarEl);
     this.fsm = new ReconnectFSM({
       client: tapped,
       onState: (s) => statusBar.update(s),
-      retryMs: RETRY_MS,
-      pingMs: PING_MS,
-      pongTimeoutMs: PONG_TIMEOUT_MS,
+      retryMs: DEFAULT_RETRY_MS,
+      pingMs: DEFAULT_PING_MS,
+      pongTimeoutMs: DEFAULT_PONG_TIMEOUT_MS,
     });
     this.fsm.start();
 

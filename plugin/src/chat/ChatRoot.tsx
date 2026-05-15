@@ -345,6 +345,7 @@ export function ChatRoot(props: ChatRootProps) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <div data-testid="vos-chat-root" className="vos:contents">
       {/* Tool UI registration. `BashTool` is from makeAssistantToolUI — it
           renders nothing visible itself; its mount side-effect registers a
           renderer for toolName === "Bash" inside the assistant-ui store. */}
@@ -427,6 +428,7 @@ export function ChatRoot(props: ChatRootProps) {
             </div>
           </ThreadPrimitive.Root>
         </div>
+      </div>
       </div>
     </AssistantRuntimeProvider>
   );
