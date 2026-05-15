@@ -6,6 +6,7 @@ import { StatusBar } from "./status";
 import { FrameBus, type DaemonFrame } from "./chat/bus";
 import { makeChatApi } from "./chat/api";
 import { makeSettingsStore, type SettingsStore } from "./chat/settings";
+import { VoidOsSettingsTab } from "./settings-tab";
 
 /** Adapt Obsidian's `requestUrl` (Electron main-process HTTP, no CORS) to the
  *  `fetch`-shaped seam consumed by makeChatApi.
@@ -49,8 +50,13 @@ function requestUrlAsFetch(): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-const DAEMON_HTTP = "http://127.0.0.1:7777";
-const DAEMON_WS = "ws://127.0.0.1:7777/events";
+const DEFAULT_DAEMON_HTTP = "http://127.0.0.1:7777";
+
+function deriveDaemonUrls(settings: { daemonUrl?: string }): { http: string; ws: string } {
+  const http = settings.daemonUrl?.trim() || DEFAULT_DAEMON_HTTP;
+  const ws = http.replace(/^http/i, "ws").replace(/\/+$/, "") + "/events";
+  return { http, ws };
+}
 const RETRY_MS = 2000;
 const PING_MS = 10000;
 const PONG_TIMEOUT_MS = 25000;
@@ -89,11 +95,13 @@ export default class VoidOsPlugin extends Plugin {
       loadData: () => this.loadData(),
       saveData: (d) => this.saveData(d),
     });
+    const urls = deriveDaemonUrls(this.settings.get());
+    this.addSettingTab(new VoidOsSettingsTab(this.app, this));
     this.bus = new FrameBus();
-    const api = makeChatApi(DAEMON_HTTP, requestUrlAsFetch());
+    const api = makeChatApi(urls.http, requestUrlAsFetch());
 
     // Single WebSocket — FSM owns reconnect, FrameBus piggybacks on frames.
-    const wsClient = new WsClient(DAEMON_WS);
+    const wsClient = new WsClient(urls.ws);
     const tapped = tapFrames(wsClient, this.bus);
 
     this.registerView(CHAT_VIEW_TYPE, (leaf: WorkspaceLeaf) =>
