@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import * as path from 'node:path';
 import {
   createPermissionEngine,
   SYSTEM_DENY_FOR_WRITE,
@@ -107,7 +108,7 @@ describe('resolveScopes', () => {
     });
     expect(r.readPaths).toEqual([`${VAULT}/notes/**`]);
     expect(warns.length).toBe(1);
-    expect(warns[0].msg).toMatch(/notes\/\*\*/);
+    expect(warns[0]!.msg).toMatch(/notes\/\*\*/);
   });
 
   test('ZeroScopeError when every read_scope pattern is invalid', () => {
@@ -125,5 +126,51 @@ describe('resolveScopes', () => {
       expect(e).toBeInstanceOf(ZeroScopeError);
       expect((e as ZeroScopeError).agent).toBe('journaler');
     }
+  });
+});
+
+describe('canRead / canWrite', () => {
+  const VAULT = '/tmp/vos-test-vault';
+  const HOME  = '/tmp/vos-test-home';
+  const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
+
+  const agentVault: AgentDefn = { name: 'maya', read_scope: ['vault/**'], write_scope: ['vault/**'] };
+  const agentHome:  AgentDefn = { name: 'dl',   read_scope: ['~/Downloads/**'] };
+  const agentTmp:   AgentDefn = { name: 'tmp',  read_scope: ['/tmp/x/**'] };
+
+  test('vault-relative read matches', () => {
+    expect(eng.canRead(path.join(VAULT, 'notes/foo.md'), agentVault)).toBe(true);
+  });
+
+  test('~ expansion read matches', () => {
+    expect(eng.canRead(path.join(HOME, 'Downloads/x.txt'), agentHome)).toBe(true);
+  });
+
+  test('absolute literal read matches', () => {
+    expect(eng.canRead('/tmp/x/y', agentTmp)).toBe(true);
+  });
+
+  test('canWrite: SYSTEM_DENY blocks vault/agents even when write_scope=vault/**', () => {
+    expect(eng.canWrite(path.join(VAULT, 'agents/maya/agent.md'), agentVault)).toBe(false);
+  });
+
+  test('canRead: SYSTEM_DENY paths remain readable', () => {
+    expect(eng.canRead(path.join(VAULT, 'agents/maya/agent.md'), agentVault)).toBe(true);
+  });
+
+  test('canWrite default-deny outside scope', () => {
+    expect(eng.canWrite(path.join(VAULT, '..', 'outside.md'), agentVault)).toBe(false);
+  });
+
+  test('canRead default-deny outside scope', () => {
+    expect(eng.canRead(path.join(VAULT, '..', 'outside.md'), agentVault)).toBe(false);
+  });
+
+  test('canRead throws TypeError on relative input', () => {
+    expect(() => eng.canRead('notes/foo.md', agentVault)).toThrow(TypeError);
+  });
+
+  test('canWrite throws TypeError on relative input', () => {
+    expect(() => eng.canWrite('notes/foo.md', agentVault)).toThrow(TypeError);
   });
 });
