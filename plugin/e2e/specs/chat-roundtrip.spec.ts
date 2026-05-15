@@ -19,6 +19,7 @@ interface E2EState {
   cdpPort: number;
   vaultPath: string;
   obsidianUserDataDir: string;
+  fakeScriptPath: string;
 }
 
 async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {

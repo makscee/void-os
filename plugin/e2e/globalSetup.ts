@@ -78,6 +78,15 @@ export default async function globalSetup() {
   fs.mkdirSync(daemonVault, { recursive: true });
   fs.mkdirSync(obsidianUserDataDir, { recursive: true });
 
+  // Per-spec switchable fake script. Daemon points at this path for the
+  // whole run; specs swap its contents by copying a different fixture in
+  // before they kick a chat. Initialized with hello.jsonl so specs that
+  // don't swap (e.g. chat-roundtrip) keep their original behaviour.
+  const fakeScriptDir = path.join(tmpdir, "fake-script");
+  fs.mkdirSync(fakeScriptDir, { recursive: true });
+  const fakeScriptPath = path.join(fakeScriptDir, "active.jsonl");
+  fs.copyFileSync(FAKE_SCRIPT, fakeScriptPath);
+
   // Copy the committed fixture vault into tmpdir so Obsidian's runtime writes
   // (workspace.json, appearance.json, plugin-data tweaks) don't pollute the
   // checked-in fixture. The build output + resolved data.json go into the
@@ -130,7 +139,7 @@ export default async function globalSetup() {
     VOID_OS_VAULT_ROOT: daemonVault,
     VOS_PROVIDER: "fake",
     VOS_TITLER: "stub",
-    VOS_FAKE_SCRIPT: FAKE_SCRIPT,
+    VOS_FAKE_SCRIPT: fakeScriptPath,
   };
   delete env.ANTHROPIC_API_KEY;
   delete env.VOID_KEYS_URL;
@@ -179,6 +188,7 @@ export default async function globalSetup() {
     tmpdir,
     vaultPath: VAULT_PATH,
     obsidianUserDataDir,
+    fakeScriptPath,
   };
   const statePath = path.join(tmpdir, "state.json");
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
