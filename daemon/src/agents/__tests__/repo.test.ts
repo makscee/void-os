@@ -71,6 +71,9 @@ describe("makeAgentRepo", () => {
 
   test("list returns [] when no rows", () => {
     const db = freshDb();
+    // VOS-90 T8: migration 0008 seeds a default `maya` row. Clear it so this
+    // test exercises the truly-empty path that AgentRepo.list() must handle.
+    db.exec("DELETE FROM agents");
     const repo = makeAgentRepo(db);
     expect(repo.list()).toEqual([]);
     db.close();

@@ -7,7 +7,9 @@
 //   2. Resolves the open task for the context via `openTaskFor`.
 //   3. In a single SQLite transaction: CAS-clears the pending question
 //      (clearTaskPending) and appends a ROLE_USER tool_result message.
-//   4. On success: emits task.state_changed (WORKING) + message.appended,
+//   4. On success: emits task.state_changed (WORKING) + message.appended on
+//      the internal EventBus, broadcasts `chat.tool_result` on the WS bus
+//      so the plugin reducer can clear `pendingAskUser` inline (VOS-90 T8),
 //      then resolves the PendingRegistry slot so the awaiting MCP tool
 //      handler returns the answer to the agent.
 //
@@ -25,6 +27,9 @@
 //     idempotent w.r.t. the renamed schema.
 //   - Bus emit envelope uses `DaemonEvent` shape (`type` + `payload`) —
 //     mirrors the existing `runAskUser` handler emit pattern. No `as any`.
+//   - VOS-90 T8: the WS broadcast is an OPTIONAL dep so existing test fixtures
+//     that only pass `bus` keep compiling. When wired in production (app.ts),
+//     the `emit` callable is the same `broadcast()` shim used by orchestrator.
 
 import { Hono } from "hono";
 import { z } from "zod";
@@ -46,6 +51,10 @@ export interface AnswerDeps {
   db: Database;
   bus: EventBus;
   pending: PendingRegistry;
+  // Optional WS broadcast shim. Production wiring (app.ts) passes the
+  // module-level `broadcast` function; tests may omit it (the route then
+  // skips the WS frame — only the in-process bus events are surfaced).
+  emit?: (type: string, payload: Record<string, unknown>) => void;
 }
 
 export function mountAnswerRoute(app: Hono, deps: AnswerDeps): void {
@@ -112,6 +121,22 @@ export function mountAnswerRoute(app: Hono, deps: AnswerDeps): void {
       type: "message.appended",
       chatId,
       payload: { taskId, messageId },
+    });
+
+    // VOS-90 T8: broadcast `chat.tool_result` on the WS bus so the plugin
+    // reducer's `chat.tool_result` case clears `pendingAskUser` + the live
+    // tool entry's pending flag inline. Without this frame the plugin must
+    // refetch /chat/:id/messages, opening race windows that flake the e2e
+    // ("button still visible after answer", "banner not cleared", etc.).
+    // Frame shape mirrors orchestrator.ts:335 emit so plugin/src/chat/reducer.ts
+    // case "chat.tool_result" (line 654) reads `tool_call_id`, `output`,
+    // `is_error` off the top-level envelope.
+    deps.emit?.("chat.tool_result", {
+      chat_id: chatId,
+      run_id: runId,
+      tool_call_id: body.tool_use_id,
+      output: body.answer,
+      is_error: false,
     });
 
     deps.pending.resolve(body.tool_use_id, body.answer);
