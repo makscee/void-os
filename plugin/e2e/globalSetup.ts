@@ -151,7 +151,13 @@ export default async function globalSetup() {
   }
 
   // Spawn Obsidian (from local cache) with CDP debugger + fixture vault.
-  const obsidianBin = await ensureObsidian();
+  let obsidianBin: string;
+  try {
+    obsidianBin = await ensureObsidian();
+  } catch (err) {
+    daemon.kill("SIGKILL");
+    throw err;
+  }
   const obsidian: ChildProcess = spawn(
     obsidianBin,
     [
