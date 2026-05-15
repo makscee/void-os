@@ -67,6 +67,11 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   let orchestrator = deps.orchestrator;
   let titler = deps.titler;
 
+  // VOS-88 T7: bus is shared between orchestrator wiring and the MCP server
+  // (ask_user emits task.state_changed / message.appended via this bus).
+  // Hoisted out of the orchestrator-only block so mountMcp can receive it.
+  const bus = createEventBus({ db: deps.db });
+
   if (!orchestrator || !titler) {
     const repo = makeChatRepo(deps.db);
     const replay = makeSessionReplay(deps.db);
@@ -77,7 +82,6 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     }
 
     if (!orchestrator) {
-      const bus = createEventBus({ db: deps.db });
       const tracesDir = path.join(deps.vaultRoot, ".traces");
       const provider = makeClaudeCodeProviderComposed({
         bus,
@@ -102,7 +106,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   app.route("/", chatsApi(deps.db));
   app.route("/", agentsApi(deps.db));
   app.route("/", chatApi(deps.db, { orchestrator }));
-  mountMcp(app, { vaultRoot: deps.vaultRoot, db: deps.db });
+  mountMcp(app, { vaultRoot: deps.vaultRoot, db: deps.db, bus });
   return app;
 };
 

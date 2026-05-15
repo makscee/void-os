@@ -32,8 +32,15 @@ export const ASK_USER_TOOL_DEF = {
         items: { type: "string", minLength: 1, maxLength: 80 },
         maxItems: 6,
       },
+      // VOS-88 T7: MCP is stateless; the caller's runtime injects these IDs
+      // into the tool arguments so the daemon can route the question to the
+      // correct task/chat. The zod AskUserInput schema below ignores them
+      // (non-strict); the MCP handler reads them off `args` directly.
+      task_id: { type: "string", minLength: 1 },
+      context_id: { type: "string", minLength: 1 },
+      run_id: { type: "string", minLength: 1 },
     },
-    required: ["question"],
+    required: ["question", "task_id"],
   },
 };
 
