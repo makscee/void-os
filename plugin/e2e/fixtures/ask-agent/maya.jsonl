@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"e2e-ask-agent-maya"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello from fake"},{"type":"tool_use","id":"tu-ask-1","name":"ask_agent","input":{"target_agent_id":"journaler","message":"summarise"}}]}}

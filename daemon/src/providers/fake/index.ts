@@ -26,6 +26,25 @@ export function resolveFakeScript(agentName: string): string | undefined {
   return process.env[k] ?? process.env.VOS_FAKE_SCRIPT;
 }
 
+/**
+ * Resolve per-event delay (ms) for the fake provider.
+ *
+ * Lookup order:
+ *   1. `VOS_FAKE_PER_EVENT_DELAY_MS_<agentName>` (per-agent)
+ *   2. `VOS_FAKE_PER_EVENT_DELAY_MS` (global)
+ *   3. undefined
+ *
+ * Used by ask_agent E2E so a parent's run does not drain before the
+ * test bridge can react to a tool_use frame and call MCP.
+ */
+export function resolveFakePerEventDelayMs(agentName: string): number | undefined {
+  const k = `VOS_FAKE_PER_EVENT_DELAY_MS_${agentName}`;
+  const raw = process.env[k] ?? process.env.VOS_FAKE_PER_EVENT_DELAY_MS;
+  if (raw == null) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 export interface FakeProviderOpts {
   scriptPath: string;
   /** Optional delay between events. Default 0. Useful for cancel tests. */
