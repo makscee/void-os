@@ -137,6 +137,10 @@ describe("A2A v1.0 — PartSchema member-name exclusivity", () => {
     expect(() => PartSchema.parse(bad)).toThrow();
   });
 
+  test("PartSchema rejects empty object (no discriminator)", () => {
+    expect(() => PartSchema.parse({})).toThrow();
+  });
+
   test("accepts each variant individually", () => {
     expect(() => PartSchema.parse({ text: "ok" })).not.toThrow();
     expect(() =>

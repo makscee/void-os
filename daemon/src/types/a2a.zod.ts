@@ -46,13 +46,6 @@ const PartCommonFields = {
   metadata: z.record(z.string(), z.unknown()).optional(),
 };
 
-const ForbidTextRawUrlData = {
-  text: z.never().optional(),
-  raw: z.never().optional(),
-  url: z.never().optional(),
-  data: z.never().optional(),
-};
-
 export const TextPartSchema = z.object({
   text: z.string(),
   raw: z.never().optional(),
@@ -93,11 +86,6 @@ export const PartSchema = z.union([
   FileUrlPartSchema,
   DataPartSchema,
 ]);
-
-// Reference the disabled-fields helper so the import is exercised even if a
-// future refactor switches branches to spread it. Keeps the helper alive
-// under `noUnusedLocals` should it be enabled.
-void ForbidTextRawUrlData;
 
 // ---------------------------------------------------------------------------
 // Message

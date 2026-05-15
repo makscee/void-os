@@ -206,6 +206,7 @@ export interface AgentCard {
   provider?: AgentProvider;
   documentationUrl?: string;
   iconUrl?: string;
+  /** TODO(VOS-future): replace `unknown` with proper `SecurityScheme` union once that ticket lands. */
   securitySchemes?: Record<string, unknown>;
   securityRequirements?: Array<Record<string, string[]>>;
   signatures?: Array<Record<string, unknown>>;

@@ -26,6 +26,7 @@ export interface ChatRow {
 // `Chat` stays as the user-facing alias so existing call-sites continue
 // to compile unchanged; downstream tickets migrate consumers off `Chat`.
 export type Context = ChatRow;
+/** @deprecated Use `Context` instead. Kept as an alias for backwards compatibility; downstream tickets will migrate. */
 export type Chat = ChatRow;
 
 // VOS-82: daemon-internal subprocess concept. NOT an A2A type — A2A
