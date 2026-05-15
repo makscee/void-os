@@ -137,6 +137,16 @@ export interface ChatState {
   errorNotice: ErrorNotice | null;
   /** Per-chat send queue. */
   queues: Record<string, QueuedMessage[]>;
+  /** Latest unresolved ask_user prompt for this chat, or null. Single-slot
+   *  per daemon invariant (ASK_USER_ALREADY_OPEN). Drives composer mode in
+   *  ChatRoot. Cleared only by matching tool_result or set_chat. NOT cleared
+   *  by task.state_changed → WORKING (race: a late WORKING from a previous
+   *  resume can fire after the next ask_user tool_use lands; see VOS-90 spec D7). */
+  pendingAskUser: {
+    toolUseId: string;
+    question: string;
+    options?: string[];
+  } | null;
 }
 
 export const initialChatState = (chatId: string | null = null): ChatState => ({
@@ -149,6 +159,7 @@ export const initialChatState = (chatId: string | null = null): ChatState => ({
   pendingStoppedRunId: null,
   errorNotice: null,
   queues: {},
+  pendingAskUser: null,
 });
 
 /** Classify a run.end / run.error error string into a notice kind. The
@@ -179,6 +190,7 @@ export type LocalAction =
    *  so the next refetched dispatch (triggered by run.end{cancelled}) tags
    *  the partial assistant entry as cancelled. No-op when not running. */
   | { kind: "local_cancel" }
+  | { kind: "local_answer_409" }
   | { kind: "frame"; frame: DaemonFrame };
 
 /** Normalize daemon `output` field — string or block array of {type:"text",text} —
@@ -442,6 +454,40 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       if (shouldTagStopped) {
         messages = tagLastAssistantCancelled(messages, stoppedRunId);
       }
+      // Rehydrate pendingAskUser from the message list. The single-slot
+      // invariant lives on the daemon side; the reducer just observes.
+      const askUserRows = action.messages
+        .map((m, i) => ({ m, i }))
+        .filter(({ m }) => m.role === "tool_use" && m.name === "ask_user");
+      const unpaired: Array<{ tool_use: ReplayMessage & { role: "tool_use" }; idx: number }> = [];
+      for (const { m, i } of askUserRows) {
+        const tu = m as ReplayMessage & { role: "tool_use" };
+        const paired = action.messages
+          .slice(i + 1)
+          .some((later) => later.role === "tool_result" && later.tool_call_id === tu.tool_call_id);
+        if (!paired) unpaired.push({ tool_use: tu, idx: i });
+      }
+      let nextPendingAskUser: ChatState["pendingAskUser"] = null;
+      if (unpaired.length > 0) {
+        const latest = unpaired[unpaired.length - 1].tool_use;
+        const input = (latest.input ?? {}) as { question?: unknown; options?: unknown };
+        const question = typeof input.question === "string" ? input.question : "";
+        const options = Array.isArray(input.options)
+          ? (input.options as unknown[]).filter((o): o is string => typeof o === "string")
+          : undefined;
+        nextPendingAskUser = {
+          toolUseId: latest.tool_call_id,
+          question,
+          options,
+        };
+        if (unpaired.length > 1) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[void-os] ask_user invariant violated: %d unpaired prompts on refetch",
+            unpaired.length,
+          );
+        }
+      }
       return {
         ...state,
         messages,
@@ -450,6 +496,7 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         liveTokens: isRefetch ? "" : state.liveTokens,
         liveToolEvents: isRefetch ? [] : state.liveToolEvents,
         pendingStoppedRunId: isRefetch ? null : state.pendingStoppedRunId,
+        pendingAskUser: nextPendingAskUser,
       };
     }
     case "user_send": {
@@ -527,6 +574,10 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         errorNotice: null,
       };
     }
+    case "local_answer_409": {
+      if (!state.pendingAskUser) return state;
+      return { ...state, pendingAskUser: null };
+    }
     case "frame": {
       const f = action.frame;
       const fChat = typeof f.chat_id === "string" ? f.chat_id : null;
@@ -565,14 +616,27 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           const input = (f.input && typeof f.input === "object")
             ? (f.input as Record<string, unknown>)
             : {};
-          return appendLiveToolUse(state, toolCallId, name, input);
+          const next = appendLiveToolUse(state, toolCallId, name, input);
+          if (name !== "ask_user") return next;
+          const question = typeof input.question === "string" ? input.question : "";
+          const options = Array.isArray(input.options)
+            ? (input.options as unknown[]).filter((o): o is string => typeof o === "string")
+            : undefined;
+          return {
+            ...next,
+            pendingAskUser: { toolUseId: toolCallId, question, options },
+          };
         }
         case "chat.tool_result": {
           if (!runId) return state;
           const toolCallId = typeof f.tool_call_id === "string" ? f.tool_call_id : null;
           if (!toolCallId) return state;
           const isError = f.is_error === true;
-          return applyLiveToolResult(state, toolCallId, f.output, isError);
+          const next = applyLiveToolResult(state, toolCallId, f.output, isError);
+          if (state.pendingAskUser && state.pendingAskUser.toolUseId === toolCallId) {
+            return { ...next, pendingAskUser: null };
+          }
+          return next;
         }
         case "run.end": {
           if (!runId) return state;
