@@ -72,11 +72,35 @@ export const applyMigrations = (db: Database, migrations: MigrationFile[]): stri
 
   for (const m of migrations) {
     if (applied.has(m.version)) continue;
-    const tx = db.transaction(() => {
-      db.exec(m.sql);
-      insert.run(m.version, Date.now());
-    });
-    tx();
+    // Opt-in FK suspension: PRAGMA foreign_keys is a no-op mid-transaction,
+    // so a migration that needs to rebuild a table referenced by FKs from
+    // other tables (rename-rebuild-copy, SQLite docs §"Making Other Kinds
+    // Of Table Schema Changes") must opt in via the marker
+    // "-- void-os:fk-rebuild" on line 1. The runner toggles
+    // foreign_keys=OFF outside the tx for those migrations only, runs a
+    // foreign_key_check inside the tx to abort on dangling refs, and
+    // restores foreign_keys=ON afterwards.
+    const needsFkSuspend = /void-os:fk-rebuild/.test(m.sql);
+    const fkRow = db.query("PRAGMA foreign_keys").get() as { foreign_keys: number };
+    const fkWasOn = fkRow.foreign_keys === 1;
+    if (needsFkSuspend && fkWasOn) db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      const tx = db.transaction(() => {
+        db.exec(m.sql);
+        if (needsFkSuspend && fkWasOn) {
+          const dangling = db.query("PRAGMA foreign_key_check").all();
+          if (dangling.length > 0) {
+            throw new Error(
+              `Migration ${m.version} left dangling FKs: ${JSON.stringify(dangling)}`,
+            );
+          }
+        }
+        insert.run(m.version, Date.now());
+      });
+      tx();
+    } finally {
+      if (needsFkSuspend && fkWasOn) db.exec("PRAGMA foreign_keys = ON");
+    }
     newlyApplied.push(m.version);
   }
   return newlyApplied;
