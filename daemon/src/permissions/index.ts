@@ -1,24 +1,3 @@
-// Folder permissions. Computes per-spawn CC settings (allowed tools, paths).
-
-export interface FolderPermission {
-  path: string;
-  label: string;
-  access: "read" | "write" | "none";
-  agents: string[];
-}
-
-export interface CcSpawnSettings {
-  allowedTools: string[];
-  disallowedPaths: string[];
-  permissionPromptTool?: string;
-}
-
-export interface PermissionResolver {
-  listFolders(): Promise<FolderPermission[]>;
-  setFolders(folders: FolderPermission[]): Promise<void>;
-  computeCcSettings(agent: string): Promise<CcSpawnSettings>;
-}
-
-export const createPermissionResolver = (): PermissionResolver => {
-  throw new Error("not implemented");
-};
+// Permission engine. See ./engine.ts and the spec at
+// docs/superpowers/specs/2026-05-15-vos-85-permission-engine-design.md.
+export * from './engine';

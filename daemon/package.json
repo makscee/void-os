@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/picomatch": "^3.0.1"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -21,6 +22,7 @@
     "@modelcontextprotocol/sdk": "1.20.0",
     "gray-matter": "4.0.3",
     "hono": "^4.12.18",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "picomatch": "^4.0.2"
   }
 }
