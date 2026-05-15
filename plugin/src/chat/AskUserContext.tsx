@@ -16,12 +16,18 @@ export interface AskUserContextValue {
   /** Surface a transient toast in the chat surface. Toast layer lives in ChatRoot;
    *  AskUserTool calls this on error paths (network failure). */
   showToast(text: string): void;
+  /** Notify the runtime that an /answer call returned 409 (another tab /
+   *  resolution already won the race). AskUserTool calls this so the
+   *  reducer clears `pendingAskUser` and the banner detaches even before
+   *  the daemon's tool_result frame echoes through. VOS-90 T8. */
+  notifyAnswer409(): void;
 }
 
 const noopValue: AskUserContextValue = {
   chatId: null,
   async answer() { return { ok: true }; },
   showToast() {},
+  notifyAnswer409() {},
 };
 
 export const AskUserContext = React.createContext<AskUserContextValue>(noopValue);

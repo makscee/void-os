@@ -49,6 +49,13 @@ function AskUserRender(props: {
       try {
         const r = await ctx.answer(props.toolCallId, value);
         if (r && "ok" in r && r.ok === false && r.status === 409) {
+          // Another tab / direct API call already resolved this prompt.
+          // Detach the banner immediately (don't wait for the daemon's
+          // chat.tool_result echo — that may already have landed and
+          // cleared the slot, in which case this is a no-op; or it may
+          // still be in flight, in which case the user sees instant
+          // feedback that the click was rejected). VOS-90 T8.
+          ctx.notifyAnswer409();
           ctx.showToast("Question already resolved.");
         }
       } catch {

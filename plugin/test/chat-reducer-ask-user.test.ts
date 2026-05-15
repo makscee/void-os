@@ -169,4 +169,70 @@ describe("reducer pendingAskUser", () => {
     s = chatReducer(s, { kind: "local_answer_409" });
     expect(s.pendingAskUser).toBeNull();
   });
+
+  it("local_answer_409 is a no-op when pendingAskUser is null", () => {
+    const before = withChat();
+    const after = chatReducer(before, { kind: "local_answer_409" });
+    expect(after).toBe(before);
+  });
+});
+
+describe("reducer liveToolsFirst (VOS-90 T8 overlay arrival-order tracker)", () => {
+  const runStart = (chatId: string, runId: string) =>
+    ({
+      kind: "frame" as const,
+      frame: { type: "run.start", chat_id: chatId, run_id: runId, agent: "x" } as never,
+    });
+  const token = (chatId: string, runId: string, delta: string) =>
+    ({
+      kind: "frame" as const,
+      frame: { type: "chat.token", chat_id: chatId, run_id: runId, delta } as never,
+    });
+  const toolUse = (chatId: string, runId: string, toolCallId: string, name: string) =>
+    ({
+      kind: "frame" as const,
+      frame: {
+        type: "chat.tool_use",
+        chat_id: chatId,
+        run_id: runId,
+        tool_call_id: toolCallId,
+        name,
+        input: {},
+      } as never,
+    });
+
+  it("starts false", () => {
+    expect(withChat().liveToolsFirst).toBe(false);
+  });
+
+  it("flips true when chat.tool_use fires before any tokens", () => {
+    let s = chatReducer(withChat(), runStart(baseChat, "r1"));
+    s = chatReducer(s, toolUse(baseChat, "r1", "tu-1", "ask_user"));
+    expect(s.liveToolsFirst).toBe(true);
+  });
+
+  it("stays false when chat.token fires before chat.tool_use", () => {
+    let s = chatReducer(withChat(), runStart(baseChat, "r1"));
+    s = chatReducer(s, token(baseChat, "r1", "hi "));
+    s = chatReducer(s, toolUse(baseChat, "r1", "tu-1", "Bash"));
+    expect(s.liveToolsFirst).toBe(false);
+  });
+
+  it("resets to false on run.start (fresh run)", () => {
+    let s = chatReducer(withChat(), runStart(baseChat, "r1"));
+    s = chatReducer(s, toolUse(baseChat, "r1", "tu-1", "ask_user"));
+    expect(s.liveToolsFirst).toBe(true);
+    s = chatReducer(s, runStart(baseChat, "r2"));
+    expect(s.liveToolsFirst).toBe(false);
+  });
+
+  it("clears to false on run.end (clearOverlay)", () => {
+    let s = chatReducer(withChat(), runStart(baseChat, "r1"));
+    s = chatReducer(s, toolUse(baseChat, "r1", "tu-1", "ask_user"));
+    s = chatReducer(s, {
+      kind: "frame",
+      frame: { type: "run.end", chat_id: baseChat, run_id: "r1", status: "done" } as never,
+    });
+    expect(s.liveToolsFirst).toBe(false);
+  });
 });

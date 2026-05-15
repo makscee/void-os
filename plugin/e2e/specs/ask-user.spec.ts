@@ -225,5 +225,12 @@ test.describe("ask_user inline rendering", () => {
       // Button disappeared pre-click — option locator must be detached.
       await expect(chatRoot.getByTestId("ask-user-option")).toHaveCount(0);
     }
+
+    // Banner-clear contract (VOS-90 plan, T8): regardless of which path
+    // resolved the prompt (echo from daemon or local_answer_409 from the
+    // stale click's 409 handler), the ask-user banner must detach.
+    await expect(chatRoot.getByTestId("ask-user-banner")).toHaveCount(0, {
+      timeout: 10_000,
+    });
   });
 });

@@ -147,6 +147,17 @@ export interface ChatState {
     question: string;
     options?: string[];
   } | null;
+  /** Arrival-order flag for the live overlay parts list. Set to `true` when
+   *  the FIRST overlay-bound frame for the current run is a `chat.tool_use`
+   *  (i.e. a tool fired before any tokens streamed). Consumed by runtime's
+   *  `buildOverlay` to keep the tool part at a stable index across subsequent
+   *  token deltas — see VOS-90 T8 tapClientLookup race fix.
+   *
+   *  Lifecycle:
+   *   - reset to `false` on run.start / set_chat / local_cancel / clearOverlay
+   *   - flipped to `true` by chat.tool_use only when both liveTokens === ""
+   *     and liveToolEvents.length === 0 (i.e. nothing streamed yet) */
+  liveToolsFirst: boolean;
 }
 
 export const initialChatState = (chatId: string | null = null): ChatState => ({
@@ -160,6 +171,7 @@ export const initialChatState = (chatId: string | null = null): ChatState => ({
   errorNotice: null,
   queues: {},
   pendingAskUser: null,
+  liveToolsFirst: false,
 });
 
 /** Classify a run.end / run.error error string into a notice kind. The
@@ -361,7 +373,8 @@ function clearOverlay(state: ChatState): ChatState {
   if (
     state.liveTokens === "" &&
     state.liveToolEvents.length === 0 &&
-    state.activeRunId === null
+    state.activeRunId === null &&
+    state.liveToolsFirst === false
   ) {
     return state;
   }
@@ -370,6 +383,7 @@ function clearOverlay(state: ChatState): ChatState {
     liveTokens: "",
     liveToolEvents: [],
     activeRunId: null,
+    liveToolsFirst: false,
   };
 }
 
@@ -593,6 +607,7 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
             ...state,
             liveTokens: "",
             liveToolEvents: [],
+            liveToolsFirst: false,
             runState: "running",
             activeRunId: runId,
             errorNotice: null,
@@ -616,7 +631,16 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           const input = (f.input && typeof f.input === "object")
             ? (f.input as Record<string, unknown>)
             : {};
-          const next = appendLiveToolUse(state, toolCallId, name, input);
+          // Arrival-order tracker: if this tool fired before any tokens AND
+          // no prior tools, mark the overlay as "tools first" so buildOverlay
+          // keeps tools at index 0 when text streams in later (ask_user case).
+          const toolsFirst =
+            state.liveToolsFirst ||
+            (state.liveTokens === "" && state.liveToolEvents.length === 0);
+          const withFlag = state.liveToolsFirst === toolsFirst
+            ? state
+            : { ...state, liveToolsFirst: toolsFirst };
+          const next = appendLiveToolUse(withFlag, toolCallId, name, input);
           if (name !== "ask_user") return next;
           const question = typeof input.question === "string" ? input.question : "";
           const options = Array.isArray(input.options)

@@ -277,13 +277,15 @@ export function ChatRoot(props: ChatRootProps) {
   });
   const runtime = handle.runtime;
 
+  const notifyAnswer409 = handle.notifyAnswer409;
   const askUserCtx: AskUserContextValue = React.useMemo(
     () => ({
       chatId: activeChatId,
       answer: (toolUseId, text) => props.api.answer(activeChatId ?? "", toolUseId, text),
       showToast,
+      notifyAnswer409,
     }),
-    [activeChatId, props.api, showToast],
+    [activeChatId, props.api, showToast, notifyAnswer409],
   );
 
   // Refresh chat list on run start AND any terminal frame. run.start updates

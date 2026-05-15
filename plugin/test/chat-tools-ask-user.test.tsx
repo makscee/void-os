@@ -30,6 +30,7 @@ async function flush(act: any) {
 function makeCtx(answerImpl?: (toolUseId: string, text: string) => Promise<{ ok: true } | { ok: false; status: 400 | 404 | 409; error: string }>) {
   const calls: Array<{ toolUseId: string; text: string }> = [];
   const toasts: string[] = [];
+  let answer409Calls = 0;
   const ctx = {
     chatId: "chat-1",
     answer: async (toolUseId: string, text: string) => {
@@ -38,8 +39,9 @@ function makeCtx(answerImpl?: (toolUseId: string, text: string) => Promise<{ ok:
       return { ok: true } as const;
     },
     showToast: (t: string) => { toasts.push(t); },
+    notifyAnswer409: () => { answer409Calls += 1; },
   };
-  return { ctx, calls, toasts };
+  return { ctx, calls, toasts, get answer409Calls() { return answer409Calls; } };
 }
 
 describe("AskUserTool render", () => {
@@ -196,6 +198,46 @@ describe("AskUserTool render", () => {
 
     expect(host.querySelector('[data-testid="ask-user-option"]')).toBeNull();
     expect(host.textContent ?? "").toMatch(/answered:\s*red/i);
+
+    await act(async () => { root.unmount(); });
+  });
+
+  it("409 from answer → notifyAnswer409 + toast", async () => {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const act = (React as any).act;
+    const { AskUserContext } = await import("../src/chat/AskUserContext");
+    const { AskUserTool } = await import("../src/chat/tools/AskUserTool");
+    const Render = (AskUserTool as any).__renderForTest;
+
+    const ctxBundle = makeCtx(async () => ({ ok: false as const, status: 409 as const, error: "already_resolved" }));
+    const host = (globalThis as any).document.createElement("div");
+    (globalThis as any).document.body.appendChild(host);
+    const root = createRoot(host);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          AskUserContext.Provider,
+          { value: ctxBundle.ctx },
+          React.createElement(Render, {
+            args: { question: "color?", options: ["red", "blue"] },
+            isError: false,
+            toolCallId: "tu-1",
+            toolName: "ask_user",
+          }),
+        ),
+      );
+    });
+    await flush(act);
+
+    const red = host.querySelector('[data-testid="ask-user-option"]') as HTMLButtonElement;
+    await act(async () => { red.click(); });
+    await flush(act);
+
+    expect(ctxBundle.answer409Calls).toBe(1);
+    expect(ctxBundle.toasts.length).toBeGreaterThan(0);
+    expect(ctxBundle.toasts[0]).toMatch(/already resolved/i);
 
     await act(async () => { root.unmount(); });
   });

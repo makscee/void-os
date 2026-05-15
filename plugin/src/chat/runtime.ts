@@ -114,12 +114,31 @@ function buildOverlay(
   liveTokens: string,
   liveToolEvents: ToolPart[],
   cancelled: boolean,
+  toolsFirst: boolean,
 ): ChatMessage | null {
   if (!runId) return null;
   if (!liveTokens && liveToolEvents.length === 0) return null;
+  // Arrival-order ordering: when tools landed BEFORE any text streamed
+  // (e.g. ask_user fires a tool_use first, then text "chose red" arrives
+  // post-answer), keep tools at their original index positions so the
+  // tool part doesn't shift from index 0 → index 1 when text arrives.
+  // Otherwise (text first, then tools) the historic [text, ...tools]
+  // order is correct and stable.
+  //
+  // Stability matters because assistant-ui's MessagePart is keyed by
+  // partIndex (see MessagePartsGrouped.js + ExternalThread.js part lookups
+  // via tapClientLookup-by-index). A part shifting index between renders
+  // mid-tool-call surfaces as `tapClientLookup: Index N out of bounds
+  // (length: N)` when the rendered tool UI's part lookup races with the
+  // store's part-list update. VOS-90 T8.
   const parts: ChatMessage["parts"] = [];
-  if (liveTokens) parts.push({ kind: "text", text: liveTokens });
-  for (const t of liveToolEvents) parts.push(t);
+  if (toolsFirst) {
+    for (const t of liveToolEvents) parts.push(t);
+    if (liveTokens) parts.push({ kind: "text", text: liveTokens });
+  } else {
+    if (liveTokens) parts.push({ kind: "text", text: liveTokens });
+    for (const t of liveToolEvents) parts.push(t);
+  }
   return {
     id: runId,
     role: "assistant",
@@ -149,6 +168,10 @@ export interface ChatRuntimeHandle {
   /** Mirror of reducer state.pendingAskUser, exposed for ChatRoot composer-mode
    *  branching. */
   pendingAskUser: ChatState["pendingAskUser"];
+  /** Dispatcher exposed for AskUserTool's 409 path (option-button click
+   *  loses race with another tab). Clears pendingAskUser so the banner
+   *  detaches without waiting for the daemon's tool_result echo. */
+  notifyAnswer409: () => void;
 }
 
 export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
@@ -277,6 +300,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
         state.liveTokens,
         state.liveToolEvents,
         false,
+        state.liveToolsFirst,
       );
       if (overlay) base.push(toThreadMessage(overlay));
     } else if (state.pendingStoppedRunId) {
@@ -285,6 +309,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
         state.liveTokens,
         state.liveToolEvents,
         true,
+        state.liveToolsFirst,
       );
       if (overlay) base.push(toThreadMessage(overlay));
     }
@@ -315,6 +340,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     state.activeRunId,
     state.liveTokens,
     state.liveToolEvents,
+    state.liveToolsFirst,
     state.pendingStoppedRunId,
     state.errorNotice,
     state.queues,
@@ -423,7 +449,18 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     convertMessage: (m) => m,
   });
 
-  return { runtime, cancel, isRunning, send: sendText, pendingAskUser: state.pendingAskUser };
+  const notifyAnswer409 = useCallback(() => {
+    dispatch({ kind: "local_answer_409" });
+  }, []);
+
+  return {
+    runtime,
+    cancel,
+    isRunning,
+    send: sendText,
+    pendingAskUser: state.pendingAskUser,
+    notifyAnswer409,
+  };
 }
 
 // Re-exported for tests.
