@@ -86,3 +86,43 @@ describe("runAskUser (integration, happy path)", () => {
     expect(result).toEqual({ content: [{ type: "text", text: "yes" }] });
   });
 });
+
+describe("runAskUser guards", () => {
+  it("rejects ASK_USER_ALREADY_OPEN when another question is pending", async () => {
+    const { db, bus, pending } = fixture();
+    void runAskUser(
+      { db, bus, pending, taskId: "t", contextId: "ctx", runId: "r", deadlineMs: 60_000, now: () => 1 },
+      { question: "first" },
+    ).catch(() => {});
+    await new Promise((r) => setTimeout(r, 5));
+    const second = await runAskUser(
+      { db, bus, pending, taskId: "t", contextId: "ctx", runId: "r", deadlineMs: 60_000, now: () => 2 },
+      { question: "second" },
+    );
+    expect(second.isError).toBe(true);
+    expect(second.content[0].text).toBe("ASK_USER_ALREADY_OPEN");
+  });
+
+  it("returns TASK_NOT_WORKING when task is already TASK_STATE_INPUT_REQUIRED (different path: pending null edge)", () => {
+    // Force state without setting pending — exercises the second branch in the error distinguisher.
+    const { db, bus, pending } = fixture();
+    db.run("UPDATE tasks SET state='TASK_STATE_INPUT_REQUIRED' WHERE id='t'");
+    return runAskUser(
+      { db, bus, pending, taskId: "t", contextId: "ctx", runId: "r", deadlineMs: 60_000, now: () => 1 },
+      { question: "ok?" },
+    ).then((r) => {
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe("TASK_NOT_WORKING");
+    });
+  });
+
+  it("returns TASK_NOT_FOUND for an unknown taskId", async () => {
+    const { db, bus, pending } = fixture();
+    const r = await runAskUser(
+      { db, bus, pending, taskId: "nope", contextId: "ctx", runId: null, deadlineMs: 60_000, now: () => 1 },
+      { question: "ok?" },
+    );
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("TASK_NOT_FOUND");
+  });
+});
