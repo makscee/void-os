@@ -20,6 +20,7 @@ import * as os from "node:os";
 import * as net from "node:net";
 import * as crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { ensureObsidian } from "./obsidian-cache.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "..");
@@ -149,9 +150,10 @@ export default async function globalSetup() {
     throw err;
   }
 
-  // Spawn Obsidian with CDP debugger + fixture vault.
+  // Spawn Obsidian (from local cache) with CDP debugger + fixture vault.
+  const obsidianBin = await ensureObsidian();
   const obsidian: ChildProcess = spawn(
-    "/Applications/Obsidian.app/Contents/MacOS/Obsidian",
+    obsidianBin,
     [
       `--remote-debugging-port=${cdpPort}`,
       `--user-data-dir=${obsidianUserDataDir}`,
