@@ -3,6 +3,7 @@ import {
   createPermissionEngine,
   SYSTEM_DENY_FOR_WRITE,
   ZeroScopeError,
+  __test__,
   type AgentDefn,
   type PermissionEngine,
 } from '../engine';
@@ -33,5 +34,45 @@ describe('engine surface', () => {
     expect(e).toBeInstanceOf(Error);
     expect(e.agent).toBe('maya');
     expect(e.message).toContain('maya');
+  });
+});
+
+describe('expandPattern', () => {
+  const opts = { vaultRoot: '/vault', homeRoot: '/home/u' };
+
+  test('vault/ prefix expands to vaultRoot', () => {
+    const r = __test__.expandPattern('vault/notes/**', opts);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.expanded).toBe('/vault/notes/**');
+  });
+
+  test('~/ prefix expands to homeRoot', () => {
+    const r = __test__.expandPattern('~/Downloads/**', opts);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.expanded).toBe('/home/u/Downloads/**');
+  });
+
+  test('absolute literal passes through', () => {
+    const r = __test__.expandPattern('/tmp/x/**', opts);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.expanded).toBe('/tmp/x/**');
+  });
+
+  test('bare relative pattern is rejected', () => {
+    const r = __test__.expandPattern('notes/**', opts);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/prefix/i);
+  });
+
+  test('vault/../escape is rejected (traversal escapes vaultRoot)', () => {
+    const r = __test__.expandPattern('vault/../../etc/passwd', opts);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/escape|traversal|anchor/i);
+  });
+
+  test('vault/notes/../inbox normalizes inside vaultRoot', () => {
+    const r = __test__.expandPattern('vault/notes/../inbox/**', opts);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.expanded).toBe('/vault/inbox/**');
   });
 });
