@@ -2,9 +2,12 @@
 // T5: mounts /health onto the shared Hono app. Other endpoints land downstream.
 
 import type { Hono } from "hono";
+import type { Database } from "bun:sqlite";
+import { mountCost } from "./cost";
 
 export interface ApiContext {
   version: string;
+  db: Database;
 }
 
 /**
@@ -21,4 +24,5 @@ export const mountApi = (app: Hono, ctx: ApiContext): void => {
       sessions: 0,
     }),
   );
+  mountCost(app, ctx);
 };
