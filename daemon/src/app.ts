@@ -22,7 +22,7 @@ import { chatsApi } from "./api/chats.ts";
 import { chatApi } from "./api/chat.ts";
 import { mountMcp } from "./adapters/mcp/index.ts";
 import { createEventBus } from "./events/index.ts";
-import { makeClaudeCodeProviderComposed } from "./providers/claude-code/index.ts";
+import { makeProvider } from "./providers/factory.ts";
 import { makeChatRepo } from "./chat/repo.ts";
 import { makeSessionReplay } from "./chat/session-replay.ts";
 import { makeTitler, type Titler } from "./chat/titler.ts";
@@ -78,7 +78,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     if (!orchestrator) {
       const bus = createEventBus({ db: deps.db });
       const tracesDir = path.join(deps.vaultRoot, ".traces");
-      const provider = makeClaudeCodeProviderComposed({
+      const provider = makeProvider(process.env, {
         bus,
         db: deps.db,
         tracesDir,
