@@ -18,8 +18,8 @@ import { makeChatRepo } from "../../src/chat/repo";
 import {
   makeOrchestrator,
   Conflict409,
-  extractAssistantText,
 } from "../../src/chat/orchestrator";
+import { extractAssistantText } from "../../src/providers/claude-code/extract.ts";
 
 const MIGRATIONS_DIR = join(
   __dirname,
