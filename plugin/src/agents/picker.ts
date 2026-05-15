@@ -48,6 +48,11 @@ export function makeRealAgentPickerFactory(app: App): AgentPickerFactory {
   const { SuggestModal } = require("obsidian") as { SuggestModal: typeof SuggestModalT };
   return (items) => {
     return new Promise<AgentListEntry | null>((resolve) => {
+      // Obsidian's SuggestModal fires onClose BEFORE onChooseSuggestion on
+      // selection (verified on smoke). Record the pick in onChooseSuggestion
+      // and settle exclusively from onClose with whatever was recorded — null
+      // on bare dismiss, the entry on selection.
+      let picked: AgentListEntry | null = null;
       let settled = false;
       const settle = (v: AgentListEntry | null) => {
         if (settled) return;
@@ -68,14 +73,20 @@ export function makeRealAgentPickerFactory(app: App): AgentPickerFactory {
           el.createDiv({ text: item.name, cls: "void-agent-picker-name" });
           el.createDiv({ text: item.description, cls: "void-agent-picker-desc" });
         }
-        onChooseSuggestion(item: AgentListEntry) {
-          settle(item);
+        // Obsidian's selectSuggestion fires synchronously on pick, then calls
+        // close() (→ onClose) and finally onChooseSuggestion. Capture the
+        // entry HERE — before super.selectSuggestion triggers onClose — so
+        // that by the time onClose settles, `picked` is already the entry.
+        selectSuggestion(value: AgentListEntry, evt: MouseEvent | KeyboardEvent) {
+          picked = value;
+          super.selectSuggestion(value, evt);
+        }
+        onChooseSuggestion(_item: AgentListEntry) {
+          // No-op: selectSuggestion + onClose already settled the promise.
         }
         onClose() {
           super.onClose?.();
-          // Fires after onChooseSuggestion on selection, and on bare dismiss.
-          // `settle` is idempotent, so a prior selection wins.
-          settle(null);
+          settle(picked);
         }
       }
       const m = new (Picker as any)(app);
