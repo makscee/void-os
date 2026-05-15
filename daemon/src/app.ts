@@ -58,9 +58,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   const emit = deps.emit ?? broadcast;
 
   // Wire orchestrator + titler. Tests can inject both to skip SDK/key/cc
-  // construction entirely. Production path: real bus → real ccSpawner →
-  // spawner-iter → orchestrator; titler uses real Anthropic SDK if key
-  // resolution succeeds, otherwise a no-op stub so title generation simply
+  // construction entirely. Production path: real bus → real claude-code
+  // Provider (createCcSpawner + makeCcSpawnerIter + makeClaudeCodeProvider)
+  // → orchestrator; titler uses real Anthropic SDK if key resolution
+  // succeeds, otherwise a no-op stub so title generation simply
   // fails-soft via chat.title_failed.
   let orchestrator = deps.orchestrator;
   let titler = deps.titler;

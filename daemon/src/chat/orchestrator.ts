@@ -7,11 +7,11 @@
 //      crashed run that never cleared the lock) do NOT block new dispatch.
 //   2. Insert a runs row (status='running') as part of the same txn so the
 //      lock + run row are committed atomically.
-//   3. Spawn the underlying claudev process via an injected Spawner.
-//      The Spawner contract here is intentionally narrow — `AsyncIterable`
-//      of parsed JSONL events — so tests can mock it and so the real
-//      CcSpawner can be adapted by the wiring layer (Task 9) without
-//      this module depending on Bun.spawn, bus subscriptions, or fs.
+//   3. Spawn the underlying claudev process via an injected Provider.
+//      The Provider contract here is intentionally narrow — `ProviderHandle`
+//      with an async-iterable events stream — so tests can mock it and so
+//      the real claude-code Provider can be composed by the wiring layer
+//      without this module depending on Bun.spawn, bus subscriptions, or fs.
 //   4. Translate spawner events into `chat.*` / `run.*` bus events.
 //   5. Capture session_id exactly once per chat lifetime via the
 //      `sessionCaptured` guard. Per T0 drill, claudev reuses the same
