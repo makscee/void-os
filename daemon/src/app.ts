@@ -54,7 +54,7 @@ export interface BuildAppDeps {
 export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   const app = new Hono();
   app.get("/", (c) => c.text(`void-os daemon v${VERSION}\n`));
-  mountApi(app, { version: VERSION });
+  mountApi(app, { version: VERSION, db: deps.db });
 
   const emit = deps.emit ?? broadcast;
 
