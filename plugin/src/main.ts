@@ -6,6 +6,9 @@ import { StatusBar } from "./status";
 import { FrameBus, type DaemonFrame } from "./chat/bus";
 import { makeChatApi } from "./chat/api";
 import { makeSettingsStore, type SettingsStore } from "./chat/settings";
+import { makeAgentsApi } from "./agents/api";
+import { openAgentPicker, makeRealAgentPickerFactory, defaultOnError } from "./agents/picker";
+import type { AgentListEntry } from "./agents/types";
 
 /** Adapt Obsidian's `requestUrl` (Electron main-process HTTP, no CORS) to the
  *  `fetch`-shaped seam consumed by makeChatApi.
@@ -91,6 +94,15 @@ export default class VoidOsPlugin extends Plugin {
     });
     this.bus = new FrameBus();
     const api = makeChatApi(DAEMON_HTTP, requestUrlAsFetch());
+    const agentsApi = makeAgentsApi(DAEMON_HTTP, requestUrlAsFetch());
+    const pickerFactory = makeRealAgentPickerFactory(this.app);
+
+    const openPicker = (): Promise<AgentListEntry | null> =>
+      openAgentPicker({
+        agentsApi,
+        modalFactory: pickerFactory,
+        onError: defaultOnError,
+      });
 
     // Single WebSocket — FSM owns reconnect, FrameBus piggybacks on frames.
     const wsClient = new WsClient(DAEMON_WS);
@@ -102,9 +114,8 @@ export default class VoidOsPlugin extends Plugin {
         api,
         chatId: this.settings!.get().chatId,
         onChatIdMinted: (id) => this.settings!.setChatId(id),
-        defaultAgent: "maya",
-        // VOS-92 T4.2: placeholder — T4.3 replaces with real picker via makeRealAgentPickerFactory.
-        openPicker: async () => ({ name: "maya", description: "" }),
+        defaultAgent: "maya", // retained as fallback only
+        openPicker,
       })),
     );
 
@@ -122,6 +133,20 @@ export default class VoidOsPlugin extends Plugin {
       id: "open-chat-view",
       name: "Open void-os chat",
       callback: () => this.activateChatView(),
+    });
+
+    this.addCommand({
+      id: "new-chat-with-agent",
+      name: "New chat with agent…",
+      callback: async () => {
+        const picked = await openPicker();
+        if (!picked) return;
+        await this.activateChatView();
+        const created = await api.createChat(picked.name);
+        this.settings!.setChatId(created.id);
+        // ChatView re-reads chatId from settings on focus; next user message
+        // opens the chat via the existing path.
+      },
     });
   }
 
