@@ -22,18 +22,25 @@ bun run e2e
 Create `plugin/e2e/specs/<name>.spec.ts`:
 
 ```ts
-import { test, expect, _electron as electron } from "@playwright/test";
+import { test, expect, chromium } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
 test("...", async () => {
-  const state = JSON.parse(readFileSync(process.env.VOS_E2E_STATE!, "utf8"));
-  const app = await electron.launch({
-    executablePath: "/Applications/Obsidian.app/Contents/MacOS/Obsidian",
-    args: [`--user-data-dir=${state.obsidianUserDataDir}`, state.vaultPath],
-  });
-  const win = await app.firstWindow();
-  // ...
-  await app.close();
+  const state = JSON.parse(readFileSync(process.env.VOS_E2E_STATE!, "utf8")) as {
+    port: number;
+    cdpPort: number;
+    vaultPath: string;
+    obsidianUserDataDir: string;
+  };
+  // Connect to the already-running Obsidian via CDP (launched by globalSetup).
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${state.cdpPort}`);
+  try {
+    const vaultPage = browser.contexts().flatMap(ctx => ctx.pages())
+      .find(p => p.url() === "app://obsidian.md/index.html")!;
+    // ...
+  } finally {
+    await browser.close();
+  }
 });
 ```
 

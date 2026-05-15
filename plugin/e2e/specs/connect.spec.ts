@@ -32,11 +32,14 @@ test("plugin boots and reaches connected state, sustained across one heartbeat",
 
     // Obsidian shows a "Do you trust the author of this vault?" modal on first
     // open in a fresh user-data-dir.  Dismiss it so plugins can load.
-    await vaultPage.evaluate(() => {
-      const btn = Array.from(document.querySelectorAll(".modal-container button"))
-        .find((b) => b.textContent?.includes("Trust"));
-      if (btn) (btn as HTMLElement).click();
-    });
+    // getByRole retries internally until the button appears or 10s elapses —
+    // no silent no-op unlike a fire-and-forget querySelectorAll.
+    const trustBtn = vaultPage.getByRole("button", { name: /Trust author/i });
+    try {
+      await trustBtn.click({ timeout: 10_000 });
+    } catch {
+      // No modal rendered within 10s — assume already trusted or skipped.
+    }
 
     // Now wait for the void-os status bar element (plugin loads after trust).
     const pill = vaultPage.getByTestId("vos-status-bar");
