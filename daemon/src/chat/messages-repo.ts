@@ -125,13 +125,21 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
           )
           .map((p) => (p as { text: string }).text)
           .join("\n");
-        if (text) {
+        // VOS-80 stopped-badge contract (preserved through mig-0007):
+        // emit an empty-content assistant entry when the run cancelled
+        // before any text streamed — the cancelled flag on this entry
+        // drives the UI "↯ stopped" pill. For ROLE_USER rows we still
+        // require text. ROLE_AGENT rows with both empty text and no
+        // cancellation are dropped (no row to surface).
+        const isCancelledAgent =
+          surfaceRole === "assistant" && r.run_status === "cancelled";
+        if (text || isCancelledAgent) {
           const entry: ReplayEntry = {
             role: surfaceRole,
             content: text,
             ts: r.ts,
           };
-          if (surfaceRole === "assistant" && r.run_status === "cancelled") {
+          if (isCancelledAgent) {
             (entry as { cancelled?: boolean }).cancelled = true;
           }
           out.push(entry);

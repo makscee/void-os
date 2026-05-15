@@ -15,6 +15,7 @@ import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeChatRepo } from "../../src/chat/repo";
+import { makeMessagesRepo } from "../../src/chat/messages-repo";
 import {
   makeOrchestrator,
   Conflict409,
@@ -38,6 +39,9 @@ function freshDb(): Database {
     "0002_runs_columns.sql",
     "0003_chat_lifecycle.sql",
     "0004_messages.sql",
+    "0005_costs_cache.sql",
+    "0006_costs_chat_id.sql",
+    "0007_a2a_tables.sql",
   ]) {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
@@ -127,8 +131,8 @@ test("happy path: lock acquired, run inserted, sessionCaptured, cleanup", async 
   expect(tokens.length).toBe(1);
   expect(tokens[0]).toBe("Hi");
 
-  // Persisted last_msg snippet reflects the assembled assistant text.
-  expect(afterChat.last_msg).toBe("Hi");
+  // VOS-83 mig-0007: preview derived from messages.parts_text.
+  expect(makeMessagesRepo(db).lastAssistantText(chat.id)).toBe("Hi");
 
   // Wait one microtask for fire-and-forget titler
   await new Promise((r) => setTimeout(r, 5));
@@ -237,7 +241,7 @@ test("orchestrator: assistant with multiple text blocks emits one delta + persis
   const tokens = events.filter((e) => e.t === "chat.token");
   expect(tokens.length).toBe(1);
   expect(tokens[0]!.p.delta).toBe("alpha beta");
-  expect(repo.get(chat.id)!.last_msg).toBe("alpha beta");
+  expect(makeMessagesRepo(db).lastAssistantText(chat.id)).toBe("alpha beta");
 });
 
 // ── VOS-80 S4: tool_use / tool_result WS frames ─────────────────────────

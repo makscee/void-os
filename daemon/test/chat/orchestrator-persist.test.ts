@@ -35,6 +35,9 @@ function freshDb(): Database {
     "0002_runs_columns.sql",
     "0003_chat_lifecycle.sql",
     "0004_messages.sql",
+    "0005_costs_cache.sql",
+    "0006_costs_chat_id.sql",
+    "0007_a2a_tables.sql",
   ]) {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
@@ -103,18 +106,23 @@ test("happy path: user + assistant + tool_use + tool_result all persisted", asyn
   expect(result.status).toBe("done");
 
   const walked = messages.walk(chat.id);
+  // VOS-83 mig-0007: a turn's parts (text + tool_use + tool_result) are
+  // buffered onto a single agent row. walk emits the merged text entry
+  // first, then iterates DataParts (tool_use, tool_result) in declaration
+  // order. The legacy interleaved [user, tool_use, tool_result, assistant]
+  // order is replaced by [user, assistant, tool_use, tool_result].
   expect(walked.map((m: any) => m.role)).toEqual([
     "user",
+    "assistant",
     "tool_use",
     "tool_result",
-    "assistant",
   ]);
   expect((walked[0] as any).content).toBe("hello");
-  expect((walked[1] as any).tool_call_id).toBe("u_1");
-  expect((walked[1] as any).name).toBe("Bash");
+  expect((walked[1] as any).content).toBe("thinking...\n done");
   expect((walked[2] as any).tool_call_id).toBe("u_1");
-  expect((walked[2] as any).output).toBe("ok");
-  expect((walked[3] as any).content).toBe("thinking... done");
+  expect((walked[2] as any).name).toBe("Bash");
+  expect((walked[3] as any).tool_call_id).toBe("u_1");
+  expect((walked[3] as any).output).toBe("ok");
 });
 
 test("cancel mid-stream: user + partial assistant in messages table", async () => {
@@ -162,8 +170,9 @@ test("cancel mid-stream: user + partial assistant in messages table", async () =
   expect(walked.map((m: any) => m.role)).toEqual(["user", "assistant"]);
   expect((walked[1] as any).content).toBe("partial ");
 
-  // chats.last_msg derived from same write.
-  expect(repo.get(chat.id)!.last_msg).toBe("partial ");
+  // VOS-83 mig-0007: last_msg column dropped — preview comes from
+  // messages.parts_text via lastAssistantText.
+  expect(messages.lastAssistantText(chat.id)).toBe("partial ");
 });
 
 test("error mid-stream: partial assistant text persisted, runs.status='error'", async () => {
@@ -199,8 +208,9 @@ test("error mid-stream: partial assistant text persisted, runs.status='error'", 
   expect(walked.map((m: any) => m.role)).toEqual(["user", "assistant"]);
   expect((walked[1] as any).content).toBe("halfway");
 
-  // chats.last_msg also updated from messages.
-  expect(repo.get(chat.id)!.last_msg).toBe("halfway");
+  // VOS-83 mig-0007: last_msg column dropped — preview comes from
+  // messages.parts_text via lastAssistantText.
+  expect(messages.lastAssistantText(chat.id)).toBe("halfway");
 
   // runs.status === 'error'
   const run = db
