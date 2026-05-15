@@ -1,0 +1,59 @@
+import { describe, test, expect } from "bun:test";
+import * as path from "node:path";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import { makeFakeProvider } from "../index.ts";
+
+function tmpJsonl(lines: string[]): string {
+  const p = path.join(os.tmpdir(), `fake-provider-${Date.now()}-${Math.random()}.jsonl`);
+  fs.writeFileSync(p, lines.join("\n") + "\n", "utf8");
+  return p;
+}
+
+describe("makeFakeProvider", () => {
+  test("name is 'fake'", () => {
+    const p = makeFakeProvider({ scriptPath: tmpJsonl([]) });
+    expect(p.name).toBe("fake");
+  });
+
+  test("emits events parsed from JSONL then resolves done", async () => {
+    const scriptPath = tmpJsonl([
+      JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } }),
+    ]);
+    const provider = makeFakeProvider({ scriptPath });
+    const handle = provider.spawn({ runId: "r1", prompt: "p", cwd: "/tmp" });
+    const seen: string[] = [];
+    for await (const ev of handle.events) seen.push(ev.type);
+    expect(seen).toEqual(["system", "assistant"]);
+    const result = await handle.done;
+    expect(result.reason).toBe("exit");
+    expect(result.exitCode).toBe(0);
+    expect(result.sessionId).toBe("s1");
+  });
+
+  test("cancel ends iteration with reason=cancel", async () => {
+    const scriptPath = tmpJsonl([
+      JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }),
+      JSON.stringify({ type: "assistant", message: {} }),
+      JSON.stringify({ type: "assistant", message: {} }),
+    ]);
+    const provider = makeFakeProvider({ scriptPath, perEventDelayMs: 50 });
+    const handle = provider.spawn({ runId: "r2", prompt: "p", cwd: "/tmp" });
+    const it = handle.events[Symbol.asyncIterator]();
+    await it.next(); // pull first
+    const cancelled = await handle.cancel();
+    expect(cancelled).toBe(true);
+    while (!(await it.next()).done) {}
+    const result = await handle.done;
+    expect(result.reason).toBe("cancel");
+  });
+
+  test("missing script => done resolves reason=error", async () => {
+    const provider = makeFakeProvider({ scriptPath: "/tmp/does-not-exist-vos93.jsonl" });
+    const handle = provider.spawn({ runId: "r3", prompt: "p", cwd: "/tmp" });
+    for await (const _ of handle.events) {}
+    const result = await handle.done;
+    expect(result.reason).toBe("error");
+  });
+});
