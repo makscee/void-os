@@ -105,3 +105,41 @@ test("provider.name is 'claude-code'", () => {
   });
   expect(provider.name).toBe("claude-code");
 });
+
+test("done resolves 'timeout' when underlying iterator times out", async () => {
+  // Fake iterator that throws a ClaudeCodeTimeoutError sentinel before exhausting
+  const provider: Provider = makeClaudeCodeProvider({
+    iter: {
+      spawn: () =>
+        (async function* () {
+          yield { type: "assistant", message: {} } as ProviderEvent;
+          const e = Object.assign(new Error("watchdog timeout"), { code: "CC_TIMEOUT" });
+          throw e;
+        })(),
+    },
+  });
+  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp" });
+  try { for await (const _ of h.events) {} } catch {}
+  const out = await h.done;
+  expect(out.reason).toBe("timeout");
+});
+
+test("done resolves 'cancel' (not 'error') when cancel then iterator throws", async () => {
+  const provider: Provider = makeClaudeCodeProvider({
+    iter: {
+      spawn: () =>
+        (async function* () {
+          yield { type: "assistant", message: {} } as ProviderEvent;
+          throw new Error("cancelled mid-stream");
+        })(),
+      cancel: async () => true,
+    },
+  });
+  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp" });
+  const it = h.events[Symbol.asyncIterator]();
+  await it.next();
+  await h.cancel();
+  try { while (!(await it.next()).done) {} } catch {}
+  const out = await h.done;
+  expect(out.reason).toBe("cancel");
+});

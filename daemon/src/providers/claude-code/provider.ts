@@ -66,8 +66,13 @@ export function makeClaudeCodeProvider(
         } catch (err) {
           if (!ended) {
             ended = true;
+            // Typed timeout sentinel: spawner.ts throws with code "CC_TIMEOUT"
+            // when the underlying iterator surfaces a watchdog termination.
+            const isTimeout =
+              err instanceof Error &&
+              (err as Error & { code?: string }).code === "CC_TIMEOUT";
             resolveDone({
-              reason: "error",
+              reason: isTimeout ? "timeout" : cancelled ? "cancel" : "error",
               sessionId,
             });
           }

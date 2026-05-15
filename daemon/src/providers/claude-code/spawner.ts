@@ -114,6 +114,9 @@ async function* iterate(
   let runId: string | null = null;
   let done = false;
   let error: Error | null = null;
+  // Set to true when run.end carries reason="timeout" so the iterator can
+  // throw a CC_TIMEOUT sentinel instead of exhausting cleanly.
+  let timedOut = false;
   // Single-waiter wake signal: each pull awaits `wait`; producer resolves
   // it via `wake()` and rotates the slot. Safe because async generators
   // serialise pulls (no concurrent `next()` calls on the same iterator).
@@ -144,6 +147,10 @@ async function* iterate(
       return;
     }
     if (e.runId !== runId) return;
+    // Surface watchdog timeout: run.end with reason="timeout" must become a
+    // CC_TIMEOUT sentinel throw so provider.ts can resolve reason:"timeout".
+    const reason = (e.payload as { reason?: string } | undefined)?.reason;
+    if (reason === "timeout") timedOut = true;
     done = true;
     signal();
   };
@@ -189,6 +196,8 @@ async function* iterate(
         const inner = (e.payload as { event?: SpawnerEvent } | undefined)?.event;
         if (inner) queue.push(inner);
       } else if (e.type === "run.end") {
+        const reason = (e.payload as { reason?: string } | undefined)?.reason;
+        if (reason === "timeout") timedOut = true;
         done = true;
       } else if (e.type === "run.error") {
         const err = (e.payload as { error?: unknown } | undefined)?.error;
@@ -205,6 +214,9 @@ async function* iterate(
       }
       if (done) {
         if (error) throw error;
+        if (timedOut) {
+          throw Object.assign(new Error("watchdog timeout"), { code: "CC_TIMEOUT" });
+        }
         return;
       }
       await new Promise<void>((resolve) => { wake = resolve; });
