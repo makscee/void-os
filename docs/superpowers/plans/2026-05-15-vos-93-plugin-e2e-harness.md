@@ -426,10 +426,9 @@ import { makeTitlerStub } from "../titler-stub.ts";
 describe("makeTitlerStub", () => {
   test("returns a Titler whose methods resolve no-op", async () => {
     const t = makeTitlerStub();
-    // The exact method names are taken from `Titler` interface. Today
-    // (VOS-79) the only method is `maybeTitle(chatId)`. If the interface
-    // grows, this test forces the stub to keep up.
-    const result = await t.maybeTitle("c1");
+    // Method name comes from `Titler` interface (daemon/src/chat/titler.ts).
+    // If the interface adds more methods, this test + the stub must grow.
+    const result = await t.title("c1");
     expect(result).toBeUndefined();
   });
 });
@@ -454,7 +453,7 @@ import type { Titler } from "./titler.ts";
 
 export function makeTitlerStub(): Titler {
   return {
-    async maybeTitle(_chatId: string): Promise<void> {
+    async title(_chatId: string): Promise<void> {
       // intentionally empty
     },
   };
@@ -516,8 +515,13 @@ mkdir -p /tmp/vos93-smoke-vault
 echo '{"type":"system","subtype":"init","session_id":"smoke"}' > /tmp/vos93-smoke.jsonl
 VOID_OS_PORT=17777 VOID_OS_DB=/tmp/vos93-smoke.sqlite \
   VOID_OS_VAULT_ROOT=/tmp/vos93-smoke-vault \
-  VOS_PROVIDER=fake VOS_FAKE_SCRIPT=/tmp/vos93-smoke.jsonl \
-  unset ANTHROPIC_API_KEY; unset VOID_KEYS_URL; \
+  env -u ANTHROPIC_API_KEY -u VOID_KEYS_URL \
+  VOID_OS_PORT=17777 \
+  VOID_OS_DB=/tmp/vos93-smoke.sqlite \
+  VOID_OS_VAULT_ROOT=/tmp/vos93-smoke-vault \
+  VOS_PROVIDER=fake \
+  VOS_TITLER=stub \
+  VOS_FAKE_SCRIPT=/tmp/vos93-smoke.jsonl \
   timeout 5 bun run src/index.ts || true
 ```
 
@@ -844,11 +848,44 @@ This vault exists only to host the void-os plugin during Playwright runs.
   "promptDelete": false,
   "alwaysUpdateLinks": false,
   "newFileLocation": "root",
-  "showUnsupportedFiles": false
+  "showUnsupportedFiles": false,
+  "restrictedMode": false
 }
 ```
 
-(`app.json` keys that suppress first-run nags are best-effort; if Playwright runs surface unexpected modals, snapshot a configured-once vault later and replace this file with the snapshotted copy. Track as a follow-up issue if it bites.)
+`restrictedMode: false` is **critical** — without it Obsidian disables every community plugin on launch (community-plugins.json is ignored), the void-os pill never appears, and the smoke spec times out 15s with no signal.
+
+`plugin/e2e/fixtures/vault/.obsidian/core-plugins.json`:
+
+```json
+[
+  "file-explorer",
+  "global-search",
+  "switcher",
+  "graph",
+  "backlink",
+  "outgoing-link",
+  "tag-pane",
+  "page-preview",
+  "daily-notes",
+  "templates",
+  "note-composer",
+  "command-palette",
+  "editor-status",
+  "starred",
+  "markdown-importer",
+  "outline",
+  "word-count",
+  "open-with-default-app",
+  "file-recovery",
+  "publish",
+  "sync"
+]
+```
+
+(Obsidian validates core + community plugin manifests together at boot; missing `core-plugins.json` on a fresh vault triggers a first-run prompt. The list above mirrors a default install — copy from `~/Library/Application Support/obsidian/Obsidian/.obsidian/core-plugins.json` on a configured machine if the values drift.)
+
+**Verify the fixture before writing the spec:** open the fixture vault manually with Obsidian once (drag `plugin/e2e/fixtures/vault/` onto Obsidian.app or use Vault > Open another vault). Confirm: (a) no Restricted Mode prompt, (b) the void-os pill appears in the status bar (will say "offline" because no daemon is running), (c) no first-run welcome modal. If any of these fail, capture the resulting `.obsidian/` and commit it as the new fixture.
 
 `plugin/e2e/fixtures/vault/.obsidian/plugins/void-os/.gitkeep` — empty file (build output goes here at setup time; we ship `.gitkeep` so the directory exists in git).
 
@@ -952,7 +989,7 @@ async function waitForReady(port: number, timeoutMs: number): Promise<void> {
   while (Date.now() - start < timeoutMs) {
     try {
       const res = await fetch(url);
-      if (res.status >= 200 && res.status < 500) return;
+      if (res.status === 200) return;
     } catch { /* connection refused — keep trying */ }
     await new Promise((r) => setTimeout(r, 100));
   }
