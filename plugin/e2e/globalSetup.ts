@@ -25,6 +25,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "..");
 const DAEMON_ROOT = path.resolve(HERE, "..", "..", "daemon");
 const FIXTURE_VAULT = path.join(HERE, "fixtures", "vault");
+const DAEMON_FIXTURE_VAULT = path.join(HERE, "fixtures", "daemon-vault");
 const FAKE_SCRIPT = path.join(HERE, "fixtures", "cc", "hello.jsonl");
 
 async function freePort(): Promise<number> {
@@ -77,6 +78,15 @@ export default async function globalSetup() {
   const obsidianUserDataDir = path.join(tmpdir, "obsidian-user-data");
   fs.mkdirSync(daemonVault, { recursive: true });
   fs.mkdirSync(obsidianUserDataDir, { recursive: true });
+
+  // Plant a minimal `agents/maya/agent.md` into the daemon's vault so
+  // boot-time `scanVaultAgents(...).upsertAll(...)` mirrors a real maya row
+  // into the `agents` table. The agent picker (Obsidian SuggestModal) opens
+  // on click of `new-chat-btn`; if the table is empty the picker shows the
+  // empty notice and Enter is a no-op, blocking every spec that mints a chat.
+  // The 0008 migration also seeds `maya`, but this fixture removes any
+  // dependence on migration ordering or test-time DB state.
+  fs.cpSync(DAEMON_FIXTURE_VAULT, daemonVault, { recursive: true });
 
   // Per-spec switchable fake script. Daemon points at this path for the
   // whole run; specs swap its contents by copying a different fixture in

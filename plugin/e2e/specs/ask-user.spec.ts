@@ -79,6 +79,25 @@ async function openChatAndMint(page: Page) {
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await page.getByTestId("new-chat-btn").click({ force: true, timeout: 5_000 });
+  // VOS-92 wired new-chat-btn to open the agent picker (Obsidian SuggestModal).
+  // Daemon-vault fixture (`agents/maya/agent.md`) seeds the agents table so
+  // the picker has a `maya` row. Click the first suggestion-item directly —
+  // this fires SuggestModal.selectSuggestion which mints the chat through
+  // wireOnNewChat. Pressing Enter on the input is unreliable: SuggestModal's
+  // chooser only reacts to Enter when a suggestion is highlighted, and the
+  // initial highlight does not always land before the keystroke.
+  const pickerInput = page.locator(".prompt input.prompt-input");
+  await expect(pickerInput).toBeVisible({ timeout: 10_000 });
+  const firstSuggestion = page.locator(".suggestion-item").first();
+  await expect(firstSuggestion).toBeVisible({ timeout: 10_000 });
+  await firstSuggestion.click();
+  // Picker must detach (no .prompt root) before the spec proceeds; otherwise
+  // subsequent composer.fill / Send routes through the picker input instead
+  // of the chat composer.
+  await expect(page.locator(".prompt")).toHaveCount(0, { timeout: 5_000 });
+  const composer = chatRoot.getByPlaceholder("Message");
+  await expect(composer).toBeVisible({ timeout: 10_000 });
+  await expect(composer).toBeEditable({ timeout: 5_000 });
   return chatRoot;
 }
 
@@ -118,8 +137,31 @@ test.describe("ask_user inline rendering", () => {
     const red = chatRoot.getByTestId("ask-user-option").filter({ hasText: "red" });
     await red.click();
 
-    await expect(chatRoot.getByRole("paragraph").filter({ hasText: "chose red" }))
-      .toBeVisible({ timeout: 20_000 });
+    // Assert assistant text streamed back. The chatRoot div has
+    // display:contents (zero bounding box), so chained locators that
+    // resolve through chatRoot first (chatRoot.getByText / getByRole) are
+    // unreliable in this Playwright version — they appear to fail to find
+    // descendants. Use a flat CSS selector against the page so the descendant
+    // <p> is matched directly. The ChatList row also previews "chose red"
+    // in its last_msg, but the .vos-md class is unique to the assistant
+    // markdown render.
+    // chatRoot uses display:contents; chained-locator visibility checks for
+    // descendants resolve to 0 in this Playwright build. Poll the raw DOM
+    // instead — the assistant's MarkdownText emits <p> descendants of the
+    // chatRoot subtree, so the presence-count is unambiguous.
+    await expect
+      .poll(
+        () =>
+          p.evaluate(() => {
+            const root = document.querySelector('[data-testid="vos-chat-root"]');
+            if (!root) return 0;
+            return Array.from(root.querySelectorAll("p")).filter((n) =>
+              (n.textContent ?? "").includes("chose red"),
+            ).length;
+          }),
+        { timeout: 20_000, intervals: [200] },
+      )
+      .toBeGreaterThan(0);
   });
 
   test("free-form happy-path: type 'world' → hello, world", async () => {
@@ -143,8 +185,19 @@ test.describe("ask_user inline rendering", () => {
     await answer.fill("world");
     await chatRoot.getByRole("button", { name: "Send" }).click();
 
-    await expect(chatRoot.getByRole("paragraph").filter({ hasText: "hello, world" }))
-      .toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(
+        () =>
+          p.evaluate(() => {
+            const root = document.querySelector('[data-testid="vos-chat-root"]');
+            if (!root) return 0;
+            return Array.from(root.querySelectorAll("p")).filter((n) =>
+              (n.textContent ?? "").includes("hello, world"),
+            ).length;
+          }),
+        { timeout: 20_000, intervals: [200] },
+      )
+      .toBeGreaterThan(0);
   });
 
   test("cross-tab 409 race: direct POST resolves; stale UI click tolerated; reply lands; banner clears", async () => {
@@ -210,8 +263,23 @@ test.describe("ask_user inline rendering", () => {
     // Primary outcome: the answer that actually won the race ("red")
     // streams as the assistant reply. This is the recovery contract —
     // the run continues regardless of which side won the race.
-    await expect(chatRoot.getByRole("paragraph").filter({ hasText: "chose red" }))
-      .toBeVisible({ timeout: 20_000 });
+    // chatRoot uses display:contents; chained-locator visibility checks for
+    // descendants resolve to 0 in this Playwright build. Poll the raw DOM
+    // instead — the assistant's MarkdownText emits <p> descendants of the
+    // chatRoot subtree, so the presence-count is unambiguous.
+    await expect
+      .poll(
+        () =>
+          p.evaluate(() => {
+            const root = document.querySelector('[data-testid="vos-chat-root"]');
+            if (!root) return 0;
+            return Array.from(root.querySelectorAll("p")).filter((n) =>
+              (n.textContent ?? "").includes("chose red"),
+            ).length;
+          }),
+        { timeout: 20_000, intervals: [200] },
+      )
+      .toBeGreaterThan(0);
 
     // Surfacing contract: either the toast informs the user the stale
     // click was rejected, OR the prompt UI is already gone (button
