@@ -8,3 +8,6 @@ fixtures/vault/.obsidian/plugins/void-os/data.json
 # Playwright artifacts.
 playwright-report/
 test-results/
+
+# VOS-94: e2e Obsidian binary cache (downloaded by globalSetup).
+.cache/
