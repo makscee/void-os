@@ -9,6 +9,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export const OBSIDIAN_VERSION = "1.8.10";
 
+export function cacheIsValid(versionFile: string, binPath: string, expected: string): boolean {
+  if (!fs.existsSync(versionFile) || !fs.existsSync(binPath)) return false;
+  return fs.readFileSync(versionFile, "utf8").trim() === expected;
+}
+
 export async function ensureObsidian(): Promise<string> {
   if (process.platform !== "darwin") {
     throw new Error(
