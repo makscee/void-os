@@ -1,12 +1,9 @@
 // VOS-80 S5: orchestrator cancel() — interrupts an in-flight run,
-// terminates spawner, flushes partial assistant text, emits run.end
+// terminates provider handle, flushes partial assistant text, emits run.end
 // with status="cancelled".
 //
-// Spawner is mocked as an AsyncIterable + a `cancel(runId)` hook. When
-// orchestrator.cancel(chatId) fires, the spawner is signalled to stop
-// yielding (mirroring real CcProcess.kill()), the iterator returns, and
-// orchestrator's finally-block records status="cancelled" and persists
-// any tokens already streamed.
+// Provider is mocked as a Provider with handle.cancel() that flips `killed`,
+// causing the parked iterator to exit. Mirrors real ProviderHandle behaviour.
 
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
@@ -15,6 +12,7 @@ import { join } from "node:path";
 import { makeChatRepo } from "../../src/chat/repo";
 import { makeOrchestrator } from "../../src/chat/orchestrator";
 import { makeMessagesRepo } from "../../src/chat/messages-repo";
+import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -40,24 +38,19 @@ function freshDb(): Database {
 }
 
 /**
- * Mock spawner that mid-stream blocks until cancelled. Mirrors the real
- * CcProcess.kill() shape: spawner.cancel(runId) flips `killed`, the parked
- * iterator's polling loop notices and returns. The runId-keyed lookup the
- * spawner-iter adapter performs is not exercised here — that's covered in
- * the adapter's own test suite.
+ * Mock provider that mid-stream blocks until handle.cancel() is called.
+ * Mirrors the real ProviderHandle: cancel() flips `killed`, the parked
+ * iterator's polling loop notices and returns.
  */
-function blockingSpawner() {
+function blockingProvider(): Provider & { wasKilled(): boolean } {
   let killed = false;
   return {
+    name: "blocking",
     wasKilled() {
       return killed;
     },
-    cancel(_runId: string): Promise<boolean> {
-      killed = true;
-      return Promise.resolve(true);
-    },
-    spawn(_args: { chat_id: string; resume: string | null; prompt: string }) {
-      return (async function* () {
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      const events = (async function* () {
         yield { type: "system", session_id: "sid-cancel" };
         yield {
           type: "assistant",
@@ -71,6 +64,37 @@ function blockingSpawner() {
           await new Promise((r) => setTimeout(r, 5));
         }
       })();
+      return {
+        events,
+        cancel: async () => {
+          killed = true;
+          return true;
+        },
+        done: Promise.resolve({ reason: "cancel" as const }),
+      };
+    },
+  };
+}
+
+/**
+ * Provider that parks mid-stream with a `killed` flag, exposing per-spawn cancel.
+ */
+function parkingProvider(
+  genFn: (killed: () => boolean) => AsyncIterable<ProviderEvent>,
+): Provider & { cancel_(): Promise<boolean> } {
+  let cancelFn: () => Promise<boolean> = async () => false;
+  return {
+    name: "parking",
+    cancel_: () => cancelFn(),
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      let killed = false;
+      cancelFn = async () => { killed = true; return true; };
+      const events = genFn(() => killed);
+      return {
+        events,
+        cancel: async () => { killed = true; return true; },
+        done: Promise.resolve({ reason: "cancel" as const }),
+      };
     },
   };
 }
@@ -81,16 +105,17 @@ test("cancel(): in-flight run → run.end status='cancelled', partial text flush
   const chat = repo.create({ agent: "maya" });
 
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = blockingSpawner();
+  const provider = blockingProvider();
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
 
-  // Kick off dispatch — will park inside spawner mid-stream.
+  // Kick off dispatch — will park inside provider mid-stream.
   const dispatchP = orch.dispatch(chat.id, "go");
 
   // Wait until run.start has fired (so current_run_id is set + partial token streamed).
@@ -130,8 +155,8 @@ test("cancel(): in-flight run → run.end status='cancelled', partial text flush
   const listed = repo.list().find((c) => c.id === chat.id)!;
   expect(listed.last_run_status).toBe("cancelled");
 
-  // spawner.cancel was actually called.
-  expect(spawner.wasKilled()).toBe(true);
+  // handle.cancel was actually called.
+  expect(provider.wasKilled()).toBe(true);
 });
 
 test("cancel(): no active run → returns cancelled=false (409 surface)", async () => {
@@ -139,11 +164,12 @@ test("cancel(): no active run → returns cancelled=false (409 surface)", async 
   const repo = makeChatRepo(db);
   const chat = repo.create({ agent: "maya" });
 
-  const spawner = blockingSpawner();
+  const provider = blockingProvider();
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
@@ -159,11 +185,12 @@ test("cancel(): idempotent — second cancel after completion returns cancelled=
   const chat = repo.create({ agent: "maya" });
 
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = blockingSpawner();
+  const provider = blockingProvider();
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -187,14 +214,11 @@ test("cancel(): partial-token stream — only emitted text is persisted, no extr
   const chat = repo.create({ agent: "maya" });
 
   const events: Array<{ t: string; p: any }> = [];
-  let killed = false;
-  const spawner = {
-    cancel(_runId: string): Promise<boolean> {
-      killed = true;
-      return Promise.resolve(true);
-    },
-    spawn() {
-      return (async function* () {
+  const provider: Provider = {
+    name: "partial-tokens",
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      let killed = false;
+      const evts = (async function* () {
         yield { type: "system", session_id: "sid-x" };
         yield {
           type: "assistant",
@@ -215,13 +239,19 @@ test("cancel(): partial-token stream — only emitted text is persisted, no extr
           await new Promise((r) => setTimeout(r, 5));
         }
       })();
+      return {
+        events: evts,
+        cancel: async () => { killed = true; return true; },
+        done: Promise.resolve({ reason: "cancel" as const }),
+      };
     },
   };
 
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -241,7 +271,7 @@ test("cancel(): partial-token stream — only emitted text is persisted, no extr
 });
 
 test("cancel(): mid-tool-call — terminates cleanly without is_error frame leak", async () => {
-  // Spawner emits a tool_use, then parks waiting for tool_result (real CC
+  // Provider emits a tool_use, then parks waiting for tool_result (real CC
   // would block on subprocess output). Cancel arrives mid-tool-call: the
   // run must finalise cancelled, lock released, no chat.tool_result frame
   // (because the parked stream never gets to that yield).
@@ -250,14 +280,11 @@ test("cancel(): mid-tool-call — terminates cleanly without is_error frame leak
   const chat = repo.create({ agent: "maya" });
 
   const events: Array<{ t: string; p: any }> = [];
-  let killed = false;
-  const spawner = {
-    cancel(_runId: string): Promise<boolean> {
-      killed = true;
-      return Promise.resolve(true);
-    },
-    spawn() {
-      return (async function* () {
+  const provider: Provider = {
+    name: "mid-tool",
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      let killed = false;
+      const evts = (async function* () {
         yield { type: "system", session_id: "sid-tool-mid" };
         yield {
           type: "assistant",
@@ -284,12 +311,19 @@ test("cancel(): mid-tool-call — terminates cleanly without is_error frame leak
           },
         };
       })();
+      return {
+        events: evts,
+        cancel: async () => { killed = true; return true; },
+        done: Promise.resolve({ reason: "cancel" as const }),
+      };
     },
   };
+
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -321,35 +355,38 @@ test("cancel() before any tokens: persists empty assistant row tagged cancelled 
   const chat = repo.create({ agent: "maya" });
 
   const events: Array<{ t: string; p: any }> = [];
-  // Spawner that parks BEFORE emitting any assistant token. Just `system`
+  // Provider that parks BEFORE emitting any assistant token. Just `system`
   // (session_id) — then waits to be cancelled.
-  let killed = false;
-  const spawner = {
-    cancel(_runId: string): Promise<boolean> {
-      killed = true;
-      return Promise.resolve(true);
-    },
-    spawn() {
-      return (async function* () {
+  const provider: Provider = {
+    name: "pre-token-cancel",
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      let killed = false;
+      const evts = (async function* () {
         yield { type: "system", session_id: "sid-empty-cancel" };
         // Park indefinitely — no assistant tokens emitted before cancel.
         while (!killed) {
           await new Promise((r) => setTimeout(r, 5));
         }
       })();
+      return {
+        events: evts,
+        cancel: async () => { killed = true; return true; },
+        done: Promise.resolve({ reason: "cancel" as const }),
+      };
     },
   };
 
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
 
   const dispatchP = orch.dispatch(chat.id, "test123");
-  // Wait until run.start has fired (so spawner is parked, but no tokens yet).
+  // Wait until run.start has fired (so provider is parked, but no tokens yet).
   await waitFor(() => events.some((e) => e.t === "run.start"), 1000);
   expect(events.some((e) => e.t === "chat.token")).toBe(false);
 
@@ -379,14 +416,11 @@ test("cancel() with partial tokens: assistant row carries streamed text + cancel
   const chat = repo.create({ agent: "maya" });
 
   const events: Array<{ t: string; p: any }> = [];
-  let killed = false;
-  const spawner = {
-    cancel(_runId: string): Promise<boolean> {
-      killed = true;
-      return Promise.resolve(true);
-    },
-    spawn() {
-      return (async function* () {
+  const provider: Provider = {
+    name: "partial-cancel",
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      let killed = false;
+      const evts = (async function* () {
         yield { type: "system", session_id: "sid-partial-cancel" };
         yield {
           type: "assistant",
@@ -399,13 +433,19 @@ test("cancel() with partial tokens: assistant row carries streamed text + cancel
           await new Promise((r) => setTimeout(r, 5));
         }
       })();
+      return {
+        events: evts,
+        cancel: async () => { killed = true; return true; },
+        done: Promise.resolve({ reason: "cancel" as const }),
+      };
     },
   };
 
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });

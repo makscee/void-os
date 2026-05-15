@@ -47,40 +47,7 @@ import { makeMessagesRepo, type MessagesRepo } from "./messages-repo";
 import { extractTurnText, extractToolUses, extractToolResults } from "./util";
 import { extractAssistantText } from "../providers/claude-code/index.ts";
 
-/** Parsed stream event from claudev stdout JSONL. Shape is best-effort —
- * the spawner adapter normalizes to {type, ...}. */
-export interface SpawnerEvent {
-  type: string;
-  session_id?: string;
-  content?: unknown;
-  message?: unknown;
-  name?: string;
-  input?: unknown;
-  output?: unknown;
-  [k: string]: unknown;
-}
-
-export interface SpawnArgs {
-  chat_id: string;
-  resume: string | null;
-  prompt: string;
-}
-
-/** Narrow contract — async iterable of parsed events. The real CcSpawner
- * is bridged to this shape by the wiring layer.
- *
- * `cancel(runId)` is optional — when present, the orchestrator's
- * `cancel(chatId)` calls into it to terminate the underlying subprocess.
- * The spawner-iter adapter (VOS-80) implements this by calling
- * `CcProcess.kill()` (SIGTERM → SIGKILL grace) on the matching runId. A
- * spawner without `cancel` is treated as un-cancellable: orchestrator's
- * `cancel()` still flips the cancel-request flag, but the underlying
- * iterator must terminate on its own (test fakes do this via a `killed`
- * polling loop). Returns true if the runId was known + signalled. */
-export interface Spawner {
-  spawn(args: SpawnArgs): AsyncIterable<SpawnerEvent>;
-  cancel?(runId: string): Promise<boolean>;
-}
+import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../providers/index.ts";
 
 export interface TitlerLike {
   title(chatId: string): Promise<void>;
@@ -89,7 +56,8 @@ export interface TitlerLike {
 export interface OrchestratorDeps {
   db: Database;
   repo: ChatRepo;
-  spawner: Spawner;
+  provider: Provider;
+  cwd: string;
   emit: (type: string, payload: Record<string, unknown>) => void;
   titler: TitlerLike;
 }
@@ -127,7 +95,7 @@ export class Conflict409 extends Error {
 const TERMINAL_STATUSES = new Set(["done", "error", "cancelled"]);
 
 export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
-  const { db, repo, spawner, emit, titler } = deps;
+  const { db, repo, provider, cwd, emit, titler } = deps;
   // VOS-80 architecture (a): canonical messages store. Wired off the same
   // db handle as `repo`, so all persistence shares one connection (and
   // therefore the same per-statement txn semantics). Constructed lazily
@@ -137,10 +105,12 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
   // Per-run cancel registry. Populated by dispatch() at run.start time and
   // consulted in both the streaming loop (after-yield bail) and the finally
   // block (status="cancelled" instead of "done"). `cancel(chatId)` looks
-  // up the current_run_id, flips the flag, and forwards to spawner.cancel
-  // if available — so the subprocess actually receives SIGTERM/SIGKILL and
-  // the for-await loop unblocks. Cleared on run end.
+  // up the current_run_id, flips the flag, and calls handle.cancel() on
+  // the live ProviderHandle — so the subprocess receives SIGTERM/SIGKILL
+  // and the for-await loop unblocks. Cleared on run end.
   const cancelRequested = new Set<string>();
+  // Active handles keyed by runId so cancel(chatId) can reach them.
+  const activeHandles = new Map<string, ProviderHandle>();
 
   return {
     async cancel(chatId) {
@@ -160,11 +130,12 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         return { cancelled: true, run_id: runId };
       }
       cancelRequested.add(runId);
-      // Best-effort: signal the underlying spawner. If the spawner exposes
-      // no cancel hook (legacy test fakes), the orchestrator still records
-      // intent so the post-stream finally block stamps status="cancelled".
-      if (spawner.cancel) {
-        await spawner.cancel(runId).catch(() => false);
+      // Best-effort: signal the underlying provider handle if one is active.
+      // If the handle is absent (run already ended), the flag still ensures
+      // the finally block stamps status="cancelled".
+      const handle = activeHandles.get(runId);
+      if (handle) {
+        handle.cancel().catch(() => false);
       }
       return { cancelled: true, run_id: runId };
     },
@@ -221,12 +192,15 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
       let sessionCaptured = chat.session_id !== null;
 
       try {
-        const stream = spawner.spawn({
-          chat_id: chatId,
-          resume: chat.session_id,
+        const handle = provider.spawn({
+          runId,
           prompt: text,
+          cwd,
+          chatId,
+          resumeFrom: chat.session_id ?? undefined,
         });
-        for await (const evt of stream) {
+        activeHandles.set(runId, handle);
+        for await (const evt of handle.events) {
           // VOS-80 S5: cancel-bail. The for-await may already have a buffered
           // event that arrived before SIGTERM landed; drop further events so
           // the run terminates promptly without surfacing post-cancel tokens.
@@ -321,6 +295,9 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
           }
         }
+        // Drain the handle: wait for the provider to report terminal outcome.
+        await handle.done;
+        activeHandles.delete(runId);
         if (firstAssistantSeen && !cancelRequested.has(runId)) {
           // VOS-80 (a): persist assistant row + derive last_msg from same
           // text in one logical write. last_msg is now derived from the
@@ -338,6 +315,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           }
         }
       } catch (err) {
+        activeHandles.delete(runId);
         // VOS-80 S5: a cancel may race with the iterator throwing (e.g.
         // spawner-iter propagates "cancelled" sentinel via throw). When
         // cancelRequested is set for this run, the error path was caused

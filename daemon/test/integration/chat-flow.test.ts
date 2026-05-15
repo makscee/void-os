@@ -31,11 +31,8 @@ import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildApp } from "../../src/app.ts";
-import {
-  makeOrchestrator,
-  type SpawnArgs,
-  type SpawnerEvent,
-} from "../../src/chat/orchestrator.ts";
+import { makeOrchestrator } from "../../src/chat/orchestrator.ts";
+import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
 import { makeChatRepo } from "../../src/chat/repo.ts";
 import { bootRecovery } from "../../src/boot.ts";
 
@@ -63,17 +60,18 @@ function freshDb(): Database {
 }
 
 /**
- * Canned spawner: emits a `system` event with a stable session_id, then
+ * Canned provider: emits a `system` event with a stable session_id, then
  * two `assistant` deltas concatenating to "hello back", then ends. Captures
  * the args it was called with for resume-arg assertions.
  */
-function cannedSpawner(sessionId: string) {
-  const calls: SpawnArgs[] = [];
-  return {
-    calls,
-    spawn(args: SpawnArgs): AsyncIterable<SpawnerEvent> {
-      calls.push({ ...args });
-      return (async function* () {
+function cannedProvider(sessionId: string) {
+  const calls: Array<{ chatId: string | undefined; resumeFrom: string | undefined; prompt: string }> = [];
+  const provider: Provider & { calls: typeof calls } = {
+    name: "canned",
+    get calls() { return calls; },
+    spawn(req: ProviderSpawnRequest): ProviderHandle {
+      calls.push({ chatId: req.chatId, resumeFrom: req.resumeFrom, prompt: req.prompt });
+      const events = (async function* () {
         yield { type: "system", session_id: sessionId };
         yield {
           type: "assistant",
@@ -90,8 +88,14 @@ function cannedSpawner(sessionId: string) {
           },
         };
       })();
+      return {
+        events,
+        cancel: async () => false,
+        done: Promise.resolve({ reason: "exit" as const, exitCode: 0 }),
+      };
     },
   };
+  return provider;
 }
 
 test("full chat lifecycle: create → message → events streamed → title set → list reflects state", async () => {
@@ -119,11 +123,12 @@ test("full chat lifecycle: create → message → events streamed → title set 
   const setSessionSpy = mock(repo.setSession.bind(repo));
   const wrappedRepo = { ...repo, setSession: setSessionSpy };
 
-  const spawner = cannedSpawner("sid-e2e-1");
+  const spawner = cannedProvider("sid-e2e-1");
   const orchestrator = makeOrchestrator({
     db,
     repo: wrappedRepo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit,
     titler: titlerStub,
   });
@@ -166,10 +171,10 @@ test("full chat lifecycle: create → message → events streamed → title set 
   expect(dispatch.status).toBe("done");
   expect(dispatch.run_id).toBeTruthy();
 
-  // Spawner was called with resume=null (first turn) and the user text.
+  // Provider was called with resumeFrom=undefined (first turn) and the user text.
   expect(spawner.calls.length).toBe(1);
-  expect(spawner.calls[0]!.chat_id).toBe(created.id);
-  expect(spawner.calls[0]!.resume).toBeNull();
+  expect(spawner.calls[0]!.chatId).toBe(created.id);
+  expect(spawner.calls[0]!.resumeFrom ?? null).toBeNull();
   expect(spawner.calls[0]!.prompt).toBe("hello");
 
   // ── Step 3: assert event sequence on the sink (what WS would see) ──

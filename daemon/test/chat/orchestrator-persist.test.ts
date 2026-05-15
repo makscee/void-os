@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { makeChatRepo } from "../../src/chat/repo";
 import { makeMessagesRepo } from "../../src/chat/messages-repo";
 import { makeOrchestrator } from "../../src/chat/orchestrator";
+import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -54,47 +55,57 @@ async function waitFor(
   }
 }
 
+function inlineProvider(gen: () => AsyncIterable<ProviderEvent>): Provider {
+  return {
+    name: "inline",
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      return {
+        events: gen(),
+        cancel: async () => false,
+        done: Promise.resolve({ reason: "exit" as const, exitCode: 0 }),
+      };
+    },
+  };
+}
+
 test("happy path: user + assistant + tool_use + tool_result all persisted", async () => {
   const db = freshDb();
   const repo = makeChatRepo(db);
   const messages = makeMessagesRepo(db);
   const chat = repo.create({ agent: "maya" });
 
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-1" };
-        yield {
-          type: "assistant",
-          message: {
-            content: [
-              { type: "text", text: "thinking..." },
-              { type: "tool_use", id: "u_1", name: "Bash", input: { cmd: "ls" } },
-            ],
-          },
-        };
-        yield {
-          type: "user",
-          message: {
-            content: [
-              { type: "tool_result", tool_use_id: "u_1", content: "ok" },
-            ],
-          },
-        };
-        yield {
-          type: "assistant",
-          message: {
-            content: [{ type: "text", text: " done" }],
-          },
-        };
-      })();
-    },
-  };
+  const provider = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-1" };
+    yield {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "thinking..." },
+          { type: "tool_use", id: "u_1", name: "Bash", input: { cmd: "ls" } },
+        ],
+      },
+    };
+    yield {
+      type: "user",
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "u_1", content: "ok" },
+        ],
+      },
+    };
+    yield {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: " done" }],
+      },
+    };
+  })());
 
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
@@ -124,14 +135,11 @@ test("cancel mid-stream: user + partial assistant in messages table", async () =
   const chat = repo.create({ agent: "maya" });
 
   const events: Array<{ t: string; p: any }> = [];
-  let killed = false;
-  const spawner = {
-    cancel(_runId: string): Promise<boolean> {
-      killed = true;
-      return Promise.resolve(true);
-    },
-    spawn() {
-      return (async function* () {
+  const provider: Provider = {
+    name: "cancel-mid",
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      let killed = false;
+      const evts = (async function* () {
         yield { type: "system", session_id: "sid-c" };
         yield {
           type: "assistant",
@@ -141,13 +149,19 @@ test("cancel mid-stream: user + partial assistant in messages table", async () =
           await new Promise((r) => setTimeout(r, 5));
         }
       })();
+      return {
+        events: evts,
+        cancel: async () => { killed = true; return true; },
+        done: Promise.resolve({ reason: "cancel" as const }),
+      };
     },
   };
 
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -172,22 +186,20 @@ test("error mid-stream: partial assistant text persisted, runs.status='error'", 
   const messages = makeMessagesRepo(db);
   const chat = repo.create({ agent: "maya" });
 
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-e" };
-        yield {
-          type: "assistant",
-          message: { content: [{ type: "text", text: "halfway" }] },
-        };
-        throw new Error("stream blew up");
-      })();
-    },
-  };
+  const provider = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-e" };
+    yield {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "halfway" }] },
+    };
+    throw new Error("stream blew up");
+  })());
+
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
@@ -215,29 +227,27 @@ test("assistant UPSERT: streamed tokens collapse into single row per run", async
   const messages = makeMessagesRepo(db);
   const chat = repo.create({ agent: "maya" });
 
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-up" };
-        yield {
-          type: "assistant",
-          message: { content: [{ type: "text", text: "one " }] },
-        };
-        yield {
-          type: "assistant",
-          message: { content: [{ type: "text", text: "two " }] },
-        };
-        yield {
-          type: "assistant",
-          message: { content: [{ type: "text", text: "three" }] },
-        };
-      })();
-    },
-  };
+  const provider = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-up" };
+    yield {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "one " }] },
+    };
+    yield {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "two " }] },
+    };
+    yield {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "three" }] },
+    };
+  })());
+
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
@@ -256,22 +266,20 @@ test("second turn appends without disturbing first", async () => {
   const messages = makeMessagesRepo(db);
   const chat = repo.create({ agent: "maya" });
 
-  const makeSpawner = (sid: string, reply: string) => ({
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: sid };
-        yield {
-          type: "assistant",
-          message: { content: [{ type: "text", text: reply }] },
-        };
-      })();
-    },
-  });
+  const makeProvider = (sid: string, reply: string): Provider =>
+    inlineProvider(() => (async function* () {
+      yield { type: "system", session_id: sid };
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: reply }] },
+      };
+    })());
 
   let orch = makeOrchestrator({
     db,
     repo,
-    spawner: makeSpawner("sid-1", "first"),
+    provider: makeProvider("sid-1", "first"),
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
@@ -280,7 +288,8 @@ test("second turn appends without disturbing first", async () => {
   orch = makeOrchestrator({
     db,
     repo,
-    spawner: makeSpawner("sid-1", "second"),
+    provider: makeProvider("sid-1", "second"),
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
