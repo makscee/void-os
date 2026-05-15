@@ -89,7 +89,7 @@ async function downloadAndExtract(cacheDir: string, appPath: string, version: st
   await new Promise<void>((resolve, reject) => out.end((err: unknown) => (err ? reject(err) : resolve())));
 
   // 2. Mount.
-  const att = spawnSync("hdiutil", ["attach", "-nobrowse", "-quiet", "-mountrandom", "/tmp", dmgPath], {
+  const att = spawnSync("hdiutil", ["attach", "-nobrowse", "-mountrandom", "/tmp", dmgPath], {
     encoding: "utf8",
   });
   if (att.status !== 0) {
