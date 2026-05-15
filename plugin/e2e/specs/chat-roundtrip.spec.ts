@@ -42,9 +42,9 @@ async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: 
 }
 
 test("chat round-trip: user sends a message, fake provider replies", async () => {
+  test.setTimeout(120_000);
   const state = JSON.parse(readFileSync(process.env.VOS_E2E_STATE!, "utf8")) as E2EState;
   const { browser, page } = await getVaultPage(state.cdpPort);
-  test.setTimeout(120_000);
 
   try {
     // Precondition: plugin connected to daemon.
