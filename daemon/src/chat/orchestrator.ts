@@ -100,6 +100,34 @@ export interface Orchestrator {
   cancel(chatId: string): Promise<CancelResult>;
 }
 
+/** VOS-89 T11: child task reached a terminal state → if its parent was
+ * parked in WAITING_ON_AGENT, flip the parent back to WORKING so its run
+ * can resume. No-op when:
+ *   - the child has no parent_task_id (top-level task), or
+ *   - the parent is in any state other than WAITING_ON_AGENT (e.g. it was
+ *     itself cancelled or completed independently — we never resurrect).
+ *
+ * Idempotent: the UPDATE's WHERE clause guards the state predicate, so
+ * repeated emits of the same terminal state are safe. Mirrors the
+ * INPUT_REQUIRED → WORKING resume done inline in `dispatch()` (the user-
+ * reply path); here the trigger is a sibling task reaching terminal
+ * rather than a user POST. */
+export function resumeParentOnChildTerminal(
+  db: Database,
+  childTaskId: string,
+): void {
+  const child = db
+    .query("SELECT parent_task_id FROM tasks WHERE id = ?")
+    .get(childTaskId) as { parent_task_id: string | null } | undefined;
+  if (!child?.parent_task_id) return;
+  db.run(
+    `UPDATE tasks
+     SET state = 'TASK_STATE_WORKING', updated_at = strftime('%s','now')
+     WHERE id = ? AND state = 'TASK_STATE_WAITING_ON_AGENT'`,
+    [child.parent_task_id],
+  );
+}
+
 /** 409 conflict — another dispatch holds the lock. HTTP layer (T9) maps
  * `err.status` and `err.current_run_id` directly into the response. */
 export class Conflict409 extends Error {

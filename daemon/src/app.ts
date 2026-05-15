@@ -31,6 +31,7 @@ import { makeTitler, type Titler } from "./chat/titler.ts";
 import { makeTitlerStub } from "./chat/titler-stub.ts";
 import {
   makeOrchestrator,
+  resumeParentOnChildTerminal,
   type Orchestrator,
 } from "./chat/orchestrator.ts";
 import { fetchAnthropicKey } from "./lib/anthropic-key.ts";
@@ -73,6 +74,23 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // (ask_user emits task.state_changed / message.appended via this bus).
   // Hoisted out of the orchestrator-only block so mountMcp can receive it.
   const bus = createEventBus({ db: deps.db });
+
+  // VOS-89 T11: when any task reaches a terminal state, check whether its
+  // parent is parked in WAITING_ON_AGENT and flip the parent back to WORKING.
+  // Mirrors the answer.ts INPUT_REQUIRED -> WORKING resume, but the trigger
+  // is a child task terminating (ask_agent flow) rather than a user POST.
+  // Wired here so even test-injected orchestrators get parent-resume.
+  const ASK_AGENT_TERMINALS: ReadonlySet<string> = new Set([
+    "TASK_STATE_COMPLETED",
+    "TASK_STATE_FAILED",
+    "TASK_STATE_CANCELED",
+  ]);
+  bus.subscribe("task.state_changed", (ev) => {
+    const p = ev.payload as { taskId?: string; state?: string } | undefined;
+    if (!p?.taskId || !p.state) return;
+    if (!ASK_AGENT_TERMINALS.has(p.state)) return;
+    resumeParentOnChildTerminal(deps.db, p.taskId);
+  });
 
   if (!orchestrator || !titler) {
     const repo = makeChatRepo(deps.db);
