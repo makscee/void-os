@@ -6,6 +6,9 @@
 //   POST /chat/:id/cancel        (no body)    → { run_id, status:"cancelled" }
 //                                              | 409 {error:"no_active_run"}
 //                                              | 404 {error:"not_found"}
+//   POST /chat/:id/answer        { tool_use_id, answer }
+//                                              → { ok:true }
+//                                              | 400/404/409 { error }
 //   GET  /chats                                → ChatSummary[] (recent-first)
 //   GET  /chat/:id/messages                    → ReplayMessage[]
 //
@@ -48,6 +51,14 @@ export interface ChatApi {
   cancel(chatId: string): Promise<
     | { run_id: string; status: string; noActiveRun?: false }
     | { noActiveRun: true }
+  >;
+  /** POST /chat/:id/answer. Resolves an open ask_user prompt.
+   *  - 200 → { ok: true }
+   *  - 400/404/409 → { ok: false, status, error } (no throw)
+   *  - network/parse error → throws ApiError or the underlying TypeError */
+  answer(chatId: string, toolUseId: string, answer: string): Promise<
+    | { ok: true }
+    | { ok: false; status: 400 | 404 | 409; error: string }
   >;
   listChats(): Promise<ChatSummary[]>;
   getMessages(chatId: string): Promise<ReplayMessage[]>;
@@ -174,6 +185,31 @@ export function makeChatApi(
       }
       const body = await jsonOrThrow(res);
       return body as { run_id: string; status: string };
+    },
+    async answer(chatId, toolUseId, answer) {
+      const res = await fetchImpl(
+        `${base}/chat/${encodeURIComponent(chatId)}/answer`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ tool_use_id: toolUseId, answer }),
+        },
+      );
+      if (res.ok) return { ok: true } as const;
+      if (res.status === 400 || res.status === 404 || res.status === 409) {
+        let body: unknown = null;
+        try {
+          const text = await res.text();
+          if (text) body = JSON.parse(text);
+        } catch { /* ignore */ }
+        const error =
+          body && typeof body === "object" && "error" in body && typeof (body as { error: unknown }).error === "string"
+            ? (body as { error: string }).error
+            : `http_${res.status}`;
+        return { ok: false, status: res.status as 400 | 404 | 409, error };
+      }
+      // Other unexpected statuses → use the shared error path.
+      throw new ApiError(res.status, await res.text().catch(() => null));
     },
     async listChats() {
       const res = await fetchImpl(`${base}/chats`, { method: "GET" });
