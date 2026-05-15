@@ -11,6 +11,25 @@ export interface DaemonEvent {
   ts?: number;
 }
 
+export interface UsageTurn {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreateTokens: number;
+  cacheReadTokens: number;
+  model: string;
+}
+
+export interface RunEndEvent extends DaemonEvent {
+  type: "run.end";
+  runId: string;
+  chatId: string;
+  payload: {
+    agent: string;
+    endedAt: number;
+    usageTurns: UsageTurn[];
+  };
+}
+
 export interface EventQuery {
   since?: number;
   type?: string;
