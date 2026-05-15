@@ -50,15 +50,13 @@ export interface McpDeps {
    */
   loadAgentDefn?: (agentName: string) => AgentDefn;
   /**
-   * VOS-89 T10: dispatcher for freshly-minted child Tasks. T10 wires the
-   * MCP-layer seam only — the production implementation (composing the
-   * orchestrator's chat-mint kicker) lands in T11 (orchestrator resume)
-   * and T15 (integration test). For now the default is a no-op that logs
-   * a warning; tests inject a stub.
-   *
-   * TODO(VOS-89 T11/T15): Replace the default with a real dispatcher that
-   * runs the child Task off-thread using the same provider pipeline the
-   * orchestrator uses for chat dispatches.
+   * Dispatcher for freshly-minted child Tasks. Production buildApp passes
+   * the real implementation from `daemon/src/chat/dispatch-child.ts`
+   * (VOS-89 T15.5); MCP-only tests that don't need a child to actually
+   * run can omit this and rely on the placeholder, which logs a warning
+   * and returns. The placeholder is intentionally noisy so a misconfigured
+   * production wire surfaces in logs rather than silently dropping
+   * children on the floor.
    */
   dispatchChildTask?: (
     childTaskId: string,
@@ -121,23 +119,19 @@ export function buildMcpServer(deps: McpDeps): Server {
     tools: listMcpTools(),
   }));
 
-  // VOS-89 T10: resolve the AgentDefn loader + child-task dispatcher.
-  // The loader defaults to reading agent_cards.card_json; the dispatcher
-  // defaults to a no-op placeholder that warns once (real wiring lands
-  // in T11 / T15).
+  // Resolve the AgentDefn loader + child-task dispatcher. Production
+  // buildApp injects both; tests for the MCP layer in isolation can omit
+  // either and fall through to the defaults.
   const loadAgentDefn =
     deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(deps.db, name));
   const dispatchChildTask =
     deps.dispatchChildTask ??
     (async (childTaskId, args) => {
-      // TODO(VOS-89 T11/T15): wire real child-task dispatch via orchestrator's
-      // chat-mint kicker (composing per-agent provider env from T14).
-      // For T10 we keep this as an explicit seam: returning without doing
-      // anything leaves the child row in TASK_STATE_WORKING; the parent's
-      // bus-await will time out or be unblocked by tests that fake terminal
-      // state directly.
+      // Placeholder for MCP-only tests: leaves the child row in
+      // TASK_STATE_SUBMITTED. A misconfigured production wire surfaces
+      // here as a noisy warning rather than silently dropping children.
       console.warn(
-        `[VOS-89 T10] dispatchChildTask placeholder invoked: childTaskId=${childTaskId} agent=${args.agentName}`,
+        `[VOS-89] dispatchChildTask placeholder invoked: childTaskId=${childTaskId} agent=${args.agentName}`,
       );
     });
 

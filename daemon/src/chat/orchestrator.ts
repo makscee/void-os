@@ -111,10 +111,19 @@ export interface Orchestrator {
  * repeated emits of the same terminal state are safe. Mirrors the
  * INPUT_REQUIRED → WORKING resume done inline in `dispatch()` (the user-
  * reply path); here the trigger is a sibling task reaching terminal
- * rather than a user POST. */
+ * rather than a user POST.
+ *
+ * VOS-89 T15.5: after the WAITING→WORKING flip, attempt to settle the
+ * parent's terminal state. If the parent's chat has no active run AND no
+ * non-terminal children remain, the parent's lifecycle is over — flip it
+ * to COMPLETED. Covers the case where the run already ended (provider
+ * stream drained) before the child finished, so run.end's own attempt at
+ * the COMPLETED flip rejected (parent was still WAITING). When the child
+ * later terminates, this branch closes the loop. */
 export function resumeParentOnChildTerminal(
   db: Database,
   childTaskId: string,
+  emit?: (type: string, payload: Record<string, unknown>) => void,
 ): void {
   const child = db
     .query("SELECT parent_task_id FROM tasks WHERE id = ?")
@@ -126,6 +135,74 @@ export function resumeParentOnChildTerminal(
      WHERE id = ? AND state = 'TASK_STATE_WAITING_ON_AGENT'`,
     [child.parent_task_id],
   );
+  // Try to settle the parent. Only fires when the parent's chat has no
+  // current_run_id (i.e. the run has already cleaned up) AND no children
+  // remain non-terminal. Both predicates are evaluated by the helper.
+  const completed = tryCompleteParentTaskIfRunEnded(db, child.parent_task_id);
+  if (completed && emit) {
+    emit("task.state_changed", {
+      taskId: child.parent_task_id,
+      state: "TASK_STATE_COMPLETED",
+    });
+  }
+}
+
+/** VOS-89 T15.5: terminal task-state flip on run.end. CAS-guarded so:
+ *  - WORKING + no non-terminal children → flip to `terminal`
+ *  - any other state (INPUT_REQUIRED, WAITING_ON_AGENT, CANCELED, ...) →
+ *    no-op. The parent stays parked until its waiter (user / child)
+ *    resolves; the resume hook will retry the flip then.
+ *
+ *  We exclude tasks that have non-terminal children even if status==done.
+ *  This guards the rare race where a child is dispatched mid-stream but
+ *  the orchestrator's run.end fires before the child terminates — the
+ *  parent should not COMPLETE while a child is still running. (Today the
+ *  parent would already be WAITING_ON_AGENT in that case, so the state
+ *  predicate alone catches it; the children-check is a defensive belt-
+ *  and-braces.) */
+function tryCompleteTaskOnRunEnd(
+  db: Database,
+  taskId: string,
+  terminal: "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED",
+): boolean {
+  const res = db.run(
+    `UPDATE tasks
+        SET state = ?, updated_at = strftime('%s','now')
+      WHERE id = ?
+        AND state = 'TASK_STATE_WORKING'
+        AND NOT EXISTS (
+          SELECT 1 FROM tasks ch
+           WHERE ch.parent_task_id = tasks.id
+             AND ch.state NOT IN (
+               'TASK_STATE_COMPLETED',
+               'TASK_STATE_FAILED',
+               'TASK_STATE_CANCELED'
+             )
+        )`,
+    [terminal, taskId],
+  );
+  return res.changes > 0;
+}
+
+/** VOS-89 T15.5: settle the parent task to COMPLETED after a child wakeup
+ *  IF the parent's chat has no active run AND all children are terminal.
+ *  Skips when the chat still has a current_run_id (run is in flight; the
+ *  orchestrator's own finally block will handle the flip on run.end). */
+function tryCompleteParentTaskIfRunEnded(
+  db: Database,
+  parentTaskId: string,
+): boolean {
+  const ctx = db
+    .query(
+      `SELECT c.current_run_id AS current_run_id
+         FROM tasks t
+         JOIN contexts c ON t.context_id = c.id
+        WHERE t.id = ?`,
+    )
+    .get(parentTaskId) as { current_run_id: string | null } | undefined;
+  if (!ctx) return false;
+  if (ctx.current_run_id !== null) return false;
+  return tryCompleteTaskOnRunEnd(db, parentTaskId, "TASK_STATE_COMPLETED");
 }
 
 /** VOS-89 T12: cancel-cascade. Walks the task tree under `rootTaskId`
@@ -637,6 +714,37 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
               cleanupErr instanceof Error
                 ? cleanupErr.message
                 : String(cleanupErr),
+          });
+        }
+        // VOS-89 T15.5: settle the task's terminal state. CAS-guarded:
+        // only flips when the task is in WORKING with no non-terminal
+        // children. If the task is parked in INPUT_REQUIRED or
+        // WAITING_ON_AGENT, this is a no-op — the corresponding wakeup
+        // path (answer route / resumeParentOnChildTerminal) will retry
+        // the flip when the wait resolves.
+        const terminalState =
+          status === "done"
+            ? "TASK_STATE_COMPLETED"
+            : status === "error"
+              ? "TASK_STATE_FAILED"
+              : "TASK_STATE_CANCELED";
+        try {
+          const flipped = tryCompleteTaskOnRunEnd(db, taskId, terminalState);
+          if (flipped) {
+            emit("task.state_changed", {
+              taskId,
+              state: terminalState,
+            });
+          }
+        } catch (taskFlipErr) {
+          emit("task.terminal_flip_failed", {
+            chat_id: chatId,
+            run_id: runId,
+            task_id: taskId,
+            error:
+              taskFlipErr instanceof Error
+                ? taskFlipErr.message
+                : String(taskFlipErr),
           });
         }
         emit("run.end", {

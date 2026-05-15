@@ -108,15 +108,18 @@ describe("ask_agent integration (maya -> journaler via fake providers)", () => {
             ],
           },
         }),
-        // Final assistant turn after the (simulated) tool result returns —
-        // narrative wrap-up so the parent's run has visible terminal text.
-        JSON.stringify({
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "done." }],
-          },
-        }),
+        // No follow-up assistant turn: in production the CC subprocess
+        // would block AWAITING the MCP ask_agent result before emitting
+        // anything else. The fake provider can't actually pause, so we
+        // just end the script after tool_use. This forces the parent's
+        // first run to finish (run.end fires) while the parent task is
+        // already WAITING_ON_AGENT — the orchestrator's terminal-flip
+        // CAS sees state != WORKING and rejects, leaving the parent
+        // parked. When the child later terminates,
+        // resumeParentOnChildTerminal fires the WORKING+COMPLETED settle
+        // (chat has no current_run_id at that point because the run
+        // ended). This exercises path (b) of the T15.5 wiring; path (a)
+        // is exercised by orchestrator-level unit tests.
       ].join("\n") + "\n",
     );
     writeFileSync(
@@ -136,6 +139,14 @@ describe("ask_agent integration (maya -> journaler via fake providers)", () => {
     // ── 2. Boot the in-process daemon with both agents wired ──────────
     booted = await bootInProcessDaemon({
       agentScripts: { maya: mayaScript, journaler: journScript },
+      // 50ms between maya's events keeps the parent run alive long
+      // enough for the test bus subscriber to observe chat.tool_use,
+      // dispatch the MCP ask_agent call (HTTP roundtrip + mint), and
+      // park the parent in WAITING_ON_AGENT BEFORE the run drains.
+      // Without this the parent's run.end races ahead of the MCP call
+      // and flips the parent to COMPLETED, after which mintChildAndFlipParent's
+      // CAS rejects (parent no longer WORKING).
+      parentPerEventDelayMs: 50,
     });
     server = bindToPort(booted.app);
 
@@ -208,19 +219,24 @@ describe("ask_agent integration (maya -> journaler via fake providers)", () => {
     expect(r0.content[0]!.type).toBe("text");
     expect(r0.content[0]!.text).toBe("journaler summary.");
 
-    // ── 6. Force-resolve the parent task. In production the orchestrator
-    //      will close out the parent task to COMPLETED on its run.end after
-    //      the resume listener flipped it back to WORKING. That wiring is
-    //      not in this branch yet (no task-completion pipeline lands until
-    //      the next milestone), so the test marks the parent task COMPLETED
-    //      directly here. The assertions below still validate the four
-    //      acceptance criteria from the plan — the bookkeeping write here
-    //      is purely the bit production will own once the orchestrator
-    //      learns to terminate task state on run.end.
-    booted.db.run(
-      "UPDATE tasks SET state='TASK_STATE_COMPLETED', updated_at=? WHERE context_id=? AND parent_task_id IS NULL",
-      [Date.now(), chatId],
-    );
+    // ── 6. Wait for the parent to settle. The production wiring (T15.5)
+    //      flips the parent task to TASK_STATE_COMPLETED via TWO trigger
+    //      points:
+    //        (a) orchestrator finally block on run.end — but T15's fake
+    //            maya script drains BEFORE ask_agent resolves, so at
+    //            that moment the parent is still WAITING_ON_AGENT and
+    //            the run.end flip is rejected by the WORKING-only CAS.
+    //        (b) resumeParentOnChildTerminal — when the child finishes
+    //            it flips parent WAITING→WORKING, then because the
+    //            chat has no current_run_id (run already cleaned up)
+    //            it immediately tries the WORKING→COMPLETED flip.
+    //      So the COMPLETED flip happens via path (b) here. We poll the
+    //      parent state because the child terminal → resume → completion
+    //      chain is all synchronous emit-driven, but the test's MCP
+    //      callTool roundtrip is async: by the time we get here the
+    //      flip MAY already have happened (queueMicrotask + sync
+    //      bus listeners) but we don't depend on that ordering.
+    await booted.awaitChatComplete(chatId, { timeoutMs: 5_000 });
 
     // ── 7. Assertions per plan acceptance ─────────────────────────────
     const allTasks = booted.db

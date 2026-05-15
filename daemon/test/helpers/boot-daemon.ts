@@ -3,11 +3,11 @@
 // answer-route + ask_agent dispatcher) but no Bun.serve, no claude-code
 // subprocess, no SDK.
 //
-// What this DOESN'T use: production buildApp(). buildApp doesn't currently
-// expose a seam for `dispatchChildTask`, and the production default is a
-// no-op placeholder (see daemon/src/adapters/mcp/index.ts comment block on
-// VOS-89 T10/T11/T15). For the integration test we wire a real per-agent
-// fake-provider dispatcher inline so the child task actually runs.
+// VOS-89 T15.5: now uses the production `makeDispatchChildTask` (rather
+// than an inline test-only dispatcher), exercising real production code
+// for the child-dispatch path. We inject a `buildProvider` override that
+// returns a fake provider per agent — agentScripts maps agent → JSONL
+// script path, and the override resolves that map per agentName.
 //
 // Schema notes (verified against migrations 0007 + 0010 + 0011):
 // - `tasks` has NO `agent_name` column. The plan's spec uses
@@ -27,7 +27,6 @@ import { tmpdir } from "node:os";
 import { runMigrationsFromDir } from "../../src/adapters/sqlite/migrations.ts";
 import { createEventBus, type EventBus } from "../../src/events/index.ts";
 import { makeChatRepo } from "../../src/chat/repo.ts";
-import { makeMessagesRepo } from "../../src/chat/messages-repo.ts";
 import {
   makeOrchestrator,
   resumeParentOnChildTerminal,
@@ -37,12 +36,10 @@ import { makeTitlerStub } from "../../src/chat/titler-stub.ts";
 import { mountMcp, pendingRegistry } from "../../src/adapters/mcp/index.ts";
 import { mountAnswerRoute } from "../../src/api/answer.ts";
 import { makeFakeProvider } from "../../src/providers/fake/index.ts";
+import { makeDispatchChildTask } from "../../src/chat/dispatch-child.ts";
 import { chatsApi } from "../../src/api/chats.ts";
 import { chatApi } from "../../src/api/chat.ts";
-import { extractAssistantText } from "../../src/providers/claude-code/index.ts";
-import { extractToolUses, extractToolResults } from "../../src/chat/util.ts";
 import type { AgentDefn } from "../../src/permissions/engine.ts";
-import type { Part } from "../../src/types/a2a.ts";
 
 const MIGRATIONS_DIR = join(
   import.meta.dir,
@@ -64,6 +61,13 @@ export interface BootOpts {
   /** Optional explicit AgentDefn overrides. Defaults to permissive (no
    *  ask_agent_allow restriction) for every named agent. */
   agentDefns?: Record<string, AgentDefn>;
+  /** Per-event delay (ms) for parent-chat orchestrators. Children inherit
+   *  zero delay (they run via dispatchChildTask, separate provider).
+   *  Useful for tests that need to fire ask_agent against a parent whose
+   *  run has not yet drained — without a delay the fake-provider stream
+   *  finishes synchronously, run.end fires, and parent flips to
+   *  COMPLETED before the test bus subscriber can call MCP. */
+  parentPerEventDelayMs?: number;
 }
 
 export interface BootedDaemon {
@@ -129,11 +133,12 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
     const p = ev.payload as { taskId?: string; state?: string } | undefined;
     if (!p?.taskId || !p.state) return;
     if (!ASK_AGENT_TERMINALS.has(p.state)) return;
-    resumeParentOnChildTerminal(db, p.taskId);
+    resumeParentOnChildTerminal(db, p.taskId, (t, payload) =>
+      bus.emit({ type: t, payload }),
+    );
   });
 
   const repo = makeChatRepo(db);
-  const messages = makeMessagesRepo(db);
 
   // Per-chat orchestrator dispatch: every chat is bound to one agent at
   // creation, so each chat needs an orchestrator wired against THAT agent's
@@ -145,7 +150,10 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
     if (o) return o;
     const scriptPath = opts.agentScripts[agent];
     if (!scriptPath) throw new Error(`no fake script registered for agent: ${agent}`);
-    const provider = makeFakeProvider({ scriptPath });
+    const provider = makeFakeProvider({
+      scriptPath,
+      perEventDelayMs: opts.parentPerEventDelayMs,
+    });
     o = makeOrchestrator({
       db,
       repo,
@@ -179,42 +187,24 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
   app.route("/", chatsApi(db));
   app.route("/", chatApi(db, { orchestrator: routedOrchestrator }));
 
-  // dispatchChildTask: production has no real impl (placeholder warns +
-  // returns). Here we run the child synchronously: pull the journaler-style
-  // fake provider, drain events into the canonical messages table for the
-  // child task_id, then flip the child state COMPLETED + emit
-  // task.state_changed so the bus listeners (parent resume + ask_agent
-  // wait) fire. Child runs OFF the parent's await — runAskAgent does
-  // `await ctx.dispatchChildTask(...)`, so we kick into a new microtask
-  // and return immediately to keep the wait/race-guard loop healthy.
-  const dispatchChildTask = async (
-    childTaskId: string,
-    args: { agentName: string; message: string; systemMessage?: string },
-  ): Promise<void> => {
-    // Queue the actual run on the next microtask so runAskAgent can finish
-    // its post-dispatch DB recheck before the child terminates. (Without
-    // this beat the child can flip state synchronously inside runAskAgent
-    // step 8, before step 9's recheck — still correct, just exercises the
-    // "post-dispatch recheck found terminal" branch instead of "bus
-    // emit settled the await".)
-    queueMicrotask(() => {
-      runChildTaskOnFakeProvider({
-        db,
-        bus,
-        messages,
-        childTaskId,
-        contextId: getContextId(db, childTaskId),
-        agentName: args.agentName,
-        scriptPath: requireScript(opts.agentScripts, args.agentName),
-        emit,
-      }).catch((e) => {
-        // Surface — failing to even start the child is a test bug, not a
-        // production error mode worth exercising.
-        // eslint-disable-next-line no-console
-        console.error(`[boot-daemon] child dispatch failed: ${e}`);
-      });
-    });
-  };
+  // VOS-89 T15.5: production dispatcher with a per-agent fake-provider
+  // override. The real `makeDispatchChildTask` owns the microtask kick,
+  // SUBMITTED→WORKING flip, message draining, terminal flip, and
+  // task.state_changed emit — we only inject a fake Provider per agent
+  // so we don't need a real claude-code subprocess.
+  const dispatchChildTask = makeDispatchChildTask({
+    db,
+    bus,
+    cwd: vaultRoot,
+    tracesDir: join(vaultRoot, ".traces"),
+    buildProvider: (agentName) => {
+      const scriptPath = opts.agentScripts[agentName];
+      if (!scriptPath) {
+        throw new Error(`no fake script for agent: ${agentName}`);
+      }
+      return makeFakeProvider({ scriptPath });
+    },
+  });
 
   // Default loadAgentDefn pulls from agent_cards; we override only when the
   // caller provided explicit defns (e.g. for ask_agent_allow tests).
@@ -289,138 +279,6 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
   };
 }
 
-function getContextId(db: Database, taskId: string): string {
-  const row = db
-    .query("SELECT context_id FROM tasks WHERE id = ?")
-    .get(taskId) as { context_id: string } | undefined;
-  if (!row) throw new Error(`task not found: ${taskId}`);
-  return row.context_id;
-}
-
-function requireScript(
-  scripts: Record<string, string>,
-  agent: string,
-): string {
-  const s = scripts[agent];
-  if (!s) throw new Error(`no fake script for agent: ${agent}`);
-  return s;
-}
-
-interface RunChildArgs {
-  db: Database;
-  bus: EventBus;
-  messages: ReturnType<typeof makeMessagesRepo>;
-  childTaskId: string;
-  contextId: string;
-  agentName: string;
-  scriptPath: string;
-  emit: (t: string, p: Record<string, unknown>) => void;
-}
-
-/**
- * Drains a fake-provider script into the canonical messages table for a
- * pre-existing child task, then flips the child's state to COMPLETED (or
- * FAILED on script error) and emits task.state_changed.
- *
- * This mirrors the relevant slice of orchestrator.dispatch() — minus the
- * chat row, run row, lock acquisition, and titler — because child tasks
- * are not chats. They live as their own task rows under the parent's
- * context, dispatched by ask_agent and resolved by translateChildResult.
- */
-async function runChildTaskOnFakeProvider(args: RunChildArgs): Promise<void> {
-  const { db, bus, messages, childTaskId, contextId, scriptPath, emit } = args;
-  const provider = makeFakeProvider({ scriptPath });
-
-  // Flip child SUBMITTED -> WORKING so any observer sees a normal lifecycle.
-  // Use raw UPDATE — setTaskState is constrained to two states and would
-  // not accept SUBMITTED/COMPLETED transitions.
-  db.run(
-    "UPDATE tasks SET state='TASK_STATE_WORKING', updated_at=? WHERE id=?",
-    [Date.now(), childTaskId],
-  );
-
-  const handle = provider.spawn({
-    runId: childTaskId, // child has no run row; reuse id for prompt/logs only
-    prompt: "", // injected by ask_agent.message in production; unused by fake provider
-    cwd: "/tmp",
-    chatId: contextId,
-  });
-
-  const agentParts: Part[] = [];
-  let lastText = "";
-  let firstAssistantSeen = false;
-  let terminalState: "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" =
-    "TASK_STATE_COMPLETED";
-
-  try {
-    for await (const evt of handle.events) {
-      if (evt.type === "assistant") {
-        firstAssistantSeen = true;
-        const text = extractAssistantText(evt);
-        if (text) {
-          lastText += text;
-          agentParts.push({ text } as Part);
-        }
-        for (const tu of extractToolUses(evt)) {
-          agentParts.push({
-            data: {
-              kind: "tool_use",
-              tool_call_id: tu.tool_call_id,
-              tool_name: tu.name,
-              input: tu.input,
-            },
-            metadata: { ts: Date.now() },
-          } as unknown as Part);
-        }
-      } else if (evt.type === "user") {
-        for (const tr of extractToolResults(evt)) {
-          const outText =
-            typeof tr.output === "string" ? tr.output : JSON.stringify(tr.output);
-          agentParts.push({
-            data: {
-              kind: "tool_result",
-              tool_call_id: tr.tool_call_id,
-              output: outText,
-              is_error: tr.is_error,
-            },
-            metadata: { ts: Date.now() },
-          } as unknown as Part);
-        }
-      }
-    }
-    await handle.done;
-  } catch (e) {
-    terminalState = "TASK_STATE_FAILED";
-    emit("child.error", {
-      child_task_id: childTaskId,
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-
-  if (firstAssistantSeen && agentParts.length > 0) {
-    messages.appendMessage(
-      childTaskId,
-      contextId,
-      null, // child has no run row in this harness
-      "ROLE_AGENT",
-      agentParts,
-      Date.now(),
-    );
-  }
-
-  db.run(
-    "UPDATE tasks SET state=?, updated_at=? WHERE id=?",
-    [terminalState, Date.now(), childTaskId],
-  );
-
-  // Emit task.state_changed so:
-  //  - the ask_agent waitForChildTerminal listener resolves the parent's
-  //    `await waitP`, returning the terminal state; runAskAgent then
-  //    translates it to a tool result via translateChildResult.
-  //  - the parent-resume listener (subscribed in bootInProcessDaemon) flips
-  //    the parent task back to WORKING.
-  bus.emit({
-    type: "task.state_changed",
-    payload: { taskId: childTaskId, state: terminalState },
-  });
-}
+// VOS-89 T15.5: inline runChildTaskOnFakeProvider helper removed — the
+// production `makeDispatchChildTask` is now used end-to-end via a
+// `buildProvider` injection.

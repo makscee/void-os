@@ -34,6 +34,7 @@ import {
   resumeParentOnChildTerminal,
   type Orchestrator,
 } from "./chat/orchestrator.ts";
+import { makeDispatchChildTask } from "./chat/dispatch-child.ts";
 import { fetchAnthropicKey } from "./lib/anthropic-key.ts";
 
 export const VERSION = pkg.version;
@@ -89,7 +90,9 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     const p = ev.payload as { taskId?: string; state?: string } | undefined;
     if (!p?.taskId || !p.state) return;
     if (!ASK_AGENT_TERMINALS.has(p.state)) return;
-    resumeParentOnChildTerminal(deps.db, p.taskId);
+    resumeParentOnChildTerminal(deps.db, p.taskId, (t, payload) =>
+      bus.emit({ type: t, payload }),
+    );
   });
 
   if (!orchestrator || !titler) {
@@ -133,7 +136,22 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   app.route("/", chatsApi(deps.db));
   app.route("/", agentsApi(deps.db));
   app.route("/", chatApi(deps.db, { orchestrator }));
-  mountMcp(app, { vaultRoot: deps.vaultRoot, db: deps.db, bus });
+  // VOS-89 T15.5: real production dispatcher for ask_agent children. Per-
+  // agent Provider memoisation lives inside the dispatcher; cwd +
+  // tracesDir mirror the orchestrator wiring above so child runs share
+  // the same trace tree + working dir as parent runs.
+  const dispatchChildTask = makeDispatchChildTask({
+    db: deps.db,
+    bus,
+    cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
+    tracesDir: path.join(deps.vaultRoot, ".traces"),
+  });
+  mountMcp(app, {
+    vaultRoot: deps.vaultRoot,
+    db: deps.db,
+    bus,
+    dispatchChildTask,
+  });
   // VOS-88 T8: user-facing answer route. Shares the SAME `pendingRegistry`
   // singleton with mountMcp so the MCP tool handler (which awaits the slot)
   // and the HTTP route (which resolves it) reference the same map.
