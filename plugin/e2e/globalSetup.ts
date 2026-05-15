@@ -24,9 +24,8 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "..");
 const DAEMON_ROOT = path.resolve(HERE, "..", "..", "daemon");
-const VAULT_PATH = path.join(HERE, "fixtures", "vault");
-const PLUGIN_OUT = path.join(VAULT_PATH, ".obsidian", "plugins", "void-os");
-const FAKE_SCRIPT = path.join(HERE, "fixtures", "cc", "empty.jsonl");
+const FIXTURE_VAULT = path.join(HERE, "fixtures", "vault");
+const FAKE_SCRIPT = path.join(HERE, "fixtures", "cc", "hello.jsonl");
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -79,6 +78,14 @@ export default async function globalSetup() {
   fs.mkdirSync(daemonVault, { recursive: true });
   fs.mkdirSync(obsidianUserDataDir, { recursive: true });
 
+  // Copy the committed fixture vault into tmpdir so Obsidian's runtime writes
+  // (workspace.json, appearance.json, plugin-data tweaks) don't pollute the
+  // checked-in fixture. The build output + resolved data.json go into the
+  // copy as well.
+  const VAULT_PATH = path.join(tmpdir, "fixture-vault");
+  fs.cpSync(FIXTURE_VAULT, VAULT_PATH, { recursive: true });
+  const PLUGIN_OUT = path.join(VAULT_PATH, ".obsidian", "plugins", "void-os");
+
   // Pre-register the fixture vault in obsidian.json so Obsidian skips the
   // onboarding/starter screen and opens the vault directly.
   const vaultId = crypto.createHash("md5").update(VAULT_PATH).digest("hex").slice(0, 16);
@@ -86,8 +93,12 @@ export default async function globalSetup() {
     path.join(obsidianUserDataDir, "obsidian.json"),
     JSON.stringify({
       vaults: {
-        [vaultId]: { path: VAULT_PATH, ts: Date.now(), open: true },
+        // `trusted: true` skips the "Trust author" modal on Obsidian 1.8+.
+        [vaultId]: { path: VAULT_PATH, ts: Date.now(), open: true, trusted: true },
       },
+      // Don't let Obsidian auto-update mid-run (it hot-swaps obsidian.asar
+      // and unloads the plugin, breaking long-running specs).
+      updateDisabled: true,
     }, null, 2),
   );
 
