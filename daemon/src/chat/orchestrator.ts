@@ -128,6 +128,73 @@ export function resumeParentOnChildTerminal(
   );
 }
 
+/** VOS-89 T12: cancel-cascade. Walks the task tree under `rootTaskId`
+ * (recursive CTE on `tasks.parent_task_id`) and flips every NON-terminal
+ * descendant to TASK_STATE_CANCELED in a SINGLE transaction. The root
+ * itself is left untouched — callers cancel it separately (e.g. via
+ * `orch.cancel(chatId)` to terminate any in-flight provider handle).
+ *
+ * Terminal states (COMPLETED / FAILED / CANCELED) are excluded from the
+ * sweep — once a child has finished on its own, we never overwrite its
+ * outcome. Returns the ids that were actually cancelled, in CTE traversal
+ * order (parent-before-child by depth).
+ *
+ * Wiring: NOT yet plumbed into a higher-level cancel entry-point —
+ * `orch.cancel(chatId)` only kills the in-flight run / provider handle,
+ * it does not currently reach into the task tree. A future task should
+ * call `cascadeCancel` after that flip and emit `task.state_changed` per
+ * returned id so the resume listener (app.ts T11) can react.
+ *
+ * No emit happens here: this helper is DB-only by design (mirrors
+ * `resumeParentOnChildTerminal`). The caller owns event emission so the
+ * helper stays unit-testable without a bus. */
+export function cascadeCancel(db: Database, rootTaskId: string): string[] {
+  const cancelled: string[] = [];
+  const tx = db.transaction(() => {
+    // Recursive CTE collects every non-terminal descendant of `rootTaskId`.
+    // The base case is direct children (parent_task_id = root); the
+    // recursive step extends through the tree. The root itself is excluded
+    // by starting the CTE from `parent_task_id = ?` rather than `id = ?`.
+    const rows = db
+      .query(
+        `WITH RECURSIVE descendants(id, state) AS (
+           SELECT id, state FROM tasks WHERE parent_task_id = ?
+           UNION ALL
+           SELECT t.id, t.state
+             FROM tasks t
+             JOIN descendants d ON t.parent_task_id = d.id
+         )
+         SELECT id FROM descendants
+          WHERE state NOT IN (
+            'TASK_STATE_COMPLETED',
+            'TASK_STATE_FAILED',
+            'TASK_STATE_CANCELED'
+          )`,
+      )
+      .all(rootTaskId) as Array<{ id: string }>;
+    if (rows.length === 0) return;
+    const update = db.prepare(
+      `UPDATE tasks
+         SET state = 'TASK_STATE_CANCELED', updated_at = strftime('%s','now')
+       WHERE id = ?
+         AND state NOT IN (
+           'TASK_STATE_COMPLETED',
+           'TASK_STATE_FAILED',
+           'TASK_STATE_CANCELED'
+         )`,
+    );
+    for (const r of rows) {
+      const info = update.run(r.id);
+      // changes==1 only when the row was still non-terminal at UPDATE time.
+      // Within a single tx no concurrent writer exists, so this matches the
+      // SELECT 1:1 — but we honour the actual UPDATE result to be safe.
+      if (info.changes > 0) cancelled.push(r.id);
+    }
+  });
+  tx();
+  return cancelled;
+}
+
 /** 409 conflict — another dispatch holds the lock. HTTP layer (T9) maps
  * `err.status` and `err.current_run_id` directly into the response. */
 export class Conflict409 extends Error {
