@@ -76,6 +76,12 @@ describe('expandPattern', () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.expanded).toBe('/vault/inbox/**');
   });
+
+  test('~/../etc escape is rejected (traversal escapes homeRoot)', () => {
+    const r = __test__.expandPattern('~/../etc/passwd', opts);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/escape|traversal|anchor/i);
+  });
 });
 
 describe('resolveScopes', () => {
@@ -152,6 +158,14 @@ describe('canRead / canWrite', () => {
 
   test('canWrite: SYSTEM_DENY blocks vault/agents even when write_scope=vault/**', () => {
     expect(eng.canWrite(path.join(VAULT, 'agents/maya/agent.md'), agentVault)).toBe(false);
+  });
+
+  test('canWrite: SYSTEM_DENY blocks vault/.obsidian/** dotfiles', () => {
+    expect(eng.canWrite(path.join(VAULT, '.obsidian/workspace.json'), agentVault)).toBe(false);
+  });
+
+  test('canWrite: SYSTEM_DENY blocks vault/.void/** dotfiles', () => {
+    expect(eng.canWrite(path.join(VAULT, '.void/state.json'), agentVault)).toBe(false);
   });
 
   test('canRead: SYSTEM_DENY paths remain readable', () => {
