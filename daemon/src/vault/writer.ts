@@ -6,7 +6,6 @@ import { Mutex } from './mutex';
 import { resolveVaultPath } from './paths';
 import { sha256Hex } from './sha';
 import { atomicWrite } from './atomic';
-import { recordVaultEvent, recordMovePair } from './events';
 import { findSection } from './sections';
 import { parseFm, stringifyFm } from './frontmatter';
 
@@ -82,14 +81,7 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
       }
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await atomicWrite(abs, content, tmpDir, { crashAfterTmpWrite });
-      recordVaultEvent(opts.db, {
-        type: 'vault.create',
-        agent: ctx.agent,
-        run_id: ctx.run_id,
-        path: p,
-        sha_before: null,
-        sha_after: sha256Hex(content),
-      });
+      void ctx;
     });
   }
 
@@ -99,14 +91,7 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
       const oldContent = await fs.readFile(abs, 'utf8');
       const newContent = buildAppended(oldContent, content, section);
       await atomicWrite(abs, newContent, tmpDir, { crashAfterTmpWrite });
-      recordVaultEvent(opts.db, {
-        type: 'vault.append',
-        agent: ctx.agent,
-        run_id: ctx.run_id,
-        path: p,
-        sha_before: sha256Hex(oldContent),
-        sha_after: sha256Hex(newContent),
-      });
+      void ctx;
     });
   }
 
@@ -126,14 +111,7 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
       const sep = post.length > 0 && !normalized.endsWith('\n\n') ? '\n' : '';
       const newContent = pre + normalized + sep + post;
       await atomicWrite(abs, newContent, tmpDir, { crashAfterTmpWrite });
-      recordVaultEvent(opts.db, {
-        type: 'vault.replace_section',
-        agent: ctx.agent,
-        run_id: ctx.run_id,
-        path: p,
-        sha_before: sha256Hex(oldContent),
-        sha_after: sha256Hex(newContent),
-      });
+      void ctx;
     });
   }
 
@@ -145,14 +123,7 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
       data[key] = value;
       const newContent = stringifyFm(data, body);
       await atomicWrite(abs, newContent, tmpDir, { crashAfterTmpWrite });
-      recordVaultEvent(opts.db, {
-        type: 'vault.set_property',
-        agent: ctx.agent,
-        run_id: ctx.run_id,
-        path: p,
-        sha_before: sha256Hex(oldContent),
-        sha_after: sha256Hex(newContent),
-      });
+      void ctx;
     });
   }
 
@@ -174,30 +145,16 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
       }
       const newContent = oldContent.slice(0, first) + new_string + oldContent.slice(first + old_string.length);
       await atomicWrite(abs, newContent, tmpDir, { crashAfterTmpWrite });
-      recordVaultEvent(opts.db, {
-        type: 'vault.patch',
-        agent: ctx.agent,
-        run_id: ctx.run_id,
-        path: p,
-        sha_before: sha256Hex(oldContent),
-        sha_after: sha256Hex(newContent),
-      });
+      void ctx;
     });
   }
 
   async function deleteOp(p: string, ctx: WriteCtx) {
     const abs = resolve(p);
     await mutex.runExclusive(abs, async () => {
-      const oldContent = await fs.readFile(abs, 'utf8'); // throws ENOENT if missing
+      await fs.readFile(abs, 'utf8'); // throws ENOENT if missing
       await fs.unlink(abs);
-      recordVaultEvent(opts.db, {
-        type: 'vault.delete',
-        agent: ctx.agent,
-        run_id: ctx.run_id,
-        path: p,
-        sha_before: sha256Hex(oldContent),
-        sha_after: null,
-      });
+      void ctx;
     });
   }
 
@@ -210,10 +167,10 @@ export function createVaultWriter(opts: VaultWriterOpts): VaultWriter {
         e.code = 'EEXIST';
         throw e;
       }
-      const content = await fs.readFile(fromAbs, 'utf8'); // throws ENOENT if missing
+      await fs.readFile(fromAbs, 'utf8'); // throws ENOENT if missing
       await fs.mkdir(path.dirname(toAbs), { recursive: true });
       await fs.rename(fromAbs, toAbs);
-      recordMovePair(opts.db, ctx, from, to, sha256Hex(content));
+      void ctx;
     });
   }
 

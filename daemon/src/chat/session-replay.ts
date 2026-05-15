@@ -17,9 +17,10 @@ import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Database } from "bun:sqlite";
-import { makeChatRepo } from "./repo";
+import { makeChatRepo, openTaskFor } from "./repo";
 import { makeMessagesRepo } from "./messages-repo";
 import { extractTurnText, extractToolUses, extractToolResults } from "./util";
+import type { Part, Role } from "../types/a2a";
 
 /** A visible text turn (user prompt or assistant narration). */
 export interface TextMessage {
@@ -207,6 +208,11 @@ export function makeSessionReplay(
     const records = legacyJsonlOrder(text);
     if (records.length === 0) return false;
 
+    // Per-context taskId — 0007's messages.task_id is NOT NULL. The chat
+    // row was created via makeChatRepo.create which always mints a paired
+    // open task, so this lookup is always defined for live code paths.
+    const taskId = openTaskFor(db, chatId);
+
     // We assign synthetic ts values so the messages-repo (ts, ord) sort
     // recovers exactly the JSONL chronological order, even if individual
     // records lack a `ts` field. Use a monotonically-increasing counter
@@ -214,37 +220,32 @@ export function makeSessionReplay(
     let ts = 0;
     for (const r of records) {
       ts = typeof r.ts === "number" ? r.ts : ts + 1;
-      // run_id is null for legacy imports — no daemon-side run exists.
-      for (const entry of recordToEntries(r)) {
+      const entries = recordToEntries(r);
+      if (entries.length === 0) continue;
+
+      // recordToEntries always emits a single role per record (the JSONL
+      // record's outer `type` of "user" | "assistant"), so the first
+      // entry's role determines the A2A role for the whole message.
+      const isUser = entries[0]!.role === "user";
+      const role: Role = isUser ? "ROLE_USER" : "ROLE_AGENT";
+      const parts: Part[] = [];
+
+      for (const entry of entries) {
         switch (entry.role) {
           case "user":
-            messages.appendUser(chatId, null, entry.content, ts);
-            break;
           case "assistant":
-            // Append-as-new (run_id=null bypasses the UPSERT branch in
-            // messages-repo, so each JSONL assistant turn produces its
-            // own row). This matches the original walk's behavior:
-            // one assistant row per visible turn.
-            messages.appendAssistant(chatId, null, entry.content, ts);
+            if (entry.content) parts.push({ text: entry.content });
             break;
-          case "tool_use": {
-            const inputJson = (() => {
-              try {
-                return JSON.stringify(entry.input);
-              } catch {
-                return String(entry.input);
-              }
-            })();
-            messages.appendToolUse(
-              chatId,
-              null,
-              entry.tool_call_id,
-              entry.name,
-              inputJson,
-              ts,
-            );
+          case "tool_use":
+            parts.push({
+              data: {
+                kind: "tool_use",
+                tool_call_id: entry.tool_call_id,
+                tool_name: entry.name,
+                input: entry.input as Record<string, unknown>,
+              },
+            });
             break;
-          }
           case "tool_result": {
             const outText =
               typeof entry.output === "string"
@@ -256,18 +257,21 @@ export function makeSessionReplay(
                       return String(entry.output);
                     }
                   })();
-            messages.appendToolResult(
-              chatId,
-              null,
-              entry.tool_call_id,
-              outText,
-              entry.is_error,
-              ts,
-            );
+            parts.push({
+              data: {
+                kind: "tool_result",
+                tool_call_id: entry.tool_call_id,
+                output: outText,
+                is_error: entry.is_error,
+              },
+            });
             break;
           }
         }
       }
+      if (parts.length === 0) continue;
+      // run_id is null for legacy imports — no daemon-side run exists.
+      messages.appendMessage(taskId, chatId, null, role, parts, ts);
     }
     return true;
   }

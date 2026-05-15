@@ -31,6 +31,9 @@ function freshDb(): Database {
     "0002_runs_columns.sql",
     "0003_chat_lifecycle.sql",
     "0004_messages.sql",
+    "0005_costs_cache.sql",
+    "0006_costs_chat_id.sql",
+    "0007_a2a_tables.sql",
   ]) {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
@@ -135,11 +138,12 @@ test("cancel(): in-flight run → run.end status='cancelled', partial text flush
   expect(runEnds.length).toBe(1);
   expect(runEnds[0]!.p.status).toBe("cancelled");
 
-  // Partial assistant text was persisted to last_msg before terminate.
-  const afterChat = repo.get(chat.id)!;
-  expect(afterChat.last_msg).toBe("partial ");
+  // VOS-83 mig-0007: last_msg derived from messages.parts_text.
+  const messages0 = makeMessagesRepo(db);
+  expect(messages0.lastAssistantText(chat.id)).toBe("partial ");
 
   // Lock cleared.
+  const afterChat = repo.get(chat.id)!;
   expect(afterChat.current_run_id).toBeNull();
 
   // Runs row status="cancelled".
@@ -267,7 +271,8 @@ test("cancel(): partial-token stream — only emitted text is persisted, no extr
   expect(result.status).toBe("cancelled");
 
   // Concatenated partial: "hello world"
-  expect(repo.get(chat.id)!.last_msg).toBe("hello world");
+  const m1 = makeMessagesRepo(db);
+  expect(m1.lastAssistantText(chat.id)).toBe("hello world");
 });
 
 test("cancel(): mid-tool-call — terminates cleanly without is_error frame leak", async () => {
@@ -341,7 +346,8 @@ test("cancel(): mid-tool-call — terminates cleanly without is_error frame leak
   expect(events.filter((e) => e.t === "chat.tool_result").length).toBe(0);
 
   // Partial assistant text persisted.
-  expect(repo.get(chat.id)!.last_msg).toBe("checking...");
+  const m2 = makeMessagesRepo(db);
+  expect(m2.lastAssistantText(chat.id)).toBe("checking...");
   expect(repo.get(chat.id)!.current_run_id).toBeNull();
 });
 
@@ -466,7 +472,7 @@ test("cancel() with partial tokens: assistant row carries streamed text + cancel
     cancelled: true,
   });
   // last_msg preserved.
-  expect(repo.get(chat.id)!.last_msg).toBe("partial answer");
+  expect(messages.lastAssistantText(chat.id)).toBe("partial answer");
 });
 
 // ── helper ───────────────────────────────────────────────────────────────

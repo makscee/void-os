@@ -10,6 +10,30 @@ export interface MigrationFile {
   sql: string;
 }
 
+export const MIN_SQLITE_VERSION = "3.35.0";
+
+const cmpSemver = (a: string, b: string): number => {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const da = pa[i] ?? 0;
+    const db = pb[i] ?? 0;
+    if (da !== db) return da - db;
+  }
+  return 0;
+};
+
+export const assertSqliteVersion = (db: Database): void => {
+  const row = db.query("SELECT sqlite_version() AS v").get() as { v: string };
+  if (cmpSemver(row.v, MIN_SQLITE_VERSION) < 0) {
+    throw new Error(
+      `SQLite ${row.v} is below required minimum ${MIN_SQLITE_VERSION}. ` +
+        `Migration 0007 uses ALTER TABLE DROP COLUMN (3.35.0+) and relies on ` +
+        `legacy_alter_table=OFF default behavior (3.25.0+) for FK auto-rewrite.`,
+    );
+  }
+};
+
 const ensureSchemaTable = (db: Database): void => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -38,6 +62,7 @@ export const appliedVersions = (db: Database): Set<string> => {
 };
 
 export const applyMigrations = (db: Database, migrations: MigrationFile[]): string[] => {
+  assertSqliteVersion(db);
   ensureSchemaTable(db);
   const applied = appliedVersions(db);
   const newlyApplied: string[] = [];

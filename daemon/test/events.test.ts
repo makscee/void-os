@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { openDatabase } from "../src/adapters/sqlite/index.js";
 import { createEventBus } from "../src/events/index.js";
 
+// SQLite persistence was removed in VOS-83 / migration 0007. The EventBus is
+// now pub/sub only; we keep these tests to guard the in-memory dispatch
+// machinery that cc-spawner / orchestrator / cost subscribers depend on.
+
 const withDb = <T>(fn: (db: ReturnType<typeof openDatabase>) => T): T => {
   const dir = mkdtempSync(join(tmpdir(), "void-os-events-"));
   const dbPath = join(dir, "state.sqlite");
@@ -31,25 +35,6 @@ const withDb = <T>(fn: (db: ReturnType<typeof openDatabase>) => T): T => {
 };
 
 describe("EventBus", () => {
-  test("emit persists to events table and returns via query", async () => {
-    withDb((db) => {
-      const bus = createEventBus({ db });
-      bus.emit({ type: "run.start", runId: "r1", chatId: "c1", payload: { agent: "maya" } });
-      bus.emit({ type: "run.end", runId: "r1", payload: { exitCode: 0 } });
-
-      return Promise.resolve().then(async () => {
-        const rows = await bus.query({ runId: "r1" });
-        expect(rows).toHaveLength(2);
-        expect(rows.map((r) => r.type).sort()).toEqual(["run.end", "run.start"]);
-        const start = rows.find((r) => r.type === "run.start")!;
-        expect(start.runId).toBe("r1");
-        expect(start.chatId).toBe("c1");
-        expect(start.payload).toEqual({ agent: "maya" });
-        expect(typeof start.ts).toBe("number");
-      });
-    });
-  });
-
   test("subscribe fires synchronously on emit", () => {
     withDb((db) => {
       const bus = createEventBus({ db });
@@ -83,25 +68,6 @@ describe("EventBus", () => {
       bus.subscribe("x", (e) => got.push(e.type));
       expect(() => bus.emit({ type: "x", payload: {} })).not.toThrow();
       expect(got).toEqual(["x"]);
-    });
-  });
-
-  test("query filters: since, type, runId", async () => {
-    await withDb(async (db) => {
-      const bus = createEventBus({ db });
-      const t0 = Date.now();
-      bus.emit({ type: "a", runId: "r1", payload: {}, ts: t0 });
-      bus.emit({ type: "b", runId: "r1", payload: {}, ts: t0 + 10 });
-      bus.emit({ type: "a", runId: "r2", payload: {}, ts: t0 + 20 });
-
-      const byType  = await bus.query({ type: "a" });
-      expect(byType.map((r) => r.runId).sort()).toEqual(["r1", "r2"]);
-
-      const byRun   = await bus.query({ runId: "r1" });
-      expect(byRun.map((r) => r.type).sort()).toEqual(["a", "b"]);
-
-      const sinceMid = await bus.query({ since: t0 + 5 });
-      expect(sinceMid).toHaveLength(2);
     });
   });
 });

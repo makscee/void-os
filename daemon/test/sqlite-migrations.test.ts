@@ -4,15 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/adapters/sqlite/index.js";
 
+// Post-0007 schema: events/agents dropped, chats renamed to contexts,
+// tasks/artifacts/agent_cards added.
 const EXPECTED_TABLES = [
-  "events",
-  "chats",
+  "contexts",
   "runs",
   "costs",
-  "agents",
   "schedules",
   "connected_folders",
   "messages",
+  "tasks",
+  "artifacts",
+  "agent_cards",
   "schema_migrations",
 ];
 
@@ -24,6 +27,18 @@ const listTables = (db: ReturnType<typeof openDatabase>): string[] => {
     .all() as Array<{ name: string }>;
   return rows.map((r) => r.name).sort();
 };
+
+// Migrations the floor tests require to be applied. Newer migrations are
+// allowed (and expected) — assertions check "contains these" not "equals".
+const REQUIRED_MIGRATIONS = [
+  "0001_init",
+  "0002_runs_columns",
+  "0003_chat_lifecycle",
+  "0004_messages",
+  "0005_costs_cache",
+  "0006_costs_chat_id",
+  "0007_a2a_tables",
+];
 
 describe("sqlite migrations", () => {
   test("applies 0001_init and creates all 8 tables + schema_migrations", () => {
@@ -38,12 +53,10 @@ describe("sqlite migrations", () => {
       const applied = db
         .prepare("SELECT version FROM schema_migrations ORDER BY version")
         .all() as Array<{ version: string }>;
-      expect(applied.map((r) => r.version)).toEqual([
-        "0001_init",
-        "0002_runs_columns",
-        "0003_chat_lifecycle",
-        "0004_messages",
-      ]);
+      const appliedVersions = applied.map((r) => r.version);
+      for (const v of REQUIRED_MIGRATIONS) {
+        expect(appliedVersions).toContain(v);
+      }
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -56,16 +69,14 @@ describe("sqlite migrations", () => {
     try {
       const db = openDatabase(dbPath);
 
-      // schema_migrations contains all applied migrations.
+      // schema_migrations contains all required migrations.
       const applied = db
         .prepare("SELECT version FROM schema_migrations ORDER BY version")
         .all() as Array<{ version: string }>;
-      expect(applied.map((r) => r.version)).toEqual([
-        "0001_init",
-        "0002_runs_columns",
-        "0003_chat_lifecycle",
-        "0004_messages",
-      ]);
+      const appliedVersions = applied.map((r) => r.version);
+      for (const v of REQUIRED_MIGRATIONS) {
+        expect(appliedVersions).toContain(v);
+      }
 
       // runs has the new columns.
       const cols = db
@@ -96,13 +107,20 @@ describe("sqlite migrations", () => {
       const firstRow = db1
         .prepare("SELECT applied_at FROM schema_migrations WHERE version='0001_init'")
         .get() as { applied_at: number };
+      const firstCount = (
+        db1
+          .prepare("SELECT COUNT(*) AS n FROM schema_migrations")
+          .get() as { n: number }
+      ).n;
       db1.close();
 
       const db2 = openDatabase(dbPath);
       const rows = db2
         .prepare("SELECT version, applied_at FROM schema_migrations")
         .all() as Array<{ version: string; applied_at: number }>;
-      expect(rows).toHaveLength(4);
+      // Idempotency: re-opening must not add rows or re-apply 0001_init.
+      expect(rows).toHaveLength(firstCount);
+      expect(firstCount).toBeGreaterThanOrEqual(REQUIRED_MIGRATIONS.length);
       const row = rows.find((r) => r.version === "0001_init")!;
       expect(row.version).toBe("0001_init");
       expect(row.applied_at).toBe(firstRow.applied_at);

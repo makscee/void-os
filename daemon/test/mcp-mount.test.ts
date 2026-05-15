@@ -53,11 +53,7 @@ describe("mountMcp /mcp", () => {
     const content = result.content as Array<{ text: string }>;
     expect(content[0]!.text).toBe("marker-xyzzy");
     await client.close();
-    const row = ctx.db.prepare(
-      "SELECT type, data FROM events WHERE type='mcp.vault.read'",
-    ).get() as { type: string; data: string };
-    expect(row.type).toBe("mcp.vault.read");
-    expect(JSON.parse(row.data).ok).toBe(true);
+    // VOS-83: events persistence removed; vault.read no longer records rows.
     ctx.server.stop();
   });
 

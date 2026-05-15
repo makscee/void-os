@@ -42,12 +42,32 @@
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { ChatRepo } from "./repo";
+import { type ChatRepo, openTaskFor, setTaskState } from "./repo";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo";
+import type { Part } from "../types/a2a";
 import { extractTurnText, extractToolUses, extractToolResults } from "./util";
 import { extractAssistantText } from "../providers/claude-code/index.ts";
 
-import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../providers/index.ts";
+import type { Provider, ProviderHandle } from "../providers/index.ts";
+
+/** Collapse runs of adjacent TextPart entries in a parts buffer into a single
+ *  TextPart. The orchestrator pushes one TextPart per assistant token batch
+ *  during streaming; the canonical A2A Message stored in the messages table
+ *  contains a single concatenated TextPart for the turn's narrative text. */
+function mergeAdjacentTextParts(parts: Part[]): Part[] {
+  const out: Part[] = [];
+  for (const p of parts) {
+    const last = out[out.length - 1];
+    const lastText = (last as { text?: unknown } | undefined)?.text;
+    const curText = (p as { text?: unknown }).text;
+    if (typeof lastText === "string" && typeof curText === "string") {
+      out[out.length - 1] = { ...(last as object), text: lastText + curText } as Part;
+    } else {
+      out.push(p);
+    }
+  }
+  return out;
+}
 
 export interface TitlerLike {
   title(chatId: string): Promise<void>;
@@ -170,10 +190,28 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
       });
       acquire(); // may throw Conflict409 — propagates to caller, no cleanup needed (txn rolled back).
 
+      // VOS-83 mig-0007: every chat has an open task minted by repo.create.
+      // The orchestrator attributes each turn's messages + state-flips to it.
+      const taskId = openTaskFor(db, chatId);
+      // Per-turn parts buffer for the AGENT message. Tokens, tool_use blocks,
+      // and tool_result blocks all accumulate here during streaming and flush
+      // as ONE appendMessage call at terminal (happy / cancel / error).
+      const agentParts: Part[] = [];
+      // Resuming user message: flip state back to WORKING (a previous turn
+      // may have left this task in INPUT_REQUIRED waiting for input).
+      setTaskState(db, taskId, "TASK_STATE_WORKING");
+
       // VOS-80 (a): persist the user prompt immediately — before spawning CC.
       // GET /chat/:id/messages reads from the messages table, so the user
       // turn must be visible the moment dispatch is accepted.
-      messages.appendUser(chatId, runId, text, startedAt);
+      messages.appendMessage(
+        taskId,
+        chatId,
+        runId,
+        "ROLE_USER",
+        [{ text } as Part],
+        startedAt,
+      );
 
       emit("chat.message_user", { chat_id: chatId, run_id: runId, text });
       emit("run.start", {
@@ -224,6 +262,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             const text = extractAssistantText(evt);
             if (text) {
               lastAssistantText += text;
+              agentParts.push({ text } as Part);
               emit("chat.token", {
                 chat_id: chatId,
                 run_id: runId,
@@ -233,24 +272,20 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             // Surface every tool_use block in this assistant turn as a
             // dedicated WS frame (S4 tool-call panel hydration).
             for (const tu of extractToolUses(evt)) {
-              // VOS-80 (a): persist immediately so replay can render tool
-              // blocks even if the run is cancelled before completion.
+              // VOS-83 mig-0007: buffer tool_use as an A2A DataPart inside
+              // the per-turn agentParts. The single appendMessage flush at
+              // turn-terminal commits it (alongside any text + tool_result
+              // parts that streamed in this turn).
               const tuTs = typeof evt.ts === "number" ? evt.ts : Date.now();
-              const inputJson = (() => {
-                try {
-                  return JSON.stringify(tu.input);
-                } catch {
-                  return String(tu.input);
-                }
-              })();
-              messages.appendToolUse(
-                chatId,
-                runId,
-                tu.tool_call_id,
-                tu.name,
-                inputJson,
-                tuTs,
-              );
+              agentParts.push({
+                data: {
+                  kind: "tool_use",
+                  tool_call_id: tu.tool_call_id,
+                  tool_name: tu.name,
+                  input: tu.input,
+                },
+                metadata: { ts: tuTs },
+              } as unknown as Part);
               emit("chat.tool_use", {
                 chat_id: chatId,
                 run_id: runId,
@@ -265,7 +300,10 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             // messages (chat.message_user was already emitted for the prompt
             // at dispatch start) — they only surface as chat.tool_result.
             for (const tr of extractToolResults(evt)) {
-              // VOS-80 (a): normalize output to text and persist immediately.
+              // VOS-83 mig-0007: buffer tool_result as an A2A DataPart on the
+              // SAME agent turn (matches messages-repo.walk() decoding, which
+              // surfaces both tool_use + tool_result DataParts under the
+              // agent row that contains them).
               const outText =
                 typeof tr.output === "string"
                   ? tr.output
@@ -277,14 +315,15 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
                       }
                     })();
               const trTs = typeof evt.ts === "number" ? evt.ts : Date.now();
-              messages.appendToolResult(
-                chatId,
-                runId,
-                tr.tool_call_id,
-                outText,
-                tr.is_error,
-                trTs,
-              );
+              agentParts.push({
+                data: {
+                  kind: "tool_result",
+                  tool_call_id: tr.tool_call_id,
+                  output: outText,
+                  is_error: tr.is_error,
+                },
+                metadata: { ts: trTs },
+              } as unknown as Part);
               emit("chat.tool_result", {
                 chat_id: chatId,
                 run_id: runId,
@@ -299,19 +338,23 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         await handle.done;
         activeHandles.delete(runId);
         if (firstAssistantSeen && !cancelRequested.has(runId)) {
-          // VOS-80 (a): persist assistant row + derive last_msg from same
-          // text in one logical write. last_msg is now derived from the
-          // canonical messages row (single source of truth) — the explicit
-          // setLastMsg call below preserves the 200-char preview shape so
-          // existing list-view consumers don't break.
-          if (lastAssistantText) {
-            messages.appendAssistant(
+          // VOS-83 mig-0007: flush buffered parts ONCE per turn (single
+          // appendMessage). last_msg preview is now derived from messages
+          // by repo.list(); setLastMsg is retained only for the updated_at
+          // bump (used by list ordering).
+          const flushed = mergeAdjacentTextParts(agentParts);
+          if (flushed.length > 0) {
+            messages.appendMessage(
+              taskId,
               chatId,
               runId,
-              lastAssistantText,
+              "ROLE_AGENT",
+              flushed,
               Date.now(),
             );
-            repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
+            if (lastAssistantText) {
+              repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
+            }
           }
         }
       } catch (err) {
@@ -357,23 +400,36 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // should NOT inject a phantom empty assistant row into history;
         // the errorNotice surface in the plugin handles that case.
         if (status === "cancelled") {
-          messages.appendAssistant(
+          // VOS-83 mig-0007: on cancel ALWAYS write a row (even with empty
+          // parts) so the LEFT JOIN in messages-repo.walk() can stamp
+          // `cancelled: true` on a concrete row. Empty parts renders as
+          // STOPPED_MARKER on the plugin. The buffered tool blocks (if any
+          // streamed pre-cancel) are preserved by mergeAdjacentTextParts.
+          const flushed = mergeAdjacentTextParts(agentParts);
+          messages.appendMessage(
+            taskId,
             chatId,
             runId,
-            lastAssistantText,
+            "ROLE_AGENT",
+            flushed,
             Date.now(),
           );
           if (lastAssistantText) {
             repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
           }
-        } else if (status === "error" && lastAssistantText) {
-          messages.appendAssistant(
+        } else if (status === "error" && agentParts.length > 0) {
+          const flushed = mergeAdjacentTextParts(agentParts);
+          messages.appendMessage(
+            taskId,
             chatId,
             runId,
-            lastAssistantText,
+            "ROLE_AGENT",
+            flushed,
             Date.now(),
           );
-          repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
+          if (lastAssistantText) {
+            repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
+          }
         }
         // Phase 3: cleanup, atomic. Always clear the lock and stamp end.
         const endedAt = Date.now();

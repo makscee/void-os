@@ -26,17 +26,10 @@ test('read throws ENOENT for missing file', async () => {
   await expect(w.read('missing.md')).rejects.toThrow();
 });
 
-test('create writes file, mkdir -p, emits vault.create event', async () => {
+test('create writes file, mkdir -p', async () => {
   await w.create('sub/deep/a.md', 'hello', CTX);
   expect(fs.readFileSync(path.join(v.root, 'sub/deep/a.md'), 'utf8')).toBe('hello');
-  const e = readEvents(v.db);
-  expect(e).toHaveLength(1);
-  expect(e[0]).toMatchObject({
-    type: 'vault.create',
-    agent: 'test',
-    run_id: 'r-test',
-    payload: { path: 'sub/deep/a.md', sha_before: null, sha_after: sha256Hex('hello') },
-  });
+  // VOS-83: events persistence removed; file side-effect is the contract now.
 });
 
 test('create fails EEXIST', async () => {
@@ -72,14 +65,11 @@ test('append SECTION_NOT_FOUND', async () => {
   await expect(w.append('a.md', 'x', 'Missing', CTX)).rejects.toThrow('SECTION_NOT_FOUND');
 });
 
-test('append emits vault.append event with sha_before/after', async () => {
+test('append writes joined content', async () => {
   fs.writeFileSync(path.join(v.root, 'a.md'), 'old\n');
   await w.append('a.md', 'new', null, CTX);
-  const e = readEvents(v.db);
-  expect(e.length).toBeGreaterThan(0);
-  expect(e[0]!.type).toBe('vault.append');
-  expect(e[0]!.payload.sha_before).toBe(sha256Hex('old\n'));
-  expect(e[0]!.payload.sha_after).toBe(sha256Hex('old\n\nnew\n'));
+  // VOS-83: events persistence removed; file content is the only contract now.
+  expect(fs.readFileSync(path.join(v.root, 'a.md'), 'utf8')).toBe('old\n\nnew\n');
 });
 
 test('replace_section swaps body, preserves other sections + frontmatter', async () => {
@@ -148,18 +138,11 @@ test('patch OLD_STRING_NOT_UNIQUE', async () => {
   await expect(w.patch('a.md', 'dup', 'X', CTX)).rejects.toThrow('OLD_STRING_NOT_UNIQUE');
 });
 
-test('delete removes file, emits vault.delete event', async () => {
+test('delete removes file', async () => {
   fs.writeFileSync(path.join(v.root, 'a.md'), 'bye\n');
   await w.delete('a.md', CTX);
   expect(fs.existsSync(path.join(v.root, 'a.md'))).toBe(false);
-  const e = readEvents(v.db);
-  expect(e.length).toBeGreaterThan(0);
-  expect(e[0]!.type).toBe('vault.delete');
-  expect(e[0]!.payload).toEqual({
-    path: 'a.md',
-    sha_before: sha256Hex('bye\n'),
-    sha_after: null,
-  });
+  // VOS-83: events persistence removed.
 });
 
 test('delete ENOENT on missing file', async () => {

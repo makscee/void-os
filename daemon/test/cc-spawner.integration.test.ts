@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openDatabase } from "../src/adapters/sqlite/index.js";
-import { createEventBus } from "../src/events/index.js";
+import { createEventBus, type DaemonEvent } from "../src/events/index.js";
 import {
   createCcSpawner,
   NoSessionError,
@@ -16,12 +16,25 @@ import {
 
 const FAKE = resolve(import.meta.dir, "fixtures/fake-claudev");
 
+// VOS-83: EventBus persistence was removed (legacy `events` table dropped in
+// migration 0007). Tests now capture via in-memory subscribe instead of
+// bus.query against SQLite.
+interface EventQueryFilter { runId?: string; type?: string }
+type Captured = (filter?: EventQueryFilter) => DaemonEvent[];
+
 const setup = () => {
   const dir = mkdtempSync(join(tmpdir(), "void-os-cc-"));
   const db = openDatabase(join(dir, "state.sqlite"));
   const tracesDir = join(dir, "traces");
   const bus = createEventBus({ db });
-  return { dir, db, bus, tracesDir };
+  const captured: DaemonEvent[] = [];
+  bus.subscribe("*", (e) => { captured.push(e); });
+  const events: Captured = (filter = {}) =>
+    captured.filter((e) =>
+      (filter.runId === undefined || e.runId === filter.runId) &&
+      (filter.type  === undefined || e.type  === filter.type),
+    );
+  return { dir, db, bus, tracesDir, events };
 };
 
 const teardown = (dir: string, db: { close: () => void }) => {
@@ -31,7 +44,7 @@ const teardown = (dir: string, db: { close: () => void }) => {
 
 describe("CC spawner (fake claudev)", () => {
   test("happy scenario: session captured, run.end with exit 0, runs row final", async () => {
-    const { dir, db, bus, tracesDir } = setup();
+    const { dir, db, bus, tracesDir, events: capturedEvents } = setup();
     const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
     let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     try {
@@ -56,7 +69,7 @@ describe("CC spawner (fake claudev)", () => {
       expect(row.session_id).toBe(sessionId);
       expect(row.exit_code).toBe(0);
 
-      const events = await bus.query({ runId: proc.runId });
+      const events = capturedEvents({ runId: proc.runId });
       const types = events.map((e) => e.type);
       expect(types).toContain("run.start");
       expect(types).toContain("run.session");
@@ -69,7 +82,7 @@ describe("CC spawner (fake claudev)", () => {
   });
 
   test("silent scenario: watchdog fires within 1500ms with watchdogTickMs:50", async () => {
-    const { dir, db, bus, tracesDir } = setup();
+    const { dir, db, bus, tracesDir, events: capturedEvents } = setup();
     const spawner = createCcSpawner({
       bus, db, tracesDir, binary: FAKE,
       watchdogTickMs: 50,
@@ -94,7 +107,7 @@ describe("CC spawner (fake claudev)", () => {
       expect(row.status).toBe("error");        // mapped from reason="timeout"
       expect(row.kill_reason).toBe("timeout"); // granularity preserved
 
-      const events = await bus.query({ runId: proc.runId, type: "run.timeout" });
+      const events = capturedEvents({ runId: proc.runId, type: "run.timeout" });
       expect(events).toHaveLength(1);
     } finally {
       if (proc) { try { await proc.kill(); } catch { /* already dead */ } }
@@ -103,7 +116,7 @@ describe("CC spawner (fake claudev)", () => {
   });
 
   test("crash scenario: cc.stderr emitted, non-zero exit, sessionId() rejects, stderr ts <= run.end ts", async () => {
-    const { dir, db, bus, tracesDir } = setup();
+    const { dir, db, bus, tracesDir, events: capturedEvents } = setup();
     const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
     let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     try {
@@ -119,12 +132,12 @@ describe("CC spawner (fake claudev)", () => {
       // is the sole source of the rejection.
       await expect(proc.sessionId()).rejects.toBeInstanceOf(NoSessionError);
 
-      const stderr = await bus.query({ runId: proc.runId, type: "cc.stderr" });
+      const stderr = capturedEvents({ runId: proc.runId, type: "cc.stderr" });
       expect(stderr.length).toBeGreaterThan(0);
 
       // Ordering: every cc.stderr ts must be <= run.end ts. This proves
       // finalize awaited stderrDone before emitting run.end.
-      const endEvents = await bus.query({ runId: proc.runId, type: "run.end" });
+      const endEvents = capturedEvents({ runId: proc.runId, type: "run.end" });
       expect(endEvents).toHaveLength(1);
       const endTs = endEvents[0].ts ?? 0;
       expect(stderr.every((e) => (e.ts ?? 0) <= endTs)).toBe(true);
@@ -135,7 +148,7 @@ describe("CC spawner (fake claudev)", () => {
   });
 
   test("resume: --resume <id> reaches fake; second run echoes resume id", async () => {
-    const { dir, db, bus, tracesDir } = setup();
+    const { dir, db, bus, tracesDir, events: capturedEvents } = setup();
     const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
     let first: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     let second: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
@@ -162,7 +175,7 @@ describe("CC spawner (fake claudev)", () => {
 
       // stderr should contain "fake-claudev resume: <sid>" — proves the
       // spawner forwarded --resume <sid> to the child argv.
-      const stderr = await bus.query({ runId: second.runId, type: "cc.stderr" });
+      const stderr = capturedEvents({ runId: second.runId, type: "cc.stderr" });
       const allChunks = stderr
         .map((e) => (e.payload as { chunk: string }).chunk)
         .join("");
@@ -181,7 +194,7 @@ describe("CC spawner (fake claudev)", () => {
   // `{fast: true}` mode sends SIGINT with a 250ms SIGKILL grace, which
   // even a SIGTERM-trapping CC cannot stall.
   test("kill({fast: true}) terminates a parked subprocess within ~1s", async () => {
-    const { dir, db, bus, tracesDir } = setup();
+    const { dir, db, bus, tracesDir, events: capturedEvents } = setup();
     const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
     let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     try {
