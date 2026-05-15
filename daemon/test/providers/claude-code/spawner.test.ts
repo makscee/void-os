@@ -12,8 +12,8 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createEventBus, type EventBus } from "../../../src/events/index.js";
-import type { CcSpawner, CcProcess, CcSpawnRequest } from "../../../src/adapters/cc/index.js";
-import { makeCcSpawnerIter } from "../../../src/adapters/cc/spawner-iter.ts";
+import type { CcSpawner, CcProcess, CcSpawnRequest } from "../../../src/providers/claude-code/index.js";
+import { makeCcSpawnerIter } from "../../../src/providers/claude-code/spawner.ts";
 
 // Mirrors daemon/src/adapters/sqlite/migrations/0001_init.sql events table.
 const SCHEMA = `
