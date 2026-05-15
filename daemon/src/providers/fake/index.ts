@@ -13,6 +13,19 @@ import type {
   ProviderSpawnRequest,
 } from "../types.ts";
 
+/**
+ * Resolve fake provider script path with per-agent override.
+ *
+ * Lookup order:
+ *   1. `VOS_FAKE_SCRIPT_<agentName>` (per-agent)
+ *   2. `VOS_FAKE_SCRIPT` (global)
+ *   3. undefined
+ */
+export function resolveFakeScript(agentName: string): string | undefined {
+  const k = `VOS_FAKE_SCRIPT_${agentName}`;
+  return process.env[k] ?? process.env.VOS_FAKE_SCRIPT;
+}
+
 export interface FakeProviderOpts {
   scriptPath: string;
   /** Optional delay between events. Default 0. Useful for cancel tests. */

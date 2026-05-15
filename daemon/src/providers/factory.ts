@@ -5,7 +5,7 @@
  */
 import type { Provider } from "./types.ts";
 import { makeClaudeCodeProviderComposed } from "./claude-code/index.ts";
-import { makeFakeProvider } from "./fake/index.ts";
+import { makeFakeProvider, resolveFakeScript } from "./fake/index.ts";
 import type { Database } from "bun:sqlite";
 import type { EventBus } from "../events/index.ts";
 
@@ -34,7 +34,7 @@ export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
     });
   }
   if (kind === "fake") {
-    const scriptPath = env.VOS_FAKE_SCRIPT;
+    const scriptPath = resolveFakeScript(deps.agent) ?? env.VOS_FAKE_SCRIPT;
     if (!scriptPath) {
       throw new Error("VOS_PROVIDER=fake requires VOS_FAKE_SCRIPT env var");
     }
