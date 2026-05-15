@@ -18,8 +18,9 @@ import { makeChatRepo } from "../../src/chat/repo";
 import {
   makeOrchestrator,
   Conflict409,
-  extractAssistantText,
 } from "../../src/chat/orchestrator";
+import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
+import { extractAssistantText } from "../../src/providers/claude-code/extract.ts";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -44,34 +45,43 @@ function freshDb(): Database {
   return db;
 }
 
-interface FakeSpawnerOpts {
+// Minimal Provider wrapping an inline async-generator factory.
+// Used by tests that only need to script the event sequence.
+function inlineProvider(gen: () => AsyncIterable<ProviderEvent>): Provider {
+  return {
+    name: "inline",
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      const events = gen();
+      return {
+        events,
+        cancel: async () => false,
+        done: Promise.resolve({ reason: "exit" as const, exitCode: 0 }),
+      };
+    },
+  };
+}
+
+interface FakeProviderOpts {
   sessionId?: string;
   throwBefore?: boolean;
   throwMid?: boolean;
-  // When set, the spawner asserts on the resume arg it receives.
+  // When set, the provider asserts on the resumeFrom arg it receives.
   expectResume?: string | null;
 }
 
-function fakeSpawner(opts: FakeSpawnerOpts = {}) {
-  const calls: Array<{
-    chat_id: string;
-    resume: string | null | undefined;
-    prompt: string;
-  }> = [];
-  const spawner = {
-    calls,
-    spawn(args: { chat_id: string; resume: string | null; prompt: string }) {
-      calls.push({ ...args });
+function fakeProvider(opts: FakeProviderOpts = {}): Provider {
+  return {
+    name: "fake",
+    spawn(req: ProviderSpawnRequest): ProviderHandle {
       if (opts.expectResume !== undefined) {
-        expect(args.resume ?? null).toBe(opts.expectResume);
+        expect(req.resumeFrom ?? null).toBe(opts.expectResume);
       }
       if (opts.throwBefore) {
-        // Synchronous throw before the iterator yields.
         throw new Error("ENOENT: claudev not found");
       }
       const sid = opts.sessionId ?? "sid-fresh";
       const throwMid = opts.throwMid;
-      return (async function* () {
+      const events = (async function* () {
         yield { type: "system", session_id: sid };
         yield {
           type: "assistant",
@@ -80,9 +90,13 @@ function fakeSpawner(opts: FakeSpawnerOpts = {}) {
         if (throwMid) throw new Error("stream blew up");
         yield { type: "tool_use", name: "vault.read", input: { path: "x" } };
       })();
+      return {
+        events,
+        cancel: async () => false,
+        done: Promise.resolve({ reason: "exit" as const, exitCode: 0 }),
+      };
     },
   };
-  return spawner;
 }
 
 test("happy path: lock acquired, run inserted, sessionCaptured, cleanup", async () => {
@@ -92,11 +106,12 @@ test("happy path: lock acquired, run inserted, sessionCaptured, cleanup", async 
 
   const events: Array<{ t: string; p: unknown }> = [];
   const titler = { title: mock(async () => {}) };
-  const spawner = fakeSpawner({ expectResume: null });
+  const spawner = fakeProvider({ expectResume: null });
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler,
   });
@@ -209,27 +224,24 @@ test("orchestrator: assistant with multiple text blocks emits one delta + persis
   const repo = makeChatRepo(db);
   const chat = repo.create({ agent: "maya" });
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-multi" };
-        yield {
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "text", text: "alpha " },
-              { type: "text", text: "beta" },
-            ],
-          },
-        };
-      })();
-    },
-  };
+  const spawner = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-multi" };
+    yield {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "alpha " },
+          { type: "text", text: "beta" },
+        ],
+      },
+    };
+  })());
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -247,32 +259,29 @@ test("orchestrator: assistant tool_use block → chat.tool_use frame with id/nam
   const repo = makeChatRepo(db);
   const chat = repo.create({ agent: "maya" });
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-tu" };
-        yield {
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "text", text: "let me check " },
-              {
-                type: "tool_use",
-                id: "u_1",
-                name: "vault.read",
-                input: { path: "x" },
-              },
-            ],
+  const spawner = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-tu" };
+    yield {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "let me check " },
+          {
+            type: "tool_use",
+            id: "u_1",
+            name: "vault.read",
+            input: { path: "x" },
           },
-        };
-      })();
-    },
-  };
+        ],
+      },
+    };
+  })());
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -297,35 +306,32 @@ test("orchestrator: user tool_result block → chat.tool_result frame", async ()
   const repo = makeChatRepo(db);
   const chat = repo.create({ agent: "maya" });
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-tr" };
-        yield {
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "tool_use", id: "u_1", name: "bash", input: { cmd: "ls" } },
-            ],
-          },
-        };
-        yield {
-          type: "user",
-          message: {
-            role: "user",
-            content: [
-              { type: "tool_result", tool_use_id: "u_1", content: "file1\n" },
-            ],
-          },
-        };
-      })();
-    },
-  };
+  const spawner = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-tr" };
+    yield {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "u_1", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+    };
+    yield {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "u_1", content: "file1\n" },
+        ],
+      },
+    };
+  })());
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -346,31 +352,28 @@ test("orchestrator: tool_result with is_error=true surfaces is_error on frame", 
   const repo = makeChatRepo(db);
   const chat = repo.create({ agent: "maya" });
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-err" };
-        yield {
-          type: "user",
-          message: {
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: "u_1",
-                content: "ENOENT",
-                is_error: true,
-              },
-            ],
+  const spawner = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-err" };
+    yield {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "u_1",
+            content: "ENOENT",
+            is_error: true,
           },
-        };
-      })();
-    },
-  };
+        ],
+      },
+    };
+  })());
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -386,27 +389,24 @@ test("orchestrator: multiple tool_use blocks in one assistant turn emit multiple
   const repo = makeChatRepo(db);
   const chat = repo.create({ agent: "maya" });
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-multi-tu" };
-        yield {
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [
-              { type: "tool_use", id: "u_1", name: "a", input: {} },
-              { type: "tool_use", id: "u_2", name: "b", input: { k: 2 } },
-            ],
-          },
-        };
-      })();
-    },
-  };
+  const spawner = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-multi-tu" };
+    yield {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "u_1", name: "a", input: {} },
+          { type: "tool_use", id: "u_2", name: "b", input: { k: 2 } },
+        ],
+      },
+    };
+  })());
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -422,24 +422,21 @@ test("orchestrator: malformed tool_use (no id) emits NO frame", async () => {
   const repo = makeChatRepo(db);
   const chat = repo.create({ agent: "maya" });
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-bad" };
-        yield {
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [{ type: "tool_use", name: "x", input: {} }],
-          },
-        };
-      })();
-    },
-  };
+  const spawner = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-bad" };
+    yield {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", name: "x", input: {} }],
+      },
+    };
+  })());
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -455,26 +452,23 @@ test("orchestrator: user tool_result does NOT emit a chat.message_user echo of t
   const repo = makeChatRepo(db);
   const chat = repo.create({ agent: "maya" });
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-no-echo" };
-        yield {
-          type: "user",
-          message: {
-            role: "user",
-            content: [
-              { type: "tool_result", tool_use_id: "u_1", content: "out" },
-            ],
-          },
-        };
-      })();
-    },
-  };
+  const spawner = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-no-echo" };
+    yield {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "u_1", content: "out" },
+        ],
+      },
+    };
+  })());
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -489,24 +483,21 @@ test("orchestrator: pure tool-call assistant turn emits NO chat.token", async ()
   const repo = makeChatRepo(db);
   const chat = repo.create({ agent: "maya" });
   const events: Array<{ t: string; p: any }> = [];
-  const spawner = {
-    spawn() {
-      return (async function* () {
-        yield { type: "system", session_id: "sid-tool-only" };
-        yield {
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [{ type: "tool_use", id: "u_1", name: "x", input: {} }],
-          },
-        };
-      })();
-    },
-  };
+  const spawner = inlineProvider(() => (async function* () {
+    yield { type: "system", session_id: "sid-tool-only" };
+    yield {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "u_1", name: "x", input: {} }],
+      },
+    };
+  })());
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });
@@ -525,18 +516,15 @@ test("concurrent dispatch: second rejects with Conflict409 carrying current_run_
   // Slow spawner so two dispatches race for the lock.
   let release: () => void = () => {};
   const gate = new Promise<void>((r) => (release = r));
-  const slowSpawner = {
-    spawn(_args: unknown) {
-      return (async function* () {
-        await gate;
-        yield { type: "system", session_id: "sid-slow" };
-      })();
-    },
-  };
+  const slowSpawner = inlineProvider(() => (async function* () {
+    await gate;
+    yield { type: "system", session_id: "sid-slow" };
+  })());
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner: slowSpawner,
+    provider: slowSpawner,
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
@@ -574,7 +562,8 @@ test("spawn throws synchronously: lock released, run marked error", async () => 
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner: fakeSpawner({ throwBefore: true }),
+    provider: fakeProvider({ throwBefore: true }),
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler,
   });
@@ -600,7 +589,8 @@ test("spawn throws mid-stream: lock released, run marked error", async () => {
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner: fakeSpawner({ throwMid: true }),
+    provider: fakeProvider({ throwMid: true }),
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
@@ -626,14 +616,15 @@ test("sessionCaptured fires exactly once: --resume path does NOT re-call setSess
   const wrappedRepo = { ...repo, setSession: setSessionSpy };
 
   // Spawner asserts orchestrator passes resume="sid-original".
-  const spawner = fakeSpawner({
+  const spawner = fakeProvider({
     sessionId: "sid-original",
     expectResume: "sid-original",
   });
   const orch = makeOrchestrator({
     db,
     repo: wrappedRepo,
-    spawner,
+    provider: spawner,
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
@@ -657,7 +648,8 @@ test("titler NOT fired when chat already has a title (second turn)", async () =>
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner: fakeSpawner({ sessionId: "sid-prev", expectResume: "sid-prev" }),
+    provider: fakeProvider({ sessionId: "sid-prev", expectResume: "sid-prev" }),
+    cwd: "/tmp",
     emit: () => {},
     titler,
   });
@@ -672,7 +664,8 @@ test("missing chat: dispatch rejects with 404-shaped error", async () => {
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner: fakeSpawner(),
+    provider: fakeProvider(),
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });
@@ -701,7 +694,8 @@ test("stale current_run_id (terminal run) does NOT block new dispatch", async ()
   const orch = makeOrchestrator({
     db,
     repo,
-    spawner: fakeSpawner({ sessionId: "sid-after-crash" }),
+    provider: fakeProvider({ sessionId: "sid-after-crash" }),
+    cwd: "/tmp",
     emit: () => {},
     titler: { title: async () => {} },
   });

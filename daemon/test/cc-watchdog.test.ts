@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createWatchdog } from "../src/adapters/cc/watchdog.js";
+import { createWatchdog } from "../src/providers/claude-code/watchdog.js";
 
 const makeClock = (start = 1_000_000) => {
   let now = start;

@@ -12,7 +12,7 @@ import { createEventBus } from "../src/events/index.js";
 import {
   createCcSpawner,
   NoSessionError,
-} from "../src/adapters/cc/index.js";
+} from "../src/providers/claude-code/index.js";
 
 const FAKE = resolve(import.meta.dir, "fixtures/fake-claudev");
 

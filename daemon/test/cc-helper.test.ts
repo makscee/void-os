@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { probeClaudev } from "../src/adapters/cc/index.js";
+import { probeClaudev } from "../src/providers/claude-code/index.js";
 
 const hasClaudev = await (async () => {
   try {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createStreamParser } from "../src/adapters/cc/parser.js";
+import { createStreamParser } from "../src/providers/claude-code/parser.js";
 
 describe("createStreamParser", () => {
   test("emits one parsed event per JSON line", () => {

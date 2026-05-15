@@ -22,8 +22,7 @@ import { chatsApi } from "./api/chats.ts";
 import { chatApi } from "./api/chat.ts";
 import { mountMcp } from "./adapters/mcp/index.ts";
 import { createEventBus } from "./events/index.ts";
-import { createCcSpawner } from "./adapters/cc/index.ts";
-import { makeCcSpawnerIter } from "./adapters/cc/spawner-iter.ts";
+import { makeClaudeCodeProviderComposed } from "./providers/claude-code/index.ts";
 import { makeChatRepo } from "./chat/repo.ts";
 import { makeSessionReplay } from "./chat/session-replay.ts";
 import { makeTitler, type Titler } from "./chat/titler.ts";
@@ -59,9 +58,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   const emit = deps.emit ?? broadcast;
 
   // Wire orchestrator + titler. Tests can inject both to skip SDK/key/cc
-  // construction entirely. Production path: real bus → real ccSpawner →
-  // spawner-iter → orchestrator; titler uses real Anthropic SDK if key
-  // resolution succeeds, otherwise a no-op stub so title generation simply
+  // construction entirely. Production path: real bus → real claude-code
+  // Provider (createCcSpawner + makeCcSpawnerIter + makeClaudeCodeProvider)
+  // → orchestrator; titler uses real Anthropic SDK if key resolution
+  // succeeds, otherwise a no-op stub so title generation simply
   // fails-soft via chat.title_failed.
   let orchestrator = deps.orchestrator;
   let titler = deps.titler;
@@ -78,17 +78,18 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     if (!orchestrator) {
       const bus = createEventBus({ db: deps.db });
       const tracesDir = path.join(deps.vaultRoot, ".traces");
-      const cc = createCcSpawner({ bus, db: deps.db, tracesDir });
-      const spawner = makeCcSpawnerIter({
-        cc,
+      const provider = makeClaudeCodeProviderComposed({
         bus,
+        db: deps.db,
+        tracesDir,
         agent: deps.defaultAgent ?? "maya",
         cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
       });
       orchestrator = makeOrchestrator({
         db: deps.db,
         repo,
-        spawner,
+        provider,
+        cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
         emit,
         titler,
       });

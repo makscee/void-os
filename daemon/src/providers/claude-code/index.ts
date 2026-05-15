@@ -387,3 +387,38 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
     },
   };
 };
+
+export { makeClaudeCodeProvider } from "./provider.ts";
+export type { CcIter, MakeClaudeCodeProviderDeps } from "./provider.ts";
+export { extractAssistantText } from "./extract.ts";
+
+import { makeCcSpawnerIter } from "./spawner.ts";
+import { makeClaudeCodeProvider } from "./provider.ts";
+import type { Provider } from "../types.ts";
+
+// Production factory: composes createCcSpawner + makeCcSpawnerIter into a Provider.
+// Deps shape mirrors app.ts wiring — bus/db typed via Parameters<typeof createCcSpawner>[0].
+export interface ClaudeCodeProviderDeps {
+  bus: Parameters<typeof createCcSpawner>[0]["bus"];
+  db: Parameters<typeof createCcSpawner>[0]["db"];
+  tracesDir: string;
+  agent: string;
+  cwd: string;
+}
+
+export function makeClaudeCodeProviderComposed(
+  deps: ClaudeCodeProviderDeps,
+): Provider {
+  const cc = createCcSpawner({
+    bus: deps.bus,
+    db: deps.db,
+    tracesDir: deps.tracesDir,
+  });
+  const iter = makeCcSpawnerIter({
+    cc,
+    bus: deps.bus,
+    agent: deps.agent,
+    cwd: deps.cwd,
+  });
+  return makeClaudeCodeProvider({ iter });
+}

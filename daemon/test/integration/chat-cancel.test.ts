@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildApp } from "../../src/app.ts";
 import { makeOrchestrator } from "../../src/chat/orchestrator.ts";
+import type { Provider, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
 import { makeChatRepo } from "../../src/chat/repo.ts";
 
 const MIGRATIONS_DIR = join(
@@ -43,14 +44,11 @@ function freshDb(): Database {
 async function bootstrap() {
   const db = freshDb();
   const repo = makeChatRepo(db);
-  let killed = false;
-  const spawner = {
-    cancel(_runId: string): Promise<boolean> {
-      killed = true;
-      return Promise.resolve(true);
-    },
-    spawn() {
-      return (async function* () {
+  const provider: Provider = {
+    name: "cancel-test",
+    spawn(_req: ProviderSpawnRequest): ProviderHandle {
+      let killed = false;
+      const events_ = (async function* () {
         yield { type: "system", session_id: "sid-cancel" };
         yield {
           type: "assistant",
@@ -63,6 +61,11 @@ async function bootstrap() {
           await new Promise((r) => setTimeout(r, 5));
         }
       })();
+      return {
+        events: events_,
+        cancel: async () => { killed = true; return true; },
+        done: Promise.resolve({ reason: "cancel" as const }),
+      };
     },
   };
 
@@ -70,7 +73,8 @@ async function bootstrap() {
   const orchestrator = makeOrchestrator({
     db,
     repo,
-    spawner,
+    provider,
+    cwd: "/tmp",
     emit: (t, p) => events.push({ t, p }),
     titler: { title: async () => {} },
   });

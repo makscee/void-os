@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/adapters/sqlite/index.js";
 import { createEventBus } from "../src/events/index.js";
-import { createCcSpawner } from "../src/adapters/cc/index.js";
+import { createCcSpawner } from "../src/providers/claude-code/index.js";
 
 const enabled = process.env.VOS_E2E_REAL === "1";
 
