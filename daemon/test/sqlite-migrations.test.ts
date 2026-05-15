@@ -4,15 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/adapters/sqlite/index.js";
 
+// Post-0007 schema: events/agents dropped, chats renamed to contexts,
+// tasks/artifacts/agent_cards added.
 const EXPECTED_TABLES = [
-  "events",
-  "chats",
+  "contexts",
   "runs",
   "costs",
-  "agents",
   "schedules",
   "connected_folders",
   "messages",
+  "tasks",
+  "artifacts",
+  "agent_cards",
   "schema_migrations",
 ];
 
@@ -32,6 +35,9 @@ const REQUIRED_MIGRATIONS = [
   "0002_runs_columns",
   "0003_chat_lifecycle",
   "0004_messages",
+  "0005_costs_cache",
+  "0006_costs_chat_id",
+  "0007_a2a_tables",
 ];
 
 describe("sqlite migrations", () => {

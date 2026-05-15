@@ -45,11 +45,7 @@ describe("vault.read tool", () => {
     expect(out.structuredContent!.path).toBe("notes/x.md");
     expect(out.structuredContent!.sha).toMatch(/^[a-f0-9]{64}$/);
     expect(out.structuredContent!.bytes).toBe(11);
-    const row = ctx.db.prepare(
-      "SELECT type, data FROM events WHERE type='mcp.vault.read'",
-    ).get() as { type: string; data: string };
-    expect(row.type).toBe("mcp.vault.read");
-    expect(JSON.parse(row.data).ok).toBe(true);
+    // VOS-83: events persistence removed; vault.read no longer records rows.
     ctx.cleanup();
   });
 
@@ -57,11 +53,7 @@ describe("vault.read tool", () => {
     const out = await handleVaultRead({ path: "../etc/passwd" }, { vaultRoot: ctx.vaultRoot, db: ctx.db });
     expect(out.isError).toBe(true);
     expect((out.content[0] as { text: string }).text).toContain("PATH_ESCAPES_VAULT_ROOT");
-    const data = JSON.parse(
-      (ctx.db.prepare("SELECT data FROM events").get() as { data: string }).data,
-    );
-    expect(data.ok).toBe(false);
-    expect(data.error_code).toBe("PATH_ESCAPES_VAULT_ROOT");
+    // VOS-83: events persistence removed; error path no longer records rows.
     ctx.cleanup();
   });
 

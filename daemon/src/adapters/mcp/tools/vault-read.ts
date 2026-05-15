@@ -13,7 +13,6 @@ import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import { createHash } from "node:crypto";
 import { resolveVaultPath, ERR } from "../../../vault/paths.ts";
-import { recordMcpEvent } from "../events.ts";
 import type { Database } from "bun:sqlite";
 
 export const vaultReadDef = {
@@ -67,7 +66,6 @@ export async function handleVaultRead(
     const code = (e instanceof Error && (e.message === ERR.PATH_MUST_BE_RELATIVE || e.message === ERR.PATH_ESCAPES_VAULT_ROOT))
       ? e.message
       : "IO_ERROR";
-    recordMcpEvent(deps.db, { tool: "vault.read", input: { path: rel }, ok: false, error_code: code, run_id: deps.runId ?? null });
     return errResult(code, (e as Error).message);
   }
 
@@ -77,12 +75,10 @@ export async function handleVaultRead(
   } catch (e) {
     const errno = (e as NodeJS.ErrnoException).code;
     const code = errno === "ENOENT" ? "ENOENT" : "IO_ERROR";
-    recordMcpEvent(deps.db, { tool: "vault.read", input: { path: rel }, ok: false, error_code: code, run_id: deps.runId ?? null });
     return errResult(code, (e as Error).message);
   }
 
   if (!stat.isFile()) {
-    recordMcpEvent(deps.db, { tool: "vault.read", input: { path: rel }, ok: false, error_code: "NOT_A_FILE", run_id: deps.runId ?? null });
     return errResult("NOT_A_FILE", `${rel} is not a regular file`);
   }
 
@@ -90,13 +86,12 @@ export async function handleVaultRead(
   try {
     content = await fs.readFile(abs, "utf8");
   } catch (e) {
-    recordMcpEvent(deps.db, { tool: "vault.read", input: { path: rel }, ok: false, error_code: "IO_ERROR", run_id: deps.runId ?? null });
     return errResult("IO_ERROR", (e as Error).message);
   }
 
   const sha = sha256(content);
   const bytes = Buffer.byteLength(content);
-  recordMcpEvent(deps.db, { tool: "vault.read", input: { path: rel }, ok: true, result_sha: sha, run_id: deps.runId ?? null });
+  void deps;
   return {
     content: [{ type: "text", text: content }],
     structuredContent: { path: rel, sha, bytes },

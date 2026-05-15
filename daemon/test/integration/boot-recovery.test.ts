@@ -19,7 +19,7 @@ function seeded(): Database {
 
   const now = Date.now();
   db.run(
-    "INSERT INTO chats (id, title, agent, created_at, updated_at) VALUES ('c1', 'c1', 'maya', ?, ?)",
+    "INSERT INTO contexts (id, title, agent_name, created_at, updated_at) VALUES ('c1', 'c1', 'maya', ?, ?)",
     [now, now],
   );
   // running, pending, done, error, cancelled — bootRecovery should only flip running+pending.
@@ -43,7 +43,7 @@ function seeded(): Database {
     "INSERT INTO runs (id, chat_id, agent, kind, status, started_at, ended_at) VALUES ('r-cancelled', 'c1', 'maya', 'chat', 'cancelled', ?, ?)",
     [now, now],
   );
-  db.run("UPDATE chats SET current_run_id = 'r-running' WHERE id = 'c1'");
+  db.run("UPDATE contexts SET current_run_id = 'r-running' WHERE id = 'c1'");
   return db;
 }
 
@@ -64,7 +64,7 @@ test("bootRecovery clears chats.current_run_id for interrupted runs", () => {
   const db = seeded();
   bootRecovery(db);
   const c = db
-    .query("SELECT current_run_id FROM chats WHERE id = 'c1'")
+    .query("SELECT current_run_id FROM contexts WHERE id = 'c1'")
     .get() as { current_run_id: string | null };
   expect(c.current_run_id).toBeNull();
 });
@@ -82,7 +82,7 @@ test("bootRecovery is a no-op when no orphans exist", () => {
   runMigrationsFromDir(db, MIGRATIONS_DIR);
   const now = Date.now();
   db.run(
-    "INSERT INTO chats (id, title, agent, created_at, updated_at) VALUES ('c2', 'c2', 'maya', ?, ?)",
+    "INSERT INTO contexts (id, title, agent_name, created_at, updated_at) VALUES ('c2', 'c2', 'maya', ?, ?)",
     [now, now],
   );
   db.run(
@@ -93,7 +93,7 @@ test("bootRecovery is a no-op when no orphans exist", () => {
   const r = db.query("SELECT status FROM runs WHERE id = 'r-d'").get() as { status: string };
   expect(r.status).toBe("done");
   const c = db
-    .query("SELECT current_run_id FROM chats WHERE id = 'c2'")
+    .query("SELECT current_run_id FROM contexts WHERE id = 'c2'")
     .get() as { current_run_id: string | null };
   expect(c.current_run_id).toBeNull();
 });
@@ -105,20 +105,20 @@ test("bootRecovery flips multiple orphans across multiple chats", () => {
   const now = Date.now();
   for (const cid of ["cA", "cB", "cC"]) {
     db.run(
-      "INSERT INTO chats (id, title, agent, created_at, updated_at) VALUES (?, ?, 'maya', ?, ?)",
+      "INSERT INTO contexts (id, title, agent_name, created_at, updated_at) VALUES (?, ?, 'maya', ?, ?)",
       [cid, cid, now, now],
     );
     db.run(
       "INSERT INTO runs (id, chat_id, agent, kind, status, started_at) VALUES (?, ?, 'maya', 'chat', 'running', ?)",
       [`r-${cid}`, cid, now],
     );
-    db.run("UPDATE chats SET current_run_id = ? WHERE id = ?", [`r-${cid}`, cid]);
+    db.run("UPDATE contexts SET current_run_id = ? WHERE id = ?", [`r-${cid}`, cid]);
   }
   bootRecovery(db);
   const rows = db.query("SELECT status FROM runs").all() as Array<{ status: string }>;
   for (const r of rows) expect(r.status).toBe("interrupted");
   const chats = db
-    .query("SELECT current_run_id FROM chats")
+    .query("SELECT current_run_id FROM contexts")
     .all() as Array<{ current_run_id: string | null }>;
   for (const c of chats) expect(c.current_run_id).toBeNull();
 });

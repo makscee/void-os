@@ -10,28 +10,19 @@ let w: VaultWriter;
 beforeEach(() => { v = mkTmpVault(); w = createVaultWriter({ vaultRoot: v.root, db: v.db }); });
 afterEach(() => v.cleanup());
 
-test('move renames file, mkdir -p target, emits delete+create rows in tx', async () => {
+test('move renames file, mkdir -p target', async () => {
   fs.writeFileSync(path.join(v.root, 'a.md'), 'X\n');
   await w.move('a.md', 'new/sub/b.md', CTX);
   expect(fs.existsSync(path.join(v.root, 'a.md'))).toBe(false);
   expect(fs.readFileSync(path.join(v.root, 'new/sub/b.md'), 'utf8')).toBe('X\n');
-  const e = readEvents(v.db);
-  expect(e).toHaveLength(2);
-  expect(e[0]).toMatchObject({
-    type: 'vault.delete',
-    payload: { path: 'a.md', sha_before: sha256Hex('X\n'), sha_after: null },
-  });
-  expect(e[1]).toMatchObject({
-    type: 'vault.create',
-    payload: { path: 'new/sub/b.md', sha_before: null, sha_after: sha256Hex('X\n') },
-  });
+  // VOS-83: events persistence removed; transactional delete+create rows no
+  // longer recorded.
 });
 
-test('move fails EEXIST if target exists, no events written', async () => {
+test('move fails EEXIST if target exists', async () => {
   fs.writeFileSync(path.join(v.root, 'a.md'), 'X\n');
   fs.writeFileSync(path.join(v.root, 'b.md'), 'Y\n');
   await expect(w.move('a.md', 'b.md', CTX)).rejects.toThrow('EEXIST');
-  expect(readEvents(v.db)).toEqual([]);
 });
 
 test('move ENOENT if source missing', async () => {

@@ -9,16 +9,16 @@ let w: VaultWriter;
 beforeEach(() => { v = mkTmpVault(); w = createVaultWriter({ vaultRoot: v.root, db: v.db }); });
 afterEach(() => v.cleanup());
 
-test('100 parallel EOF appends produce 100 ordered lines, 100 events', async () => {
+test('100 parallel EOF appends produce 100 ordered lines', async () => {
   fs.writeFileSync(path.join(v.root, 'log.md'), '');
   const tasks = Array.from({ length: 100 }, (_, i) => w.append('log.md', `line-${i}`, null, CTX));
   await Promise.all(tasks);
   const out = fs.readFileSync(path.join(v.root, 'log.md'), 'utf8');
-  // each append adds: existing-content + '\n' + 'line-N\n' (since empty file → '' + '\n' = '\n' then '\n' + payload → '\n\nline-0\n' first time)
   // Just assert: all 100 lines present, in some order, no torn writes.
   const lines = out.split('\n').filter(l => l.startsWith('line-'));
   expect(lines.length).toBe(100);
   const set = new Set(lines);
   expect(set.size).toBe(100);  // all unique
-  expect(readEvents(v.db).filter(e => e.type === 'vault.append').length).toBe(100);
+  // VOS-83: events persistence removed; mutex/atomic correctness now lives
+  // entirely in filesystem state.
 });
