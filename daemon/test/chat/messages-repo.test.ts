@@ -11,8 +11,8 @@
 
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runMigrationsFromDir } from "../../src/adapters/sqlite/migrations";
 import { makeMessagesRepo } from "../../src/chat/messages-repo";
 import type { Part } from "../../src/types/a2a";
 
@@ -28,10 +28,9 @@ const MIGRATIONS_DIR = join(
 
 function freshDb(): Database {
   const db = new Database(":memory:");
-  // Apply ALL migrations in lex order — matches the production runner.
-  for (const f of readdirSync(MIGRATIONS_DIR).filter((x) => x.endsWith(".sql")).sort()) {
-    db.run(readFileSync(join(MIGRATIONS_DIR, f), "utf8"));
-  }
+  // Use the canonical runner — matches production and honours the
+  // fk-rebuild marker on migrations that rebuild FK-referenced tables.
+  runMigrationsFromDir(db, MIGRATIONS_DIR);
   return db;
 }
 
