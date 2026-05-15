@@ -55,9 +55,8 @@ export function makeRealAgentPickerFactory(app: App): AgentPickerFactory {
         resolve(v);
       };
 
-      class Picker extends (SuggestModal as any)<AgentListEntry | { __empty: true }> {
+      class Picker extends (SuggestModal as any)<AgentListEntry> {
         getSuggestions(query: string) {
-          if (items.length === 0) return [{ __empty: true } as const];
           const q = query.toLowerCase();
           return items.filter(
             (i) =>
@@ -65,16 +64,11 @@ export function makeRealAgentPickerFactory(app: App): AgentPickerFactory {
               i.description.toLowerCase().includes(q),
           );
         }
-        renderSuggestion(item: AgentListEntry | { __empty: true }, el: HTMLElement) {
-          if ("__empty" in item) {
-            el.createDiv({ text: EMPTY_NOTICE });
-            return;
-          }
+        renderSuggestion(item: AgentListEntry, el: HTMLElement) {
           el.createDiv({ text: item.name, cls: "void-agent-picker-name" });
           el.createDiv({ text: item.description, cls: "void-agent-picker-desc" });
         }
-        onChooseSuggestion(item: AgentListEntry | { __empty: true }) {
-          if ("__empty" in item) { settle(null); return; }
+        onChooseSuggestion(item: AgentListEntry) {
           settle(item);
         }
         onClose() {
@@ -86,6 +80,11 @@ export function makeRealAgentPickerFactory(app: App): AgentPickerFactory {
       }
       const m = new (Picker as any)(app);
       m.setPlaceholder("Pick an agent…");
+      // Native Obsidian guidance for the empty / no-match state — rendered
+      // by SuggestModal as a non-selectable placeholder, so pressing Enter
+      // does NOT close the modal with a null pick. Replaces the prior
+      // {__empty:true} sentinel which rendered as a real (selectable) row.
+      m.emptyStateText = EMPTY_NOTICE;
       m.open();
     });
   };

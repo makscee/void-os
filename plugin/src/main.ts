@@ -141,11 +141,12 @@ export default class VoidOsPlugin extends Plugin {
       callback: async () => {
         const picked = await openPicker();
         if (!picked) return;
-        await this.activateChatView();
+        // Mint FIRST so settings.chatId is correct for any fresh leaf the
+        // view opens against; then activate with the id so an already-open
+        // leaf gets the id pushed into ChatRoot's state.
         const created = await api.createChat(picked.name);
-        this.settings!.setChatId(created.id);
-        // ChatView re-reads chatId from settings on focus; next user message
-        // opens the chat via the existing path.
+        await this.settings!.setChatId(created.id);
+        await this.activateChatView(created.id);
       },
     });
   }
@@ -156,7 +157,7 @@ export default class VoidOsPlugin extends Plugin {
     this.bus = null;
   }
 
-  private async activateChatView() {
+  private async activateChatView(chatId?: string) {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(CHAT_VIEW_TYPE)[0];
     if (!leaf) {
@@ -164,5 +165,13 @@ export default class VoidOsPlugin extends Plugin {
       await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
     }
     workspace.revealLeaf(leaf);
+    // When called with a chatId (command path), push it into ChatRoot via
+    // the view's imperative setter. Required because the deps factory only
+    // runs once at mount — a chat minted while the view is already open
+    // won't otherwise activate until next plugin reload.
+    if (chatId) {
+      const view = leaf.view;
+      if (view instanceof ChatView) view.setActiveChatId(chatId);
+    }
   }
 }

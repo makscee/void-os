@@ -31,6 +31,12 @@ export interface ChatRootProps {
   onChatIdMinted?: (id: string) => void | Promise<void>;
   defaultAgent?: string;
   openPicker: () => Promise<AgentListEntry | null>;
+  /** Mount-time callback: receives an imperative setter so external code
+   *  (e.g. the Obsidian command that opens this view + mints a chat) can
+   *  push a chat id into the React tree after the leaf is already open.
+   *  Without this, props.chatId is only consulted on prop change — a fresh
+   *  chat minted while the view is already mounted would not become active. */
+  registerSetActiveChatId?: (setter: (id: string) => void) => void;
 }
 
 // VOS-92: wire the "+ New chat" flow.
@@ -227,6 +233,15 @@ export function ChatRoot(props: ChatRootProps) {
   // (e.g. fresh open after restart), we sync it down.
   const [activeChatId, setActiveChatId] = React.useState<string | null>(props.chatId);
   React.useEffect(() => { setActiveChatId(props.chatId); }, [props.chatId]);
+
+  // Expose an imperative setter so the host (ChatView / Obsidian command)
+  // can push a freshly-minted chat id into this tree without remounting or
+  // relying on prop diffing (props are computed once at mount via the deps
+  // factory). Registered once on mount.
+  const register = props.registerSetActiveChatId;
+  React.useEffect(() => {
+    register?.(setActiveChatId);
+  }, [register]);
 
   // Bumped after every successful "+ New" or new-chat-id mint to force the
   // ChatList to re-fetch /chats. Cheap and predictable; avoids wiring the
