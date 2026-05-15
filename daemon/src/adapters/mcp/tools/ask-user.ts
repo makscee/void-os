@@ -1,5 +1,14 @@
 // daemon/src/adapters/mcp/tools/ask-user.ts
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import type { Database } from "bun:sqlite";
+import type { EventBus } from "../../../events";
+import type { PendingRegistry } from "../pending-questions";
+import {
+  setTaskInputRequired,
+  appendToolUseMessage,
+  clearTaskPending,
+} from "../../../chat/ask-user-repo";
 
 export const AskUserInput = z.object({
   question: z.string().min(1).max(500),
@@ -27,3 +36,106 @@ export const ASK_USER_TOOL_DEF = {
     required: ["question"],
   },
 };
+
+// VOS-88 T6: runAskUser handler — happy path.
+//
+// Reconciliation vs plan §T6:
+//   - EventBus has NO typed event registry (src/events/index.ts). The string
+//     event types "task.state_changed" / "message.appended" are kept as the
+//     plan specified — they are internal bus events that drive plugin
+//     invalidation. The WS frame names (chat.tool_use, chat.tool_result,
+//     run.end) live in orchestrator.ts on a separate layer.
+//   - DaemonEvent requires { type, payload }. We pass the task-id / state /
+//     message-id under payload rather than as top-level fields to satisfy
+//     the interface without `as any` casts.
+
+export interface AskUserContext {
+  db: Database;
+  bus: EventBus;
+  pending: PendingRegistry;
+  taskId: string;
+  contextId: string;
+  runId: string | null;
+  deadlineMs: number;
+  now: () => number;
+}
+
+export interface AskUserResult {
+  content: [{ type: "text"; text: string }];
+  isError?: boolean;
+}
+
+export async function runAskUser(
+  ctx: AskUserContext,
+  raw: unknown,
+): Promise<AskUserResult> {
+  const args = AskUserInput.parse(raw);
+  const toolUseId = randomUUID();
+
+  // Transaction: write tool_use message + CAS state flip together.
+  const tx = ctx.db.transaction(() => {
+    const ok = setTaskInputRequired(
+      ctx.db,
+      ctx.taskId,
+      toolUseId,
+      args.question,
+      args.options,
+    );
+    if (!ok) {
+      const row = ctx.db
+        .query(
+          "SELECT state, json_extract(metadata, '$.pending_tool_use_id') AS pending FROM tasks WHERE id=?",
+        )
+        .get(ctx.taskId) as { state?: string; pending?: string } | null;
+      if (!row) throw new Error("TASK_NOT_FOUND");
+      if (row.pending) throw new Error("ASK_USER_ALREADY_OPEN");
+      throw new Error("TASK_NOT_WORKING");
+    }
+    const messageId = appendToolUseMessage(ctx.db, {
+      taskId: ctx.taskId,
+      contextId: ctx.contextId,
+      runId: ctx.runId,
+      toolUseId,
+      question: args.question,
+      options: args.options,
+    });
+    return messageId;
+  });
+
+  let messageId: number;
+  try {
+    messageId = tx();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: "text", text: msg }], isError: true };
+  }
+
+  ctx.bus.emit({
+    type: "task.state_changed",
+    chatId: ctx.contextId,
+    payload: { taskId: ctx.taskId, state: "TASK_STATE_INPUT_REQUIRED" },
+  });
+  ctx.bus.emit({
+    type: "message.appended",
+    chatId: ctx.contextId,
+    payload: { taskId: ctx.taskId, messageId },
+  });
+
+  try {
+    const answer = await ctx.pending.register(toolUseId, ctx.deadlineMs);
+    return { content: [{ type: "text", text: answer }] };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg === "ASK_USER_TIMEOUT") {
+      const cleared = clearTaskPending(ctx.db, ctx.taskId, toolUseId);
+      if (cleared) {
+        ctx.bus.emit({
+          type: "task.state_changed",
+          chatId: ctx.contextId,
+          payload: { taskId: ctx.taskId, state: "TASK_STATE_WORKING" },
+        });
+      }
+    }
+    return { content: [{ type: "text", text: msg }], isError: true };
+  }
+}
