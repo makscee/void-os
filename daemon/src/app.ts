@@ -21,7 +21,8 @@ import { mountApi } from "./api/index.ts";
 import { chatsApi } from "./api/chats.ts";
 import { agentsApi } from "./api/agents.ts";
 import { chatApi } from "./api/chat.ts";
-import { mountMcp } from "./adapters/mcp/index.ts";
+import { mountMcp, pendingRegistry } from "./adapters/mcp/index.ts";
+import { mountAnswerRoute } from "./api/answer.ts";
 import { createEventBus } from "./events/index.ts";
 import { makeClaudeCodeProviderComposed } from "./providers/claude-code/index.ts";
 import { makeChatRepo } from "./chat/repo.ts";
@@ -107,6 +108,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   app.route("/", agentsApi(deps.db));
   app.route("/", chatApi(deps.db, { orchestrator }));
   mountMcp(app, { vaultRoot: deps.vaultRoot, db: deps.db, bus });
+  // VOS-88 T8: user-facing answer route. Shares the SAME `pendingRegistry`
+  // singleton with mountMcp so the MCP tool handler (which awaits the slot)
+  // and the HTTP route (which resolves it) reference the same map.
+  mountAnswerRoute(app, { db: deps.db, bus, pending: pendingRegistry });
   return app;
 };
 
