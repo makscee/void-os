@@ -28,10 +28,23 @@
 import type { CcSpawner, KillOpts } from "./index.js";
 import type { EventBus, DaemonEvent } from "../../events/index.js";
 import type {
-  Spawner,
-  SpawnArgs,
-  SpawnerEvent,
-} from "../../chat/orchestrator.js";
+  ProviderEvent as SpawnerEvent,
+  ProviderSpawnRequest,
+} from "../types.ts";
+
+// Local alias kept for one transition step; Task 5 removes references.
+type SpawnArgs = {
+  chat_id: string;
+  resume: string | null;
+  prompt: string;
+};
+
+// Local Spawner interface kept for the iterator-style return type. Task 5
+// retires it when `makeClaudeCodeProvider` replaces it as the public surface.
+interface Spawner {
+  spawn(args: SpawnArgs): AsyncIterable<SpawnerEvent>;
+  cancel?(runId: string): Promise<boolean>;
+}
 
 export interface SpawnerIterDeps {
   /** Underlying bus-emitting spawner (createCcSpawner output). */
