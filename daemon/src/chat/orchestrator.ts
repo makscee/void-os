@@ -195,6 +195,96 @@ export function cascadeCancel(db: Database, rootTaskId: string): string[] {
   return cancelled;
 }
 
+/** VOS-89 T13: startup reconciler.
+ *
+ * Daemon may crash mid-flight while:
+ *   (a) a parent task is parked in TASK_STATE_WAITING_ON_AGENT and its
+ *       dispatched child has already reached terminal — the runtime
+ *       resume listener (app.ts T11) was not running to flip the parent
+ *       back to WORKING, so on next boot the parent would be stuck forever;
+ *   (b) an ancestor was already CANCELED but a descendant was still
+ *       WORKING (the runtime cascade had not finished, or the cancel
+ *       reached only the in-flight provider handle without reaching the
+ *       task tree) — descendants would orphan-run forever once the
+ *       daemon is back.
+ *
+ * `reconcileOrphans(db)` is called at boot, before the MCP server starts
+ * accepting connections, and fixes both classes in a SINGLE transaction:
+ *
+ *   (a) WAITING_ON_AGENT parent whose at-least-one child is terminal →
+ *       parent state = WORKING. CAS-guarded so a concurrent writer
+ *       (impossible at boot, defensive) cannot race.
+ *
+ *   (b) Recursive CTE rooted at every CANCELED task descending via
+ *       parent_task_id → flip every non-terminal descendant to CANCELED.
+ *
+ * Idempotent: re-running on an already-reconciled DB is a no-op (every
+ * UPDATE is guarded by a state predicate that rejects already-correct
+ * rows). DB-only by design — emits no events; runtime listeners are not
+ * yet wired at this point in the boot sequence. */
+export function reconcileOrphans(db: Database): void {
+  const tx = db.transaction(() => {
+    // (a) Parent parked WAITING_ON_AGENT but a child already terminal.
+    // Use EXISTS with a state predicate so the UPDATE only touches rows
+    // that genuinely need flipping. Distinct join to avoid double-counting
+    // when multiple children are terminal — the UPDATE result is the same
+    // regardless of how many children matched.
+    db.run(
+      `UPDATE tasks
+         SET state = 'TASK_STATE_WORKING', updated_at = strftime('%s','now')
+       WHERE state = 'TASK_STATE_WAITING_ON_AGENT'
+         AND EXISTS (
+           SELECT 1 FROM tasks ch
+            WHERE ch.parent_task_id = tasks.id
+              AND ch.state IN (
+                'TASK_STATE_COMPLETED',
+                'TASK_STATE_FAILED',
+                'TASK_STATE_CANCELED'
+              )
+         )`,
+    );
+
+    // (b) Recursive CTE: descend from every CANCELED root through
+    // parent_task_id chains and cancel any non-terminal descendant.
+    // Base case = direct children of any CANCELED task; recursive step
+    // extends down. The CTE only carries non-terminal rows so we never
+    // descend into / overwrite a subtree whose ancestor already finished
+    // independently (terminal states are preserved). Final UPDATE is
+    // re-guarded by the same predicate for defence-in-depth.
+    db.run(
+      `WITH RECURSIVE orphans(id) AS (
+         SELECT t.id
+           FROM tasks t
+           JOIN tasks p ON t.parent_task_id = p.id
+          WHERE p.state = 'TASK_STATE_CANCELED'
+            AND t.state NOT IN (
+              'TASK_STATE_COMPLETED',
+              'TASK_STATE_FAILED',
+              'TASK_STATE_CANCELED'
+            )
+         UNION ALL
+         SELECT t.id
+           FROM tasks t
+           JOIN orphans o ON t.parent_task_id = o.id
+          WHERE t.state NOT IN (
+            'TASK_STATE_COMPLETED',
+            'TASK_STATE_FAILED',
+            'TASK_STATE_CANCELED'
+          )
+       )
+       UPDATE tasks
+          SET state = 'TASK_STATE_CANCELED', updated_at = strftime('%s','now')
+        WHERE id IN (SELECT id FROM orphans)
+          AND state NOT IN (
+            'TASK_STATE_COMPLETED',
+            'TASK_STATE_FAILED',
+            'TASK_STATE_CANCELED'
+          )`,
+    );
+  });
+  tx();
+}
+
 /** 409 conflict — another dispatch holds the lock. HTTP layer (T9) maps
  * `err.status` and `err.current_run_id` directly into the response. */
 export class Conflict409 extends Error {
