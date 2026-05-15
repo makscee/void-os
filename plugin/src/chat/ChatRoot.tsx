@@ -11,6 +11,7 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
+import type { AgentListEntry } from "../agents/types";
 import {
   useChatRuntime,
   QUEUED_MARKER,
@@ -29,6 +30,30 @@ export interface ChatRootProps {
   chatId: string | null;
   onChatIdMinted?: (id: string) => void | Promise<void>;
   defaultAgent?: string;
+  openPicker: () => Promise<AgentListEntry | null>;
+}
+
+// VOS-92: wire the "+ New chat" flow.
+// - Opens the agent picker; awaits its resolution.
+// - On pick, mints a chat via api.createChat(agent.name) and refreshes.
+// - On null (user dismissed), no-op.
+export interface WireOnNewChatDeps {
+  api: { createChat(agent?: string): Promise<{ id: string; title: string; created_at: number }> };
+  openPicker: () => Promise<AgentListEntry | null>;
+  onChatIdMinted?: (id: string) => void | Promise<void>;
+  bumpRefresh: () => void;
+  fallbackAgent?: string;  // defensive: if picker returns an entry with empty name
+}
+
+export function wireOnNewChat(deps: WireOnNewChatDeps): () => Promise<void> {
+  return async () => {
+    const picked = await deps.openPicker();
+    if (!picked) return;
+    const agentName = picked.name || deps.fallbackAgent;
+    const created = await deps.api.createChat(agentName);
+    await deps.onChatIdMinted?.(created.id);
+    deps.bumpRefresh();
+  };
 }
 
 // User TextPart: detect the queued marker in the part text, strip it, and
@@ -284,12 +309,20 @@ export function ChatRoot(props: ChatRootProps) {
     };
   }, [runtime]);
 
-  const onNewChat = React.useCallback(async () => {
-    const created = await props.api.createChat(props.defaultAgent);
-    setActiveChatId(created.id);
-    await props.onChatIdMinted?.(created.id);
-    bumpRefresh();
-  }, [props.api, props.defaultAgent, props.onChatIdMinted, bumpRefresh]);
+  const onNewChat = React.useMemo(
+    () =>
+      wireOnNewChat({
+        api: props.api,
+        openPicker: props.openPicker,
+        onChatIdMinted: async (id) => {
+          setActiveChatId(id);
+          await props.onChatIdMinted?.(id);
+        },
+        bumpRefresh,
+        fallbackAgent: props.defaultAgent,
+      }),
+    [props.api, props.openPicker, props.onChatIdMinted, props.defaultAgent, bumpRefresh],
+  );
 
   const onSelect = React.useCallback((id: string) => {
     setActiveChatId(id);

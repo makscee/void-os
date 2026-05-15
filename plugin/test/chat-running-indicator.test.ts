@@ -82,7 +82,7 @@ describe("ChatRoot live run indicators (VOS-80 regression)", () => {
     const root = createRoot(host);
 
     await act(async () => {
-      root.render(React.createElement(ChatRoot, { bus, api: makeApi(), chatId: "c1" }));
+      root.render(React.createElement(ChatRoot, { bus, api: makeApi(), chatId: "c1", openPicker: async () => ({ name: "maya", description: "test" }) }));
     });
     await flush(act);
 

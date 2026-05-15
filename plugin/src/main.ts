@@ -103,6 +103,8 @@ export default class VoidOsPlugin extends Plugin {
         chatId: this.settings!.get().chatId,
         onChatIdMinted: (id) => this.settings!.setChatId(id),
         defaultAgent: "maya",
+        // VOS-92 T4.2: placeholder — T4.3 replaces with real picker via makeRealAgentPickerFactory.
+        openPicker: async () => ({ name: "maya", description: "" }),
       })),
     );
 
