@@ -11,6 +11,7 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
+import type { AgentListEntry } from "../agents/types";
 import {
   useChatRuntime,
   QUEUED_MARKER,
@@ -29,6 +30,36 @@ export interface ChatRootProps {
   chatId: string | null;
   onChatIdMinted?: (id: string) => void | Promise<void>;
   defaultAgent?: string;
+  openPicker: () => Promise<AgentListEntry | null>;
+  /** Mount-time callback: receives an imperative setter so external code
+   *  (e.g. the Obsidian command that opens this view + mints a chat) can
+   *  push a chat id into the React tree after the leaf is already open.
+   *  Without this, props.chatId is only consulted on prop change — a fresh
+   *  chat minted while the view is already mounted would not become active. */
+  registerSetActiveChatId?: (setter: (id: string) => void) => void;
+}
+
+// VOS-92: wire the "+ New chat" flow.
+// - Opens the agent picker; awaits its resolution.
+// - On pick, mints a chat via api.createChat(agent.name) and refreshes.
+// - On null (user dismissed), no-op.
+export interface WireOnNewChatDeps {
+  api: { createChat(agent?: string): Promise<{ id: string; title: string; created_at: number }> };
+  openPicker: () => Promise<AgentListEntry | null>;
+  onChatIdMinted?: (id: string) => void | Promise<void>;
+  bumpRefresh: () => void;
+  fallbackAgent?: string;  // defensive: if picker returns an entry with empty name
+}
+
+export function wireOnNewChat(deps: WireOnNewChatDeps): () => Promise<void> {
+  return async () => {
+    const picked = await deps.openPicker();
+    if (!picked) return;
+    const agentName = picked.name || deps.fallbackAgent;
+    const created = await deps.api.createChat(agentName);
+    await deps.onChatIdMinted?.(created.id);
+    deps.bumpRefresh();
+  };
 }
 
 // User TextPart: detect the queued marker in the part text, strip it, and
@@ -203,6 +234,15 @@ export function ChatRoot(props: ChatRootProps) {
   const [activeChatId, setActiveChatId] = React.useState<string | null>(props.chatId);
   React.useEffect(() => { setActiveChatId(props.chatId); }, [props.chatId]);
 
+  // Expose an imperative setter so the host (ChatView / Obsidian command)
+  // can push a freshly-minted chat id into this tree without remounting or
+  // relying on prop diffing (props are computed once at mount via the deps
+  // factory). Registered once on mount.
+  const register = props.registerSetActiveChatId;
+  React.useEffect(() => {
+    register?.(setActiveChatId);
+  }, [register]);
+
   // Bumped after every successful "+ New" or new-chat-id mint to force the
   // ChatList to re-fetch /chats. Cheap and predictable; avoids wiring the
   // FrameBus into the list for now.
@@ -284,12 +324,20 @@ export function ChatRoot(props: ChatRootProps) {
     };
   }, [runtime]);
 
-  const onNewChat = React.useCallback(async () => {
-    const created = await props.api.createChat(props.defaultAgent);
-    setActiveChatId(created.id);
-    await props.onChatIdMinted?.(created.id);
-    bumpRefresh();
-  }, [props.api, props.defaultAgent, props.onChatIdMinted, bumpRefresh]);
+  const onNewChat = React.useMemo(
+    () =>
+      wireOnNewChat({
+        api: props.api,
+        openPicker: props.openPicker,
+        onChatIdMinted: async (id) => {
+          setActiveChatId(id);
+          await props.onChatIdMinted?.(id);
+        },
+        bumpRefresh,
+        fallbackAgent: props.defaultAgent,
+      }),
+    [props.api, props.openPicker, props.onChatIdMinted, props.defaultAgent, bumpRefresh],
+  );
 
   const onSelect = React.useCallback((id: string) => {
     setActiveChatId(id);

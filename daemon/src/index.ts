@@ -11,6 +11,8 @@ import * as fs from "node:fs";
 import { buildApp, VERSION, wsHandler } from "./app.ts";
 import { openDatabase } from "./adapters/sqlite/index.ts";
 import { bootRecovery } from "./boot.ts";
+import { scanVaultAgents } from "./agents/scan.ts";
+import { makeAgentRepo } from "./agents/repo.ts";
 
 const PORT = Number(process.env.VOID_OS_PORT ?? 7777);
 const HOST = process.env.VOID_OS_HOST ?? "127.0.0.1";
@@ -33,6 +35,19 @@ const db = openDatabase(dbPath);
 
 // VOS-79 T10: sweep orphan running/pending runs left by a previous crash.
 bootRecovery(db);
+
+// VOS-92: scan vault/agents/ and mirror into the `agents` table.
+// Runs after migrations (openDatabase) and before buildApp so all routes
+// see a populated registry. Stale rows from deleted agents persist until
+// next restart — acceptable for v1, documented in spec §4.4.
+// Scanner failure must NOT block daemon boot — log and continue.
+try {
+  const agentRows = scanVaultAgents(vaultRoot);
+  makeAgentRepo(db).upsertAll(agentRows);
+  console.log(`  agents: ${agentRows.length} from ${vaultRoot}/agents/`);
+} catch (e) {
+  console.warn(`  agents: scan failed: ${e instanceof Error ? e.message : e} — continuing with existing rows`);
+}
 
 const app = await buildApp({ db, vaultRoot });
 

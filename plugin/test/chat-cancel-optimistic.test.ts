@@ -76,7 +76,7 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
     const root = createRoot(host);
 
     await act(async () => {
-      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1" }));
+      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1", openPicker: async () => ({ name: "maya", description: "test" }) }));
     });
     await flush(act);
 
@@ -156,7 +156,7 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
     const root = createRoot(host);
 
     await act(async () => {
-      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1" }));
+      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1", openPicker: async () => ({ name: "maya", description: "test" }) }));
     });
     await flush(act);
 

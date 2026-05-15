@@ -11,6 +11,10 @@ export type ChatViewDeps = () => ChatRootProps;
 
 export class ChatView extends ItemView {
   private root: Root | null = null;
+  /** Set by ChatRoot's registerSetActiveChatId callback on mount; lets the
+   *  plugin's command path push a freshly-minted chat id into the React
+   *  tree when the view is already open. Null until the first render lands. */
+  private pushActiveChatId: ((id: string) => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, private deps: ChatViewDeps | null = null) {
     super(leaf);
@@ -18,6 +22,13 @@ export class ChatView extends ItemView {
   getViewType() { return CHAT_VIEW_TYPE; }
   getDisplayText() { return "void-os chat"; }
   getIcon() { return "message-circle"; }
+
+  /** Imperative API used by main.ts's new-chat command after activateChatView.
+   *  Safe to call any time after onOpen; no-op if React hasn't registered yet
+   *  (in which case the next render's props.chatId will pick up the value). */
+  setActiveChatId(id: string) {
+    this.pushActiveChatId?.(id);
+  }
 
   async onOpen() {
     const container = this.containerEl.children[1] as HTMLElement;
@@ -34,7 +45,11 @@ export class ChatView extends ItemView {
     mount.style.display = "flex";
     this.root = createRoot(mount);
     if (this.deps) {
-      this.root.render(React.createElement(ChatRoot, this.deps()));
+      const props = this.deps();
+      props.registerSetActiveChatId = (setter) => {
+        this.pushActiveChatId = setter;
+      };
+      this.root.render(React.createElement(ChatRoot, props));
     } else {
       // Fallback for the smoke test: render an empty placeholder so onOpen
       // doesn't blow up when no deps are wired (test asserts mount exists).
@@ -45,5 +60,6 @@ export class ChatView extends ItemView {
   async onClose() {
     this.root?.unmount();
     this.root = null;
+    this.pushActiveChatId = null;
   }
 }

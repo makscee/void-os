@@ -68,7 +68,7 @@ describe("ChatRoot refetch on run.end (VOS-80 part 2)", () => {
     const root = createRoot(host);
 
     await act(async () => {
-      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1" }));
+      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1", openPicker: async () => ({ name: "maya", description: "test" }) }));
     });
     await flush(act);
     expect(calls).toBe(1); // mount fetch
@@ -115,7 +115,7 @@ describe("ChatRoot refetch on run.end (VOS-80 part 2)", () => {
     const root = createRoot(host);
 
     await act(async () => {
-      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1" }));
+      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1", openPicker: async () => ({ name: "maya", description: "test" }) }));
     });
     await flush(act);
     expect(host.textContent).toContain("previous reply");
@@ -162,7 +162,7 @@ describe("ChatRoot refetch on run.end (VOS-80 part 2)", () => {
     const root = createRoot(host);
 
     await act(async () => {
-      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1" }));
+      root.render(React.createElement(ChatRoot, { bus, api, chatId: "c1", openPicker: async () => ({ name: "maya", description: "test" }) }));
     });
     await flush(act);
     const mountCalls = calls;

@@ -53,7 +53,7 @@ export interface ChatApi {
   getMessages(chatId: string): Promise<ReplayMessage[]>;
 }
 
-async function jsonOrThrow(res: Response): Promise<unknown> {
+export async function jsonOrThrow(res: Response): Promise<unknown> {
   const text = await res.text();
   let body: unknown = null;
   if (text) {

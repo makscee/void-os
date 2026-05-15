@@ -19,6 +19,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import pkg from "../package.json" with { type: "json" };
 import { mountApi } from "./api/index.ts";
 import { chatsApi } from "./api/chats.ts";
+import { agentsApi } from "./api/agents.ts";
 import { chatApi } from "./api/chat.ts";
 import { mountMcp } from "./adapters/mcp/index.ts";
 import { createEventBus } from "./events/index.ts";
@@ -99,6 +100,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // VOS-79: chat-lifecycle HTTP surface. `chatsApi` owns list/create;
   // `chatApi` owns per-chat routes (GET /chat/:id, /messages, POST /message).
   app.route("/", chatsApi(deps.db));
+  app.route("/", agentsApi(deps.db));
   app.route("/", chatApi(deps.db, { orchestrator }));
   mountMcp(app, { vaultRoot: deps.vaultRoot, db: deps.db });
   return app;

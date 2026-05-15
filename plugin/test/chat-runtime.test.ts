@@ -81,6 +81,7 @@ describe("ChatRoot integration (S2)", () => {
           bus,
           api,
           chatId: "c1",
+          openPicker: async () => ({ name: "maya", description: "test" }),
         }),
       );
     });

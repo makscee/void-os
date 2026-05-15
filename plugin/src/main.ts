@@ -6,6 +6,9 @@ import { StatusBar } from "./status";
 import { FrameBus, type DaemonFrame } from "./chat/bus";
 import { makeChatApi } from "./chat/api";
 import { makeSettingsStore, type SettingsStore } from "./chat/settings";
+import { makeAgentsApi } from "./agents/api";
+import { openAgentPicker, makeRealAgentPickerFactory, defaultOnError } from "./agents/picker";
+import type { AgentListEntry } from "./agents/types";
 
 /** Adapt Obsidian's `requestUrl` (Electron main-process HTTP, no CORS) to the
  *  `fetch`-shaped seam consumed by makeChatApi.
@@ -91,6 +94,15 @@ export default class VoidOsPlugin extends Plugin {
     });
     this.bus = new FrameBus();
     const api = makeChatApi(DAEMON_HTTP, requestUrlAsFetch());
+    const agentsApi = makeAgentsApi(DAEMON_HTTP, requestUrlAsFetch());
+    const pickerFactory = makeRealAgentPickerFactory(this.app);
+
+    const openPicker = (): Promise<AgentListEntry | null> =>
+      openAgentPicker({
+        agentsApi,
+        modalFactory: pickerFactory,
+        onError: defaultOnError,
+      });
 
     // Single WebSocket — FSM owns reconnect, FrameBus piggybacks on frames.
     const wsClient = new WsClient(DAEMON_WS);
@@ -102,7 +114,8 @@ export default class VoidOsPlugin extends Plugin {
         api,
         chatId: this.settings!.get().chatId,
         onChatIdMinted: (id) => this.settings!.setChatId(id),
-        defaultAgent: "maya",
+        defaultAgent: "maya", // retained as fallback only
+        openPicker,
       })),
     );
 
@@ -121,6 +134,21 @@ export default class VoidOsPlugin extends Plugin {
       name: "Open void-os chat",
       callback: () => this.activateChatView(),
     });
+
+    this.addCommand({
+      id: "new-chat-with-agent",
+      name: "New chat with agent…",
+      callback: async () => {
+        const picked = await openPicker();
+        if (!picked) return;
+        // Mint FIRST so settings.chatId is correct for any fresh leaf the
+        // view opens against; then activate with the id so an already-open
+        // leaf gets the id pushed into ChatRoot's state.
+        const created = await api.createChat(picked.name);
+        await this.settings!.setChatId(created.id);
+        await this.activateChatView(created.id);
+      },
+    });
   }
 
   async onunload() {
@@ -129,7 +157,7 @@ export default class VoidOsPlugin extends Plugin {
     this.bus = null;
   }
 
-  private async activateChatView() {
+  private async activateChatView(chatId?: string) {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(CHAT_VIEW_TYPE)[0];
     if (!leaf) {
@@ -137,5 +165,13 @@ export default class VoidOsPlugin extends Plugin {
       await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
     }
     workspace.revealLeaf(leaf);
+    // When called with a chatId (command path), push it into ChatRoot via
+    // the view's imperative setter. Required because the deps factory only
+    // runs once at mount — a chat minted while the view is already open
+    // won't otherwise activate until next plugin reload.
+    if (chatId) {
+      const view = leaf.view;
+      if (view instanceof ChatView) view.setActiveChatId(chatId);
+    }
   }
 }
