@@ -27,24 +27,7 @@
 
 import type { CcSpawner, KillOpts } from "./index.js";
 import type { EventBus, DaemonEvent } from "../../events/index.js";
-import type {
-  ProviderEvent as SpawnerEvent,
-  ProviderSpawnRequest,
-} from "../types.ts";
-
-// Local alias kept for one transition step; Task 5 removes references.
-type SpawnArgs = {
-  chat_id: string;
-  resume: string | null;
-  prompt: string;
-};
-
-// Local Spawner interface kept for the iterator-style return type. Task 5
-// retires it when `makeClaudeCodeProvider` replaces it as the public surface.
-interface Spawner {
-  spawn(args: SpawnArgs): AsyncIterable<SpawnerEvent>;
-  cancel?(runId: string): Promise<boolean>;
-}
+import type { ProviderEvent } from "../types.ts";
 
 export interface SpawnerIterDeps {
   /** Underlying bus-emitting spawner (createCcSpawner output). */
@@ -75,14 +58,17 @@ export interface SpawnerIterDeps {
  * immediately. Watchdog timeouts keep the SIGTERM-5s-SIGKILL path so
  * naturally-stuck runs still get a chance to flush.
  */
-export function makeCcSpawnerIter(deps: SpawnerIterDeps): Spawner {
+export function makeCcSpawnerIter(deps: SpawnerIterDeps): {
+  spawn(args: { chat_id: string; resume: string | null; prompt: string }): AsyncIterable<ProviderEvent>;
+  cancel?(runId: string): Promise<boolean>;
+} {
   // Per-spawner-instance map. Multiple chats running in parallel have
   // distinct runIds; cancel(runId) only touches the one. Populated by
   // iterate() once cc.spawn resolves; cleared when the iterator's finally
   // block runs (run.end or run.error or cancel-induced kill).
   const activeProcs = new Map<string, { kill: (opts?: KillOpts) => Promise<void> }>();
   return {
-    spawn(args: SpawnArgs): AsyncIterable<SpawnerEvent> {
+    spawn(args: { chat_id: string; resume: string | null; prompt: string }): AsyncIterable<ProviderEvent> {
       return iterate(deps, args, activeProcs);
     },
     async cancel(runId: string): Promise<boolean> {
@@ -104,10 +90,10 @@ export function makeCcSpawnerIter(deps: SpawnerIterDeps): Spawner {
  */
 async function* iterate(
   deps: SpawnerIterDeps,
-  args: SpawnArgs,
+  args: { chat_id: string; resume: string | null; prompt: string },
   activeProcs: Map<string, { kill: (opts?: KillOpts) => Promise<void> }>,
-): AsyncGenerator<SpawnerEvent, void, void> {
-  const queue: SpawnerEvent[] = [];
+): AsyncGenerator<ProviderEvent, void, void> {
+  const queue: ProviderEvent[] = [];
   // Buffer for events that arrive before `cc.spawn` resolves (i.e. before
   // we know our `runId`). Drained + filtered after spawn resolves.
   const preSpawn: DaemonEvent[] = [];
@@ -135,7 +121,7 @@ async function* iterate(
       return;
     }
     if (e.runId !== runId) return;
-    const inner = (e.payload as { event?: SpawnerEvent } | undefined)?.event;
+    const inner = (e.payload as { event?: ProviderEvent } | undefined)?.event;
     if (inner) {
       queue.push(inner);
       signal();
@@ -193,7 +179,7 @@ async function* iterate(
     for (const e of preSpawn) {
       if (e.runId !== runId) continue;
       if (e.type === "cc.event") {
-        const inner = (e.payload as { event?: SpawnerEvent } | undefined)?.event;
+        const inner = (e.payload as { event?: ProviderEvent } | undefined)?.event;
         if (inner) queue.push(inner);
       } else if (e.type === "run.end") {
         const reason = (e.payload as { reason?: string } | undefined)?.reason;
