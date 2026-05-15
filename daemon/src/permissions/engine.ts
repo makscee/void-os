@@ -93,9 +93,39 @@ export const SYSTEM_DENY_FOR_WRITE: readonly string[] = [
   '~/.void-os/**',
 ];
 
-export function createPermissionEngine(_opts: EngineOptions): PermissionEngine {
+const DEFAULT_READ_SCOPE: ReadonlyArray<string> = ['vault/**'];
+
+export function createPermissionEngine(opts: EngineOptions): PermissionEngine {
+  const expandOpts = { vaultRoot: opts.vaultRoot, homeRoot: opts.homeRoot };
+  const warn = opts.logger?.warn ?? (() => {});
+
+  function expandList(patterns: ReadonlyArray<string>): string[] {
+    const out: string[] = [];
+    for (const p of patterns) {
+      const r = expandPattern(p, expandOpts);
+      if (r.ok) out.push(r.expanded);
+      else warn(`permission: dropping invalid pattern ${p}: ${r.reason}`, { pattern: p });
+    }
+    return out;
+  }
+
+  function resolveScopes(agent: AgentDefn): ResolvedScopes {
+    const readInput  = agent.read_scope  ?? DEFAULT_READ_SCOPE;
+    const readPaths  = expandList(readInput);
+    if (readPaths.length === 0) throw new ZeroScopeError(agent.name);
+
+    // When write_scope omitted, mirror the *resolved* read paths so callers always
+    // observe the same expanded form (per spec §Default scopes). Otherwise expand
+    // write_scope independently — it may legitimately differ from read_scope.
+    const writePaths = agent.write_scope === undefined
+      ? [...readPaths]
+      : expandList(agent.write_scope);
+
+    return { readPaths, writePaths };
+  }
+
   return {
-    resolveScopes() { throw new Error('not implemented'); },
+    resolveScopes,
     canRead() { throw new Error('not implemented'); },
     canWrite() { throw new Error('not implemented'); },
   };

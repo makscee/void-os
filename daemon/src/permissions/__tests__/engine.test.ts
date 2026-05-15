@@ -76,3 +76,54 @@ describe('expandPattern', () => {
     if (r.ok) expect(r.expanded).toBe('/vault/inbox/**');
   });
 });
+
+describe('resolveScopes', () => {
+  const VAULT = '/tmp/vos-test-vault';
+  const HOME  = '/tmp/vos-test-home';
+
+  test('default scopes when both fields undefined', () => {
+    const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
+    const r = eng.resolveScopes({ name: 'maya' });
+    expect(r.readPaths).toEqual([`${VAULT}/**`]);
+    expect(r.writePaths).toEqual([`${VAULT}/**`]);
+  });
+
+  test('write_scope undefined mirrors resolved read_scope', () => {
+    const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
+    const r = eng.resolveScopes({ name: 'maya', read_scope: ['vault/notes/**'] });
+    expect(r.readPaths).toEqual([`${VAULT}/notes/**`]);
+    expect(r.writePaths).toEqual([`${VAULT}/notes/**`]);
+  });
+
+  test('bad patterns are dropped, good ones survive, logger.warn called', () => {
+    const warns: Array<{ msg: string; ctx?: unknown }> = [];
+    const eng = createPermissionEngine({
+      vaultRoot: VAULT, homeRoot: HOME,
+      logger: { warn: (msg, ctx) => warns.push({ msg, ctx }) },
+    });
+    const r = eng.resolveScopes({
+      name: 'maya',
+      read_scope: ['notes/**', 'vault/notes/**'],
+    });
+    expect(r.readPaths).toEqual([`${VAULT}/notes/**`]);
+    expect(warns.length).toBe(1);
+    expect(warns[0].msg).toMatch(/notes\/\*\*/);
+  });
+
+  test('ZeroScopeError when every read_scope pattern is invalid', () => {
+    const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
+    expect(() => eng.resolveScopes({ name: 'maya', read_scope: ['notes/**'] }))
+      .toThrow(ZeroScopeError);
+  });
+
+  test('ZeroScopeError carries agent name', () => {
+    const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
+    try {
+      eng.resolveScopes({ name: 'journaler', read_scope: ['nope/**'] });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ZeroScopeError);
+      expect((e as ZeroScopeError).agent).toBe('journaler');
+    }
+  });
+});
