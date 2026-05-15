@@ -7,6 +7,7 @@ import { FrameBus, type DaemonFrame } from "./chat/bus";
 import { makeChatApi } from "./chat/api";
 import { makeSettingsStore, type SettingsStore } from "./chat/settings";
 import { VoidOsSettingsTab } from "./settings-tab";
+import { DEFAULT_RETRY_MS, DEFAULT_PING_MS, DEFAULT_PONG_TIMEOUT_MS } from "./config.ts";
 
 /** Adapt Obsidian's `requestUrl` (Electron main-process HTTP, no CORS) to the
  *  `fetch`-shaped seam consumed by makeChatApi.
@@ -57,9 +58,6 @@ function deriveDaemonUrls(settings: { daemonUrl?: string }): { http: string; ws:
   const ws = http.replace(/^http/i, "ws").replace(/\/+$/, "") + "/events";
   return { http, ws };
 }
-const RETRY_MS = 2000;
-const PING_MS = 10000;
-const PONG_TIMEOUT_MS = 25000;
 
 /** Wraps a WsPort so a single underlying handler is multiplexed:
  *  - the original consumer (ReconnectFSM) sees every event verbatim;
@@ -114,13 +112,15 @@ export default class VoidOsPlugin extends Plugin {
       })),
     );
 
-    const statusBar = new StatusBar(this.addStatusBarItem());
+    const statusBarEl = this.addStatusBarItem();
+    statusBarEl.setAttribute("data-testid", "vos-status-bar");
+    const statusBar = new StatusBar(statusBarEl);
     this.fsm = new ReconnectFSM({
       client: tapped,
       onState: (s) => statusBar.update(s),
-      retryMs: RETRY_MS,
-      pingMs: PING_MS,
-      pongTimeoutMs: PONG_TIMEOUT_MS,
+      retryMs: DEFAULT_RETRY_MS,
+      pingMs: DEFAULT_PING_MS,
+      pongTimeoutMs: DEFAULT_PONG_TIMEOUT_MS,
     });
     this.fsm.start();
 
