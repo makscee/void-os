@@ -120,9 +120,22 @@ export async function runAskAgent(
       systemMessage: args.system_message,
     });
 
-    // 9 + 10. Await child terminal — the post-dispatch DB recheck lives
-    // inside waitForChildTerminal.
-    const state = await waitP;
+    // 9 + 10. Await child terminal. The race-guard recheck inside
+    // waitForChildTerminal runs at subscribe-time (before mint), so if the
+    // dispatcher flipped state to a terminal value WITHOUT emitting we'd
+    // hang. Do an explicit post-dispatch DB recheck to close that window.
+    const postRow = ctx.db
+      .query("SELECT state FROM tasks WHERE id = ?")
+      .get(childTaskId) as { state: string } | undefined;
+    const TERMINAL = new Set([
+      "TASK_STATE_COMPLETED",
+      "TASK_STATE_FAILED",
+      "TASK_STATE_CANCELED",
+    ]);
+    const state =
+      postRow && TERMINAL.has(postRow.state)
+        ? (postRow.state as "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED")
+        : await waitP;
 
     // 11. Translate terminal -> tool result (or throw -> mcp error).
     return translateChildResult(ctx.db, childTaskId, state, null);

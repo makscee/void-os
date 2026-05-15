@@ -169,6 +169,116 @@ describe("runAskAgent (composition)", () => {
     expect(parent?.state).toBe("TASK_STATE_WORKING");
   });
 
+  test("child COMPLETED with no assistant message → '(no message)'", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+
+    const ctx = buildCtx(db, contextId, parentId, caller, async (childTaskId) => {
+      const now = Math.floor(Date.now() / 1000);
+      // Intentionally insert NO ROLE_AGENT message; just flip state and emit.
+      db.run(
+        `UPDATE tasks SET state='TASK_STATE_COMPLETED', updated_at=? WHERE id=?`,
+        [now, childTaskId],
+      );
+      ctx.bus.emit({
+        type: "task.state_changed",
+        chatId: contextId,
+        payload: { taskId: childTaskId, state: "TASK_STATE_COMPLETED" },
+      });
+    });
+
+    const result = await runAskAgent(ctx, {
+      target_agent_id: "journaler",
+      message: "hi",
+    });
+
+    expect(result).toEqual({ content: [{ type: "text", text: "(no message)" }] });
+  });
+
+  test("fast-completion race: terminal-before-subscribe still resolves via DB recheck", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+
+    // Dispatcher flips state + writes message but does NOT emit. Handler must
+    // resolve via the post-subscribe DB recheck.
+    const ctx = buildCtx(db, contextId, parentId, caller, async (childTaskId) => {
+      const now = Math.floor(Date.now() / 1000);
+      db.run(
+        `INSERT INTO messages (task_id, context_id, run_id, role, parts, parts_text, ts, ord)
+         VALUES (?, ?, NULL, 'ROLE_AGENT', '[]', 'FAST', ?, 0)`,
+        [childTaskId, contextId, now],
+      );
+      db.run(
+        `UPDATE tasks SET state='TASK_STATE_COMPLETED', updated_at=? WHERE id=?`,
+        [now, childTaskId],
+      );
+      // intentionally no bus.emit
+    });
+
+    const result = await runAskAgent(ctx, {
+      target_agent_id: "journaler",
+      message: "hi",
+    });
+
+    expect(result).toEqual({ content: [{ type: "text", text: "FAST" }] });
+  });
+
+  test("child FAILED surfaces as tool-error", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+
+    const ctx = buildCtx(db, contextId, parentId, caller, async (childTaskId) => {
+      const now = Math.floor(Date.now() / 1000);
+      db.run(
+        `UPDATE tasks SET state='TASK_STATE_FAILED', updated_at=? WHERE id=?`,
+        [now, childTaskId],
+      );
+      ctx.bus.emit({
+        type: "task.state_changed",
+        chatId: contextId,
+        payload: { taskId: childTaskId, state: "TASK_STATE_FAILED" },
+      });
+    });
+
+    const result = await runAskAgent(ctx, {
+      target_agent_id: "journaler",
+      message: "hi",
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(
+      (result as { content: Array<{ text: string }> }).content[0]!.text,
+    ).toMatch(/child task failed/);
+  });
+
+  test("cancel cascade: child CANCELED → 'child task cancelled' tool-error", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+
+    const ctx = buildCtx(db, contextId, parentId, caller, async (childTaskId) => {
+      const now = Math.floor(Date.now() / 1000);
+      db.run(
+        `UPDATE tasks SET state='TASK_STATE_CANCELED', updated_at=? WHERE id=?`,
+        [now, childTaskId],
+      );
+      ctx.bus.emit({
+        type: "task.state_changed",
+        chatId: contextId,
+        payload: { taskId: childTaskId, state: "TASK_STATE_CANCELED" },
+      });
+    });
+
+    const result = await runAskAgent(ctx, {
+      target_agent_id: "journaler",
+      message: "hi",
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(
+      (result as { content: Array<{ text: string }> }).content[0]!.text,
+    ).toBe("child task cancelled");
+  });
+
   test("depth limit exceeded", async () => {
     const { contextId } = seed(db);
     // Build a chain of 5 tasks: root -> g1 -> g2 -> g3 -> g4. Caller is g4 at
