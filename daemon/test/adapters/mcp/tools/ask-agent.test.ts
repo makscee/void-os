@@ -318,4 +318,47 @@ describe("runAskAgent (composition)", () => {
       .get() as { n: number };
     expect(kids.n).toBe(0);
   });
+
+  test("Finding 4: emits task.state_changed when parent flips to WAITING_ON_AGENT", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+
+    // Capture every task.state_changed envelope so we can assert the
+    // parent's WORKING -> WAITING_ON_AGENT transition is broadcast.
+    const events: Array<{ taskId?: string; state?: string }> = [];
+
+    // Drive child to terminal so runAskAgent returns. The dispatcher
+    // simulator runs AFTER the parent flip emit, but we capture both.
+    const ctx = buildCtx(db, contextId, parentId, caller, async (childTaskId) => {
+      const now = Math.floor(Date.now() / 1000);
+      db.run(
+        `INSERT INTO messages (task_id, context_id, run_id, role, parts, parts_text, ts, ord)
+         VALUES (?, ?, NULL, 'ROLE_AGENT', '[]', 'OK', ?, 0)`,
+        [childTaskId, contextId, now],
+      );
+      db.run(
+        `UPDATE tasks SET state='TASK_STATE_COMPLETED', updated_at=? WHERE id=?`,
+        [now, childTaskId],
+      );
+      ctx.bus.emit({
+        type: "task.state_changed",
+        chatId: contextId,
+        payload: { taskId: childTaskId, state: "TASK_STATE_COMPLETED" },
+      });
+    });
+    ctx.bus.subscribe("task.state_changed", (ev) => {
+      events.push(ev.payload as { taskId?: string; state?: string });
+    });
+
+    await runAskAgent(ctx, {
+      target_agent_id: "journaler",
+      message: "hi",
+    });
+
+    // Assert the parent's WAITING_ON_AGENT transition was emitted.
+    const parentWaitEv = events.find(
+      (e) => e.taskId === parentId && e.state === "TASK_STATE_WAITING_ON_AGENT",
+    );
+    expect(parentWaitEv).toBeTruthy();
+  });
 });

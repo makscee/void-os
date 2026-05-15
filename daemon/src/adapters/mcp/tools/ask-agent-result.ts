@@ -26,6 +26,14 @@ export function translateChildResult(
   db: Database,
   childTaskId: string,
   state: string,
+  /**
+   * Optional explicit error string. Most production callers pass null
+   * because the dispatcher already persisted the error to
+   * `tasks.metadata.errorMessage` (VOS-89 review-fix Finding 2). When
+   * supplied, takes precedence over the persisted value — useful for
+   * tests that want to assert the translator's formatting without
+   * round-tripping through the DB.
+   */
   childError: string | null,
 ): ToolResult {
   if (state === "TASK_STATE_COMPLETED") {
@@ -43,7 +51,26 @@ export function translateChildResult(
     return { content: [{ type: "text", text }] };
   }
   if (state === "TASK_STATE_FAILED") {
-    throw new AskAgentError(`child task failed: ${childError ?? "unknown"}`);
+    // Prefer caller-supplied childError; otherwise look up the persisted
+    // errorMessage from tasks.metadata (written by dispatch-child on the
+    // FAILED transition). Falls back to "unknown" if neither is present.
+    let resolved = childError;
+    if (resolved === null) {
+      const metaRow = db
+        .query("SELECT metadata FROM tasks WHERE id = ?")
+        .get(childTaskId) as { metadata: string | null } | undefined;
+      if (metaRow?.metadata) {
+        try {
+          const parsed = JSON.parse(metaRow.metadata) as Record<string, unknown>;
+          if (typeof parsed.errorMessage === "string") {
+            resolved = parsed.errorMessage;
+          }
+        } catch {
+          // malformed metadata — fall through to "unknown"
+        }
+      }
+    }
+    throw new AskAgentError(`child task failed: ${resolved ?? "unknown"}`);
   }
   if (state === "TASK_STATE_CANCELED") {
     throw new AskAgentError("child task cancelled");

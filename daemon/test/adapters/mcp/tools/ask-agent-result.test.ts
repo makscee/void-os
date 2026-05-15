@@ -62,6 +62,31 @@ describe("translateChildResult", () => {
     ).toThrow(/child task failed: boom/);
   });
 
+  test("FAILED reads errorMessage from tasks.metadata when childError is null (Finding 2)", () => {
+    // Simulate dispatch-child having persisted the error string on the
+    // FAILED transition.
+    db.run(
+      `UPDATE tasks SET state='TASK_STATE_FAILED',
+                        metadata = ?
+                  WHERE id = 'child'`,
+      [JSON.stringify({ errorMessage: "provider exploded: rate-limit-429" })],
+    );
+    expect(() =>
+      translateChildResult(db, "child", "TASK_STATE_FAILED", null),
+    ).toThrow(/child task failed: provider exploded: rate-limit-429/);
+  });
+
+  test("FAILED with malformed metadata falls back to 'unknown'", () => {
+    db.run(
+      `UPDATE tasks SET state='TASK_STATE_FAILED',
+                        metadata = 'not-json'
+                  WHERE id = 'child'`,
+    );
+    expect(() =>
+      translateChildResult(db, "child", "TASK_STATE_FAILED", null),
+    ).toThrow(/child task failed: unknown/);
+  });
+
   test("CANCELED throws AskAgentError", () => {
     expect(() =>
       translateChildResult(db, "child", "TASK_STATE_CANCELED", null),

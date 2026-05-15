@@ -37,13 +37,14 @@ describe("mountMcp /mcp", () => {
   let ctx: Ctx;
   beforeEach(async () => { ctx = await startApp(); });
 
-  test("tools/list returns vault.read and ask_user", async () => {
+  test("tools/list returns vault.read, ask_user, and ask_agent", async () => {
     const client = new Client({ name: "test", version: "0.0.0" });
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${ctx.server.port}/mcp`));
     await client.connect(transport);
     const { tools } = await client.listTools();
     // VOS-88 T7: ask_user joins vault.read on the tools list.
-    expect(tools.map((t) => t.name).sort()).toEqual(["ask_user", "vault.read"]);
+    // VOS-89 T10: ask_agent registered alongside.
+    expect(tools.map((t) => t.name).sort()).toEqual(["ask_agent", "ask_user", "vault.read"]);
     await client.close();
     ctx.server.stop();
   });

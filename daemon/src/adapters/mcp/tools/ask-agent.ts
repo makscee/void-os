@@ -113,6 +113,20 @@ export async function runAskAgent(
       targetAgent: args.target_agent_id,
     });
 
+    // VOS-89 review-fix Finding 4: emit task.state_changed for the parent's
+    // WORKING -> WAITING_ON_AGENT flip. The mint runs in a sibling tx and
+    // does not have bus access, so emission lives here. UI subscribers
+    // (and any other live listeners) need this to render the WAITING badge
+    // before the child terminates.
+    ctx.bus.emit({
+      type: "task.state_changed",
+      chatId: ctx.contextId,
+      payload: {
+        taskId: ctx.taskId,
+        state: "TASK_STATE_WAITING_ON_AGENT",
+      },
+    });
+
     // 8. Dispatch child task.
     await ctx.dispatchChildTask(childTaskId, {
       agentName: args.target_agent_id,

@@ -110,6 +110,7 @@ export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn 
           provider: providerFor(args.agentName),
           childTaskId,
           message: args.message,
+          cwd: deps.cwd,
         }).catch((err) => {
           // The runner already flips the child to FAILED + emits
           // task.state_changed in its catch path. This outer catch is a
@@ -137,10 +138,14 @@ interface RunChildArgs {
   provider: Provider;
   childTaskId: string;
   message: string;
+  /** Vault-aware cwd threaded from DispatchChildDeps. Passed to
+   *  provider.spawn so the child runs in the same working directory as
+   *  the parent (mirrors orchestrator wiring), NOT a hardcoded "/tmp". */
+  cwd: string;
 }
 
 async function runChildOnProvider(args: RunChildArgs): Promise<void> {
-  const { db, bus, messages, provider, childTaskId, message } = args;
+  const { db, bus, messages, provider, childTaskId, message, cwd } = args;
 
   const ctxRow = db
     .query("SELECT context_id FROM tasks WHERE id = ?")
@@ -168,7 +173,7 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
     handle = provider.spawn({
       runId: childTaskId, // child has no run row; reuse id for prompt/logs only
       prompt: message,
-      cwd: "/tmp",
+      cwd,
       chatId: contextId,
     });
 
@@ -238,10 +243,36 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
     );
   }
 
-  db.run(
-    "UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?",
-    [terminalState, Date.now(), childTaskId],
-  );
+  // VOS-89 review-fix Finding 2: persist errorMessage to tasks.metadata
+  // on FAILED so translateChildResult can surface the real error string
+  // to the parent ask_agent caller. Without this, the parent sees
+  // "child task failed: unknown" since the raw error is lost.
+  if (terminalState === "TASK_STATE_FAILED" && errorMessage !== null) {
+    const existingRow = db
+      .query("SELECT metadata FROM tasks WHERE id = ?")
+      .get(childTaskId) as { metadata: string | null } | undefined;
+    let meta: Record<string, unknown> = {};
+    if (existingRow?.metadata) {
+      try {
+        const parsed = JSON.parse(existingRow.metadata);
+        if (parsed && typeof parsed === "object") {
+          meta = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // malformed metadata — overwrite with fresh object
+      }
+    }
+    meta.errorMessage = errorMessage;
+    db.run(
+      "UPDATE tasks SET state = ?, metadata = ?, updated_at = ? WHERE id = ?",
+      [terminalState, JSON.stringify(meta), Date.now(), childTaskId],
+    );
+  } else {
+    db.run(
+      "UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?",
+      [terminalState, Date.now(), childTaskId],
+    );
+  }
 
   bus.emit({
     type: "task.state_changed",
