@@ -5,10 +5,18 @@ export default async function globalTeardown() {
   if (!statePath || !fs.existsSync(statePath)) return;
   const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
     daemonPid: number;
+    obsidianPid?: number;
     tmpdir: string;
   };
+  // Kill Obsidian first so it doesn't write stale state on shutdown.
+  if (state.obsidianPid) {
+    try { process.kill(state.obsidianPid, "SIGTERM"); } catch { /* already gone */ }
+  }
   try { process.kill(state.daemonPid, "SIGTERM"); } catch { /* already gone */ }
   await new Promise((r) => setTimeout(r, 2_000));
+  if (state.obsidianPid) {
+    try { process.kill(state.obsidianPid, 0); process.kill(state.obsidianPid, "SIGKILL"); } catch { /* gone */ }
+  }
   try { process.kill(state.daemonPid, 0); process.kill(state.daemonPid, "SIGKILL"); } catch { /* gone */ }
   try { fs.rmSync(state.tmpdir, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
