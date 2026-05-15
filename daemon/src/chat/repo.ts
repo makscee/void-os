@@ -21,6 +21,29 @@ export interface ChatRow {
   updated_at: number;
 }
 
+// VOS-82: A2A vocabulary aliases. `Context` is the A2A-aligned name for
+// what the daemon currently calls a Chat row (1 chat = 1 A2A context).
+// `Chat` stays as the user-facing alias so existing call-sites continue
+// to compile unchanged; downstream tickets migrate consumers off `Chat`.
+export type Context = ChatRow;
+export type Chat = ChatRow;
+
+// VOS-82: daemon-internal subprocess concept. NOT an A2A type — A2A
+// models task lifecycle as a `Task` (see ./types/a2a.ts). `Run` represents
+// the in-process spawn/cancel boundary; `task_id` is the optional link to
+// an A2A Task when the run is dispatching against one (populated by
+// downstream tickets that introduce Task tracking).
+export interface Run {
+  id: string;
+  chat_id: string;
+  agent: string;
+  kind: string;
+  status: string;
+  started_at: number;
+  ended_at?: number | null;
+  task_id?: string;
+}
+
 export interface ChatListItem {
   id: string;
   agent: string;

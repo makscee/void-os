@@ -6,4 +6,7 @@ export {
   type ChatRepo,
   type ChatRow,
   type ChatListItem,
+  type Context,
+  type Chat,
+  type Run,
 } from "./repo";
