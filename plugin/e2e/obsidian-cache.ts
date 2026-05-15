@@ -54,6 +54,20 @@ export async function acquireLock(lockDir: string, timeoutMs: number): Promise<v
   );
 }
 
+export function buildDmgUrl(version: string): string {
+  return `https://github.com/obsidianmd/obsidian-releases/releases/download/v${version}/Obsidian-${version}.dmg`;
+}
+
+export function assertDmgResponse(res: Response, url: string): void {
+  if (!res.ok) {
+    throw new Error(`obsidian-cache: download failed: HTTP ${res.status} for ${url} (final url: ${res.url || url})`);
+  }
+  const ct = res.headers.get("content-type") ?? "";
+  if (!ct.includes("octet-stream")) {
+    throw new Error(`obsidian-cache: unexpected content-type "${ct}" for ${url} — redirect may have dropped to HTML`);
+  }
+}
+
 export async function ensureObsidian(): Promise<string> {
   if (process.platform !== "darwin") {
     throw new Error(

@@ -158,3 +158,30 @@ describe("acquireLock", () => {
     }
   });
 });
+
+import { buildDmgUrl, assertDmgResponse } from "../e2e/obsidian-cache";
+
+describe("buildDmgUrl", () => {
+  test("matches the GitHub releases asset URL pattern", () => {
+    expect(buildDmgUrl("1.8.10")).toBe(
+      "https://github.com/obsidianmd/obsidian-releases/releases/download/v1.8.10/Obsidian-1.8.10.dmg",
+    );
+  });
+});
+
+describe("assertDmgResponse", () => {
+  test("throws on non-ok response", () => {
+    const r = new Response("nope", { status: 404, headers: { "content-type": "text/plain" } });
+    expect(() => assertDmgResponse(r, "https://x")).toThrow(/HTTP 404/);
+  });
+
+  test("throws when content-type is not octet-stream", () => {
+    const r = new Response("<html>", { status: 200, headers: { "content-type": "text/html" } });
+    expect(() => assertDmgResponse(r, "https://x")).toThrow(/content-type/i);
+  });
+
+  test("passes for octet-stream + 200", () => {
+    const r = new Response("\0\0\0", { status: 200, headers: { "content-type": "application/octet-stream" } });
+    expect(() => assertDmgResponse(r, "https://x")).not.toThrow();
+  });
+});
