@@ -1,15 +1,20 @@
-// VOS-80 architecture (a): messages-repo tests.
+// VOS-83 mig-0007: messages-repo tests (single-method API).
 //
-// Covers append + walk roundtrip for all four roles, ordering within and
-// across runs, assistant-row idempotency (UPDATE on existing run_id), and
-// the lastAssistantText derivation used to keep chats.last_msg in sync.
+// Drives the rewritten repo: `appendMessage(taskId, contextId, runId, role,
+// parts[], ts?)` writing to the A2A-shaped `messages` table (task_id FK,
+// role ∈ {ROLE_USER, ROLE_AGENT}, parts JSON, parts_text flatten).
+//
+// Seeds rows directly via raw SQL: chat repo is still wired to the legacy
+// `chats` table name (renamed to `contexts` by 0007) — fixing chat repo is
+// a downstream task. Inline helpers below stand contexts + tasks + runs up
+// against the live schema.
 
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeChatRepo } from "../../src/chat/repo";
 import { makeMessagesRepo } from "../../src/chat/messages-repo";
+import type { Part } from "../../src/types/a2a";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -23,194 +28,242 @@ const MIGRATIONS_DIR = join(
 
 function freshDb(): Database {
   const db = new Database(":memory:");
-  for (const m of [
-    "0001_init.sql",
-    "0002_runs_columns.sql",
-    "0003_chat_lifecycle.sql",
-    "0004_messages.sql",
-  ]) {
-    db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
+  // Apply ALL migrations in lex order — matches the production runner.
+  for (const f of readdirSync(MIGRATIONS_DIR).filter((x) => x.endsWith(".sql")).sort()) {
+    db.run(readFileSync(join(MIGRATIONS_DIR, f), "utf8"));
   }
   return db;
 }
 
-function seedChat(db: Database, runId: string | null = "run-1"): string {
-  const chat = makeChatRepo(db).create({ agent: "maya" });
-  if (runId) {
-    db.run(
-      "INSERT INTO runs (id, chat_id, agent, kind, status, started_at) VALUES (?, ?, 'maya', 'chat', 'running', ?)",
-      [runId, chat.id, Date.now()],
-    );
-  }
-  return chat.id;
+function seedContext(db: Database): string {
+  const id = `ctx-${Math.random().toString(36).slice(2, 10)}`;
+  const now = Date.now();
+  db.run(
+    "INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived) VALUES (?, 'maya', NULL, ?, ?, 0)",
+    [id, now, now],
+  );
+  return id;
 }
 
-test("appendUser + walk yields a user TextMessage entry", () => {
-  const db = freshDb();
-  const chatId = seedChat(db);
-  const repo = makeMessagesRepo(db);
-
-  repo.appendUser(chatId, "run-1", "hello world", 1000);
-
-  expect(repo.walk(chatId)).toEqual([
-    { role: "user", content: "hello world", ts: 1000 },
-  ]);
-});
-
-test("appendAssistant is idempotent on (chat_id, run_id) — UPDATEs on second call", () => {
-  const db = freshDb();
-  const chatId = seedChat(db);
-  const repo = makeMessagesRepo(db);
-
-  repo.appendAssistant(chatId, "run-1", "partial ", 1000);
-  repo.appendAssistant(chatId, "run-1", "partial done", 1001);
-
-  const out = repo.walk(chatId);
-  expect(out).toEqual([
-    { role: "assistant", content: "partial done", ts: 1001 },
-  ]);
-});
-
-test("appendToolUse stores name + JSON-stringified input", () => {
-  const db = freshDb();
-  const chatId = seedChat(db);
-  const repo = makeMessagesRepo(db);
-
-  repo.appendToolUse(
-    chatId,
-    "run-1",
-    "tool-call-abc",
-    "Bash",
-    JSON.stringify({ cmd: "ls" }),
-    2000,
+function seedTask(db: Database, contextId: string): string {
+  const id = `task-${Math.random().toString(36).slice(2, 10)}`;
+  const now = Date.now();
+  db.run(
+    "INSERT INTO tasks (id, context_id, state, tokens_in, tokens_out, metadata, created_at, updated_at) VALUES (?, ?, 'TASK_STATE_SUBMITTED', 0, 0, '{}', ?, ?)",
+    [id, contextId, now, now],
   );
+  return id;
+}
 
-  expect(repo.walk(chatId)).toEqual([
+function seedRun(
+  db: Database,
+  contextId: string,
+  runId = "run-1",
+  status = "running",
+): string {
+  db.run(
+    "INSERT INTO runs (id, chat_id, agent, kind, status, started_at) VALUES (?, ?, 'maya', 'chat', ?, ?)",
+    [runId, contextId, status, Date.now()],
+  );
+  return runId;
+}
+
+// ---------------------------------------------------------------------------
+
+test("appendMessage(ROLE_USER) round-trips one user text entry via walk", () => {
+  const db = freshDb();
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
+  const repo = makeMessagesRepo(db);
+
+  const parts: Part[] = [{ text: "hi" }];
+  repo.appendMessage(tid, cid, "run-1", "ROLE_USER", parts, 1000);
+
+  expect(repo.walk(cid)).toEqual([
+    { role: "user", content: "hi", ts: 1000 },
+  ]);
+});
+
+test("appendMessage(ROLE_AGENT) with mixed parts round-trips via walk", () => {
+  const db = freshDb();
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
+  const repo = makeMessagesRepo(db);
+
+  const parts: Part[] = [
+    { text: "looking" },
+    {
+      data: {
+        kind: "tool_use",
+        tool_call_id: "c1",
+        tool_name: "read",
+        input: { path: "/x" },
+      },
+    },
+    { text: "done" },
+  ];
+  repo.appendMessage(tid, cid, "run-1", "ROLE_AGENT", parts, 2000);
+
+  expect(repo.walk(cid)).toEqual([
+    { role: "assistant", content: "looking\ndone", ts: 2000 },
     {
       role: "tool_use",
-      tool_call_id: "tool-call-abc",
-      name: "Bash",
-      input: { cmd: "ls" },
+      tool_call_id: "c1",
+      name: "read",
+      input: { path: "/x" },
       ts: 2000,
     },
   ]);
 });
 
-test("appendToolResult stores output text + is_error", () => {
+test("ROLE_AGENT UPSERTs on (context_id, run_id) — second call overwrites parts/parts_text/ts", () => {
   const db = freshDb();
-  const chatId = seedChat(db);
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
   const repo = makeMessagesRepo(db);
 
-  repo.appendToolResult(chatId, "run-1", "tool-call-abc", "out", false, 2001);
-  repo.appendToolResult(chatId, "run-1", "tool-call-def", "err", true, 2002);
+  const id1 = repo.appendMessage(
+    tid,
+    cid,
+    "run-1",
+    "ROLE_AGENT",
+    [{ text: "partial" }],
+    1000,
+  );
+  const id2 = repo.appendMessage(
+    tid,
+    cid,
+    "run-1",
+    "ROLE_AGENT",
+    [{ text: "partial done" }],
+    1010,
+  );
 
-  expect(repo.walk(chatId)).toEqual([
-    {
-      role: "tool_result",
-      tool_call_id: "tool-call-abc",
-      output: "out",
-      is_error: false,
-      ts: 2001,
-    },
-    {
-      role: "tool_result",
-      tool_call_id: "tool-call-def",
-      output: "err",
-      is_error: true,
-      ts: 2002,
-    },
+  expect(id2).toBe(id1);
+  expect(repo.walk(cid)).toEqual([
+    { role: "assistant", content: "partial done", ts: 1010 },
+  ]);
+  // Ensure UPSERT, not INSERT — single row in the table.
+  const count = db
+    .query("SELECT COUNT(*) AS n FROM messages WHERE context_id = ?")
+    .get(cid) as { n: number };
+  expect(count.n).toBe(1);
+});
+
+test("parts_text stored as concatenation of TextPart.text joined by '\\n'", () => {
+  const db = freshDb();
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
+  const repo = makeMessagesRepo(db);
+
+  repo.appendMessage(
+    tid,
+    cid,
+    "run-1",
+    "ROLE_AGENT",
+    [
+      { text: "first" },
+      { data: { kind: "tool_use", tool_call_id: "x", tool_name: "y", input: {} } },
+      { text: "second" },
+    ],
+    1000,
+  );
+
+  const row = db
+    .query("SELECT parts_text FROM messages WHERE context_id = ?")
+    .get(cid) as { parts_text: string };
+  expect(row.parts_text).toBe("first\nsecond");
+});
+
+test("lastAssistantText returns parts_text of most recent ROLE_AGENT row", () => {
+  const db = freshDb();
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
+  seedRun(db, cid, "run-2");
+  const repo = makeMessagesRepo(db);
+
+  expect(repo.lastAssistantText(cid)).toBe("");
+
+  repo.appendMessage(tid, cid, "run-1", "ROLE_USER", [{ text: "q" }], 1000);
+  repo.appendMessage(tid, cid, "run-1", "ROLE_AGENT", [{ text: "first answer" }], 1010);
+  expect(repo.lastAssistantText(cid)).toBe("first answer");
+
+  repo.appendMessage(tid, cid, "run-2", "ROLE_AGENT", [{ text: "second answer" }], 1020);
+  expect(repo.lastAssistantText(cid)).toBe("second answer");
+});
+
+test("walk orders by (ts ASC, ord ASC) with ord monotone per context", () => {
+  const db = freshDb();
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
+  seedRun(db, cid, "run-2");
+  const repo = makeMessagesRepo(db);
+
+  repo.appendMessage(tid, cid, "run-1", "ROLE_USER", [{ text: "q1" }], 1000);
+  repo.appendMessage(tid, cid, "run-1", "ROLE_AGENT", [{ text: "a1" }], 1010);
+  repo.appendMessage(tid, cid, "run-2", "ROLE_USER", [{ text: "q2" }], 1020);
+  repo.appendMessage(tid, cid, "run-2", "ROLE_AGENT", [{ text: "a2" }], 1030);
+
+  const out = repo.walk(cid);
+  expect(out.map((e) => (e as { content?: string }).content)).toEqual([
+    "q1",
+    "a1",
+    "q2",
+    "a2",
   ]);
 });
 
-test("walk preserves insertion order across runs via (ts, ord)", () => {
+test("walk ord-tiebreaks rows that share the same ts", () => {
   const db = freshDb();
-  const chatId = seedChat(db, "run-1");
-  db.run(
-    "INSERT INTO runs (id, chat_id, agent, kind, status, started_at) VALUES (?, ?, 'maya', 'chat', 'running', ?)",
-    ["run-2", chatId, Date.now()],
-  );
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
   const repo = makeMessagesRepo(db);
 
-  repo.appendUser(chatId, "run-1", "q1", 1000);
-  repo.appendAssistant(chatId, "run-1", "a1", 1010);
-  repo.appendUser(chatId, "run-2", "q2", 1020);
-  repo.appendAssistant(chatId, "run-2", "a2", 1030);
+  // Three appends at the same ts; ord must keep them in insertion order.
+  repo.appendMessage(tid, cid, "run-1", "ROLE_USER", [{ text: "first" }], 5000);
+  // Use a separate runId so UPSERT doesn't merge these into one agent row.
+  seedRun(db, cid, "run-1b");
+  repo.appendMessage(tid, cid, "run-1b", "ROLE_AGENT", [{ text: "second" }], 5000);
+  seedRun(db, cid, "run-1c");
+  repo.appendMessage(tid, cid, "run-1c", "ROLE_AGENT", [{ text: "third" }], 5000);
 
-  const out = repo.walk(chatId);
-  expect(out.map((m: any) => m.content)).toEqual(["q1", "a1", "q2", "a2"]);
-});
-
-test("walk preserves ord when ts ties (multiple tool_use within one ts)", () => {
-  const db = freshDb();
-  const chatId = seedChat(db);
-  const repo = makeMessagesRepo(db);
-
-  repo.appendAssistant(chatId, "run-1", "thinking", 5000);
-  repo.appendToolUse(chatId, "run-1", "t1", "Bash", "{}", 5000);
-  repo.appendToolUse(chatId, "run-1", "t2", "Read", "{}", 5000);
-
-  const out = repo.walk(chatId);
-  expect(out.map((m: any) => m.role)).toEqual([
-    "assistant",
-    "tool_use",
-    "tool_use",
+  const out = repo.walk(cid);
+  expect(out.map((e) => (e as { content?: string }).content)).toEqual([
+    "first",
+    "second",
+    "third",
   ]);
-  expect((out[1] as any).tool_call_id).toBe("t1");
-  expect((out[2] as any).tool_call_id).toBe("t2");
 });
 
-test("lastAssistantText returns latest assistant content or empty", () => {
+test("walk surfaces cancelled=true on ROLE_AGENT rows whose run.status='cancelled'", () => {
   const db = freshDb();
-  const chatId = seedChat(db);
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
   const repo = makeMessagesRepo(db);
 
-  expect(repo.lastAssistantText(chatId)).toBe("");
-
-  repo.appendUser(chatId, "run-1", "q", 1000);
-  repo.appendAssistant(chatId, "run-1", "first answer", 1010);
-  expect(repo.lastAssistantText(chatId)).toBe("first answer");
-
-  db.run(
-    "INSERT INTO runs (id, chat_id, agent, kind, status, started_at) VALUES ('run-2', ?, 'maya', 'chat', 'running', ?)",
-    [chatId, Date.now()],
+  repo.appendMessage(tid, cid, "run-1", "ROLE_USER", [{ text: "go" }], 1000);
+  repo.appendMessage(
+    tid,
+    cid,
+    "run-1",
+    "ROLE_AGENT",
+    [{ text: "partial answer" }],
+    1010,
   );
-  repo.appendAssistant(chatId, "run-2", "second answer", 1020);
-  expect(repo.lastAssistantText(chatId)).toBe("second answer");
-});
-
-test("walk returns [] for chat with no rows", () => {
-  const db = freshDb();
-  const chatId = seedChat(db, null);
-  const repo = makeMessagesRepo(db);
-  expect(repo.walk(chatId)).toEqual([]);
-});
-
-test("appendToolUse with malformed JSON input falls back to raw string", () => {
-  const db = freshDb();
-  const chatId = seedChat(db);
-  const repo = makeMessagesRepo(db);
-
-  // Caller should pass valid JSON, but we should not crash on malformed.
-  repo.appendToolUse(chatId, "run-1", "t1", "Bash", "not-json", 2000);
-  const out = repo.walk(chatId);
-  expect((out[0] as any).input).toBe("not-json");
-});
-
-test("walk surfaces cancelled=true on assistant entries from cancelled runs", () => {
-  const db = freshDb();
-  const chatId = seedChat(db, "run-1");
-  const repo = makeMessagesRepo(db);
-
-  repo.appendUser(chatId, "run-1", "go", 1000);
-  repo.appendAssistant(chatId, "run-1", "partial answer", 1010);
-  // Simulate the orchestrator's terminal stamp for ESC cancel.
-  db.run("UPDATE runs SET status = 'cancelled', ended_at = ? WHERE id = ?", [
+  db.run("UPDATE runs SET status='cancelled', ended_at=? WHERE id=?", [
     1020,
     "run-1",
   ]);
 
-  const out = repo.walk(chatId);
-  expect(out).toEqual([
+  expect(repo.walk(cid)).toEqual([
     { role: "user", content: "go", ts: 1000 },
     {
       role: "assistant",
@@ -221,38 +274,110 @@ test("walk surfaces cancelled=true on assistant entries from cancelled runs", ()
   ]);
 });
 
-test("walk omits cancelled flag on assistant entries from done runs", () => {
+test("walk omits cancelled flag on ROLE_AGENT rows from done runs", () => {
   const db = freshDb();
-  const chatId = seedChat(db, "run-1");
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
   const repo = makeMessagesRepo(db);
 
-  repo.appendAssistant(chatId, "run-1", "all good", 1010);
-  db.run("UPDATE runs SET status = 'done', ended_at = ? WHERE id = ?", [
-    1020,
-    "run-1",
-  ]);
+  repo.appendMessage(tid, cid, "run-1", "ROLE_AGENT", [{ text: "ok" }], 1010);
+  db.run("UPDATE runs SET status='done', ended_at=? WHERE id=?", [1020, "run-1"]);
 
-  const out = repo.walk(chatId);
-  expect(out).toEqual([
-    { role: "assistant", content: "all good", ts: 1010 },
-  ]);
+  const out = repo.walk(cid);
+  expect(out).toEqual([{ role: "assistant", content: "ok", ts: 1010 }]);
   expect((out[0] as { cancelled?: boolean }).cancelled).toBeUndefined();
 });
 
-test("walk does not stamp cancelled on user rows from cancelled runs", () => {
+test("walk does not stamp cancelled on ROLE_USER rows from cancelled runs", () => {
   const db = freshDb();
-  const chatId = seedChat(db, "run-1");
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
   const repo = makeMessagesRepo(db);
 
-  repo.appendUser(chatId, "run-1", "go", 1000);
-  db.run("UPDATE runs SET status = 'cancelled', ended_at = ? WHERE id = ?", [
+  repo.appendMessage(tid, cid, "run-1", "ROLE_USER", [{ text: "go" }], 1000);
+  db.run("UPDATE runs SET status='cancelled', ended_at=? WHERE id=?", [
     1020,
     "run-1",
   ]);
 
-  const out = repo.walk(chatId);
-  expect(out).toEqual([
-    { role: "user", content: "go", ts: 1000 },
-  ]);
+  const out = repo.walk(cid);
+  expect(out).toEqual([{ role: "user", content: "go", ts: 1000 }]);
   expect((out[0] as { cancelled?: boolean }).cancelled).toBeUndefined();
+});
+
+test("walk decodes tool_result DataParts back into ReplayEntry shape", () => {
+  const db = freshDb();
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  seedRun(db, cid, "run-1");
+  const repo = makeMessagesRepo(db);
+
+  // Tool results travel back from the model as ROLE_USER parts in A2A.
+  repo.appendMessage(
+    tid,
+    cid,
+    "run-1",
+    "ROLE_USER",
+    [
+      {
+        data: {
+          kind: "tool_result",
+          tool_call_id: "c1",
+          output: "ok",
+          is_error: false,
+        },
+      },
+      {
+        data: {
+          kind: "tool_result",
+          tool_call_id: "c2",
+          output: "boom",
+          is_error: true,
+        },
+      },
+    ],
+    2000,
+  );
+
+  expect(repo.walk(cid)).toEqual([
+    {
+      role: "tool_result",
+      tool_call_id: "c1",
+      output: "ok",
+      is_error: false,
+      ts: 2000,
+    },
+    {
+      role: "tool_result",
+      tool_call_id: "c2",
+      output: "boom",
+      is_error: true,
+      ts: 2000,
+    },
+  ]);
+});
+
+test("walk returns [] for a context with no rows", () => {
+  const db = freshDb();
+  const cid = seedContext(db);
+  const repo = makeMessagesRepo(db);
+  expect(repo.walk(cid)).toEqual([]);
+});
+
+test("appendMessage with null runId on ROLE_AGENT always inserts (no UPSERT)", () => {
+  const db = freshDb();
+  const cid = seedContext(db);
+  const tid = seedTask(db, cid);
+  const repo = makeMessagesRepo(db);
+
+  const id1 = repo.appendMessage(tid, cid, null, "ROLE_AGENT", [{ text: "a" }], 1000);
+  const id2 = repo.appendMessage(tid, cid, null, "ROLE_AGENT", [{ text: "b" }], 1010);
+
+  expect(id2).not.toBe(id1);
+  const count = db
+    .query("SELECT COUNT(*) AS n FROM messages WHERE context_id = ?")
+    .get(cid) as { n: number };
+  expect(count.n).toBe(2);
 });
