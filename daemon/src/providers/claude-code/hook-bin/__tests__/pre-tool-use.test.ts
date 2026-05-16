@@ -104,6 +104,23 @@ describe("pre-tool-use hook", () => {
     expect(decision.continue).toBe(false);
   });
 
+  // VOS-106 T11.1: pipe/chain bypass — `cat x | tee y` parses verb=cat in the
+  // naive tokenizer and never classifies `tee` as a write. Meta-token gate
+  // must fail-closed even when both reads and writes scope are world-broad.
+  it("Bash: pipe-to-tee denies via shell-meta gate even with broad scope", async () => {
+    const broad = {
+      VOS_READ_PATHS: JSON.stringify([`${VAULT}/**`]),
+      VOS_WRITE_PATHS: JSON.stringify([`${VAULT}/**`]),
+      VOS_SYSTEM_DENY: JSON.stringify([]),
+    };
+    const { decision } = await runHook(
+      { tool_name: "Bash", tool_input: { command: "cat x | tee y" } },
+      broad,
+    );
+    expect(decision.continue).toBe(false);
+    expect(decision.stopReason).toMatch(/BASH_SHELL_(META|SUBSTITUTION)/);
+  });
+
   it("Bash: pwd allows without scope check", async () => {
     const { decision } = await runHook(
       { tool_name: "Bash", tool_input: { command: "pwd" } },

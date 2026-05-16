@@ -6,7 +6,11 @@
 
 import * as path from "node:path";
 import { matchPath } from "../../../permissions/match";
-import { parseShellPaths, SHELL_SUBSTITUTION_SENTINEL } from "./parse-shell-paths";
+import {
+  parseShellPaths,
+  SHELL_META_SENTINEL,
+  SHELL_SUBSTITUTION_SENTINEL,
+} from "./parse-shell-paths";
 
 interface ToolCall {
   tool_name: string;
@@ -132,6 +136,12 @@ if (tool === "Bash") {
   // otherwise match a `**` glob.
   if (rdPaths.includes(SHELL_SUBSTITUTION_SENTINEL) || wrPaths.includes(SHELL_SUBSTITUTION_SENTINEL)) {
     emit({ continue: false, stopReason: "BASH_SHELL_SUBSTITUTION: unanalyzable command" });
+  }
+  // VOS-106 T11.1: meta-token sentinel (pipes, chains, stderr redirects).
+  // Same fail-closed treatment as shell substitution — literal-token analysis
+  // can't see verbs hiding behind `|`/`;`/`&&`/`2>`/`<`, so deny outright.
+  if (rdPaths.includes(SHELL_META_SENTINEL) || wrPaths.includes(SHELL_META_SENTINEL)) {
+    emit({ continue: false, stopReason: "BASH_SHELL_META: chain/pipe/redirect unanalyzable" });
   }
   if (wrPaths.length > 0) {
     const dec = gateWrite(wrPaths, cwd, writes, systemDeny);

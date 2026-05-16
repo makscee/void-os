@@ -71,4 +71,59 @@ describe("parseShellPaths", () => {
       writes: [],
     });
   });
+
+  // VOS-106 T11.1: chain/pipe/stderr-redirect bypass hardening. Option A
+  // (sentinel-on-meta) — any meta-token poisons the parse, fail-closed in
+  // both reads and writes so the hook denies regardless of which gate runs.
+  it("pipe: cat secret | tee /etc/foo → meta sentinel in both reads and writes", () => {
+    expect(parseShellPaths("cat secret | tee /etc/foo")).toEqual({
+      reads: ["__SHELL_META__"],
+      writes: ["__SHELL_META__"],
+    });
+  });
+  it("semicolon chain: cat a; rm b → meta sentinel", () => {
+    expect(parseShellPaths("cat a; rm b")).toEqual({
+      reads: ["__SHELL_META__"],
+      writes: ["__SHELL_META__"],
+    });
+  });
+  it("&& chain: cat a && rm b → meta sentinel", () => {
+    expect(parseShellPaths("cat a && rm b")).toEqual({
+      reads: ["__SHELL_META__"],
+      writes: ["__SHELL_META__"],
+    });
+  });
+  it("|| chain: cat a || rm b → meta sentinel", () => {
+    expect(parseShellPaths("cat a || rm b")).toEqual({
+      reads: ["__SHELL_META__"],
+      writes: ["__SHELL_META__"],
+    });
+  });
+  it("stderr redirect: echo hi 2> /tmp/err → meta sentinel", () => {
+    expect(parseShellPaths("echo hi 2> /tmp/err")).toEqual({
+      reads: ["__SHELL_META__"],
+      writes: ["__SHELL_META__"],
+    });
+  });
+  it("combined stdout+stderr: echo hi &> /tmp/log → meta sentinel", () => {
+    expect(parseShellPaths("echo hi &> /tmp/log")).toEqual({
+      reads: ["__SHELL_META__"],
+      writes: ["__SHELL_META__"],
+    });
+  });
+  it("input redirect: cat < /etc/passwd → meta sentinel", () => {
+    expect(parseShellPaths("cat < /etc/passwd")).toEqual({
+      reads: ["__SHELL_META__"],
+      writes: ["__SHELL_META__"],
+    });
+  });
+  it("no false positive: pure pwd still parses cleanly", () => {
+    expect(parseShellPaths("pwd")).toEqual({ reads: [], writes: [] });
+  });
+  it("no false positive: cat vault/x.md still parses cleanly", () => {
+    expect(parseShellPaths("cat vault/x.md")).toEqual({
+      reads: ["vault/x.md"],
+      writes: [],
+    });
+  });
 });

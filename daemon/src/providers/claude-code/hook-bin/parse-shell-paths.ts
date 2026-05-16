@@ -37,7 +37,28 @@ function looksLikePath(token: string): boolean {
  *  meta, prefixed/suffixed with `__` to avoid collision with real paths. */
 export const SHELL_SUBSTITUTION_SENTINEL = "__SHELL_SUBSTITUTION__";
 
+/** VOS-106 T11.1: sentinel for shell meta-tokens (pipes, chains, input
+ *  redirects, stderr/combined redirects). Same fail-closed pattern as
+ *  SHELL_SUBSTITUTION_SENTINEL — we emit it into BOTH reads and writes so
+ *  whichever gate the caller evaluates first will deny. Picked Option A
+ *  (deny-on-meta) over Option B (split-and-recurse) for simplicity and
+ *  zero recursion risk; precision loss on benign cases like `pwd | head`
+ *  is acceptable since the hook's allow-list is intentionally narrow. */
+export const SHELL_META_SENTINEL = "__SHELL_META__";
+
 const SUBSTITUTION_RE = /\$\(|`|\$\{/;
+
+// Meta-token detection. Order matters in the alternation only for readability;
+// any single match short-circuits to the sentinel.
+//   `\|`  pipe (also covers `||` since one match is enough)
+//   `;`   command separator
+//   `&&`  AND chain
+//   `&>`  combined stdout+stderr redirect
+//   `\d+>` numbered fd redirect, e.g. `2>` stderr — must precede bare `>` rule
+//   `<`   input redirect (also matches heredoc `<<`)
+// We deliberately do NOT match bare `>` / `>>` here — those are handled
+// downstream as the existing redirect-target capture.
+const META_RE = /\||;|&&|&>|\d+>|<|\|\|/;
 
 export function parseShellPaths(cmd: string): ShellPaths {
   const reads: string[] = [];
@@ -50,6 +71,17 @@ export function parseShellPaths(cmd: string): ShellPaths {
   // for benign cases (e.g. `echo $HOME`) but never silently allows a bypass.
   if (SUBSTITUTION_RE.test(cmd)) {
     return { reads: [SHELL_SUBSTITUTION_SENTINEL], writes: [] };
+  }
+
+  // VOS-106 T11.1 security gate: command chaining / pipes / non-stdout
+  // redirects let a write-verb hide behind a read-verb (e.g. `cat x | tee y`
+  // parses verb=cat and never sees tee). Fail-closed by emitting the meta
+  // sentinel into both reads and writes — neither gate can match it.
+  if (META_RE.test(cmd)) {
+    return {
+      reads: [SHELL_META_SENTINEL],
+      writes: [SHELL_META_SENTINEL],
+    };
   }
 
   // Split on whitespace, preserving redirect operators as their own tokens.
