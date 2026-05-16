@@ -103,6 +103,7 @@ export async function drainRun(args: DrainRunArgs): Promise<TerminalOutcome> {
     }
   }
 
+  let handleDoneWon = false;
   const abortSentinel = signal
     ? new Promise<{ reason: "cancel" }>((resolve) => {
         if (signal.aborted) resolve({ reason: "cancel" });
@@ -111,11 +112,16 @@ export async function drainRun(args: DrainRunArgs): Promise<TerminalOutcome> {
       })
     : null;
 
-  const done = abortSentinel
-    ? await Promise.race([handle.done, abortSentinel])
-    : await handle.done;
+  const trackedDone = handle.done.then((v) => {
+    handleDoneWon = true;
+    return v;
+  });
 
-  if (signal?.aborted && done.reason === "cancel") {
+  const done = abortSentinel
+    ? await Promise.race([trackedDone, abortSentinel])
+    : await trackedDone;
+
+  if (signal?.aborted && !handleDoneWon) {
     console.warn("[run-driver] handle.done did not resolve before signal.aborted — provider may be leaking");
   }
 

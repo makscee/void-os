@@ -124,6 +124,29 @@ describe("run-driver: warn on stuck handle.done", () => {
   });
 });
 
+describe("run-driver: no warn when handle.done resolves on cancel", () => {
+  it("does not warn when handle.done resolves with cancel before sentinel", async () => {
+    async function* gen() {
+      yield { type: "parts", role: "ROLE_AGENT", parts: [{ text: "x" }], ts: 1 };
+      while (true) { await new Promise((r) => setTimeout(r, 1)); }
+    }
+    const ac = new AbortController();
+    // handle.done resolves cleanly when cancel is observed — well-behaved provider.
+    const done = new Promise<{ reason: "cancel" }>((resolve) => {
+      ac.signal.addEventListener("abort", () => resolve({ reason: "cancel" }), { once: true });
+    });
+    const handle: any = { events: gen(), cancel: async () => true, done };
+    const warnSpy: any[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: any[]) => { warnSpy.push(args); };
+    try {
+      setTimeout(() => ac.abort(), 5);
+      await drainRun({ handle, signal: ac.signal });
+    } finally { console.warn = origWarn; }
+    expect(warnSpy.some((a) => String(a[0]).includes("[run-driver]"))).toBe(false);
+  });
+});
+
 describe("run-driver: terminal reasons", () => {
   for (const reason of ["exit", "cancel", "timeout", "error"] as const) {
     it(`propagates ${reason}`, async () => {
