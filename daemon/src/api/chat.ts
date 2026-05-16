@@ -9,12 +9,96 @@
 // The orchestrator is injected (optional) so tests can supply a mock and
 // production wires the real one in `buildApp`. When absent, POST routes
 // short-circuit to 500 — production wiring is responsible for providing it.
+//
+// VOS-91 T8: mountChatTaskStateFanout subscribes to the in-process bus and
+// fans out `chat.task.state_changed` WS frames whenever a task changes state.
 
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
 import { makeChatRepo } from "../chat/repo.ts";
 import { makeSessionReplay } from "../chat/session-replay.ts";
 import type { Orchestrator } from "../chat/orchestrator.ts";
+import type { EventBus } from "../events/index.ts";
+
+// ---------------------------------------------------------------------------
+// VOS-91 T8: chat.task.state_changed fan-out
+// ---------------------------------------------------------------------------
+
+export type TaskStateChangedPayload = {
+  chat_id: string;
+  task_id: string;
+  parent_task_id: string | null;
+  state:
+    | "SUBMITTED"
+    | "WORKING"
+    | "WAITING_ON_AGENT"
+    | "INPUT_REQUIRED"
+    | "COMPLETED"
+    | "FAILED"
+    | "CANCELED";
+  error?: string;
+};
+
+export interface ChatTaskStateFanoutDeps {
+  db: Database;
+  bus: EventBus;
+  broadcast: (
+    chatId: string,
+    frame: { type: "chat.task.state_changed"; payload: TaskStateChangedPayload },
+  ) => void;
+}
+
+/**
+ * Subscribe to `task.state_changed` events on the bus and fan-out a
+ * `chat.task.state_changed` WS frame to the relevant chat's subscribers.
+ *
+ * Returns an unsubscribe function (pass to cleanup / server teardown).
+ */
+export function mountChatTaskStateFanout(
+  deps: ChatTaskStateFanoutDeps,
+): () => void {
+  return deps.bus.subscribe("task.state_changed", (event) => {
+    const p = (event.payload ?? {}) as { taskId?: string; state?: string };
+    if (!p.taskId || !p.state) return;
+
+    const row = deps.db
+      .query(
+        "SELECT context_id, parent_task_id, metadata FROM tasks WHERE id = ?",
+      )
+      .get(p.taskId) as
+      | {
+          context_id: string;
+          parent_task_id: string | null;
+          metadata: string | null;
+        }
+      | undefined;
+    if (!row) return;
+
+    const stripped = p.state.replace(/^TASK_STATE_/, "") as TaskStateChangedPayload["state"];
+    const payload: TaskStateChangedPayload = {
+      chat_id: row.context_id,
+      task_id: p.taskId,
+      parent_task_id: row.parent_task_id,
+      state: stripped,
+    };
+
+    if (stripped === "FAILED" && row.metadata) {
+      try {
+        const meta = JSON.parse(row.metadata) as { errorMessage?: unknown };
+        if (typeof meta.errorMessage === "string") payload.error = meta.errorMessage;
+      } catch {
+        /* ignore malformed metadata */
+      }
+    }
+
+    deps.broadcast(row.context_id, {
+      type: "chat.task.state_changed",
+      payload,
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 
 export interface ChatApiOpts {
   // Optional orchestrator. When omitted, POST /chat/:id/message returns 500.

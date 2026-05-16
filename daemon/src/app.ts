@@ -21,7 +21,7 @@ import { mountApi } from "./api/index.ts";
 import { resolveTz } from "./cost/tz.ts";
 import { chatsApi } from "./api/chats.ts";
 import { agentsApi } from "./api/agents.ts";
-import { chatApi } from "./api/chat.ts";
+import { chatApi, mountChatTaskStateFanout } from "./api/chat.ts";
 import { mountMcp } from "./adapters/mcp/index.ts";
 import { mountAnswerRoute } from "./api/answer.ts";
 import { createEventBus } from "./events/index.ts";
@@ -96,6 +96,15 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     resumeParentOnChildTerminal(deps.db, p.taskId, (t, payload) =>
       bus.emit({ type: t, payload }),
     );
+  });
+
+  // VOS-91 T8: fan-out chat.task.state_changed WS frames for every task
+  // state transition. All chats share one WS broadcast channel — the
+  // payload already carries chat_id for client-side filtering.
+  mountChatTaskStateFanout({
+    db: deps.db,
+    bus,
+    broadcast: (_chatId, frame) => emit(frame.type, frame.payload as Record<string, unknown>),
   });
 
   if (!orchestrator || !titler) {
