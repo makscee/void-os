@@ -136,7 +136,9 @@ export function makeSessionReplay(db: Database): SessionReplay {
                WHERE t.context_id = ? AND t.parent_tool_call_id IS NOT NULL`,
             )
             .all(chatId) as typeof childRows;
-        } catch {
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!msg.includes("no such column")) throw e;
           childRows = [];
         }
 
