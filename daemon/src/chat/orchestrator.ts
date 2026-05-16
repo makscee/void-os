@@ -369,7 +369,9 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
   // up the current_run_id, flips the flag, and calls handle.cancel() on
   // the live ProviderHandle — so the subprocess receives SIGTERM/SIGKILL
   // and the for-await loop unblocks. Cleared on run end.
-  const cancelRequested = new Set<string>();
+  const cancelControllers = new Map<string, AbortController>();
+  const isCancelled = (runId: string) =>
+    cancelControllers.get(runId)?.signal.aborted === true;
   // Active handles keyed by runId so cancel(chatId) can reach them.
   const activeHandles = new Map<string, ProviderHandle>();
 
@@ -380,7 +382,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         return { cancelled: false, run_id: null };
       }
       const runId = chat.current_run_id;
-      if (cancelRequested.has(runId)) {
+      if (isCancelled(runId)) {
         // Already cancelled in flight — return the run_id so callers can
         // log it, but cancelled=false flags this as a duplicate (the HTTP
         // layer still surfaces it as 200 only if the run was *just* terminated;
@@ -390,7 +392,12 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // first one already took effect" so the second call is idempotent.
         return { cancelled: true, run_id: runId };
       }
-      cancelRequested.add(runId);
+      let ctrl = cancelControllers.get(runId);
+      if (!ctrl) {
+        ctrl = new AbortController();
+        cancelControllers.set(runId, ctrl);
+      }
+      ctrl.abort();
       // Best-effort: signal the underlying provider handle if one is active.
       // If the handle is absent (run already ended), the flag still ensures
       // the finally block stamps status="cancelled".
@@ -484,12 +491,16 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           contextId: chatId,
           resumeFrom: chat.session_id ?? undefined,
         });
+        if (!cancelControllers.has(runId)) {
+          cancelControllers.set(runId, new AbortController());
+        }
+        const cancelSignal = cancelControllers.get(runId)!.signal;
         activeHandles.set(runId, handle);
         for await (const evt of handle.events) {
           // VOS-80 S5: cancel-bail. The for-await may already have a buffered
           // event that arrived before SIGTERM landed; drop further events so
           // the run terminates promptly without surfacing post-cancel tokens.
-          if (cancelRequested.has(runId)) {
+          if (isCancelled(runId)) {
             break;
           }
           // VOS-96 T5: canonical event loop per ADR-0001 §Decision. Providers
@@ -555,7 +566,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // Drain the handle: wait for the provider to report terminal outcome.
         await handle.done;
         activeHandles.delete(runId);
-        if (firstAssistantSeen && !cancelRequested.has(runId)) {
+        if (firstAssistantSeen && !isCancelled(runId)) {
           // VOS-83 mig-0007: flush buffered parts ONCE per turn (single
           // appendMessage). last_msg preview is now derived from messages
           // by repo.list(); setLastMsg is retained only for the updated_at
@@ -599,7 +610,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // spawner-iter propagates "cancelled" sentinel via throw). When
         // cancelRequested is set for this run, the error path was caused
         // by cancel — don't surface it as run.error.
-        if (cancelRequested.has(runId)) {
+        if (isCancelled(runId)) {
           // swallowed: finally block handles status="cancelled" + run.end
         } else {
           status = "error";
@@ -616,7 +627,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // the run is over and can stamp the terminal status correctly.
         // Persist whatever assistant text was streamed before the bail so
         // mid-stream interrupts don't drop visible tokens.
-        if (cancelRequested.has(runId)) {
+        if (isCancelled(runId)) {
           status = "cancelled";
           errorMessage = null;
         }
@@ -765,7 +776,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           task_id: taskId,
         });
         // Drop cancel-request flag — run is terminal, no further bail needed.
-        cancelRequested.delete(runId);
+        cancelControllers.delete(runId);
       }
 
       // Phase 4: fire-and-forget titler on the FIRST successful turn.
