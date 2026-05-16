@@ -17,9 +17,9 @@ describe("FrameBus", () => {
     const bus = new FrameBus();
     const seen: unknown[] = [];
     const off = bus.on((f) => seen.push(f));
-    bus.emit({ type: "x" });
+    bus.emit({ type: "run.start" });
     off();
-    bus.emit({ type: "y" });
+    bus.emit({ type: "run.end" });
     expect(seen.length).toBe(1);
   });
 
@@ -28,7 +28,7 @@ describe("FrameBus", () => {
     const seen: unknown[] = [];
     bus.on(() => { throw new Error("boom"); });
     bus.on((f) => seen.push(f));
-    bus.emit({ type: "ping" });
+    bus.emit({ type: "chat.token", chat_id: "c", run_id: "r", delta: "x" });
     expect(seen.length).toBe(1);
   });
 });
