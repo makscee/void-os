@@ -465,6 +465,24 @@ describe("chatReducer — refetched rebuilds childTasks (T15)", () => {
     expect(s.messages.find((m: any) => m.text === "A")).toBeUndefined();
   });
 
+  it("refetched rehydrates pendingAskUser when child task issues ask_user", () => {
+    let s = initialChatState("ctx-1");
+    const replay: any[] = [
+      { role: "child_task_started", chat_id: "ctx-1", parent_task_id: "t-parent",
+        parent_tool_call_id: "tc-1", child_task_id: "t-child", agent: "journaler",
+        task_state: "INPUT_REQUIRED", ts: 1, task_id: "t-child" },
+      // Child task's ask_user — unpaired (no tool_result).
+      { role: "tool_use", tool_call_id: "au-1", name: "ask_user",
+        input: { question: "yes or no?", options: ["yes", "no"] }, ts: 2, task_id: "t-child" },
+    ];
+    s = chatReducer(s, { kind: "refetched", chatId: "ctx-1", messages: replay });
+    expect(s.pendingAskUser).toMatchObject({
+      toolUseId: "au-1",
+      question: "yes or no?",
+      options: ["yes", "no"],
+    });
+  });
+
   it("refetched preserves manualToggle for existing taskIds", () => {
     let s = initialChatState("ctx-1");
     s = chatReducer(s, { kind: "frame", frame: { type: "chat.child_task_started",

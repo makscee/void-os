@@ -591,15 +591,20 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       if (shouldTagStopped) {
         messages = tagLastAssistantCancelled(messages, stoppedRunId);
       }
-      // Rehydrate pendingAskUser from the parent message list. The single-slot
-      // invariant lives on the daemon side; the reducer just observes.
-      const askUserRows = parentEntries
+      // Rehydrate pendingAskUser from ALL replay entries (parent + child).
+      // Bug fix (T15): if a CHILD task issued ask_user, its row has
+      // task_id === childTaskId and was partitioned into childEntries[], so
+      // scanning only parentEntries misses it. The daemon's single-slot
+      // invariant (ASK_USER_ALREADY_OPEN) guarantees at most one unpaired
+      // ask_user across the whole Context regardless of which task issued it.
+      const allRows = rawMessages.filter((m) => m.role !== "child_task_started") as ReplayMessage[];
+      const askUserRows = allRows
         .map((m, i) => ({ m, i }))
         .filter(({ m }) => m.role === "tool_use" && (m as ReplayMessage & { role: "tool_use" }).name === "ask_user");
       const unpaired: Array<{ tool_use: ReplayMessage & { role: "tool_use" }; idx: number }> = [];
       for (const { m, i } of askUserRows) {
         const tu = m as ReplayMessage & { role: "tool_use" };
-        const paired = parentEntries
+        const paired = allRows
           .slice(i + 1)
           .some((later) => later.role === "tool_result" && (later as ReplayMessage & { role: "tool_result" }).tool_call_id === tu.tool_call_id);
         if (!paired) unpaired.push({ tool_use: tu, idx: i });
