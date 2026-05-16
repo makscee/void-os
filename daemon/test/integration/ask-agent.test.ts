@@ -76,11 +76,11 @@ function bindToPort(app: Hono): { stop: () => void; port: number } {
 }
 
 describe("ask_agent integration (maya -> journaler via fake providers)", () => {
-  // VOS-97 T5: helper below calls client.callTool with task_id/context_id
-  // in `arguments`. Daemon now reads them from `_meta`, so this hits
-  // ASK_AGENT_MISSING_TASK_ID. Task 6 migrates the caller + verifies the
-  // hono bridge forwards `_meta`; un-todo there.
-  test.todo("Task 6 — hono-bridge _meta forwarding: happy path child completes, parent resumes", async () => {
+  // VOS-97 T6: ids now travel on `params._meta` (per ADR-0002 §"Caller-side
+  // _meta injection"). The MCP SDK Client.callTool forwards the full params
+  // shape into the JSON-RPC envelope; the SDK server-side transport parses
+  // it out into RequestHandlerExtra._meta. The hono bridge is a byte pipe.
+  test("happy path child completes, parent resumes", async () => {
     // ── 1. Per-agent fake-provider scripts ────────────────────────────
     // maya emits a system handshake (so session_id is captured) + an
     // assistant turn carrying both narrative text AND a tool_use block
@@ -296,10 +296,12 @@ async function callAskAgentOverMcp(args: {
     return await client.callTool({
       name: "ask_agent",
       arguments: {
-        task_id: args.taskId,
-        context_id: args.contextId,
         target_agent_id: args.targetAgentId,
         message: args.message,
+      },
+      _meta: {
+        task_id: args.taskId,
+        context_id: args.contextId,
       },
     });
   } finally {

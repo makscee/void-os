@@ -101,11 +101,13 @@ async function runRoundTrip(answer: string) {
     const callPromise = client.callTool({
       name: "ask_user",
       arguments: {
+        question: "ok?",
+        options: ["yes", "no"],
+      },
+      _meta: {
         task_id: "t",
         context_id: "ctx",
         run_id: "r",
-        question: "ok?",
-        options: ["yes", "no"],
       },
     });
 
@@ -155,15 +157,17 @@ async function runRoundTrip(answer: string) {
 }
 
 describe("ask_user E2E (MCP client ↔ answer route, shared PendingRegistry)", () => {
-  // VOS-97 T5: ids must move from `arguments` → `params._meta`. The client
-  // call site here still injects them in `arguments`, which now triggers
-  // ASK_USER_MISSING_TASK_ID. Task 6 updates the call site + verifies the
-  // hono bridge forwards `_meta`. Skipped here until then.
-  it.todo("Task 6 — hono-bridge _meta forwarding: button answer 'yes' round trip", async () => {
+  // VOS-97 T6: ids now travel on `params._meta` (per ADR-0002 §"Caller-side
+  // _meta injection"). The MCP SDK Client.callTool forwards the full params
+  // shape into the JSON-RPC envelope, which the SDK server-side transport
+  // parses out into RequestHandlerExtra._meta. The hono bridge is a byte
+  // pipe — it never touches the body shape, so no bridge-side change is
+  // needed for forwarding to work.
+  it("button answer 'yes' round trip", async () => {
     await runRoundTrip("yes");
   });
 
-  it.todo("Task 6 — hono-bridge _meta forwarding: free-text 'maybe' round trip", async () => {
+  it("free-text 'maybe' round trip", async () => {
     await runRoundTrip("maybe");
   });
 });

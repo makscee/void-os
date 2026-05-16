@@ -77,10 +77,11 @@ afterEach(async () => {
 });
 
 describe("VOS-89 T15.5: production buildApp wires dispatchChildTask", () => {
-  // VOS-97 T5: mcpClient.callTool below still passes task_id/context_id in
-  // `arguments`. Daemon now requires them on `params._meta`; until Task 6
-  // fixes the caller + hono bridge, this hits ASK_AGENT_MISSING_TASK_ID.
-  test.todo("Task 6 — hono-bridge _meta forwarding: ask_agent runs child via fake provider", async () => {
+  // VOS-97 T6: ids now travel on `params._meta` (per ADR-0002 §"Caller-side
+  // _meta injection"). The MCP SDK Client.callTool forwards `_meta` through
+  // the JSON-RPC envelope; the SDK server-side transport surfaces it via
+  // RequestHandlerExtra._meta. The hono bridge is a byte pipe.
+  test("ask_agent runs child via fake provider", async () => {
     // ── 1. Per-agent fake-provider scripts ────────────────────────────
     const tmp = mkdtempSync(join(tmpdir(), "vos89-t15-5-"));
     const journScript = join(tmp, "journaler.jsonl");
@@ -165,10 +166,12 @@ describe("VOS-89 T15.5: production buildApp wires dispatchChildTask", () => {
     const callP = mcpClient.callTool({
       name: "ask_agent",
       arguments: {
-        task_id: parentTaskId,
-        context_id: contextId,
         target_agent_id: "journaler",
         message: "summarise please",
+      },
+      _meta: {
+        task_id: parentTaskId,
+        context_id: contextId,
       },
     });
     const result = (await callP) as {
