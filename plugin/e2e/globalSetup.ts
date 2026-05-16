@@ -32,7 +32,10 @@ const FAKE_SCRIPT = path.join(HERE, "fixtures", "cc", "hello.jsonl");
 // These are forwarded to the daemon as VOS_FAKE_SCRIPT_<agent> env vars
 // so the fake provider factory (resolveFakeScript) picks them per child.
 const ASK_AGENT_MAYA_SCRIPT = path.join(HERE, "fixtures", "ask-agent", "maya.jsonl");
-const ASK_AGENT_JOURNALER_SCRIPT = path.join(HERE, "fixtures", "ask-agent", "journaler.jsonl");
+// VOS-91 T18: richer journaler fixture (chunk-1/chunk-2/noop/final-answer-A)
+// used by both ask_agent and ask-agent-subthread specs. ask-agent.spec.ts
+// asserts toContain("A") so final-answer-A still satisfies it.
+const ASK_AGENT_JOURNALER_SCRIPT = path.join(HERE, "fixtures", "ask-agent-subthread", "journaler.jsonl");
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -175,6 +178,8 @@ export default async function globalSetup() {
     VOS_FAKE_SCRIPT_maya: ASK_AGENT_MAYA_SCRIPT,
     VOS_FAKE_SCRIPT_journaler: ASK_AGENT_JOURNALER_SCRIPT,
     VOS_FAKE_PER_EVENT_DELAY_MS_maya: "200",
+    // VOS-91 T18: slow journaler events so WORKING state is observable in UI.
+    VOS_FAKE_PER_EVENT_DELAY_MS_journaler: "200",
   };
   delete env.ANTHROPIC_API_KEY;
   delete env.VOID_KEYS_URL;

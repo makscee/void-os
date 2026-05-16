@@ -129,6 +129,7 @@ async function callAskAgentOverMcp(args: {
   contextId: string;
   targetAgentId: string;
   message: string;
+  toolCallId: string;
 }): Promise<unknown> {
   const client = new Client({ name: "vos89-t16-spec", version: "0.0.0" });
   const transport = new StreamableHTTPClientTransport(
@@ -136,13 +137,17 @@ async function callAskAgentOverMcp(args: {
   );
   await client.connect(transport);
   try {
+    // VOS-97 ADR-0002: runtime ids travel via params._meta, not arguments.
     return await client.callTool({
       name: "ask_agent",
       arguments: {
-        task_id: args.taskId,
-        context_id: args.contextId,
         target_agent_id: args.targetAgentId,
         message: args.message,
+      },
+      _meta: {
+        task_id: args.taskId,
+        context_id: args.contextId,
+        tool_call_id: args.toolCallId,
       },
     });
   } finally {
@@ -165,6 +170,7 @@ test("ask_agent end-to-end: maya -> journaler via real MCP + plugin UI", async (
       30_000,
     );
     const chatId = String(frame.chat_id);
+    const toolCallId = String(frame.tool_call_id ?? "");
     const input = frame.input as { target_agent_id?: string; message?: string };
 
     // Resolve the parent task id from the chat (= context) id. There is
@@ -197,6 +203,7 @@ test("ask_agent end-to-end: maya -> journaler via real MCP + plugin UI", async (
       contextId: chatId,
       targetAgentId: String(input.target_agent_id ?? "journaler"),
       message: String(input.message ?? "summarise"),
+      toolCallId,
     });
   })();
 
@@ -215,11 +222,19 @@ test("ask_agent end-to-end: maya -> journaler via real MCP + plugin UI", async (
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
-    // Mint chat (defaults to agent="maya" — see daemon/src/api/chats.ts).
+    // Mint chat. new-chat-btn opens the agent picker (SuggestModal).
+    // Click the first suggestion (maya) and wait for the picker to dismiss.
     await page.getByTestId("new-chat-btn").click({ force: true, timeout: 5_000 });
+    const pickerInput = page.locator(".prompt input.prompt-input");
+    await expect(pickerInput).toBeVisible({ timeout: 10_000 });
+    const firstSuggestion = page.locator(".suggestion-item").first();
+    await expect(firstSuggestion).toBeVisible({ timeout: 10_000 });
+    await firstSuggestion.click();
+    await expect(page.locator(".prompt")).toHaveCount(0, { timeout: 5_000 });
 
     const composer = chatRoot.getByPlaceholder("Message");
     await expect(composer).toBeVisible({ timeout: 5_000 });
+    await expect(composer).toBeEditable({ timeout: 5_000 });
     await composer.fill("hello");
 
     const sendBtn = chatRoot.getByRole("button", { name: "Send" });
@@ -231,7 +246,9 @@ test("ask_agent end-to-end: maya -> journaler via real MCP + plugin UI", async (
       content: Array<{ type: string; text: string }>;
     };
     expect(askResult.content[0]!.type).toBe("text");
-    expect(askResult.content[0]!.text).toBe("A");
+    // VOS-91 T18: journaler fixture updated to "final-answer-A"; toContain
+    // remains true and also works with the original single-char fixture.
+    expect(askResult.content[0]!.text).toContain("A");
 
     // Locate parent + child rows, then assert the state-machine progression.
     const parent = await waitForTaskRow({
