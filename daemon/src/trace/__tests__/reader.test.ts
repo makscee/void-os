@@ -1,5 +1,5 @@
 import { describe, test, expect, afterAll } from "bun:test";
-import { writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { writeFileSync, readFileSync, rmSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readTrace } from "../reader";
@@ -31,5 +31,30 @@ describe("readTrace — basic", () => {
     expect(out.records.map(r => r.seq)).toEqual([0,1,2,3,4]);
     expect(out.gaps).toEqual([]);
     expect(out.recoveredPartial).toBe(false);
+  });
+});
+
+describe("readTrace — partial trailing", () => {
+  test("trailing partial line is dropped, recoveredPartial=true, file unchanged", () => {
+    const path = join(tmpRoot, "partial.jsonl");
+    const records = [0,1,2,3,4].map(i => ({ seq: i, ts: "2026-05-16T00:00:00.000Z", kind: "cc.event", payload: { i } }));
+    const text = fixture(records) + '{"seq":5,"ts":"2026-05-16","kind"';
+    writeFileSync(path, text);
+
+    const before = readFileSync(path, "utf8");
+    const out = readTrace(path);
+    const after = readFileSync(path, "utf8");
+
+    expect(out.records.length).toBe(5);
+    expect(out.recoveredPartial).toBe(true);
+    expect(after).toBe(before);
+  });
+
+  test("file ending in \\n with no trailing bytes → recoveredPartial=false", () => {
+    const path = join(tmpRoot, "no-partial.jsonl");
+    writeFileSync(path, fixture([{ seq: 0, ts: "x", kind: "cc.event", payload: {} }]));
+    const out = readTrace(path);
+    expect(out.recoveredPartial).toBe(false);
+    expect(out.records.length).toBe(1);
   });
 });
