@@ -42,8 +42,8 @@ describe("ChatList", () => {
     const { ChatList } = await import("../src/chat/ChatList");
 
     const api = stubApi([
-      { id: "c1", agent: "maya", title: null, last_msg: "first chat preview", updated_at: 2, last_run_status: "done" },
-      { id: "c2", agent: "maya", title: "Has Title", last_msg: "ignored", updated_at: 1, last_run_status: "running" },
+      { id: "c1", agent: "maya", title: null, last_msg: "first chat preview", updated_at: 2, last_run_status: "done", cost_usd: 0, input_required: false },
+      { id: "c2", agent: "maya", title: "Has Title", last_msg: "ignored", updated_at: 1, last_run_status: "running", cost_usd: 0, input_required: false },
     ]);
 
     const host = (globalThis as any).document.createElement("div");
@@ -82,8 +82,8 @@ describe("ChatList", () => {
     const { ChatList } = await import("../src/chat/ChatList");
 
     const api = stubApi([
-      { id: "c1", agent: "maya", title: "A", last_msg: null, updated_at: 1, last_run_status: null },
-      { id: "c2", agent: "maya", title: "B", last_msg: null, updated_at: 0, last_run_status: null },
+      { id: "c1", agent: "maya", title: "A", last_msg: null, updated_at: 1, last_run_status: null, cost_usd: 0, input_required: false },
+      { id: "c2", agent: "maya", title: "B", last_msg: null, updated_at: 0, last_run_status: null, cost_usd: 0, input_required: false },
     ]);
     const selected: string[] = [];
 
@@ -162,6 +162,8 @@ describe("ChatList", () => {
           last_msg: "hello",
           updated_at: 1,
           last_run_status: calls === 1 ? "running" : "cancelled",
+          cost_usd: 0,
+          input_required: false,
         }];
       },
       async getMessages() { return []; },
@@ -215,7 +217,7 @@ describe("ChatList", () => {
     async cancel() { return { run_id: "r", status: "cancelled" }; },
       async listChats() {
         calls++;
-        return [{ id: `c${calls}`, agent: "maya", title: `t${calls}`, last_msg: null, updated_at: calls, last_run_status: null }];
+        return [{ id: `c${calls}`, agent: "maya", title: `t${calls}`, last_msg: null, updated_at: calls, last_run_status: null, cost_usd: 0, input_required: false }];
       },
       async getMessages() { return []; },
     };
@@ -239,6 +241,76 @@ describe("ChatList", () => {
     });
     await flush(act);
     expect(calls).toBe(2);
+
+    root.unmount();
+  });
+
+  test("renders input-required dot when chat.input_required is true", async () => {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const act = (React as any).act;
+    const { ChatList } = await import("../src/chat/ChatList");
+
+    const api = stubApi([
+      { id: "c1", agent: "maya", title: "needs input", last_msg: null, updated_at: 2, last_run_status: "done", cost_usd: 0, input_required: true },
+      { id: "c2", agent: "maya", title: "calm",        last_msg: null, updated_at: 1, last_run_status: "done", cost_usd: 0, input_required: false },
+    ]);
+
+    const host = (globalThis as any).document.createElement("div");
+    (globalThis as any).document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        React.createElement(ChatList, {
+          api, activeChatId: null, onSelect: () => {}, onNewChat: () => {},
+        }),
+      );
+    });
+    await flush(act);
+
+    const rowC1 = host.querySelector(`[data-testid='chat-row'][data-chat-id='c1']`);
+    const rowC2 = host.querySelector(`[data-testid='chat-row'][data-chat-id='c2']`);
+    const dotC1 = rowC1!.querySelector("[data-testid='input-required-dot']") as any;
+    const dotC2 = rowC2!.querySelector("[data-testid='input-required-dot']") as any;
+    // c1 shows the dot: element present, NOT marked invisible.
+    expect(dotC1).toBeTruthy();
+    expect(dotC1.className).not.toContain("vos:invisible");
+    // c2 preserves alignment via vos:invisible slot — element exists but is invisible.
+    expect(dotC2).toBeTruthy();
+    expect(dotC2.className).toContain("vos:invisible");
+
+    root.unmount();
+  });
+
+  test("renders cost cell with formatted USD per row", async () => {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const act = (React as any).act;
+    const { ChatList } = await import("../src/chat/ChatList");
+
+    const api = stubApi([
+      { id: "c1", agent: "maya", title: "expensive",  last_msg: null, updated_at: 3, last_run_status: "done", cost_usd: 1.234, input_required: false },
+      { id: "c2", agent: "maya", title: "cheap",      last_msg: null, updated_at: 2, last_run_status: "done", cost_usd: 0.42,  input_required: false },
+      { id: "c3", agent: "maya", title: "free",       last_msg: null, updated_at: 1, last_run_status: "done", cost_usd: 0,     input_required: false },
+    ]);
+
+    const host = (globalThis as any).document.createElement("div");
+    (globalThis as any).document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        React.createElement(ChatList, {
+          api, activeChatId: null, onSelect: () => {}, onNewChat: () => {},
+        }),
+      );
+    });
+    await flush(act);
+
+    const cellText = (id: string) =>
+      host.querySelector(`[data-testid='chat-row'][data-chat-id='${id}'] [data-testid='cost-cell']`)?.textContent;
+    expect(cellText("c1")).toBe("$1.23");
+    expect(cellText("c2")).toBe("$0.42");
+    expect(cellText("c3")).toBe("$0.00");
 
     root.unmount();
   });
