@@ -14,7 +14,7 @@
 
 ---
 
-## Task 0: Hook-error fail-mode spike + pin CC version
+### Task 0: Hook-error fail-mode spike + pin CC version
 
 **Why this is T0:** Spec §4 + §7 mandate verifying that CC's PreToolUse fails-closed (denies tool call) when the hook script errors. If CC fails-open in the pinned version, every subsequent task is built on a foundation that silently disables all scope enforcement. Must verify before writing one line of T1+.
 
@@ -162,7 +162,7 @@ git commit -m "task(VOS-106): T0 hook-error fail-mode spike + pin CC version"
 
 ---
 
-## Task 1: Shared matcher module
+### Task 1: Shared matcher module
 
 **Files:**
 - Create: `daemon/src/permissions/match.ts`
@@ -284,7 +284,7 @@ git commit -m "task(VOS-106): T1 shared matchPath module + engine.ts consumes it
 
 ---
 
-## Task 2: Shell-arg classifier
+### Task 2: Shell-arg classifier
 
 **Files:**
 - Create: `daemon/src/providers/claude-code/hook-bin/parse-shell-paths.ts`
@@ -482,7 +482,7 @@ git commit -m "task(VOS-106): T2 shell-arg classifier with NO_PATH_VERBS first-p
 
 ---
 
-## Task 3: PreToolUse hook script
+### Task 3: PreToolUse hook script
 
 **Files:**
 - Create: `daemon/src/providers/claude-code/hook-bin/pre-tool-use.ts`
@@ -777,7 +777,7 @@ git commit -m "task(VOS-106): T3 PreToolUse hook script — Read/Write/Bash/SYST
 
 ---
 
-## Task 4: Match fuzz test (hook vs engine parity)
+### Task 4: Match fuzz test (hook vs engine parity)
 
 **Files:**
 - Test: `daemon/src/permissions/__tests__/match.fuzz.test.ts`
@@ -871,7 +871,7 @@ git commit -m "task(VOS-106): T4 fuzz test — hook + engine matchPath parity"
 
 ---
 
-## Task 5: `spawn-settings.ts` pure builder
+### Task 5: `spawn-settings.ts` pure builder
 
 **Files:**
 - Create: `daemon/src/providers/claude-code/spawn-settings.ts`
@@ -1077,7 +1077,7 @@ git commit -m "task(VOS-106): T5 buildSpawnSettings — per-run settings.json + 
 
 ---
 
-## Task 6: Wire CC spawner to use spawn-settings
+### Task 6: Wire CC spawner to use spawn-settings
 
 **Files:**
 - Modify: `daemon/src/providers/claude-code/index.ts` (CcSpawnRequest + spawn body)
@@ -1392,7 +1392,7 @@ git commit -m "task(VOS-106): T6 spawner consumes spawn-settings + threads engin
 
 ---
 
-## Task 7: `app.ts` wiring + boot deny-probe
+### Task 7: `app.ts` wiring + boot deny-probe
 
 **Files:**
 - Modify: `daemon/src/app.ts`
@@ -1697,7 +1697,7 @@ git commit -m "task(VOS-106): T7 app.ts wires engine + boot deny-probe; moves de
 
 ---
 
-## Task 8: MCP URL-query identity + `vault.read` scope gate
+### Task 8: MCP URL-query identity + `vault.read` scope gate
 
 **Files:**
 - Modify: `daemon/src/adapters/mcp/index.ts`
@@ -1969,7 +1969,7 @@ git commit -m "task(VOS-106): T8 MCP URL-query identity + vault.read SCOPE_DENIE
 
 ---
 
-## Task 9: Probe fixture vault + harness
+### Task 9: Probe fixture vault + harness
 
 **Files:**
 - Create: `daemon/test/fixtures/probe-vault/CLAUDE.md`
@@ -2279,7 +2279,7 @@ git commit -m "task(VOS-106): T9 probe fixture vault + loader-integration harnes
 
 ---
 
-## Task 10: Six-probe run + acceptance
+### Task 10: Six-probe run + acceptance
 
 **Files:**
 - (no code changes — execution + log capture)
@@ -2333,7 +2333,7 @@ Skip — no source changes in this task. The work-log append in Step 3 is the on
 
 ---
 
-## Task 11: Code review gate
+### Task 11: Code review gate
 
 **Files:** (no code changes)
 
