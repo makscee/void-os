@@ -18,13 +18,14 @@ import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { runMigrationsFromDir } from "../../../../src/adapters/sqlite/migrations";
 import { createEventBus } from "../../../../src/events";
-import { makeAskAgent, type AskAgentDeps } from "../../../../src/adapters/mcp/tools/ask-agent";
+import { makeAskAgent, mintChildAndFlipParent, type AskAgentDeps } from "../../../../src/adapters/mcp/tools/ask-agent";
 import type { AgentDefn } from "../../../../src/permissions/engine";
 
 // Construct the canonical RequestHandlerExtra envelope carrying _meta.task_id /
-// _meta.context_id per ADR-0002 (VOS-97 migration).
-function metaExtra(taskId: string, contextId: string) {
-  return { _meta: { task_id: taskId, context_id: contextId } } as any;
+// _meta.context_id per ADR-0002 (VOS-97 migration). tool_call_id is provided
+// so mintChildAndFlipParent's parentToolCallId guard is satisfied.
+function metaExtra(taskId: string, contextId: string, toolCallId = "test-tool-call-id") {
+  return { _meta: { task_id: taskId, context_id: contextId, tool_call_id: toolCallId } } as any;
 }
 
 const MIGRATIONS = join(
@@ -450,6 +451,32 @@ describe("ask_agent handler (composition)", () => {
         (result as { content: Array<{ text: string }> }).content[0]!.text,
       ).toMatch(/unknown/);
     }
+  });
+
+  // VOS-91 T2: mintChildAndFlipParent persists parent_tool_call_id
+  test("mint: persists parent_tool_call_id on the child row", () => {
+    const { contextId, parentId } = seed(db);
+    mintChildAndFlipParent(db, {
+      childId: "task-child",
+      contextId,
+      parentId,
+      targetAgent: "journaler",
+      parentToolCallId: "tool-call-abc",
+    });
+    const row = db.query("SELECT parent_tool_call_id FROM tasks WHERE id=?")
+      .get("task-child") as { parent_tool_call_id: string | null };
+    expect(row.parent_tool_call_id).toBe("tool-call-abc");
+  });
+
+  test("mint: throws if parentToolCallId is missing", () => {
+    const { contextId, parentId } = seed(db);
+    expect(() =>
+      // @ts-expect-error — exercising the runtime guard
+      mintChildAndFlipParent(db, {
+        childId: "task-child", contextId, parentId,
+        targetAgent: "journaler",
+      }),
+    ).toThrow(/parentToolCallId required/);
   });
 
   test("Finding 4: emits task.state_changed when parent flips to WAITING_ON_AGENT", async () => {

@@ -90,27 +90,29 @@ function askAgentChainDepth(db: Database, taskId: string): number {
 // Mint + flip.
 // -----------------------------------------------------------------------------
 
-interface MintArgs {
+export interface MintArgs {
   childId: string;
   contextId: string;
   parentId: string;
   targetAgent: string;
+  parentToolCallId: string;
 }
 
 // Atomically mint a SUBMITTED child task and flip the parent
 // WORKING -> WAITING_ON_AGENT. Single SQLite transaction; CAS failure on
 // the parent flip rolls back the child INSERT so no orphan row is left.
-function mintChildAndFlipParent(db: Database, a: MintArgs): void {
+export function mintChildAndFlipParent(db: Database, a: MintArgs): void {
+  if (!a.parentToolCallId) throw new Error("parentToolCallId required");
   const now = Math.floor(Date.now() / 1000);
   const tx = db.transaction(() => {
     db.run(
       `INSERT INTO tasks
-         (id, context_id, parent_task_id, state,
+         (id, context_id, parent_task_id, parent_tool_call_id, state,
           cost_usd, tokens_in, tokens_out, metadata,
           created_at, updated_at, target_agent)
-       VALUES (?, ?, ?, 'TASK_STATE_SUBMITTED',
+       VALUES (?, ?, ?, ?, 'TASK_STATE_SUBMITTED',
                0, 0, 0, '{}', ?, ?, ?)`,
-      [a.childId, a.contextId, a.parentId, now, now, a.targetAgent],
+      [a.childId, a.contextId, a.parentId, a.parentToolCallId, now, now, a.targetAgent],
     );
     const res = db.run(
       `UPDATE tasks
@@ -255,6 +257,8 @@ export function makeAskAgent(deps: AskAgentDeps) {
     if (!taskId) return errResult("ASK_AGENT_MISSING_TASK_ID");
     const contextId =
       typeof meta.context_id === "string" ? meta.context_id : taskId;
+    const toolCallId =
+      typeof meta.tool_call_id === "string" ? meta.tool_call_id : "";
 
     try {
       // 1. Existence — agent_cards lookup (migration 0007).
@@ -313,6 +317,7 @@ export function makeAskAgent(deps: AskAgentDeps) {
         parentId: taskId,
         contextId,
         targetAgent: args.target_agent_id,
+        parentToolCallId: toolCallId,
       });
 
       // VOS-89 Finding 4: emit parent's WORKING -> WAITING_ON_AGENT flip. The
