@@ -245,6 +245,8 @@ export interface AskAgentDeps {
     args: { agentName: string; message: string; systemMessage?: string },
   ) => Promise<void>;
   now: () => number;
+  /** WS fan-out helper. Defaults to broadcast() in buildApp; overridable from tests. */
+  emit?: (type: string, payload: Record<string, unknown>) => void;
 }
 
 export function makeAskAgent(deps: AskAgentDeps) {
@@ -332,6 +334,16 @@ export function makeAskAgent(deps: AskAgentDeps) {
           taskId,
           state: "TASK_STATE_WAITING_ON_AGENT",
         },
+      });
+
+      // VOS-91 T3: fan out child_task_started to WS clients immediately after
+      // the mint transaction commits and before dispatch begins.
+      deps.emit?.("chat.child_task_started", {
+        chat_id: contextId,
+        parent_task_id: taskId,
+        parent_tool_call_id: toolCallId,
+        child_task_id: childTaskId,
+        agent: args.target_agent_id,
       });
 
       // 8. Dispatch child task.

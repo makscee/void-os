@@ -57,6 +57,12 @@ export interface McpDeps {
     childTaskId: string,
     args: { agentName: string; message: string; systemMessage?: string },
   ) => Promise<void>;
+  /**
+   * VOS-91 T3: WS fan-out helper. Production buildApp defaults to broadcast();
+   * tests inject a spy to assert on WS-bound envelopes. Mirrors
+   * orchestrator's deps.emit pattern.
+   */
+  emit?: (type: string, payload: Record<string, unknown>) => void;
 }
 
 /**
@@ -88,7 +94,7 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
 }
 
 export function buildMcpServer(deps: McpDeps): Server {
-  const { vaultRoot, db, bus, bridge } = deps;
+  const { vaultRoot, db, bus, bridge, emit } = deps;
   const loadAgentDefn =
     deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(db, name));
   const dispatchChildTask =
@@ -123,6 +129,7 @@ export function buildMcpServer(deps: McpDeps): Server {
       loadAgentDefn,
       dispatchChildTask,
       now: () => Date.now(),
+      emit,
     }) as never,
   );
 

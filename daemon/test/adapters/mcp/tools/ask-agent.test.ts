@@ -70,6 +70,7 @@ function buildCtx(
   _parentId: string,
   caller: AgentDefn,
   dispatchSim?: (childTaskId: string) => void | Promise<void>,
+  emit?: (type: string, payload: Record<string, unknown>) => void,
 ): BuiltCtx {
   const bus = createEventBus();
   const deps: AskAgentDeps = {
@@ -80,6 +81,7 @@ function buildCtx(
       if (dispatchSim) await dispatchSim(childTaskId);
     },
     now: () => Math.floor(Date.now() / 1000),
+    emit,
   };
   return { bus, deps };
 }
@@ -527,6 +529,58 @@ describe("ask_agent handler (composition)", () => {
     expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
       "ASK_AGENT_MISSING_TOOL_CALL_ID",
     );
+  });
+
+  // VOS-91 T3: emits chat.child_task_started after mint, before dispatch
+  test("emits chat.child_task_started after mint commits", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+
+    const captured: Array<Record<string, unknown>> = [];
+    const emitSpy = (type: string, payload: Record<string, unknown>) => {
+      if (type === "chat.child_task_started") captured.push(payload);
+    };
+
+    const ctx = buildCtx(
+      db,
+      contextId,
+      parentId,
+      caller,
+      async (childTaskId) => {
+        // Drive child to COMPLETED so the handler can return.
+        const now = Math.floor(Date.now() / 1000);
+        db.run(
+          `INSERT INTO messages (task_id, context_id, run_id, role, parts, parts_text, ts, ord)
+           VALUES (?, ?, NULL, 'ROLE_AGENT', '[]', 'OK', ?, 0)`,
+          [childTaskId, contextId, now],
+        );
+        db.run(
+          `UPDATE tasks SET state='TASK_STATE_COMPLETED', updated_at=? WHERE id=?`,
+          [now, childTaskId],
+        );
+        ctx.bus.emit({
+          type: "task.state_changed",
+          chatId: contextId,
+          payload: { taskId: childTaskId, state: "TASK_STATE_COMPLETED" },
+        });
+      },
+      emitSpy,
+    );
+
+    await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({
+      chat_id: contextId,
+      parent_task_id: parentId,
+      parent_tool_call_id: "test-tool-call-id",
+      agent: "journaler",
+    });
+    expect(typeof captured[0]!.child_task_id).toBe("string");
+    expect((captured[0]!.child_task_id as string).length).toBeGreaterThan(0);
   });
 
   test("Finding 4: emits task.state_changed when parent flips to WAITING_ON_AGENT", async () => {

@@ -155,6 +155,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     bus,
     bridge,
     dispatchChildTask,
+    emit,
   });
   // VOS-100: user-facing answer route. Shares the SAME `bridge` instance
   // with mountMcp so the MCP tool handler (which awaits via bridge.open)
