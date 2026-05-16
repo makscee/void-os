@@ -501,9 +501,89 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
     case "refetched": {
       // Stale-response guard: ignore if reducer has since switched away.
       if (state.chatId !== action.chatId) return state;
-      let messages = replayToMessages(action.messages);
       const isRefetch = action.kind === "refetched";
       const stoppedRunId = isRefetch ? action.stoppedRunId : undefined;
+
+      // ── T15: rebuild childTasks from synthetic child_task_started entries ──
+
+      // 1. Snapshot prior manualToggle so user-set expansions survive refetch.
+      const priorToggle = new Map<string, ChildTaskStream["manualToggle"]>();
+      for (const [tid, st] of Object.entries(state.childTasks)) {
+        priorToggle.set(tid, st.manualToggle);
+      }
+
+      // 2. Build nextChildTasks from child_task_started synthetic entries.
+      const nextChildTasks: Record<string, ChildTaskStream> = {};
+      const nextToolCallToChild: Record<string, string> = {};
+      const childEntries: Record<string, ReplayMessage[]> = {};
+      const rawMessages = action.messages as unknown as Array<ReplayMessage & { role: string; task_id?: string; child_task_id?: string; parent_task_id?: string; parent_tool_call_id?: string; agent?: string; task_state?: string; chat_id?: string }>;
+      const startEntries = rawMessages.filter((m) => m.role === "child_task_started");
+      for (const cts of startEntries) {
+        const cid = cts.child_task_id!;
+        const wireState = cts.task_state ?? "WORKING";
+        const uiState: ChildState =
+          wireState === "INPUT_REQUIRED" ? "INPUT_REQUIRED" :
+          wireState === "COMPLETED" || wireState === "FAILED" || wireState === "CANCELED"
+            ? (wireState as ChildState)
+            : "WORKING";
+        nextChildTasks[cid] = {
+          taskId: cid,
+          runId: `child-${cid}`,
+          parentToolCallId: cts.parent_tool_call_id!,
+          parentTaskId: cts.parent_task_id!,
+          agent: cts.agent ?? "",
+          state: uiState,
+          error: null,
+          liveTokens: "",
+          liveToolEvents: [],
+          messages: [],
+          manualToggle: priorToggle.get(cid) ?? "auto",
+        };
+        nextToolCallToChild[cts.parent_tool_call_id!] = cid;
+        childEntries[cid] = [];
+      }
+
+      // 3. Partition replay entries by task_id — child rows are pulled out.
+      const parentEntries: ReplayMessage[] = [];
+      for (const m of rawMessages) {
+        if (m.role === "child_task_started") continue;
+        const tid = m.task_id;
+        if (tid && nextChildTasks[tid]) {
+          childEntries[tid].push(m as ReplayMessage);
+        } else {
+          parentEntries.push(m as ReplayMessage);
+        }
+      }
+
+      // 4. Build messages for each child group; attach childTaskId on ask_agent ToolParts.
+      for (const cid of Object.keys(nextChildTasks)) {
+        const childMsgs = replayToMessages(childEntries[cid]);
+        for (const msg of childMsgs) {
+          if (!msg.parts) continue;
+          for (let pi = 0; pi < msg.parts.length; pi++) {
+            const p = msg.parts[pi];
+            if (p.kind !== "tool" || p.name !== "ask_agent") continue;
+            const grandchildId = nextToolCallToChild[p.toolCallId];
+            if (grandchildId) msg.parts[pi] = { ...p, childTaskId: grandchildId };
+          }
+        }
+        nextChildTasks[cid].messages = childMsgs;
+      }
+
+      // 5. Build parent messages + attach childTaskId on ask_agent ToolParts.
+      let messages = replayToMessages(parentEntries);
+      for (const msg of messages) {
+        if (!msg.parts) continue;
+        for (let pi = 0; pi < msg.parts.length; pi++) {
+          const p = msg.parts[pi];
+          if (p.kind !== "tool" || p.name !== "ask_agent") continue;
+          const childId = nextToolCallToChild[p.toolCallId];
+          if (childId) msg.parts[pi] = { ...p, childTaskId: childId };
+        }
+      }
+
+      // ── end T15 ──
+
       const shouldTagStopped =
         stoppedRunId !== undefined &&
         (state.pendingStoppedRunId === stoppedRunId ||
@@ -511,17 +591,17 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       if (shouldTagStopped) {
         messages = tagLastAssistantCancelled(messages, stoppedRunId);
       }
-      // Rehydrate pendingAskUser from the message list. The single-slot
+      // Rehydrate pendingAskUser from the parent message list. The single-slot
       // invariant lives on the daemon side; the reducer just observes.
-      const askUserRows = action.messages
+      const askUserRows = parentEntries
         .map((m, i) => ({ m, i }))
-        .filter(({ m }) => m.role === "tool_use" && m.name === "ask_user");
+        .filter(({ m }) => m.role === "tool_use" && (m as ReplayMessage & { role: "tool_use" }).name === "ask_user");
       const unpaired: Array<{ tool_use: ReplayMessage & { role: "tool_use" }; idx: number }> = [];
       for (const { m, i } of askUserRows) {
         const tu = m as ReplayMessage & { role: "tool_use" };
-        const paired = action.messages
+        const paired = parentEntries
           .slice(i + 1)
-          .some((later) => later.role === "tool_result" && later.tool_call_id === tu.tool_call_id);
+          .some((later) => later.role === "tool_result" && (later as ReplayMessage & { role: "tool_result" }).tool_call_id === tu.tool_call_id);
         if (!paired) unpaired.push({ tool_use: tu, idx: i });
       }
       let nextPendingAskUser: ChatState["pendingAskUser"] = null;
@@ -548,6 +628,8 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       return {
         ...state,
         messages,
+        childTasks: nextChildTasks,
+        toolCallToChild: nextToolCallToChild,
         // Refetch reflects the canonical post-run state — clear overlay so
         // we don't double-render the streaming turn next to its persisted form.
         liveTokens: isRefetch ? "" : state.liveTokens,

@@ -439,3 +439,51 @@ describe("chatReducer — chat.tool_result child routing (T14)", () => {
     expect(s.childTasks["t-child"].liveToolEvents).toHaveLength(0);
   });
 });
+
+describe("chatReducer — refetched rebuilds childTasks (T15)", () => {
+  it("refetched rebuilds childTasks from synthetic child_task_started entries", () => {
+    let s = initialChatState("ctx-1");
+    const replay: any[] = [
+      { role: "user", content: "go", ts: 1, task_id: "t-parent" },
+      { role: "assistant", content: "calling journaler", ts: 2, task_id: "t-parent" },
+      { role: "tool_use", tool_call_id: "tc-1", name: "ask_agent", input: {}, ts: 2, task_id: "t-parent" },
+      { role: "child_task_started", chat_id: "ctx-1", parent_task_id: "t-parent",
+        parent_tool_call_id: "tc-1", child_task_id: "t-child", agent: "journaler",
+        task_state: "COMPLETED", ts: 2, task_id: "t-child" },
+      { role: "assistant", content: "A", ts: 3, task_id: "t-child" },
+      { role: "tool_result", tool_call_id: "tc-1", output: "A", is_error: false, ts: 4, task_id: "t-parent" },
+    ];
+    s = chatReducer(s, { kind: "refetched", chatId: "ctx-1", messages: replay as any });
+
+    expect(s.childTasks["t-child"]).toMatchObject({
+      taskId: "t-child", agent: "journaler", state: "COMPLETED",
+      parentTaskId: "t-parent", parentToolCallId: "tc-1",
+    });
+    expect(s.childTasks["t-child"].messages.map((m: any) => m.text)).toEqual(["A"]);
+    expect(s.toolCallToChild["tc-1"]).toBe("t-child");
+    // Parent thread does not contain the child's assistant message.
+    expect(s.messages.find((m: any) => m.text === "A")).toBeUndefined();
+  });
+
+  it("refetched preserves manualToggle for existing taskIds", () => {
+    let s = initialChatState("ctx-1");
+    s = chatReducer(s, { kind: "frame", frame: { type: "chat.child_task_started",
+      chat_id: "ctx-1", parent_task_id: "t-parent", parent_tool_call_id: "tc-1",
+      child_task_id: "t-child", agent: "journaler" } as any });
+    s = {
+      ...s,
+      childTasks: {
+        ...s.childTasks,
+        "t-child": { ...s.childTasks["t-child"], manualToggle: "collapsed" },
+      },
+    };
+    const replay: any[] = [
+      { role: "child_task_started", chat_id: "ctx-1", parent_task_id: "t-parent",
+        parent_tool_call_id: "tc-1", child_task_id: "t-child", agent: "journaler",
+        task_state: "COMPLETED", ts: 1, task_id: "t-child" },
+      { role: "assistant", content: "A", ts: 2, task_id: "t-child" },
+    ];
+    s = chatReducer(s, { kind: "refetched", chatId: "ctx-1", messages: replay as any });
+    expect(s.childTasks["t-child"].manualToggle).toBe("collapsed");
+  });
+});
