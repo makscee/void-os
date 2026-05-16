@@ -44,9 +44,10 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { type ChatRepo, openTaskFor, setTaskState } from "./repo";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo";
-import type { Part, TextPart, DataPart } from "../types/a2a";
+import type { Part, DataPart } from "../types/a2a";
 
 import type { Provider, ProviderHandle } from "../providers/index.ts";
+import { drainRun, mergeAdjacentText } from "./run-driver.ts";
 
 export interface TitlerLike {
   title(chatId: string): Promise<void>;
@@ -363,13 +364,16 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
   // per orchestrator so tests with multiple orchestrators don't share state.
   const messages: MessagesRepo = makeMessagesRepo(db);
 
-  // Per-run cancel registry. Populated by dispatch() at run.start time and
+  // Per-run cancel registry. Registered per-dispatch, aborted on cancel,
+  // deleted on run end. Populated by dispatch() at run.start time and
   // consulted in both the streaming loop (after-yield bail) and the finally
   // block (status="cancelled" instead of "done"). `cancel(chatId)` looks
-  // up the current_run_id, flips the flag, and calls handle.cancel() on
-  // the live ProviderHandle — so the subprocess receives SIGTERM/SIGKILL
+  // up the current_run_id, aborts the controller, and calls handle.cancel()
+  // on the live ProviderHandle — so the subprocess receives SIGTERM/SIGKILL
   // and the for-await loop unblocks. Cleared on run end.
-  const cancelRequested = new Set<string>();
+  const cancelControllers = new Map<string, AbortController>();
+  const isCancelled = (runId: string) =>
+    cancelControllers.get(runId)?.signal.aborted === true;
   // Active handles keyed by runId so cancel(chatId) can reach them.
   const activeHandles = new Map<string, ProviderHandle>();
 
@@ -380,7 +384,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         return { cancelled: false, run_id: null };
       }
       const runId = chat.current_run_id;
-      if (cancelRequested.has(runId)) {
+      if (isCancelled(runId)) {
         // Already cancelled in flight — return the run_id so callers can
         // log it, but cancelled=false flags this as a duplicate (the HTTP
         // layer still surfaces it as 200 only if the run was *just* terminated;
@@ -390,7 +394,12 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // first one already took effect" so the second call is idempotent.
         return { cancelled: true, run_id: runId };
       }
-      cancelRequested.add(runId);
+      let ctrl = cancelControllers.get(runId);
+      if (!ctrl) {
+        ctrl = new AbortController();
+        cancelControllers.set(runId, ctrl);
+      }
+      ctrl.abort();
       // Best-effort: signal the underlying provider handle if one is active.
       // If the handle is absent (run already ended), the flag still ensures
       // the finally block stamps status="cancelled".
@@ -434,9 +443,8 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
       // VOS-83 mig-0007: every chat has an open task minted by repo.create.
       // The orchestrator attributes each turn's messages + state-flips to it.
       const taskId = openTaskFor(db, chatId);
-      // Per-turn parts buffer for the AGENT message. Tokens, tool_use blocks,
-      // and tool_result blocks all accumulate here during streaming and flush
-      // as ONE appendMessage call at terminal (happy / cancel / error).
+      // Per-turn parts buffer for the AGENT message. Hoisted outside try so
+      // the finally branches (cancel / error) see partial buffer on throw.
       const agentParts: Part[] = [];
       // Resuming user message: flip state back to WORKING (a previous turn
       // may have left this task in INPUT_REQUIRED waiting for input).
@@ -484,43 +492,30 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           contextId: chatId,
           resumeFrom: chat.session_id ?? undefined,
         });
+        let cancelController = cancelControllers.get(runId);
+        if (!cancelController) {
+          cancelController = new AbortController();
+          cancelControllers.set(runId, cancelController);
+        }
+        const cancelSignal = cancelController.signal;
         activeHandles.set(runId, handle);
-        for await (const evt of handle.events) {
-          // VOS-80 S5: cancel-bail. The for-await may already have a buffered
-          // event that arrived before SIGTERM landed; drop further events so
-          // the run terminates promptly without surfacing post-cancel tokens.
-          if (cancelRequested.has(runId)) {
-            break;
-          }
-          // VOS-96 T5: canonical event loop per ADR-0001 §Decision. Providers
-          // normalize their wire format on yield, so this loop sees only
-          // `SessionEvent | PartsEvent`. CC-shape parsing lives upstream in
-          // providers/claude-code/cc-shape.ts; orchestrator does no shape
-          // synthesis — DataParts arrive pre-wrapped.
-          if (evt.type === "session") {
+
+        await drainRun({
+          handle,
+          signal: cancelSignal,
+          onSession: (sid) => {
             // Double gate: in-memory boolean + the IS NULL check on the
             // canonical row. Across runs (--resume), claudev re-emits the
             // same id; we still want this branch to no-op.
             if (!sessionCaptured && chat.session_id === null) {
-              repo.setSession(chatId, evt.sessionId);
+              repo.setSession(chatId, sid);
               sessionCaptured = true;
             }
-          } else if (evt.type === "parts") {
-            // Mark first assistant-side activity for the titler gate; user
-            // role parts (tool_result carriers) don't qualify.
-            if (evt.role === "ROLE_AGENT") firstAssistantSeen = true;
-            // Two-pass over evt.parts so the per-frame chat.token delta
-            // matches the pre-canonicalization contract: one delta per
-            // provider frame, concatenating all TextParts in the frame.
-            // tool_use / tool_result blocks still emit one WS frame each.
-            let frameText = "";
-            for (const p of evt.parts) {
-              agentParts.push(p);
-              const text = (p as TextPart).text;
-              if (typeof text === "string") {
-                frameText += text;
-                continue;
-              }
+          },
+          onPart: ({ parts, frameText, role }) => {
+            if (role === "ROLE_AGENT") firstAssistantSeen = true;
+            for (const p of parts) {
+              agentParts.push(p); // ROLE_AGENT buffer — survives drainRun throws
               const data = (p as DataPart).data;
               if (!data || typeof data !== "object") continue;
               const kind = (data as { kind?: unknown }).kind;
@@ -543,6 +538,8 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             }
             if (frameText) {
+              // Preserved invariant: frame with no TextParts emits no chat.token.
+              // Plugin S4 token stream depends on this.
               lastAssistantText += frameText;
               emit("chat.token", {
                 chat_id: chatId,
@@ -550,35 +547,18 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 delta: frameText,
               });
             }
-          }
-        }
-        // Drain the handle: wait for the provider to report terminal outcome.
-        await handle.done;
+          },
+        });
+
         activeHandles.delete(runId);
-        if (firstAssistantSeen && !cancelRequested.has(runId)) {
+
+        // Happy-path write: preserves orchestrator.ts:558 gate exactly.
+        if (firstAssistantSeen && !isCancelled(runId)) {
           // VOS-83 mig-0007: flush buffered parts ONCE per turn (single
           // appendMessage). last_msg preview is now derived from messages
           // by repo.list(); setLastMsg is retained only for the updated_at
           // bump (used by list ordering).
-          //
-          // Inline merge of adjacent TextParts: the orchestrator pushes one
-          // TextPart per assistant token batch during streaming; the
-          // canonical A2A Message stored in the messages table contains a
-          // single concatenated TextPart for the turn's narrative text.
-          const flushed: Part[] = [];
-          for (const p of agentParts) {
-            const last = flushed[flushed.length - 1];
-            const lastText = (last as { text?: unknown } | undefined)?.text;
-            const curText = (p as { text?: unknown }).text;
-            if (typeof lastText === "string" && typeof curText === "string") {
-              flushed[flushed.length - 1] = {
-                ...(last as object),
-                text: lastText + curText,
-              } as Part;
-            } else {
-              flushed.push(p);
-            }
-          }
+          const flushed = mergeAdjacentText(agentParts);
           if (flushed.length > 0) {
             messages.appendMessage(
               taskId,
@@ -597,9 +577,9 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         activeHandles.delete(runId);
         // VOS-80 S5: a cancel may race with the iterator throwing (e.g.
         // spawner-iter propagates "cancelled" sentinel via throw). When
-        // cancelRequested is set for this run, the error path was caused
+        // isCancelled(runId) is true for this run, the error path was caused
         // by cancel — don't surface it as run.error.
-        if (cancelRequested.has(runId)) {
+        if (isCancelled(runId)) {
           // swallowed: finally block handles status="cancelled" + run.end
         } else {
           status = "error";
@@ -616,7 +596,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // the run is over and can stamp the terminal status correctly.
         // Persist whatever assistant text was streamed before the bail so
         // mid-stream interrupts don't drop visible tokens.
-        if (cancelRequested.has(runId)) {
+        if (isCancelled(runId)) {
           status = "cancelled";
           errorMessage = null;
         }
@@ -636,26 +616,10 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         // should NOT inject a phantom empty assistant row into history;
         // the errorNotice surface in the plugin handles that case.
         if (status === "cancelled") {
-          // VOS-83 mig-0007: on cancel ALWAYS write a row (even with empty
-          // parts) so the LEFT JOIN in messages-repo.walk() can stamp
-          // `cancelled: true` on a concrete row. Empty parts renders as
-          // STOPPED_MARKER on the plugin. The buffered tool blocks (if any
-          // streamed pre-cancel) are preserved by the inline adjacent-
-          // TextPart merge below.
-          const flushed: Part[] = [];
-          for (const p of agentParts) {
-            const last = flushed[flushed.length - 1];
-            const lastText = (last as { text?: unknown } | undefined)?.text;
-            const curText = (p as { text?: unknown }).text;
-            if (typeof lastText === "string" && typeof curText === "string") {
-              flushed[flushed.length - 1] = {
-                ...(last as object),
-                text: lastText + curText,
-              } as Part;
-            } else {
-              flushed.push(p);
-            }
-          }
+          // STOPPED_MARKER invariant: ALWAYS write a row on cancel, even empty,
+          // so messages-repo.walk()'s LEFT JOIN can stamp `cancelled: true`.
+          // Empty parts render as STOPPED_MARKER on the plugin.
+          const flushed = mergeAdjacentText(agentParts);
           messages.appendMessage(
             taskId,
             chatId,
@@ -668,22 +632,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
           }
         } else if (status === "error" && agentParts.length > 0) {
-          // Inline merge of adjacent TextParts — see happy-path callsite
-          // above for rationale.
-          const flushed: Part[] = [];
-          for (const p of agentParts) {
-            const last = flushed[flushed.length - 1];
-            const lastText = (last as { text?: unknown } | undefined)?.text;
-            const curText = (p as { text?: unknown }).text;
-            if (typeof lastText === "string" && typeof curText === "string") {
-              flushed[flushed.length - 1] = {
-                ...(last as object),
-                text: lastText + curText,
-              } as Part;
-            } else {
-              flushed.push(p);
-            }
-          }
+          const flushed = mergeAdjacentText(agentParts);
           messages.appendMessage(
             taskId,
             chatId,
@@ -765,7 +714,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           task_id: taskId,
         });
         // Drop cancel-request flag — run is terminal, no further bail needed.
-        cancelRequested.delete(runId);
+        cancelControllers.delete(runId);
       }
 
       // Phase 4: fire-and-forget titler on the FIRST successful turn.
