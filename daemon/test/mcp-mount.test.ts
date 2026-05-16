@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { mountMcp } from "../src/adapters/mcp/index.ts";
 import { createEventBus } from "../src/events/index.ts";
+import { createAskUserBridge } from "../src/chat/ask-user-bridge.ts";
 
 // Mirrors daemon/src/adapters/sqlite/migrations/0001_init.sql
 const SCHEMA = `
@@ -28,7 +29,8 @@ async function startApp(): Promise<Ctx> {
   db.exec(SCHEMA);
   const app = new Hono();
   const bus = createEventBus({ db });
-  mountMcp(app, { vaultRoot, db, bus });
+  const bridge = createAskUserBridge({ db, bus });
+  mountMcp(app, { vaultRoot, db, bus, bridge });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   return { vaultRoot, db, app, server: { stop: () => server.stop(true), port: server.port as number } };
 }

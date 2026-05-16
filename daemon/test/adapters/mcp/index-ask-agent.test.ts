@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEventBus } from "../../../src/events/index.ts";
 import { buildMcpServer } from "../../../src/adapters/mcp/index.ts";
+import { createAskUserBridge } from "../../../src/chat/ask-user-bridge.ts";
 import { askAgentDef } from "../../../src/adapters/mcp/tools/ask-agent.ts";
 import { askUserDef } from "../../../src/adapters/mcp/tools/ask-user.ts";
 import { vaultReadDef } from "../../../src/adapters/mcp/tools/vault-read.ts";
@@ -37,7 +38,8 @@ describe("MCP tool registration (VOS-97)", () => {
     const vaultRoot = mkdtempSync(join(tmpdir(), "vault-"));
     const db = new Database(":memory:");
     const bus = createEventBus();
-    const server = buildMcpServer({ vaultRoot, db, bus });
+    const bridge = createAskUserBridge({ db, bus });
+    const server = buildMcpServer({ vaultRoot, db, bus, bridge });
     expect(server).toBeDefined();
     // The low-level Server exposes setRequestHandler/close; smoke-check one.
     expect(typeof (server as { close?: unknown }).close).toBe("function");

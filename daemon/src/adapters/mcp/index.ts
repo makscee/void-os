@@ -10,10 +10,13 @@
  * `context_id`, `run_id`) and the `_vos_tool_use_id` correlation hint travel
  * in `params._meta` per MCP spec (see ADR-0002 + Task 1 spike outcome).
  *
- * PendingRegistry is created ONCE at module scope so it is shared between
- * the ask_user handler (which awaits answers) and the POST /chat/:id/answer
- * route (which resolves them). Both surfaces import `pendingRegistry` from
- * this module.
+ * VOS-100: ask_user state (parked awaiters + CAS + history append + bus
+ * emission) lives behind `AskUserBridge` (src/chat/ask-user-bridge.ts).
+ * The bridge is constructed ONCE in the composition root (app.ts) and the
+ * same instance is threaded into both `mountMcp` (the ask_user handler
+ * parks awaiters via `bridge.open()`) and `mountAnswerRoute` (the HTTP
+ * /answer route resolves them via `bridge.resolve()`). Replaces the old
+ * module-singleton `pendingRegistry`.
  */
 
 import type { Hono } from "hono";
@@ -24,23 +27,17 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pkg from "../../../package.json" with { type: "json" };
 import type { EventBus } from "../../events/index.ts";
 import type { AgentDefn } from "../../permissions/engine.ts";
+import type { AskUserBridge } from "../../chat/ask-user-bridge.ts";
 import { honoBridge } from "./hono-bridge.ts";
 import { vaultReadDef, makeVaultRead } from "./tools/vault-read.ts";
-import {
-  askUserDef,
-  makeAskUser,
-  ASK_USER_DEADLINE_MS,
-} from "./tools/ask-user.ts";
+import { askUserDef, makeAskUser } from "./tools/ask-user.ts";
 import { askAgentDef, makeAskAgent } from "./tools/ask-agent.ts";
-import {
-  createPendingRegistry,
-  type PendingRegistry,
-} from "./pending-questions.ts";
 
 export interface McpDeps {
   vaultRoot: string;
   db: Database;
   bus: EventBus;
+  bridge: AskUserBridge;
   /**
    * VOS-89 T10: optional override for the AgentDefn loader. When omitted,
    * a default implementation reads `agent_cards.card_json` and parses it.
@@ -90,13 +87,8 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
   return defn;
 }
 
-// VOS-88 T7: module-scope singleton. Shared by the ask_user handler
-// (await) and the T8 POST /chat/:id/answer route (resolve). Exported as
-// `pendingRegistry` for the answer route to import directly.
-export const pendingRegistry: PendingRegistry = createPendingRegistry();
-
 export function buildMcpServer(deps: McpDeps): Server {
-  const { vaultRoot, db, bus } = deps;
+  const { vaultRoot, db, bus, bridge } = deps;
   const loadAgentDefn =
     deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(db, name));
   const dispatchChildTask =
@@ -120,13 +112,7 @@ export function buildMcpServer(deps: McpDeps): Server {
   mcp.registerTool(
     "ask_user",
     askUserDef,
-    makeAskUser({
-      db,
-      bus,
-      pending: pendingRegistry,
-      now: () => Date.now(),
-      deadlineMs: ASK_USER_DEADLINE_MS,
-    }) as never,
+    makeAskUser({ bridge }) as never,
   );
   mcp.registerTool(
     "ask_agent",

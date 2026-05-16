@@ -6,9 +6,10 @@
 // authorised. Instead this test drives the orchestration boundary directly:
 //
 //   - One Hono app mounts BOTH `mountMcp` and `mountAnswerRoute`, sharing
-//     the module-singleton `pendingRegistry` from src/adapters/mcp/index.ts.
-//     If the registry is not shared the test is meaningless — that's the
-//     thing the production code wires up at T7 and T8.
+//     a single AskUserBridge instance (VOS-100 T6 — replaces the deleted
+//     module-singleton `pendingRegistry`). If the bridge is not shared the
+//     test is meaningless — that's the thing the production composition
+//     root in app.ts wires up.
 //   - A real `@modelcontextprotocol/sdk` Client connects over
 //     StreamableHTTPClientTransport to /mcp and issues a `callTool` for
 //     `ask_user` with `task_id` injected into the arguments (matching the
@@ -33,8 +34,9 @@ import { Database } from "bun:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { runMigrationsFromDir } from "../../src/adapters/sqlite/migrations.ts";
-import { mountMcp, pendingRegistry } from "../../src/adapters/mcp/index.ts";
+import { mountMcp } from "../../src/adapters/mcp/index.ts";
 import { mountAnswerRoute } from "../../src/api/answer.ts";
+import { createAskUserBridge } from "../../src/chat/ask-user-bridge.ts";
 import { createEventBus } from "../../src/events/index.ts";
 
 const MIGRATIONS = join(import.meta.dir, "../../src/adapters/sqlite/migrations");
@@ -60,14 +62,16 @@ async function startApp(): Promise<Ctx> {
       "VALUES ('r', 'ctx', 't', 'maya', 'chat', 'running', 0)",
   );
   const bus = createEventBus({ db });
+  // VOS-100 T6: same AskUserBridge instance MUST be shared between mountMcp
+  // (which parks awaiters via bridge.open()) and mountAnswerRoute (which
+  // resolves them via bridge.resolve()). If the test wired two separate
+  // bridges the round-trip would deadlock — that's what the production
+  // composition root (app.ts) guarantees by constructing one bridge and
+  // threading it into both surfaces.
+  const bridge = createAskUserBridge({ db, bus });
   const app = new Hono();
-  // CRITICAL: mountAnswerRoute MUST receive the same `pendingRegistry`
-  // singleton that mountMcp uses internally (imported from
-  // src/adapters/mcp/index.ts). If we passed `createPendingRegistry()` here
-  // the test would be a sham — the MCP-side `await` and the HTTP-side
-  // `resolve` would live on separate maps.
-  mountMcp(app, { vaultRoot: "/tmp/__not_used__", db, bus });
-  mountAnswerRoute(app, { db, bus, pending: pendingRegistry });
+  mountMcp(app, { vaultRoot: "/tmp/__not_used__", db, bus, bridge });
+  mountAnswerRoute(app, { db, bridge });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   return { db, server: { stop: () => server.stop(true), port: server.port as number } };
 }

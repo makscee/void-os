@@ -22,9 +22,10 @@ import { resolveTz } from "./cost/tz.ts";
 import { chatsApi } from "./api/chats.ts";
 import { agentsApi } from "./api/agents.ts";
 import { chatApi } from "./api/chat.ts";
-import { mountMcp, pendingRegistry } from "./adapters/mcp/index.ts";
+import { mountMcp } from "./adapters/mcp/index.ts";
 import { mountAnswerRoute } from "./api/answer.ts";
 import { createEventBus } from "./events/index.ts";
+import { createAskUserBridge } from "./chat/ask-user-bridge.ts";
 import { makeProvider } from "./providers/factory.ts";
 import { makeChatRepo } from "./chat/repo.ts";
 import { makeSessionReplay } from "./chat/session-replay.ts";
@@ -76,6 +77,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // (ask_user emits task.state_changed / message.appended via this bus).
   // Hoisted out of the orchestrator-only block so mountMcp can receive it.
   const bus = createEventBus({ db: deps.db });
+  const bridge = createAskUserBridge({ db: deps.db, bus });
 
   // VOS-89 T11: when any task reaches a terminal state, check whether its
   // parent is parked in WAITING_ON_AGENT and flip the parent back to WORKING.
@@ -151,12 +153,14 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     vaultRoot: deps.vaultRoot,
     db: deps.db,
     bus,
+    bridge,
     dispatchChildTask,
   });
-  // VOS-88 T8: user-facing answer route. Shares the SAME `pendingRegistry`
-  // singleton with mountMcp so the MCP tool handler (which awaits the slot)
-  // and the HTTP route (which resolves it) reference the same map.
-  mountAnswerRoute(app, { db: deps.db, bus, pending: pendingRegistry, emit });
+  // VOS-100: user-facing answer route. Shares the SAME `bridge` instance
+  // with mountMcp so the MCP tool handler (which awaits via bridge.open)
+  // and the HTTP route (which resolves via bridge.resolve) reference the
+  // same in-process awaiter map.
+  mountAnswerRoute(app, { db: deps.db, bridge, emit });
   return app;
 };
 
