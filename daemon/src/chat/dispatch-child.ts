@@ -57,6 +57,9 @@ export interface DispatchChildDeps {
   /** Override Provider construction. Tests inject a stub here to skip the
    *  real claude-code/fake factory call. */
   buildProvider?: (agentName: string) => Provider;
+  /** WS fan-out helper. Defaults to module-level broadcast() in buildApp,
+   *  overridable from tests. Mirrors orchestrator's deps.emit. */
+  emit?: (type: string, payload: Record<string, unknown>) => void;
 }
 
 export type DispatchChildFn = (
@@ -72,6 +75,10 @@ export type DispatchChildFn = (
 export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn {
   const messages = makeMessagesRepo(deps.db);
   const providerByAgent = new Map<string, Provider>();
+  // Default to no-op so tests that don't inject emit still work.
+  // In production, buildApp always passes its local `emit` (= broadcast)
+  // explicitly to avoid a circular import between dispatch-child ↔ app.
+  const emit = deps.emit ?? ((_type: string, _payload: Record<string, unknown>) => {});
 
   const buildProvider =
     deps.buildProvider ??
@@ -109,6 +116,7 @@ export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn 
           childTaskId,
           message: args.message,
           cwd: deps.cwd,
+          emit,
         }).catch((err) => {
           // The runner already flips the child to FAILED + emits
           // task.state_changed in its catch path. This outer catch is a
@@ -140,10 +148,14 @@ interface RunChildArgs {
    *  provider.spawn so the child runs in the same working directory as
    *  the parent (mirrors orchestrator wiring), NOT a hardcoded "/tmp". */
   cwd: string;
+  /** WS fan-out helper threaded from DispatchChildDeps. Used to emit
+   *  chat.token / chat.tool_use / chat.tool_result frames per provider part. */
+  emit: (type: string, payload: Record<string, unknown>) => void;
 }
 
 async function runChildOnProvider(args: RunChildArgs): Promise<void> {
-  const { db, bus, messages, provider, childTaskId, message, cwd } = args;
+  const { db, bus, messages, provider, childTaskId, message, cwd, emit } = args;
+  const childRunId = "child-" + childTaskId;
 
   const ctxRow = db
     .query("SELECT context_id FROM tasks WHERE id = ?")
@@ -186,13 +198,49 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
     for await (const evt of handle.events) {
       if (evt.type === "parts") {
         if (evt.role === "ROLE_AGENT") firstAssistantSeen = true;
+        // VOS-91 T4: fan-out chat.token / chat.tool_use / chat.tool_result
+        // per provider frame so WS clients can render child task streams in
+        // real time. Mirrors orchestrator.ts two-pass pattern (lines 515-551):
+        // accumulate frameText across TextParts in the frame, emit tool_use /
+        // tool_result inline, then emit a single chat.token at end of frame.
+        let frameText = "";
         for (const p of evt.parts) {
           agentParts.push(p);
-          // dispatch-child does not emit chat.token/tool_use/tool_result —
-          // child runs are headless from the UI's perspective; the parent's
-          // ask_agent surfaces a single tool_result at the end. So we only
-          // buffer here and skip the per-part fan-out the orchestrator does.
-          if (typeof (p as TextPart).text === "string") continue;
+          const text = (p as TextPart).text;
+          if (typeof text === "string") {
+            frameText += text;
+            continue;
+          }
+          const data = (p as { data?: { kind?: string } }).data;
+          if (!data || typeof data !== "object") continue;
+          const kind = (data as { kind?: unknown }).kind;
+          if (kind === "tool_use") {
+            emit("chat.tool_use", {
+              chat_id: contextId,
+              task_id: childTaskId,
+              run_id: childRunId,
+              tool_call_id: (data as { tool_call_id?: string }).tool_call_id,
+              name: (data as { tool_name?: string }).tool_name,
+              input: (data as { input?: unknown }).input,
+            } as Record<string, unknown>);
+          } else if (kind === "tool_result") {
+            emit("chat.tool_result", {
+              chat_id: contextId,
+              task_id: childTaskId,
+              run_id: childRunId,
+              tool_call_id: (data as { tool_call_id?: string }).tool_call_id,
+              output: (data as { output?: unknown }).output,
+              is_error: (data as { is_error?: unknown }).is_error === true,
+            } as Record<string, unknown>);
+          }
+        }
+        if (frameText) {
+          emit("chat.token", {
+            chat_id: contextId,
+            task_id: childTaskId,
+            run_id: childRunId,
+            delta: frameText,
+          });
         }
       }
       // session events: dispatch-child has no chat row to update; ignored.

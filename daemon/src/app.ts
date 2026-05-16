@@ -148,6 +148,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     bus,
     cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
     tracesDir: path.join(deps.vaultRoot, ".traces"),
+    emit,
   });
   mountMcp(app, {
     vaultRoot: deps.vaultRoot,
