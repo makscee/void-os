@@ -243,6 +243,10 @@ export const _resetBroadcastSockets = (): void => {
  *   close     → socket leaves the broadcast set
  */
 export const wsHandler: WebSocketHandler<unknown> = {
+  // VOS-104: /events is long-lived. Default Bun WS idleTimeout (120s) drops
+  // the socket during ask_user waits, so plugin bus listeners miss
+  // subsequent chat.task.state_changed frames. 255s = Bun max.
+  idleTimeout: 255,
   open(ws: ServerWebSocket<unknown>) {
     sockets.add(ws);
     ws.send(JSON.stringify({ type: "hello", version: VERSION }));

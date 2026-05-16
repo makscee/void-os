@@ -71,6 +71,10 @@ const app = await buildApp({ db, vaultRoot });
 const server = Bun.serve({
   hostname: HOST,
   port: PORT,
+  // VOS-104: /events is a long-lived WebSocket. Default idleTimeout (10s)
+  // drops the socket while the agent is paused on ask_user, so plugin bus
+  // listeners miss subsequent chat.task.state_changed frames. 255 = Bun max.
+  idleTimeout: 255,
   fetch(req, srv) {
     const url = new URL(req.url);
     if (url.pathname === "/events") {
