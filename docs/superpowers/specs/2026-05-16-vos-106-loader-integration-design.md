@@ -244,7 +244,7 @@ Suggested phasing:
 6. **T6** — Probe harness promotion + dynamic backlog pick. (Verification surface.)
 7. **T7** — Six-probe re-run; ≥5/6 strict pass. Code review gate. (Acceptance.)
 
-T1-T5 are unit-testable in isolation and run in parallel between subagents where dependencies allow (T3 has no dep on T2's argv plumbing; both feed into T7).
+Dependency notes: T3's hook script imports `parseShellPaths` from T2 — T3 cannot start until T2 lands. T4 (`--mcp-config` wiring) and T5 (`vault.read` scope gate) are independent of each other and can parallelize after T3. T1 (engine wiring) is independent of T2/T3 and can run first. Sequencing rubric: T0 → T1 → T2 → T3 → (T4, T5 in parallel) → T6 → T7.
 
 ## 8. Open questions / known unknowns
 

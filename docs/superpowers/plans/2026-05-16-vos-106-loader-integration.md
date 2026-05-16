@@ -344,9 +344,21 @@ describe("parseShellPaths", () => {
   it("unknown verb without paths: allow (empty)", () => {
     expect(parseShellPaths("foobar --flag")).toEqual({ reads: [], writes: [] });
   });
-  it("shell substitution → conservative deny via reads", () => {
+  it("shell substitution → SHELL_SUBSTITUTION sentinel (matchPath can't allow)", () => {
     expect(parseShellPaths("cat $(ls vault/)")).toEqual({
-      reads: ["$(ls vault/)"],
+      reads: ["__SHELL_SUBSTITUTION__"],
+      writes: [],
+    });
+  });
+  it("backtick substitution → sentinel", () => {
+    expect(parseShellPaths("echo `ls vault/`")).toEqual({
+      reads: ["__SHELL_SUBSTITUTION__"],
+      writes: [],
+    });
+  });
+  it("dollar-brace expansion → sentinel", () => {
+    expect(parseShellPaths('cat ${HOME}/secret')).toEqual({
+      reads: ["__SHELL_SUBSTITUTION__"],
       writes: [],
     });
   });
@@ -402,9 +414,26 @@ function looksLikePath(token: string): boolean {
   return false;
 }
 
+/** Sentinel pushed when shell-substitution / parameter-expansion is detected.
+ *  matchPath will never match this against any picomatch glob, so the hook's
+ *  gate forces a deny. Picked deliberately unmatchable: no slashes, no glob
+ *  meta, prefixed/suffixed with `__` to avoid collision with real paths. */
+export const SHELL_SUBSTITUTION_SENTINEL = "__SHELL_SUBSTITUTION__";
+
+const SUBSTITUTION_RE = /\$\(|`|\$\{/;
+
 export function parseShellPaths(cmd: string): ShellPaths {
   const reads: string[] = [];
   const writes: string[] = [];
+
+  // VOS-106 security gate: shell substitution / parameter expansion bypasses
+  // any literal-token analysis below (CC expands them client-side after the
+  // hook decides). If any substitution syntax is present we short-circuit to
+  // the sentinel — matchPath cannot allow it, hook denies. Loses precision
+  // for benign cases (e.g. `echo $HOME`) but never silently allows a bypass.
+  if (SUBSTITUTION_RE.test(cmd)) {
+    return { reads: [SHELL_SUBSTITUTION_SENTINEL], writes: [] };
+  }
 
   // Split on whitespace, preserving redirect operators as their own tokens.
   // Naive tokenizer — agent prompts that need shell substitution / quoting
@@ -582,6 +611,19 @@ describe("pre-tool-use hook", () => {
         VOS_WRITE_PATHS: JSON.stringify([`${VAULT}/journal/**`]),
         VOS_SYSTEM_DENY: JSON.stringify([]),
       },
+    );
+    expect(decision.continue).toBe(false);
+  });
+
+  it("Bash: shell substitution denies even with broad scope", async () => {
+    const broad = {
+      VOS_READ_PATHS: JSON.stringify([`${VAULT}/**`]),
+      VOS_WRITE_PATHS: JSON.stringify([`${VAULT}/**`]),
+      VOS_SYSTEM_DENY: JSON.stringify([]),
+    };
+    const { decision } = await runHook(
+      { tool_name: "Bash", tool_input: { command: "cat $(ls vault/)" } },
+      broad,
     );
     expect(decision.continue).toBe(false);
   });
@@ -1568,8 +1610,12 @@ export interface BuildAppDeps {
   defaultAgent?: string;
   // VOS-106
   daemonBase?: string;  // e.g. "http://127.0.0.1:17777" — used by spawned CC to reach /mcp
-  /** Allows tests to skip the deny-probe. Production callers leave unset. */
-  skipBootProbe?: boolean;
+  /**
+   * Opt-IN to the boot deny-probe. Defaults to false so tests stay fast and
+   * don't fork `bun` per buildApp call. Production entrypoint
+   * (`daemon/src/index.ts`) must explicitly pass `runBootProbe: true`.
+   */
+  runBootProbe?: boolean;
 }
 ```
 
@@ -1587,8 +1633,10 @@ Inside `buildApp`, after the orchestrator-construction block, BEFORE `app.route(
     "pre-tool-use.ts",
   );
 
-  // Boot deny-probe — refuse to start if the hook is fail-open.
-  if (!deps.skipBootProbe) {
+  // Boot deny-probe — production-only. Tests inherit the default (off) so
+  // they don't fork `bun` per buildApp. Production entrypoint passes
+  // `runBootProbe: true` explicitly.
+  if (deps.runBootProbe === true) {
     const probe = await runBootDenyProbe({ hookScriptPath });
     if (!probe.ok) {
       throw new Error(`VOS-106 boot deny-probe failed: ${probe.reason}`);
@@ -1683,16 +1731,66 @@ Inside `dispatch-child.ts`, when it falls through to the real-Provider path, thr
 - [ ] **Step 7: Run pre-existing app-wiring + dispatch tests**
 
 Run: `cd workspace/void-os && bun test daemon/test/app-wiring.test.ts daemon/test/integration/`
-Expected: PASS, with one caveat — any test that calls `buildApp` without injecting `orchestrator` will now hit the boot deny-probe. Add `skipBootProbe: true` to those test setups.
+Expected: PASS. Tests don't trigger the deny-probe — only the production entrypoint passes `runBootProbe: true` (Step 8 below). If you find a pre-existing prod-shaped test that needs the probe armed, add `runBootProbe: true` to that test's `buildApp` deps.
 
 Then run: `cd workspace/void-os && bun test daemon/`
 Expected: full suite passes.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7.5: Hook-script existence assert**
+
+Inside `buildApp`, immediately after `hookScriptPath` is computed and BEFORE the `if (deps.runBootProbe === true)` block, insert:
+
+```ts
+import { existsSync } from "node:fs";
+// ...
+  if (!existsSync(hookScriptPath)) {
+    throw new Error(
+      `VOS-106: PreToolUse hook script not found at ${hookScriptPath}. ` +
+      `Daemon currently runs from source only; see docs/adr/ADR-0003-daemon-runs-from-source.md.`,
+    );
+  }
+```
+
+Then create `daemon/docs/adr/ADR-0003-daemon-runs-from-source.md` (or `daemon/../docs/adr/...` to match repo convention — see existing ADRs in `docs/adr/`):
+
+```markdown
+# ADR-0003: Daemon runs from source tree (VOS-106)
+
+## Status
+Accepted — 2026-05-16.
+
+## Context
+VOS-106's PreToolUse hook script (`daemon/src/providers/claude-code/hook-bin/pre-tool-use.ts`) is invoked by spawned CC processes via `bun <abs-path>`. The script uses relative imports (`../../../permissions/match`, `./parse-shell-paths`) that only resolve when the file is on disk at its source-tree location.
+
+If the daemon is ever packaged (e.g. `bun build --compile` to a single binary, or shipped via `bun install` from a published artifact), `import.meta.dir` resolves into the bundle and the hook spawn-path no longer points at a readable file.
+
+## Decision
+Until a packaging ticket lands, the daemon **must run from source**. `buildApp` asserts `existsSync(hookScriptPath)` at boot; absence raises a fatal error referencing this ADR.
+
+## Consequences
+- Dev / dogfood / single-host prod: no change.
+- Future packaging: ships a compiled hook artifact (`bun build --compile daemon/src/providers/claude-code/hook-bin/pre-tool-use.ts --outfile <out>`) and updates `hookScriptPath` to point at the artifact. Out of scope for VOS-106.
+```
+
+- [ ] **Step 8: Arm the deny-probe at the production entrypoint**
+
+In `daemon/src/index.ts` (the `bun run` entrypoint that calls `buildApp` to wire `Bun.serve`), set `runBootProbe: true` on the `buildApp` call:
+
+```ts
+const app = await buildApp({
+  db,
+  vaultRoot,
+  runBootProbe: true,
+});
+```
+
+If `daemon/src/index.ts` does not yet call `buildApp` directly, find the production call site via `grep -rn "buildApp(" daemon/src --include="*.ts" | grep -v __tests__` and apply there.
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add daemon/src/app.ts daemon/src/permissions/engine.ts daemon/src/adapters/mcp/index.ts daemon/src/providers/claude-code/boot-probe.ts daemon/src/providers/claude-code/__tests__/boot-probe.test.ts daemon/src/chat/dispatch-child.ts daemon/test/
-git commit -m "task(VOS-106): T7 app.ts wires engine + boot deny-probe; moves defaultLoadAgentDefn"
+git add daemon/src/app.ts daemon/src/index.ts daemon/src/permissions/engine.ts daemon/src/adapters/mcp/index.ts daemon/src/providers/claude-code/boot-probe.ts daemon/src/providers/claude-code/__tests__/boot-probe.test.ts daemon/src/chat/dispatch-child.ts daemon/test/
+git commit -m "task(VOS-106): T7 app.ts wires engine + boot deny-probe (prod-armed); moves defaultLoadAgentDefn"
 ```
 
 ---
@@ -1986,11 +2084,25 @@ git commit -m "task(VOS-106): T8 MCP URL-query identity + vault.read SCOPE_DENIE
 
 Run:
 ```bash
-cd workspace/void-os && mkdir -p daemon/test/fixtures/probe-vault/{agents,work/tasks/backlog,work/tasks/completed,journal}
-cp -R starter-vault/CLAUDE.md daemon/test/fixtures/probe-vault/CLAUDE.md
+set -e
+cd workspace/void-os
+# Verify VOS-103 starter-vault dependency before we touch anything.
+test -d starter-vault/agents/maya || { echo "ABORT: starter-vault/agents/maya missing — VOS-103 dep unmet"; exit 1; }
+test -d starter-vault/agents/journaler || { echo "ABORT: starter-vault/agents/journaler missing"; exit 1; }
+test -d starter-vault/agents/task-tracker || { echo "ABORT: starter-vault/agents/task-tracker missing"; exit 1; }
+test -f starter-vault/CLAUDE.md || { echo "ABORT: starter-vault/CLAUDE.md missing"; exit 1; }
+
+mkdir -p daemon/test/fixtures/probe-vault/{agents,work/tasks/backlog,work/tasks/completed,journal}
+cp starter-vault/CLAUDE.md daemon/test/fixtures/probe-vault/CLAUDE.md
 cp -R starter-vault/agents/maya daemon/test/fixtures/probe-vault/agents/
 cp -R starter-vault/agents/journaler daemon/test/fixtures/probe-vault/agents/
 cp -R starter-vault/agents/task-tracker daemon/test/fixtures/probe-vault/agents/
+
+# Post-seed verification — fixture must be non-empty.
+test -f daemon/test/fixtures/probe-vault/agents/maya/agent.md
+test -f daemon/test/fixtures/probe-vault/agents/journaler/agent.md
+test -f daemon/test/fixtures/probe-vault/agents/task-tracker/agent.md
+echo "fixture seeded OK"
 ```
 
 - [ ] **Step 2: Write the fixture tickets**
