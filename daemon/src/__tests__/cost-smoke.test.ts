@@ -32,7 +32,7 @@ describe("VOS-81 smoke — event → row → /cost/today", () => {
 
     const app = new Hono();
     // Typed ApiContext so a missing `db` field on the interface fails compile.
-    const ctx: ApiContext = { version: "test", db };
+    const ctx: ApiContext = { version: "test", db, tz: "UTC" };
     mountApi(app, ctx);
 
     const ev: RunEndEvent = {
@@ -57,8 +57,9 @@ describe("VOS-81 smoke — event → row → /cost/today", () => {
     const res = await app.request("/cost/today");
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.usd).toBeCloseTo(22.5, 6); // 1M * 15e-6 + 100k * 75e-6 = 15 + 7.5
-    expect(body.tokens_in).toBe(1_000_000);
-    expect(body.tokens_out).toBe(100_000);
+    // VOS-87 T7: composite shape — total_usd + total + by_task + by_chat
+    expect(body.total_usd).toBeCloseTo(22.5, 6); // 1M * 15e-6 + 100k * 75e-6 = 15 + 7.5
+    expect(body.total.input_tokens).toBe(1_000_000);
+    expect(body.total.output_tokens).toBe(100_000);
   });
 });

@@ -8,6 +8,7 @@ import { mountCost } from "./cost";
 export interface ApiContext {
   version: string;
   db: Database;
+  tz: string; // VOS-87: IANA name resolved at boot
 }
 
 /**

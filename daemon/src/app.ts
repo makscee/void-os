@@ -18,6 +18,7 @@ import * as path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import pkg from "../package.json" with { type: "json" };
 import { mountApi } from "./api/index.ts";
+import { resolveTz } from "./cost/tz.ts";
 import { chatsApi } from "./api/chats.ts";
 import { agentsApi } from "./api/agents.ts";
 import { chatApi } from "./api/chat.ts";
@@ -58,7 +59,7 @@ export interface BuildAppDeps {
 export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   const app = new Hono();
   app.get("/", (c) => c.text(`void-os daemon v${VERSION}\n`));
-  mountApi(app, { version: VERSION, db: deps.db });
+  mountApi(app, { version: VERSION, db: deps.db, tz: resolveTz(process.env) });
 
   const emit = deps.emit ?? broadcast;
 
