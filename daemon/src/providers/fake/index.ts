@@ -77,11 +77,8 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
   return {
     name: "fake",
     spawn(req: ProviderSpawnRequest): ProviderHandle {
-      // ADR-0001 / T1: ProviderSpawnRequest now carries taskId/contextId
-      // (currently optional; T10 tightens to required). The fake provider
-      // reads them directly off `req` — no widen cast needed. The taskId
-      // presence check below preserves the previous runtime guard for the
-      // vos_ask_user directive path.
+      // VOS-96 T10: ProviderSpawnRequest requires `taskId` + `contextId` per
+      // ADR-0001 §Decision; the fake provider reads them directly off `req`.
       let cancelled = false;
       let resolveDone!: (r: { exitCode?: number; sessionId?: string; reason: "exit" | "cancel" | "timeout" | "error" }) => void;
       const done = new Promise<{ exitCode?: number; sessionId?: string; reason: "exit" | "cancel" | "timeout" | "error" }>((res) => {
@@ -103,11 +100,8 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
         // JSON-RPC to /mcp with the ask_user tool name; daemon arms pending
         // registry and only returns when /chat/:id/answer resolves it.
         const taskId = req.taskId;
-        const contextId = req.contextId ?? taskId;
+        const contextId = req.contextId;
         const runId = req.runId;
-        if (!taskId) {
-          throw new Error("vos_ask_user directive requires taskId on spawn request");
-        }
         const body = {
           jsonrpc: "2.0" as const,
           id: 1,

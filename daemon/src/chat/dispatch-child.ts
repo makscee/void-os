@@ -172,7 +172,11 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
       runId: childTaskId, // child has no run row; reuse id for prompt/logs only
       prompt: message,
       cwd,
-      chatId: contextId,
+      // VOS-96 T10: ProviderSpawnRequest.chatId removed (ADR-0001 §Decision).
+      // Child dispatch sets taskId = childTaskId and folds the chat-shaped
+      // identifier into contextId.
+      taskId: childTaskId,
+      contextId,
     });
 
     // VOS-96 T6: canonical event loop per ADR-0001 §Decision. Provider

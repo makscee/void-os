@@ -35,7 +35,8 @@ function makeFakeIter(opts: {
 }
 
 function baseReq(): ProviderSpawnRequest {
-  return { runId: "r1", prompt: "hi", cwd: "/tmp" };
+  // VOS-96 T10: ProviderSpawnRequest now requires taskId + contextId (ADR-0001).
+  return { runId: "r1", prompt: "hi", cwd: "/tmp", taskId: "t1", contextId: "c1" };
 }
 
 test("done resolves 'exit' when iterator exhausts cleanly", async () => {
@@ -121,7 +122,7 @@ test("done resolves 'timeout' when underlying iterator times out", async () => {
         })(),
     },
   });
-  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp" });
+  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp", taskId: "t1", contextId: "c1" });
   try { for await (const _ of h.events) {} } catch {}
   const out = await h.done;
   expect(out.reason).toBe("timeout");
@@ -138,7 +139,7 @@ test("done resolves 'cancel' (not 'error') when cancel then iterator throws", as
       cancel: async () => true,
     },
   });
-  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp" });
+  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp", taskId: "t1", contextId: "c1" });
   const it = h.events[Symbol.asyncIterator]();
   await it.next();
   await h.cancel();

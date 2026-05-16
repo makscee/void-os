@@ -22,7 +22,7 @@ describe("makeFakeProvider", () => {
       JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } }),
     ]);
     const provider = makeFakeProvider({ scriptPath });
-    const handle = provider.spawn({ runId: "r1", prompt: "p", cwd: "/tmp" });
+    const handle = provider.spawn({ runId: "r1", prompt: "p", cwd: "/tmp", taskId: "t1", contextId: "c1" });
     const seen: string[] = [];
     for await (const ev of handle.events) seen.push(ev.type);
     // VOS-96 T3: fake provider normalizes CC frames on yield per ADR-0001
@@ -41,7 +41,7 @@ describe("makeFakeProvider", () => {
       JSON.stringify({ type: "assistant", message: {} }),
     ]);
     const provider = makeFakeProvider({ scriptPath, perEventDelayMs: 50 });
-    const handle = provider.spawn({ runId: "r2", prompt: "p", cwd: "/tmp" });
+    const handle = provider.spawn({ runId: "r2", prompt: "p", cwd: "/tmp", taskId: "t2", contextId: "c2" });
     const it = handle.events[Symbol.asyncIterator]();
     await it.next(); // pull first
     const cancelled = await handle.cancel();
@@ -56,7 +56,7 @@ describe("makeFakeProvider", () => {
       JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }),
     ]);
     const provider = makeFakeProvider({ scriptPath });
-    const handle = provider.spawn({ runId: "r4", prompt: "p", cwd: "/tmp" });
+    const handle = provider.spawn({ runId: "r4", prompt: "p", cwd: "/tmp", taskId: "t4", contextId: "c4" });
     await handle.cancel();
     const result = await Promise.race([
       handle.done,
@@ -68,7 +68,7 @@ describe("makeFakeProvider", () => {
   test("empty script resolves done with reason=exit immediately", async () => {
     const scriptPath = tmpJsonl([]);
     const provider = makeFakeProvider({ scriptPath });
-    const handle = provider.spawn({ runId: "r5", prompt: "p", cwd: "/tmp" });
+    const handle = provider.spawn({ runId: "r5", prompt: "p", cwd: "/tmp", taskId: "t5", contextId: "c5" });
     const seen: string[] = [];
     for await (const ev of handle.events) seen.push(ev.type);
     expect(seen).toEqual([]);
@@ -79,7 +79,7 @@ describe("makeFakeProvider", () => {
 
   test("missing script => done resolves reason=error", async () => {
     const provider = makeFakeProvider({ scriptPath: "/tmp/does-not-exist-vos93.jsonl" });
-    const handle = provider.spawn({ runId: "r3", prompt: "p", cwd: "/tmp" });
+    const handle = provider.spawn({ runId: "r3", prompt: "p", cwd: "/tmp", taskId: "t3", contextId: "c3" });
     for await (const _ of handle.events) {}
     const result = await handle.done;
     expect(result.reason).toBe("error");

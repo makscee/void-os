@@ -50,7 +50,10 @@ export function makeClaudeCodeProvider(
       let sessionId: string | undefined;
 
       const raw = deps.iter.spawn({
-        chat_id: req.chatId ?? "",
+        // VOS-96 T10: ProviderSpawnRequest tightened — `chatId` removed in
+        // favor of the required `contextId` (chat-shaped runs set
+        // contextId = chatId at the orchestrator seam).
+        chat_id: req.contextId,
         resume: req.resumeFrom ?? null,
         prompt: req.prompt,
       });

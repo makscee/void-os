@@ -57,22 +57,17 @@ export type ProviderEvent = CanonicalProviderEvent;
 
 // --- Spawn request --------------------------------------------------------
 //
-// ADR-0001 §Decision tightens spawn: `taskId` and `contextId` become required, and
-// `chatId` / `kind` are removed (chatId folded into contextId; kind lifted into
-// settings.runKind). During the migration window `taskId`/`contextId` are typed as
-// optional alongside the legacy fields; T10 flips them to required and drops
-// `chatId`/`kind` once every callsite has been updated.
+// ADR-0001 §Decision: `taskId` and `contextId` are required; legacy `chatId`
+// and `kind` removed (chatId folded into contextId; runs.kind defaulting now
+// lives inside the CC provider impl rather than being threaded through the
+// spawn request). T10 (VOS-96) completed this tightening.
 
 export interface ProviderSpawnRequest {
   runId: string;
-  taskId?: string;              // ADR-0001: required after T10 migration
-  contextId?: string;           // ADR-0001: required after T10 migration; supersedes chatId
+  taskId: string;               // ADR-0001 §Decision
+  contextId: string;            // ADR-0001 §Decision; supersedes the legacy chatId
   prompt: string;
   cwd: string;
-  /** @deprecated use `contextId` (ADR-0001). Removed in T10. */
-  chatId?: string;
-  /** @deprecated lift into `settings.runKind` (ADR-0001). Removed in T10. */
-  kind?: "turn" | "replay" | string;
   resumeFrom?: string;          // session id passed to --resume
   outputTimeoutMs?: number;
   toolTimeoutMs?: number;
