@@ -26,7 +26,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pkg from "../../../package.json" with { type: "json" };
 import type { EventBus } from "../../events/index.ts";
-import type { AgentDefn } from "../../permissions/engine.ts";
+import type { AgentDefn, PermissionEngine } from "../../permissions/engine.ts";
 import type { AskUserBridge } from "../../chat/ask-user-bridge.ts";
 import { honoBridge } from "./hono-bridge.ts";
 import { vaultReadDef, makeVaultRead } from "./tools/vault-read.ts";
@@ -57,6 +57,10 @@ export interface McpDeps {
     childTaskId: string,
     args: { agentName: string; message: string; systemMessage?: string },
   ) => Promise<void>;
+  // VOS-106: permission engine for the vault.read scope gate. The calling
+  // agent identity is resolved per-request from the `?agent=<name>` URL
+  // query in mountMcp, then threaded into buildMcpServer.
+  engine: PermissionEngine;
 }
 
 /**
@@ -87,8 +91,8 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
   return defn;
 }
 
-export function buildMcpServer(deps: McpDeps): Server {
-  const { vaultRoot, db, bus, bridge } = deps;
+export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Server {
+  const { vaultRoot, db, bus, bridge, engine, callingAgent } = deps;
   const loadAgentDefn =
     deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(db, name));
   const dispatchChildTask =
@@ -107,7 +111,7 @@ export function buildMcpServer(deps: McpDeps): Server {
   mcp.registerTool(
     "vault.read",
     vaultReadDef,
-    makeVaultRead({ vaultRoot, db }) as never,
+    makeVaultRead({ vaultRoot, db, engine, agent: callingAgent }) as never,
   );
   mcp.registerTool(
     "ask_user",
@@ -130,8 +134,25 @@ export function buildMcpServer(deps: McpDeps): Server {
 }
 
 export function mountMcp(app: Hono, deps: McpDeps): void {
+  const loadAgentDefn =
+    deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(deps.db, name));
   app.all("/mcp", async (c) => {
-    const server = buildMcpServer(deps);
+    // VOS-106: calling-agent identity travels in the URL query. The
+    // spawner emits `?agent=<name>&run=<runId>` per spawn-settings T5;
+    // we resolve the AgentDefn here and pass it into buildMcpServer so
+    // tools (currently vault.read) can apply per-agent scope gates.
+    const agentName = c.req.query("agent");
+    if (!agentName) {
+      return c.json({ error: "MISSING_AGENT_QUERY: /mcp requires ?agent=<name>" }, 400);
+    }
+    let callingAgent: AgentDefn;
+    try {
+      callingAgent = loadAgentDefn(agentName);
+    } catch {
+      return c.json({ error: `UNKNOWN_AGENT: ${agentName}` }, 400);
+    }
+
+    const server = buildMcpServer({ ...deps, callingAgent });
     // Stateless mode: each request gets a fresh server+transport. Setting
     // sessionIdGenerator to undefined disables session tracking; otherwise
     // the SDK requires clients to echo back an mcp-session-id, which can't

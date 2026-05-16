@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { Database } from "bun:sqlite";
 import { makeVaultRead, vaultReadDef } from "../src/adapters/mcp/tools/vault-read.ts";
+import { createPermissionEngine } from "../src/permissions/engine.ts";
 
 // Mirrors daemon/src/adapters/sqlite/migrations/0001_init.sql
 const SCHEMA = `
@@ -45,7 +46,8 @@ describe("vault.read tool", () => {
   test("returns content + sha for an existing file", async () => {
     fs.mkdirSync(path.join(ctx.vaultRoot, "notes"));
     fs.writeFileSync(path.join(ctx.vaultRoot, "notes", "x.md"), "hello world");
-    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const engine = createPermissionEngine({ vaultRoot: ctx.vaultRoot, homeRoot: "/tmp/home" });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db, engine, agent: { name: "test", read_scope: ["vault/**"] } });
     const out = await handler({ path: "notes/x.md" }, fakeExtra());
     expect(out.isError).toBeFalsy();
     expect((out.content[0] as { type: string; text: string })).toMatchObject({ type: "text", text: "hello world" });
@@ -58,7 +60,8 @@ describe("vault.read tool", () => {
   });
 
   test("rejects path that escapes the vault root", async () => {
-    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const engine = createPermissionEngine({ vaultRoot: ctx.vaultRoot, homeRoot: "/tmp/home" });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db, engine, agent: { name: "test", read_scope: ["vault/**"] } });
     const out = await handler({ path: "../etc/passwd" }, fakeExtra());
     expect(out.isError).toBe(true);
     expect((out.content[0] as { text: string }).text).toContain("PATH_ESCAPES_VAULT_ROOT");
@@ -67,7 +70,8 @@ describe("vault.read tool", () => {
   });
 
   test("rejects absolute path with PATH_MUST_BE_RELATIVE", async () => {
-    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const engine = createPermissionEngine({ vaultRoot: ctx.vaultRoot, homeRoot: "/tmp/home" });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db, engine, agent: { name: "test", read_scope: ["vault/**"] } });
     const out = await handler({ path: "/etc/passwd" }, fakeExtra());
     expect(out.isError).toBe(true);
     expect((out.content[0] as { text: string }).text).toContain("PATH_MUST_BE_RELATIVE");
@@ -75,7 +79,8 @@ describe("vault.read tool", () => {
   });
 
   test("missing file → ENOENT", async () => {
-    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const engine = createPermissionEngine({ vaultRoot: ctx.vaultRoot, homeRoot: "/tmp/home" });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db, engine, agent: { name: "test", read_scope: ["vault/**"] } });
     const out = await handler({ path: "missing.md" }, fakeExtra());
     expect(out.isError).toBe(true);
     expect((out.content[0] as { text: string }).text).toContain("ENOENT");
@@ -84,7 +89,8 @@ describe("vault.read tool", () => {
 
   test("directory → NOT_A_FILE", async () => {
     fs.mkdirSync(path.join(ctx.vaultRoot, "a-dir"));
-    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const engine = createPermissionEngine({ vaultRoot: ctx.vaultRoot, homeRoot: "/tmp/home" });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db, engine, agent: { name: "test", read_scope: ["vault/**"] } });
     const out = await handler({ path: "a-dir" }, fakeExtra());
     expect(out.isError).toBe(true);
     expect((out.content[0] as { text: string }).text).toContain("NOT_A_FILE");
