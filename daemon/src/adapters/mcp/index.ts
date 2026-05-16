@@ -10,10 +10,13 @@
  * `context_id`, `run_id`) and the `_vos_tool_use_id` correlation hint travel
  * in `params._meta` per MCP spec (see ADR-0002 + Task 1 spike outcome).
  *
- * PendingRegistry is created ONCE at module scope so it is shared between
- * the ask_user handler (which awaits answers) and the POST /chat/:id/answer
- * route (which resolves them). Both surfaces import `pendingRegistry` from
- * this module.
+ * VOS-100: ask_user state (parked awaiters + CAS + history append + bus
+ * emission) lives behind `AskUserBridge` (src/chat/ask-user-bridge.ts).
+ * The bridge is constructed ONCE in the composition root (app.ts) and the
+ * same instance is threaded into both `mountMcp` (the ask_user handler
+ * parks awaiters via `bridge.open()`) and `mountAnswerRoute` (the HTTP
+ * /answer route resolves them via `bridge.resolve()`). Replaces the old
+ * module-singleton `pendingRegistry`.
  */
 
 import type { Hono } from "hono";

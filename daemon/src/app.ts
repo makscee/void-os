@@ -160,7 +160,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // with mountMcp so the MCP tool handler (which awaits via bridge.open)
   // and the HTTP route (which resolves via bridge.resolve) reference the
   // same in-process awaiter map.
-  mountAnswerRoute(app, { db: deps.db, bus, bridge, emit });
+  mountAnswerRoute(app, { db: deps.db, bridge, emit });
   return app;
 };
 

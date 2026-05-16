@@ -1,20 +1,26 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Hono } from "hono";
-import { readdirSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createEventBus } from "../../../events/index.ts";
-import { mountMcp, pendingRegistry } from "../../../adapters/mcp/index.ts";
+import { mountMcp } from "../../../adapters/mcp/index.ts";
 import { mountAnswerRoute } from "../../../api/answer.ts";
+import { createAskUserBridge } from "../../../chat/ask-user-bridge.ts";
+import { runMigrationsFromDir } from "../../../adapters/sqlite/migrations.ts";
 import { makeFakeProvider } from "../index.ts";
 import type { ProviderSpawnRequest } from "../../types.ts";
 
 const MIGRATIONS = join(import.meta.dir, "../../../adapters/sqlite/migrations");
 
+// VOS-100 T6: migration 0010 uses the void-os:fk-rebuild rename-rebuild-copy
+// pattern that requires `PRAGMA foreign_keys = OFF` outside the surrounding
+// transaction. Using runMigrationsFromDir (which honors that marker) instead
+// of a naive `for f of files; exec(...)` loop is what keeps the seed below
+// from blowing up on `no such table: tasks_old`.
 function migrate(db: Database) {
-  const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
-  for (const f of files) db.exec(readFileSync(join(MIGRATIONS, f), "utf8"));
+  runMigrationsFromDir(db, MIGRATIONS);
 }
 
 interface Ctx { db: Database; port: number; stop: () => void; scriptDir: string; }
@@ -35,9 +41,13 @@ async function start(): Promise<Ctx> {
       "VALUES ('r', 'ctx', 't', 'maya', 'chat', 'running', 0)",
   );
   const bus = createEventBus({ db });
+  // VOS-100 T6: same bridge instance must be shared between mountMcp (which
+  // parks awaiters in open()) and mountAnswerRoute (which resolves them).
+  // If the test wired two separate bridges the round-trip would deadlock.
+  const bridge = createAskUserBridge({ db, bus });
   const app = new Hono();
-  mountMcp(app, { vaultRoot: "/tmp/__not_used__", db, bus });
-  mountAnswerRoute(app, { db, bus, pending: pendingRegistry });
+  mountMcp(app, { vaultRoot: "/tmp/__not_used__", db, bus, bridge });
+  mountAnswerRoute(app, { db, bridge });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   const scriptDir = mkdtempSync(join(tmpdir(), "fake-ask-"));
   return { db, port: server.port as number, stop: () => server.stop(true), scriptDir };
@@ -72,30 +82,46 @@ describe("fake provider vos_ask_user directive", () => {
     };
     const handle = provider.spawn(spawnReq);
 
-    // Drain events; when we see the tool_use, fire /answer.
+    // Drain events; when we see the tool_use DataPart, fire /answer.
+    //
+    // VOS-100 T6: the fake provider yields canonical events (VOS-96), shape:
+    //   { type: "parts", role: "ROLE_AGENT", parts: [{ data: { kind: "tool_use", tool_call_id, ... }}], ts }
+    // The previous matcher looked for legacy `{type:"assistant",message:{content:[...]}}`
+    // and silently never matched — the test was timing out because the answer
+    // POST was never sent. The /answer route must reach `bridge.resolve()`
+    // with the right tool_use_id for the round-trip to complete.
     const events: unknown[] = [];
     let answered = false;
     for await (const ev of handle.events) {
       events.push(ev);
-      if (!answered && (ev as { type: string }).type === "assistant") {
-        const content = (ev as unknown as { message: { content: Array<{ type: string }> } }).message.content;
-        const toolUse = content.find((c) => c.type === "tool_use") as { id?: string } | undefined;
-        if (toolUse?.id) {
-          answered = true;
-          const res = await fetch(`http://127.0.0.1:${ctx.port}/chat/ctx/answer`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ tool_use_id: toolUse.id, answer: "red" }),
-          });
-          expect(res.status).toBe(200);
-        }
-      }
+      if (answered) continue;
+      const e = ev as { type?: string; parts?: Array<{ data?: { kind?: string; tool_call_id?: string } }> };
+      if (e.type !== "parts" || !Array.isArray(e.parts)) continue;
+      const toolUsePart = e.parts.find(
+        (p) => p?.data?.kind === "tool_use" && typeof p.data.tool_call_id === "string",
+      );
+      const toolUseId = toolUsePart?.data?.tool_call_id;
+      if (!toolUseId) continue;
+      answered = true;
+      const res = await fetch(`http://127.0.0.1:${ctx.port}/chat/ctx/answer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tool_use_id: toolUseId, answer: "red" }),
+      });
+      expect(res.status).toBe(200);
     }
     const done = await handle.done;
     expect(done.reason).toBe("exit");
-    // The final assistant event must have substituted ${answer} with the user's reply.
-    const last = events[events.length - 1] as { type: string; message: { content: Array<{ text: string }> } };
-    expect(last.type).toBe("assistant");
-    expect(last.message.content[0]?.text).toBe("chose red");
+    // The final canonical "parts" event must have substituted ${answer} with
+    // the user's reply. Canonical parts carry text as `{text: string}` rather
+    // than the legacy `{type:"text", text}` block.
+    const last = events[events.length - 1] as {
+      type: string;
+      role: string;
+      parts: Array<{ text?: string }>;
+    };
+    expect(last.type).toBe("parts");
+    expect(last.role).toBe("ROLE_AGENT");
+    expect(last.parts[0]?.text).toBe("chose red");
   });
 });

@@ -33,8 +33,9 @@ import {
   type Orchestrator,
 } from "../../src/chat/orchestrator.ts";
 import { makeTitlerStub } from "../../src/chat/titler-stub.ts";
-import { mountMcp, pendingRegistry } from "../../src/adapters/mcp/index.ts";
+import { mountMcp } from "../../src/adapters/mcp/index.ts";
 import { mountAnswerRoute } from "../../src/api/answer.ts";
+import { createAskUserBridge } from "../../src/chat/ask-user-bridge.ts";
 import { makeFakeProvider } from "../../src/providers/fake/index.ts";
 import { makeDispatchChildTask } from "../../src/chat/dispatch-child.ts";
 import { chatsApi } from "../../src/api/chats.ts";
@@ -216,8 +217,12 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
       }
     : undefined;
 
-  mountMcp(app, { vaultRoot, db, bus, dispatchChildTask, loadAgentDefn });
-  mountAnswerRoute(app, { db, bus, pending: pendingRegistry });
+  // VOS-100 T6: single bridge instance shared between mountMcp (ask_user
+  // handler parks awaiters via bridge.open) and mountAnswerRoute (HTTP
+  // /answer resolves them via bridge.resolve).
+  const bridge = createAskUserBridge({ db, bus });
+  mountMcp(app, { vaultRoot, db, bus, bridge, dispatchChildTask, loadAgentDefn });
+  mountAnswerRoute(app, { db, bridge });
 
   return {
     db,
