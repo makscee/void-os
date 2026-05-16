@@ -1,6 +1,6 @@
 # ADR-0001 — Provider event canonicalization (A2A delta-style)
 
-- **Status:** Accepted
+- **Status:** Accepted (amended 2026-05-16 — see below)
 - **Date:** 2026-05-16
 - **Supersedes:** the "canonicalization is deferred to a follow-up task" note in `daemon/src/providers/types.ts`
 
@@ -114,3 +114,9 @@ Stay CC-frame-shaped (`{type:"assistant", message:{content:[...]}}` JSONL lines)
 
 **Reversibility:**
 - Reversible by adding a `raw?: ProviderEvent` escape hatch on the canonical event and re-exporting the extractors. Not anticipated.
+
+## Amendments
+
+### 2026-05-16 — §"Why session-replay's CC-JSONL reader keeps the parsers" superseded by VOS-99
+
+The second adapter (session-replay's legacy JSONL reader) was deleted because no live pre-VOS-80 chat data required preservation. `cc-shape.ts` is now consumed only inside `providers/claude-code/` (by `provider.ts` and the fake provider). The cross-layer import from `chat/` into `providers/claude-code/*` is gone.

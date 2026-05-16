@@ -5,15 +5,14 @@ import type {
 } from "../types.ts";
 
 // CC wire-format parsers — sole owner of Claude Code's `stream-json` /
-// JSONL on-disk shape. Two adapters consume this module:
+// JSONL on-disk shape. Two adapters consume this module, both within
+// `providers/claude-code/`:
 //
 //   1. providers/claude-code/provider.ts — normalizes live spawn events
-//      from CC's stdout into canonical `ProviderEvent`s on yield.
-//   2. chat/session-replay.ts — replays pre-VOS-80 legacy CC JSONL
-//      records into A2A `Part[]`. Same on-disk shape, same parsers.
-//
-// Per ADR-0001 (2026-05-16), CC vocabulary does not belong under `chat/`.
-// chat/util.ts is now a thin re-export shim and will be deleted in T9.
+//      from CC's stdout into canonical `ProviderEvent`s on yield
+//      (via `normalizeCcEvent`).
+//   2. providers/fake/index.ts — test fake provider that exercises the
+//      same CC wire-format shape without a real spawn.
 //
 // CC frames carry text at `record.message.content[]` as an array of blocks
 // like `{ type: "text", text: string }`, interleaved with
