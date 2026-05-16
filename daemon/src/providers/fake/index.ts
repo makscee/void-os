@@ -77,14 +77,11 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
   return {
     name: "fake",
     spawn(req: ProviderSpawnRequest): ProviderHandle {
-      // The fake provider is only spawned in tests; the test rig injects task
-      // / context / run identifiers as extra properties on the spawn request
-      // (mirroring how production wiring threads them via the orchestrator).
-      // ProviderSpawnRequest does not list them, so widen here.
-      const reqExt = req as ProviderSpawnRequest & {
-        taskId?: string;
-        contextId?: string;
-      };
+      // ADR-0001 / T1: ProviderSpawnRequest now carries taskId/contextId
+      // (currently optional; T10 tightens to required). The fake provider
+      // reads them directly off `req` — no widen cast needed. The taskId
+      // presence check below preserves the previous runtime guard for the
+      // vos_ask_user directive path.
       let cancelled = false;
       let resolveDone!: (r: { exitCode?: number; sessionId?: string; reason: "exit" | "cancel" | "timeout" | "error" }) => void;
       const done = new Promise<{ exitCode?: number; sessionId?: string; reason: "exit" | "cancel" | "timeout" | "error" }>((res) => {
@@ -105,9 +102,9 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
         // Use the same MCP route the production agent would use. We talk
         // JSON-RPC to /mcp with the ask_user tool name; daemon arms pending
         // registry and only returns when /chat/:id/answer resolves it.
-        const taskId = reqExt.taskId;
-        const contextId = reqExt.contextId ?? taskId;
-        const runId = reqExt.runId;
+        const taskId = req.taskId;
+        const contextId = req.contextId ?? taskId;
+        const runId = req.runId;
         if (!taskId) {
           throw new Error("vos_ask_user directive requires taskId on spawn request");
         }
