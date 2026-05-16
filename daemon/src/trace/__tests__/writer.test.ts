@@ -162,4 +162,18 @@ describe("TraceWriter — basic", () => {
       fs.writeSync = origWrite;
     }
   });
+
+  test("close() is idempotent", () => {
+    const path = join(tmpRoot, "idemp.jsonl");
+    const w = TraceWriter.open(path);
+    w.write("cc.event", {});
+    expect(() => { w.close(); w.close(); w.close(); }).not.toThrow();
+  });
+
+  test("write() after close() throws", () => {
+    const path = join(tmpRoot, "afterclose.jsonl");
+    const w = TraceWriter.open(path);
+    w.close();
+    expect(() => w.write("cc.event", {})).toThrow();
+  });
 });
