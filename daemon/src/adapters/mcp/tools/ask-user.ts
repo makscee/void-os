@@ -6,7 +6,9 @@
 // not from tool arguments. Replaces the previous ASK_USER_TOOL_DEF JSON Schema
 // literal and the ctx-passing runAskUser function.
 import { randomUUID } from "node:crypto";
-import { z } from "zod";
+// VOS-97 T5 fix: import zod from the v3 subpath — see vault-read.ts header
+// for the rationale (SDK uses zod@3 internally; project ships zod@4).
+import { z } from "zod/v3";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { Database } from "bun:sqlite";

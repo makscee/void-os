@@ -8,7 +8,9 @@
 // translateChildResult, askAgentChainDepth, MAX_ASK_AGENT_DEPTH) are unchanged
 // from VOS-95; only the public surface (tool def + handler) was rewritten.
 
-import { z } from "zod";
+// VOS-97 T5 fix: import zod from the v3 subpath — see vault-read.ts header
+// for the rationale (SDK uses zod@3 internally; project ships zod@4).
+import { z } from "zod/v3";
 import type { Database } from "bun:sqlite";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";

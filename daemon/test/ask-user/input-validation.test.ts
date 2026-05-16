@@ -5,7 +5,10 @@
 // validation behaviour is now exercised by wrapping the raw shape with
 // `z.object(...)` — `McpServer.registerTool` does the equivalent at wire time.
 import { describe, it, expect } from "bun:test";
-import { z } from "zod";
+// VOS-97 T5: tool input shapes are zod@3 (the MCP SDK's bundled version).
+// The project's top-level `zod` is v4 with different prototypes; wrapping a
+// v3 raw shape with v4 `z.object(...)` throws `_parse is not a function`.
+import { z } from "zod/v3";
 import { askUserInput, askUserDef } from "../../src/adapters/mcp/tools/ask-user";
 
 const AskUserInput = z.object(askUserInput);

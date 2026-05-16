@@ -9,7 +9,12 @@
  *   PATH_MUST_BE_RELATIVE, PATH_ESCAPES_VAULT_ROOT, ENOENT, NOT_A_FILE, IO_ERROR.
  */
 
-import { z } from "zod";
+// VOS-97 T5 fix: the MCP SDK (1.20.x) parses tool input with its bundled
+// zod@3. The project's top-level zod is v4 (different ZodType prototypes +
+// renamed internals — v4 has no `_parse`). Importing from `zod/v3` (a
+// subpath the v4 package ships) keeps the SDK happy without downgrading
+// the project's zod dependency.
+import { z } from "zod/v3";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import { createHash } from "node:crypto";

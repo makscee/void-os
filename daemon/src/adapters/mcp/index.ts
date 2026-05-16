@@ -5,34 +5,33 @@
  * StreamableHTTPServerTransport (stateless mode) and dispatch through the
  * Hono↔SDK bridge.
  *
- * VOS-88 T7: ask_user is registered here. MCP is stateless (fresh
- * Server+transport per request), so per-session context cannot be attached
- * to the transport. The caller's runtime MUST inject `task_id` (and optional
- * `context_id`, `run_id`) into the ask_user tool `arguments` themselves; we
- * read them off `args` before invoking runAskUser.
+ * VOS-97: tools are now wired via `McpServer.registerTool`. Each tool exports
+ * a `*Def` + `make*(deps)` factory; per-request runtime ids (`task_id`,
+ * `context_id`, `run_id`) and the `_vos_tool_use_id` correlation hint travel
+ * in `params._meta` per MCP spec (see ADR-0002 + Task 1 spike outcome).
  *
  * PendingRegistry is created ONCE at module scope so it is shared between
- * the MCP CallTool handler (which awaits answers) and the T8 HTTP route
- * (which resolves them). Both surfaces import `pendingRegistry` from this
- * module.
+ * the ask_user handler (which awaits answers) and the POST /chat/:id/answer
+ * route (which resolves them). Both surfaces import `pendingRegistry` from
+ * this module.
  */
 
 import type { Hono } from "hono";
 import type { Database } from "bun:sqlite";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  type CallToolResult,
-} from "@modelcontextprotocol/sdk/types.js";
 import pkg from "../../../package.json" with { type: "json" };
 import type { EventBus } from "../../events/index.ts";
 import type { AgentDefn } from "../../permissions/engine.ts";
 import { honoBridge } from "./hono-bridge.ts";
-import { handleVaultRead, vaultReadDef } from "./tools/vault-read.ts";
-import { ASK_USER_TOOL_DEF, runAskUser } from "./tools/ask-user.ts";
-import { ASK_AGENT_TOOL_DEF, runAskAgent, type AskAgentArgs } from "./tools/ask-agent.ts";
+import { vaultReadDef, makeVaultRead } from "./tools/vault-read.ts";
+import {
+  askUserDef,
+  makeAskUser,
+  ASK_USER_DEADLINE_MS,
+} from "./tools/ask-user.ts";
+import { askAgentDef, makeAskAgent } from "./tools/ask-agent.ts";
 import {
   createPendingRegistry,
   type PendingRegistry,
@@ -64,21 +63,11 @@ export interface McpDeps {
 }
 
 /**
- * VOS-89 T10: Static MCP tool list. Exported so tests (and any future
- * tools/list shaping logic) can inspect the canonical schema without
- * spinning up a Server. The `setRequestHandler(ListToolsRequestSchema)`
- * call below returns this exact array.
- */
-export function listMcpTools() {
-  return [vaultReadDef, ASK_USER_TOOL_DEF, ASK_AGENT_TOOL_DEF];
-}
-
-/**
  * VOS-89 T10: default AgentDefn loader — reads `agent_cards.card_json`
  * and parses it. The card JSON is expected to carry at least `name`;
  * `ask_agent_allow` is optional, and when absent the field is left
  * `undefined` (NOT empty array), which the permission gate in
- * runAskAgent treats as permissive at the agent level.
+ * ask_agent treats as permissive at the agent level.
  */
 export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn {
   const row = db
@@ -101,26 +90,15 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
   return defn;
 }
 
-// VOS-88 T7: module-scope singleton. Shared by the ask_user CallTool handler
+// VOS-88 T7: module-scope singleton. Shared by the ask_user handler
 // (await) and the T8 POST /chat/:id/answer route (resolve). Exported as
-// `pendingRegistry` for T8 to import directly.
+// `pendingRegistry` for the answer route to import directly.
 export const pendingRegistry: PendingRegistry = createPendingRegistry();
 
 export function buildMcpServer(deps: McpDeps): Server {
-  const server = new Server(
-    { name: "void-os", version: pkg.version },
-    { capabilities: { tools: {} } },
-  );
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: listMcpTools(),
-  }));
-
-  // Resolve the AgentDefn loader + child-task dispatcher. Production
-  // buildApp injects both; tests for the MCP layer in isolation can omit
-  // either and fall through to the defaults.
+  const { vaultRoot, db, bus } = deps;
   const loadAgentDefn =
-    deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(deps.db, name));
+    deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(db, name));
   const dispatchChildTask =
     deps.dispatchChildTask ??
     (async (childTaskId, args) => {
@@ -132,78 +110,37 @@ export function buildMcpServer(deps: McpDeps): Server {
       );
     });
 
-  server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToolResult> => {
-    const { name, arguments: args } = req.params;
-    if (name === "vault.read") {
-      const res = await handleVaultRead(args as { path: string }, { vaultRoot: deps.vaultRoot, db: deps.db });
-      return res as unknown as CallToolResult;
-    }
-    if (name === "ask_user") {
-      // MCP is stateless: there is no per-session task context on the
-      // transport. The caller injects task_id / context_id / run_id into
-      // the tool arguments. zod's AskUserInput is non-strict and ignores
-      // these extras; we read them separately before invoking runAskUser.
-      const a = (args ?? {}) as Record<string, unknown>;
-      const taskId = typeof a.task_id === "string" ? a.task_id : undefined;
-      if (!taskId) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: "ASK_USER_MISSING_TASK_ID" }],
-        };
-      }
-      const contextId = typeof a.context_id === "string" ? a.context_id : taskId;
-      const runId = typeof a.run_id === "string" ? a.run_id : null;
-      const res = await runAskUser(
-        {
-          db: deps.db,
-          bus: deps.bus,
-          pending: pendingRegistry,
-          taskId,
-          contextId,
-          runId,
-          deadlineMs: ASK_USER_DEADLINE_MS,
-          now: () => Date.now(),
-        },
-        args,
-      );
-      return res as unknown as CallToolResult;
-    }
-    if (name === "ask_agent") {
-      // VOS-89 T10: like ask_user, MCP is stateless — caller's runtime must
-      // inject task_id / context_id into the tool arguments. We strip them
-      // off before forwarding the typed AskAgentArgs to runAskAgent.
-      const a = (args ?? {}) as Record<string, unknown>;
-      const taskId = typeof a.task_id === "string" ? a.task_id : undefined;
-      if (!taskId) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: "ASK_AGENT_MISSING_TASK_ID" }],
-        };
-      }
-      const contextId = typeof a.context_id === "string" ? a.context_id : taskId;
-      const res = await runAskAgent(
-        {
-          db: deps.db,
-          bus: deps.bus,
-          taskId,
-          contextId,
-          loadAgentDefn,
-          dispatchChildTask,
-          now: () => Date.now(),
-        },
-        {
-          target_agent_id: String(a.target_agent_id ?? ""),
-          message: String(a.message ?? ""),
-          system_message:
-            typeof a.system_message === "string" ? a.system_message : undefined,
-        } satisfies AskAgentArgs,
-      );
-      return res as unknown as CallToolResult;
-    }
-    return { isError: true, content: [{ type: "text", text: `UNKNOWN_TOOL: ${name}` }] };
-  });
+  const mcp = new McpServer({ name: "void-os", version: pkg.version });
 
-  return server;
+  mcp.registerTool(
+    "vault.read",
+    vaultReadDef,
+    makeVaultRead({ vaultRoot, db }) as never,
+  );
+  mcp.registerTool(
+    "ask_user",
+    askUserDef,
+    makeAskUser({
+      db,
+      bus,
+      pending: pendingRegistry,
+      now: () => Date.now(),
+      deadlineMs: ASK_USER_DEADLINE_MS,
+    }) as never,
+  );
+  mcp.registerTool(
+    "ask_agent",
+    askAgentDef,
+    makeAskAgent({
+      db,
+      bus,
+      loadAgentDefn,
+      dispatchChildTask,
+      now: () => Date.now(),
+    }) as never,
+  );
+
+  return mcp.server;
 }
 
 export function mountMcp(app: Hono, deps: McpDeps): void {
