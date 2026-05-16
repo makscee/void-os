@@ -93,6 +93,7 @@ describe("makeChatApi", () => {
     expect(rows.length).toBe(2);
     expect(rows[0]).toEqual({
       id: "c1", agent: "maya", title: null, last_msg: "hi", updated_at: 100, last_run_status: "done",
+      cost_usd: 0, input_required: false,
     });
     expect(rows[1].title).toBe("Trip");
     expect(rows[1].last_run_status).toBeNull();
@@ -263,5 +264,37 @@ describe("makeChatApi", () => {
     );
     await api.cancel("c/with slash");
     expect(url).toBe("http://test/chat/c%2Fwith%20slash/cancel");
+  });
+
+  test("normalizeChats defaults cost_usd to 0 and input_required to false when missing", async () => {
+    const fakeFetchImpl = async () => new Response(JSON.stringify([
+      { id: "c1", agent: "maya", title: null, last_msg: null, updated_at: 1, last_run_status: null },
+    ]), { status: 200 });
+    const api = makeChatApi("http://x", fakeFetchImpl as unknown as typeof fetch);
+    const rows = await api.listChats();
+    expect(rows[0].cost_usd).toBe(0);
+    expect(rows[0].input_required).toBe(false);
+  });
+
+  test("normalizeChats surfaces cost_usd + input_required when daemon provides them", async () => {
+    const fakeFetchImpl = async () => new Response(JSON.stringify([
+      { id: "c1", agent: "maya", title: null, last_msg: null, updated_at: 1,
+        last_run_status: null, cost_usd: 1.25, input_required: true },
+    ]), { status: 200 });
+    const api = makeChatApi("http://x", fakeFetchImpl as unknown as typeof fetch);
+    const rows = await api.listChats();
+    expect(rows[0].cost_usd).toBeCloseTo(1.25, 5);
+    expect(rows[0].input_required).toBe(true);
+  });
+
+  test("normalizeChats clamps non-numeric cost_usd to 0", async () => {
+    const fakeFetchImpl = async () => new Response(JSON.stringify([
+      { id: "c1", agent: "maya", title: null, last_msg: null, updated_at: 1,
+        last_run_status: null, cost_usd: "1.25", input_required: 1 },
+    ]), { status: 200 });
+    const api = makeChatApi("http://x", fakeFetchImpl as unknown as typeof fetch);
+    const rows = await api.listChats();
+    expect(rows[0].cost_usd).toBe(0);            // non-number → 0
+    expect(rows[0].input_required).toBe(false);  // non-boolean → false
   });
 });

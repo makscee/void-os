@@ -39,6 +39,10 @@ export interface ChatSummary {
   updated_at: number;
   /** Last run terminal status; null if no runs yet. */
   last_run_status: RunStatus | null;
+  /** Lifetime aggregate cost in USD; defaults to 0 when missing/invalid. */
+  cost_usd: number;
+  /** True iff any task in this chat is in TASK_STATE_INPUT_REQUIRED. */
+  input_required: boolean;
 }
 
 export interface ChatApi {
@@ -162,6 +166,11 @@ function normalizeChats(raw: unknown): ChatSummary[] {
       updated_at: typeof o.updated_at === "number" ? o.updated_at : 0,
       last_run_status:
         typeof o.last_run_status === "string" ? (o.last_run_status as RunStatus) : null,
+      cost_usd:
+        typeof o.cost_usd === "number" && Number.isFinite(o.cost_usd) && o.cost_usd >= 0
+          ? o.cost_usd
+          : 0,
+      input_required: o.input_required === true,
     });
   }
   return out;
