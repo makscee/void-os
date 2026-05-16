@@ -38,6 +38,7 @@ import { mountMcp } from "../../src/adapters/mcp/index.ts";
 import { mountAnswerRoute } from "../../src/api/answer.ts";
 import { createAskUserBridge } from "../../src/chat/ask-user-bridge.ts";
 import { createEventBus } from "../../src/events/index.ts";
+import { createPermissionEngine } from "../../src/permissions/engine.ts";
 
 const MIGRATIONS = join(import.meta.dir, "../../src/adapters/sqlite/migrations");
 
@@ -50,6 +51,13 @@ async function startApp(): Promise<Ctx> {
   const db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
   runMigrationsFromDir(db, MIGRATIONS);
+  // VOS-106 T7.5: mountMcp now resolves the calling agent from ?agent=<name>
+  // via agent_cards.card_json, so seed a permissive "maya" card. The same
+  // name flows through the MCP URL below.
+  db.run(
+    "INSERT INTO agent_cards (agent_name, card_json, source_mtime) VALUES ('maya', ?, 0)",
+    [JSON.stringify({ name: "maya" })],
+  );
   db.run(
     "INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived) VALUES ('ctx', 'maya', NULL, 0, 0, 0)",
   );
@@ -69,8 +77,15 @@ async function startApp(): Promise<Ctx> {
   // composition root (app.ts) guarantees by constructing one bridge and
   // threading it into both surfaces.
   const bridge = createAskUserBridge({ db, bus });
+  // VOS-106 T7.5: mountMcp now requires a PermissionEngine for vault.read's
+  // per-agent scope gate. ask_user doesn't hit the engine but the dep is
+  // structurally required; build a permissive engine rooted at /tmp.
+  const engine = createPermissionEngine({
+    vaultRoot: "/tmp/__not_used__",
+    homeRoot: "/tmp/home",
+  });
   const app = new Hono();
-  mountMcp(app, { vaultRoot: "/tmp/__not_used__", db, bus, bridge });
+  mountMcp(app, { vaultRoot: "/tmp/__not_used__", db, bus, bridge, engine });
   mountAnswerRoute(app, { db, bridge });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   return { db, server: { stop: () => server.stop(true), port: server.port as number } };
@@ -95,8 +110,10 @@ async function runRoundTrip(answer: string) {
   const ctx = await startApp();
   try {
     const client = new Client({ name: "test-e2e", version: "0.0.0" });
+    // VOS-106 T7.5: /mcp now requires ?agent=<name> so the daemon can resolve
+    // the calling agent's read_scope before instantiating tool handlers.
     const transport = new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${ctx.server.port}/mcp`),
+      new URL(`http://127.0.0.1:${ctx.server.port}/mcp?agent=maya`),
     );
     await client.connect(transport);
 

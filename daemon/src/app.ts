@@ -215,6 +215,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     bus,
     bridge,
     dispatchChildTask,
+    // VOS-106: thread the permission engine so vault.read can gate per-agent
+    // read_scope. mountMcp resolves the calling-agent identity from
+    // ?agent=<name> and pairs it with this engine inside buildMcpServer.
+    engine,
   });
   // VOS-100: user-facing answer route. Shares the SAME `bridge` instance
   // with mountMcp so the MCP tool handler (which awaits via bridge.open)

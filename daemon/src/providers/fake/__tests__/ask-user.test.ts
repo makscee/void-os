@@ -8,6 +8,7 @@ import { createEventBus } from "../../../events/index.ts";
 import { mountMcp } from "../../../adapters/mcp/index.ts";
 import { mountAnswerRoute } from "../../../api/answer.ts";
 import { createAskUserBridge } from "../../../chat/ask-user-bridge.ts";
+import { createPermissionEngine } from "../../../permissions/engine.ts";
 import { runMigrationsFromDir } from "../../../adapters/sqlite/migrations.ts";
 import { makeFakeProvider } from "../index.ts";
 import type { ProviderSpawnRequest } from "../../types.ts";
@@ -29,6 +30,12 @@ async function start(): Promise<Ctx> {
   const db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
   migrate(db);
+  // VOS-106 T7.5: mountMcp resolves the calling agent from ?agent=<name>
+  // via agent_cards.card_json. Seed a permissive maya card.
+  db.run(
+    "INSERT INTO agent_cards (agent_name, card_json, source_mtime) VALUES ('maya', ?, 0)",
+    [JSON.stringify({ name: "maya" })],
+  );
   db.run(
     "INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived) VALUES ('ctx', 'maya', NULL, 0, 0, 0)",
   );
@@ -45,8 +52,14 @@ async function start(): Promise<Ctx> {
   // parks awaiters in open()) and mountAnswerRoute (which resolves them).
   // If the test wired two separate bridges the round-trip would deadlock.
   const bridge = createAskUserBridge({ db, bus });
+  // VOS-106 T7.5: mountMcp requires a PermissionEngine for vault.read scope
+  // gating. ask_user does not exercise the engine, but the dep is required.
+  const engine = createPermissionEngine({
+    vaultRoot: "/tmp/__not_used__",
+    homeRoot: "/tmp/home",
+  });
   const app = new Hono();
-  mountMcp(app, { vaultRoot: "/tmp/__not_used__", db, bus, bridge });
+  mountMcp(app, { vaultRoot: "/tmp/__not_used__", db, bus, bridge, engine });
   mountAnswerRoute(app, { db, bridge });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   const scriptDir = mkdtempSync(join(tmpdir(), "fake-ask-"));

@@ -158,9 +158,13 @@ describe("VOS-89 T15.5: production buildApp wires dispatchChildTask", () => {
     // directly (which is what production resume listeners do anyway).
 
     // ── 5. Invoke MCP ask_agent ───────────────────────────────────────
+    // VOS-106 T7.5: /mcp now requires ?agent=<name> so the daemon can resolve
+    // calling-agent identity before instantiating per-request tool handlers.
+    // We're acting as the parent (maya) here — maya's agent_card was seeded
+    // above.
     mcpClient = new Client({ name: "vos89-t15-5-test", version: "0.0.0" });
     const transport = new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${server.port}/mcp`),
+      new URL(`http://127.0.0.1:${server.port}/mcp?agent=maya`),
     );
     await mcpClient.connect(transport);
     const callP = mcpClient.callTool({
