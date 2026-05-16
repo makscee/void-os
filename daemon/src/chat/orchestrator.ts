@@ -50,25 +50,6 @@ import { extractAssistantText } from "../providers/claude-code/index.ts";
 
 import type { Provider, ProviderHandle } from "../providers/index.ts";
 
-/** Collapse runs of adjacent TextPart entries in a parts buffer into a single
- *  TextPart. The orchestrator pushes one TextPart per assistant token batch
- *  during streaming; the canonical A2A Message stored in the messages table
- *  contains a single concatenated TextPart for the turn's narrative text. */
-function mergeAdjacentTextParts(parts: Part[]): Part[] {
-  const out: Part[] = [];
-  for (const p of parts) {
-    const last = out[out.length - 1];
-    const lastText = (last as { text?: unknown } | undefined)?.text;
-    const curText = (p as { text?: unknown }).text;
-    if (typeof lastText === "string" && typeof curText === "string") {
-      out[out.length - 1] = { ...(last as object), text: lastText + curText } as Part;
-    } else {
-      out.push(p);
-    }
-  }
-  return out;
-}
-
 export interface TitlerLike {
   title(chatId: string): Promise<void>;
 }
@@ -612,7 +593,25 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           // appendMessage). last_msg preview is now derived from messages
           // by repo.list(); setLastMsg is retained only for the updated_at
           // bump (used by list ordering).
-          const flushed = mergeAdjacentTextParts(agentParts);
+          //
+          // Inline merge of adjacent TextParts: the orchestrator pushes one
+          // TextPart per assistant token batch during streaming; the
+          // canonical A2A Message stored in the messages table contains a
+          // single concatenated TextPart for the turn's narrative text.
+          const flushed: Part[] = [];
+          for (const p of agentParts) {
+            const last = flushed[flushed.length - 1];
+            const lastText = (last as { text?: unknown } | undefined)?.text;
+            const curText = (p as { text?: unknown }).text;
+            if (typeof lastText === "string" && typeof curText === "string") {
+              flushed[flushed.length - 1] = {
+                ...(last as object),
+                text: lastText + curText,
+              } as Part;
+            } else {
+              flushed.push(p);
+            }
+          }
           if (flushed.length > 0) {
             messages.appendMessage(
               taskId,
@@ -674,8 +673,22 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           // parts) so the LEFT JOIN in messages-repo.walk() can stamp
           // `cancelled: true` on a concrete row. Empty parts renders as
           // STOPPED_MARKER on the plugin. The buffered tool blocks (if any
-          // streamed pre-cancel) are preserved by mergeAdjacentTextParts.
-          const flushed = mergeAdjacentTextParts(agentParts);
+          // streamed pre-cancel) are preserved by the inline adjacent-
+          // TextPart merge below.
+          const flushed: Part[] = [];
+          for (const p of agentParts) {
+            const last = flushed[flushed.length - 1];
+            const lastText = (last as { text?: unknown } | undefined)?.text;
+            const curText = (p as { text?: unknown }).text;
+            if (typeof lastText === "string" && typeof curText === "string") {
+              flushed[flushed.length - 1] = {
+                ...(last as object),
+                text: lastText + curText,
+              } as Part;
+            } else {
+              flushed.push(p);
+            }
+          }
           messages.appendMessage(
             taskId,
             chatId,
@@ -688,7 +701,22 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
           }
         } else if (status === "error" && agentParts.length > 0) {
-          const flushed = mergeAdjacentTextParts(agentParts);
+          // Inline merge of adjacent TextParts — see happy-path callsite
+          // above for rationale.
+          const flushed: Part[] = [];
+          for (const p of agentParts) {
+            const last = flushed[flushed.length - 1];
+            const lastText = (last as { text?: unknown } | undefined)?.text;
+            const curText = (p as { text?: unknown }).text;
+            if (typeof lastText === "string" && typeof curText === "string") {
+              flushed[flushed.length - 1] = {
+                ...(last as object),
+                text: lastText + curText,
+              } as Part;
+            } else {
+              flushed.push(p);
+            }
+          }
           messages.appendMessage(
             taskId,
             chatId,
