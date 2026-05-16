@@ -2,7 +2,7 @@
 //
 // Routes:
 //   - GET  /chat/:id            → full chat row, or 404 {error:"not_found"}
-//   - GET  /chat/:id/messages   → sessionReplay walk over CC's JSONL DAG
+//   - GET  /chat/:id/messages   → sessionReplay walk over the messages table
 //   - POST /chat/:id/message    → user-send entrypoint; dispatches via orchestrator
 //   - POST /chat/:id/cancel     → interrupt the in-flight run for this chat
 //
@@ -13,22 +13,17 @@
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
 import { makeChatRepo } from "../chat/repo.ts";
-import {
-  makeSessionReplay,
-  type ReplayOpts,
-} from "../chat/session-replay.ts";
+import { makeSessionReplay } from "../chat/session-replay.ts";
 import type { Orchestrator } from "../chat/orchestrator.ts";
 
 export interface ChatApiOpts {
-  // Optional override for session-replay (test seam: projectsRoot, cwd, encodeCwd).
-  replay?: ReplayOpts;
   // Optional orchestrator. When omitted, POST /chat/:id/message returns 500.
   orchestrator?: Orchestrator;
 }
 
 export function chatApi(db: Database, opts: ChatApiOpts = {}): Hono {
   const repo = makeChatRepo(db);
-  const replay = makeSessionReplay(db, opts.replay);
+  const replay = makeSessionReplay(db);
   const orchestrator = opts.orchestrator;
   const app = new Hono();
 
