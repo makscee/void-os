@@ -252,7 +252,7 @@ describe("chatReducer — chat.token child routing (T14)", () => {
     expect(s.childTasks["t-child"].liveTokens).toBe("");
   });
 
-  it("chat.token with unknown task_id falls through to parent path", () => {
+  it("chat.token with unknown task_id is dropped (not parent leak)", () => {
     let s = stateWithChildAndRun();
     s = chatReducer(s, {
       kind: "frame",
@@ -264,8 +264,8 @@ describe("chatReducer — chat.token child routing (T14)", () => {
         delta: "spill",
       },
     });
-    // unknown task_id → treated as parent delta
-    expect(s.liveTokens).toBe("spill");
+    // unknown task_id → dropped, neither parent nor child
+    expect(s.liveTokens).toBe("");
     expect(s.childTasks["t-child"].liveTokens).toBe("");
   });
 });
@@ -327,6 +327,25 @@ describe("chatReducer — chat.tool_use child routing (T14)", () => {
       },
     });
     expect(s.liveToolEvents).toHaveLength(1);
+    expect(s.childTasks["t-child"].liveToolEvents).toHaveLength(0);
+  });
+
+  it("chat.tool_use with unknown task_id is dropped (not parent leak)", () => {
+    let s = stateWithChildAndRun();
+    s = chatReducer(s, {
+      kind: "frame",
+      frame: {
+        type: "chat.tool_use",
+        chat_id: "ctx-1",
+        run_id: "run-p1",
+        task_id: "t-unknown",
+        tool_call_id: "tc-unknown-1",
+        name: "bash",
+        input: { cmd: "echo hi" },
+      },
+    });
+    // unknown task_id → dropped, neither parent nor child
+    expect(s.liveToolEvents).toHaveLength(0);
     expect(s.childTasks["t-child"].liveToolEvents).toHaveLength(0);
   });
 });
@@ -436,6 +455,25 @@ describe("chatReducer — chat.tool_result child routing (T14)", () => {
       },
     });
     expect(s.liveToolEvents[0].output).toBe("done");
+    expect(s.childTasks["t-child"].liveToolEvents).toHaveLength(0);
+  });
+
+  it("chat.tool_result with unknown task_id is dropped (not parent leak)", () => {
+    let s = stateWithChildAndRun();
+    s = chatReducer(s, {
+      kind: "frame",
+      frame: {
+        type: "chat.tool_result",
+        chat_id: "ctx-1",
+        run_id: "run-p1",
+        task_id: "t-unknown",
+        tool_call_id: "tc-unknown-1",
+        output: "orphan result",
+        is_error: false,
+      },
+    });
+    // unknown task_id → dropped, neither parent nor child
+    expect(s.liveToolEvents).toHaveLength(0);
     expect(s.childTasks["t-child"].liveToolEvents).toHaveLength(0);
   });
 });

@@ -766,6 +766,10 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         case "chat.token": {
           if (!runId) return state;
           const taskId = typeof f.task_id === "string" ? f.task_id : null;
+          // Drop unrouted child frame (task_id set but not in childTasks).
+          if (taskId && !state.childTasks[taskId]) {
+            return state;
+          }
           if (taskId && state.childTasks[taskId]) {
             const cur = state.childTasks[taskId];
             const delta = typeof f.delta === "string" ? f.delta : "";
@@ -790,6 +794,10 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
             ? (f.input as Record<string, unknown>)
             : {};
           const taskIdTu = typeof f.task_id === "string" ? f.task_id : null;
+          // Drop unrouted child frame (task_id set but not in childTasks).
+          if (taskIdTu && !state.childTasks[taskIdTu]) {
+            return state;
+          }
           if (taskIdTu && state.childTasks[taskIdTu]) {
             const cur = state.childTasks[taskIdTu];
             if (cur.liveToolEvents.some((p) => p.toolCallId === toolCallId)) return state;
@@ -828,6 +836,10 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           if (!toolCallId) return state;
           const isError = f.is_error === true;
           const taskIdTr = typeof f.task_id === "string" ? f.task_id : null;
+          // Drop unrouted child frame (task_id set but not in childTasks).
+          if (taskIdTr && !state.childTasks[taskIdTr]) {
+            return state;
+          }
           if (taskIdTr && state.childTasks[taskIdTr]) {
             const cur = state.childTasks[taskIdTr];
             const outText = normalizeToolOutput(f.output);
