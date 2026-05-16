@@ -17,6 +17,7 @@ export interface TextMessage {
   role: "user" | "assistant";
   content: string;
   ts?: number;
+  task_id: string;
   /** True when this assistant turn's run was marked cancelled (ESC cancel).
    *  Surfaced via LEFT JOIN runs in messages-repo.walk() so the plugin can
    *  render a "stopped" badge on the cached server-truth entry without
@@ -32,6 +33,7 @@ export interface ToolUseEntry {
   name: string;
   input: unknown;
   ts?: number;
+  task_id: string;
 }
 
 /** A tool result block lifted out of a user-role turn's content[]. */
@@ -41,6 +43,7 @@ export interface ToolResultEntry {
   output: unknown;
   is_error: boolean;
   ts?: number;
+  task_id: string;
 }
 
 /** Discriminated union surfaced to /chat/:id/messages. The plugin S4 panel

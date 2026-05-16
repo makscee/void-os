@@ -80,7 +80,7 @@ test("appendMessage(ROLE_USER) round-trips one user text entry via walk", () => 
   repo.appendMessage(tid, cid, "run-1", "ROLE_USER", parts, 1000);
 
   expect(repo.walk(cid)).toEqual([
-    { role: "user", content: "hi", ts: 1000 },
+    { role: "user", content: "hi", ts: 1000, task_id: tid },
   ]);
 });
 
@@ -106,13 +106,14 @@ test("appendMessage(ROLE_AGENT) with mixed parts round-trips via walk", () => {
   repo.appendMessage(tid, cid, "run-1", "ROLE_AGENT", parts, 2000);
 
   expect(repo.walk(cid)).toEqual([
-    { role: "assistant", content: "looking\ndone", ts: 2000 },
+    { role: "assistant", content: "looking\ndone", ts: 2000, task_id: tid },
     {
       role: "tool_use",
       tool_call_id: "c1",
       name: "read",
       input: { path: "/x" },
       ts: 2000,
+      task_id: tid,
     },
   ]);
 });
@@ -143,7 +144,7 @@ test("ROLE_AGENT UPSERTs on (context_id, run_id) — second call overwrites part
 
   expect(id2).toBe(id1);
   expect(repo.walk(cid)).toEqual([
-    { role: "assistant", content: "partial done", ts: 1010 },
+    { role: "assistant", content: "partial done", ts: 1010, task_id: tid },
   ]);
   // Ensure UPSERT, not INSERT — single row in the table.
   const count = db
@@ -263,11 +264,12 @@ test("walk surfaces cancelled=true on ROLE_AGENT rows whose run.status='cancelle
   ]);
 
   expect(repo.walk(cid)).toEqual([
-    { role: "user", content: "go", ts: 1000 },
+    { role: "user", content: "go", ts: 1000, task_id: tid },
     {
       role: "assistant",
       content: "partial answer",
       ts: 1010,
+      task_id: tid,
       cancelled: true,
     },
   ]);
@@ -284,7 +286,7 @@ test("walk omits cancelled flag on ROLE_AGENT rows from done runs", () => {
   db.run("UPDATE runs SET status='done', ended_at=? WHERE id=?", [1020, "run-1"]);
 
   const out = repo.walk(cid);
-  expect(out).toEqual([{ role: "assistant", content: "ok", ts: 1010 }]);
+  expect(out).toEqual([{ role: "assistant", content: "ok", ts: 1010, task_id: tid }]);
   expect((out[0] as { cancelled?: boolean }).cancelled).toBeUndefined();
 });
 
@@ -302,7 +304,7 @@ test("walk does not stamp cancelled on ROLE_USER rows from cancelled runs", () =
   ]);
 
   const out = repo.walk(cid);
-  expect(out).toEqual([{ role: "user", content: "go", ts: 1000 }]);
+  expect(out).toEqual([{ role: "user", content: "go", ts: 1000, task_id: tid }]);
   expect((out[0] as { cancelled?: boolean }).cancelled).toBeUndefined();
 });
 
@@ -347,6 +349,7 @@ test("walk decodes tool_result DataParts back into ReplayEntry shape", () => {
       output: "ok",
       is_error: false,
       ts: 2000,
+      task_id: tid,
     },
     {
       role: "tool_result",
@@ -354,6 +357,7 @@ test("walk decodes tool_result DataParts back into ReplayEntry shape", () => {
       output: "boom",
       is_error: true,
       ts: 2000,
+      task_id: tid,
     },
   ]);
 });
@@ -379,4 +383,50 @@ test("appendMessage with null runId on ROLE_AGENT always inserts (no UPSERT)", (
     .query("SELECT COUNT(*) AS n FROM messages WHERE context_id = ?")
     .get(cid) as { n: number };
   expect(count.n).toBe(2);
+});
+
+test("walk surfaces task_id per entry — parent and child tasks map to their own task_id", () => {
+  const db = freshDb();
+  // One context (parent chat context).
+  const cid = seedContext(db);
+  // Two tasks seeded under the same context: simulates parent + child.
+  const parentTid = seedTask(db, cid);
+  const childTid = seedTask(db, cid);
+  seedRun(db, cid, "run-parent");
+  seedRun(db, cid, "run-child");
+  const repo = makeMessagesRepo(db);
+
+  // Parent task: one user message.
+  repo.appendMessage(parentTid, cid, "run-parent", "ROLE_USER", [{ text: "parent msg" }], 1000);
+  // Child task: one agent message with a tool_use part.
+  repo.appendMessage(
+    childTid,
+    cid,
+    "run-child",
+    "ROLE_AGENT",
+    [
+      { text: "child text" },
+      {
+        data: {
+          kind: "tool_use",
+          tool_call_id: "tc1",
+          tool_name: "bash",
+          input: { cmd: "ls" },
+        },
+      },
+    ],
+    2000,
+  );
+
+  const entries = repo.walk(cid);
+
+  // Exactly 3 entries: user text, assistant text, tool_use.
+  expect(entries).toHaveLength(3);
+
+  // task_id on user entry matches parentTid.
+  expect(entries[0].task_id).toBe(parentTid);
+
+  // task_id on assistant text and tool_use entries matches childTid.
+  expect(entries[1].task_id).toBe(childTid);
+  expect(entries[2].task_id).toBe(childTid);
 });

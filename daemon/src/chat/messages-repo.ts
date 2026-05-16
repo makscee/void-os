@@ -98,7 +98,7 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
     walk(contextId) {
       const rows = db
         .query(
-          "SELECT m.role AS role, m.parts AS parts, m.ts AS ts, r.status AS run_status " +
+          "SELECT m.role AS role, m.parts AS parts, m.ts AS ts, m.task_id AS task_id, r.status AS run_status " +
             "FROM messages m LEFT JOIN runs r ON r.id = m.run_id " +
             "WHERE m.context_id = ? ORDER BY m.ts ASC, m.ord ASC",
         )
@@ -106,6 +106,7 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
           role: "ROLE_USER" | "ROLE_AGENT";
           parts: string;
           ts: number;
+          task_id: string;
           run_status: string | null;
         }>;
 
@@ -138,6 +139,7 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
             role: surfaceRole,
             content: text,
             ts: r.ts,
+            task_id: r.task_id,
           };
           if (isCancelledAgent) {
             (entry as { cancelled?: boolean }).cancelled = true;
@@ -155,6 +157,7 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
               name: (data as { tool_name?: string }).tool_name ?? "",
               input: (data as { input?: unknown }).input ?? null,
               ts: r.ts,
+              task_id: r.task_id,
             });
           } else if (data.kind === "tool_result") {
             out.push({
@@ -164,6 +167,7 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
               output: (data as { output?: unknown }).output ?? "",
               is_error: Boolean((data as { is_error?: unknown }).is_error),
               ts: r.ts,
+              task_id: r.task_id,
             });
           }
         }
