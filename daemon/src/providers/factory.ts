@@ -53,6 +53,11 @@ export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
       // matching the cc-spawner production wiring.
       tracesDir: deps.tracesDir,
       agent: deps.agent,
+      // VOS-104: pass bus + db so the fake emits a bus `run.end` with
+      // usageTurns at successful exit — feeds subscribeRunEnd so e2e cost
+      // assertions land on a real row.
+      bus: deps.bus,
+      db: deps.db,
     });
   }
   throw new Error(`unknown provider: ${kind}`);
