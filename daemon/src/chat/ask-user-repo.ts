@@ -1,6 +1,6 @@
 // VOS-88 T4: SQLite CAS helpers for the ask_user tool.
 //
-// Four helpers feed Tasks T6 (runAskUser handler), T8 (answer route), and
+// Four helpers feed Tasks T6 (ask_user handler), T8 (answer route), and
 // T10 (timeout rollback). They keep all `tasks` / `messages` writes in one
 // place so the orchestrator can drive the input-required state-machine
 // without duplicating SQL.

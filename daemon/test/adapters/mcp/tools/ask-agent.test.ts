@@ -1,6 +1,7 @@
-// VOS-89 T8: runAskAgent handler composition tests.
+// VOS-89 T8 (updated VOS-97 T7): ask_agent handler composition tests.
 //
-// These exercise the four primary control-flow branches of runAskAgent:
+// These exercise the four primary control-flow branches of the ask_agent handler
+// (built via makeAskAgent(deps)):
 //   1. happy path -> mint child, flip parent, dispatch, await terminal, translate
 //   2. unknown agent -> existence check rejects (no DB mutation)
 //   3. permission denied -> caller's ask_agent_allow excludes target
@@ -82,7 +83,7 @@ function buildCtx(
   return { bus, deps };
 }
 
-describe("runAskAgent (composition)", () => {
+describe("ask_agent handler (composition)", () => {
   let db: Database;
   beforeEach(() => {
     db = new Database(":memory:");
@@ -459,7 +460,7 @@ describe("runAskAgent (composition)", () => {
     // parent's WORKING -> WAITING_ON_AGENT transition is broadcast.
     const events: Array<{ taskId?: string; state?: string }> = [];
 
-    // Drive child to terminal so runAskAgent returns. The dispatcher
+    // Drive child to terminal so the ask_agent handler returns. The dispatcher
     // simulator runs AFTER the parent flip emit, but we capture both.
     const ctx = buildCtx(db, contextId, parentId, caller, async (childTaskId) => {
       const now = Math.floor(Date.now() / 1000);

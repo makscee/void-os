@@ -112,7 +112,7 @@ describe("VOS-89 T15.5: production buildApp wires dispatchChildTask", () => {
     db.exec("PRAGMA foreign_keys = ON");
     runMigrationsFromDir(db, MIGRATIONS_DIR);
 
-    // Seed agent_cards (existence check in runAskAgent step 1).
+    // Seed agent_cards (existence check in the ask_agent handler step 1).
     db.run(
       "INSERT INTO agent_cards (agent_name, card_json, source_mtime) VALUES (?, ?, 0)",
       ["maya", JSON.stringify({ name: "maya" })],

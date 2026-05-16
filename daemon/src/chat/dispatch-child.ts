@@ -8,7 +8,7 @@
 //
 // This module supplies a real dispatcher. Its contract:
 //   - input: childTaskId + { agentName, message, systemMessage? }
-//   - kicks the work onto the next microtask so runAskAgent's
+//   - kicks the work onto the next microtask so the ask_agent handler's
 //     post-dispatch DB recheck (step 9) gets a beat to settle before
 //     state changes
 //   - per-agent provider memoisation (one Provider per agent) keyed by
@@ -23,9 +23,9 @@
 //       (a) the parent-resume listener (app.ts T11 wiring) flips the
 //           parent back to WORKING (and possibly all the way to COMPLETED
 //           via the T15.5 settle-on-resume helper)
-//       (b) the ask_agent waiter (waitForChildTerminal) in runAskAgent
-//           resolves and translates the terminal state into an MCP tool
-//           result
+//       (b) the ask_agent waiter (waitForChildTerminal) in the ask_agent
+//           handler resolves and translates the terminal state into an
+//           MCP tool result
 //
 // Why not reuse `orchestrator.dispatch(chatId, text)`? The orchestrator's
 // dispatch unit is a chat: it acquires a per-chat lock via
@@ -94,12 +94,12 @@ export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn 
 
   return (childTaskId, args) =>
     new Promise<void>((resolve) => {
-      // Resolve runAskAgent BEFORE the child runs (microtask boundary).
-      // runAskAgent does a post-dispatch state recheck immediately after
-      // awaiting this promise; firing the actual provider work on the
-      // next microtask gives that recheck a chance to settle to a non-
-      // terminal value first, which exercises the bus-await path rather
-      // than the synchronous-terminal short-circuit.
+      // Resolve the ask_agent handler BEFORE the child runs (microtask
+      // boundary). The handler does a post-dispatch state recheck
+      // immediately after awaiting this promise; firing the actual
+      // provider work on the next microtask gives that recheck a chance
+      // to settle to a non-terminal value first, which exercises the
+      // bus-await path rather than the synchronous-terminal short-circuit.
       queueMicrotask(() => {
         runChildOnProvider({
           db: deps.db,

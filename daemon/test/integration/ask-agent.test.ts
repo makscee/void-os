@@ -12,7 +12,7 @@
 //
 // The real production wire is: claude-code subprocess emits a tool_use
 // frame; the CC client invokes the MCP server's `ask_agent` tool over
-// Streamable HTTP; runAskAgent mints the child + parks the parent. The
+// Streamable HTTP; the ask_agent handler mints the child + parks the parent. The
 // fake provider in this harness does NOT call back into the MCP server —
 // it just emits canned events. So the test plays the LLM-runtime role:
 // it watches `chat.tool_use` events on the bus, and when it sees an
@@ -158,7 +158,7 @@ describe("ask_agent integration (maya -> journaler via fake providers)", () => {
     // Production: the CC subprocess sees its own tool_use stream and
     // invokes MCP. Here, the test plays that role: when the orchestrator
     // emits chat.tool_use{name:"ask_agent"} we issue the real MCP call
-    // (which lands in runAskAgent, mints the child, parks the parent,
+    // (which lands in the ask_agent handler, mints the child, parks the parent,
     // dispatches journaler via dispatchChildTask, and resolves on child
     // terminal). We track the call promise so we can await its resolution
     // and assert it returned the journaler's text.
