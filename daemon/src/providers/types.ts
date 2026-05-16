@@ -2,25 +2,39 @@
 // VOS-86 first impl: claude-code. See spec
 // docs/superpowers/specs/2026-05-15-vos-86-provider-abstraction-design.md
 //
-// Event shape is intentionally loose so any provider impl can pass through
-// its own NDJSON wire format unchanged. The single guaranteed field is `type`.
-// Today the claude-code impl emits raw CC types ('system' | 'assistant' | 'user');
-// canonicalization is deferred to a follow-up task.
+// Canonical event union per ADR-0001 (docs/adr/ADR-0001-provider-event-canonicalization.md):
+// `ProviderEvent` is an A2A-shaped, delta-style discriminated union. The legacy loose
+// CC-passthrough shape is kept as `LegacyProviderEvent` during the migration so the
+// existing consumers (chat/orchestrator, chat/dispatch-child, fake provider) keep
+// compiling until T3-T10 migrate them. The exported `ProviderEvent` is the union of
+// the canonical events and the legacy shape; the new emitters and tests use the
+// canonical members directly.
 
-export interface ProviderSpawnRequest {
-  runId: string;
-  prompt: string;
-  cwd: string;
-  chatId?: string;
-  kind?: "turn" | "replay" | string;
-  resumeFrom?: string;          // session id passed to --resume
-  outputTimeoutMs?: number;
-  toolTimeoutMs?: number;
-  firstEventTimeoutMs?: number;
-  settings?: Record<string, unknown>;
+import type { Part, Role } from "../types/a2a.ts";
+
+// --- Canonical (ADR-0001) -------------------------------------------------
+
+export interface SessionEvent {
+  type: "session";
+  sessionId: string;
 }
 
-export interface ProviderEvent {
+export interface PartsEvent {
+  type: "parts";
+  role: Role;                   // "user" | "assistant"
+  parts: Part[];
+  ts: number;
+}
+
+export type CanonicalProviderEvent = SessionEvent | PartsEvent;
+
+// --- Legacy (pre-ADR-0001) ------------------------------------------------
+//
+// Kept compiling so T1's additive scaffolding does not break existing consumers.
+// Removed in T10 after chat/orchestrator + chat/dispatch-child + fake provider
+// migrate to the canonical union.
+
+export interface LegacyProviderEvent {
   type: string;                 // 'system' | 'assistant' | 'user' | impl-specific
   session_id?: string;          // present on 'system' events (CC handshake)
   message?: unknown;            // present on 'assistant' / 'user' events
@@ -29,6 +43,40 @@ export interface ProviderEvent {
   output?: unknown;
   content?: unknown;
   [k: string]: unknown;
+}
+
+// During the T1 migration window `ProviderEvent` stays bound to the legacy shape
+// so existing consumers (which rely on its `[k: string]: unknown` index signature
+// and `evt.type === "assistant" | "user" | "system"` ladder) keep type-checking
+// unchanged. T3-T10 will switch consumers and emitters onto `CanonicalProviderEvent`
+// directly; T10 then flips this alias to the canonical union and deletes
+// `LegacyProviderEvent`.
+export type ProviderEvent = LegacyProviderEvent;
+
+// --- Spawn request --------------------------------------------------------
+//
+// ADR-0001 §Decision tightens spawn: `taskId` and `contextId` become required, and
+// `chatId` / `kind` are removed (chatId folded into contextId; kind lifted into
+// settings.runKind). During the migration window `taskId`/`contextId` are typed as
+// optional alongside the legacy fields; T10 flips them to required and drops
+// `chatId`/`kind` once every callsite has been updated.
+
+export interface ProviderSpawnRequest {
+  runId: string;
+  taskId?: string;              // ADR-0001: required after T10 migration
+  contextId?: string;           // ADR-0001: required after T10 migration; supersedes chatId
+  prompt: string;
+  cwd: string;
+  /** @deprecated use `contextId` (ADR-0001). Removed in T10. */
+  chatId?: string;
+  /** @deprecated lift into `settings.runKind` (ADR-0001). Removed in T10. */
+  kind?: "turn" | "replay" | string;
+  resumeFrom?: string;          // session id passed to --resume
+  outputTimeoutMs?: number;
+  toolTimeoutMs?: number;
+  firstEventTimeoutMs?: number;
+  timeouts?: { firstEventMs?: number; outputMs?: number; toolMs?: number };
+  settings?: Record<string, unknown>;
 }
 
 export interface ProviderHandle {
