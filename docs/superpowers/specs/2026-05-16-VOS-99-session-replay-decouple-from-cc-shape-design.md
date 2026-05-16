@@ -7,11 +7,9 @@
 
 ## 1. Scope & architecture
 
-`chat/session-replay.ts` becomes a thin DB walker. The legacy CC-JSONL migration code — lazy-fired on the first `walk()` of a pre-VOS-80 chat — is deleted outright, along with its tests. `messages-repo.walk()` is the only source `walk()` reads from. `surfaceTraceDiagnostics` (VOS-84) stays untouched.
+`chat/session-replay.ts` becomes a thin DB walker. The legacy CC-JSONL migration code — lazy-fired on the first `walk()` of a pre-VOS-80 chat — is deleted outright, along with its tests. `messages-repo.walk()` is the only source `walk()` reads from.
 
 The cross-layer import from `chat/` into `providers/claude-code/cc-shape.ts` goes away as a side effect: once `recordToEntries`, `legacyJsonlOrder`, and `importFromJsonl` are gone, nothing in `chat/session-replay.ts` references `providers/claude-code/*`. The acceptance grep `grep -r "from.*providers/claude-code" daemon/src/chat/` returns empty.
-
-User-confirmed (brainstorming, 2026-05-16): no live pre-VOS-80 chat data needs preserving. Deletion is the simplest path; routing through a Provider-owned reader (the option-a alternative) builds an abstraction with no live consumer.
 
 ## 2. File-level changes
 
@@ -52,7 +50,8 @@ The lazy-import branch (current lines 322–333) is deleted. The behavioural cha
 
 - `makeChatRouter`'s options surface currently includes `opts.replay?: ReplayOpts` plumbed into `makeSessionReplay(db, opts.replay)`. Drop the `replay` option and the parameter forward. Tests that constructed routers with a `replay:` override are pruned in §3.
 - Remove `type ReplayOpts` from the import statement at `api/chat.ts:17-19` (the type is deleted in `session-replay.ts`; leaving the import line points at nothing and `tsc` fails).
-- Re-exports `makeSessionReplay`, `SessionReplay`, `ReplayEntry` unchanged — public read-side surface preserved. (If `ReplayOpts` was re-exported from `api/chat.ts`, drop that re-export too.)
+- Also drop any `ReplayOpts` re-export from `api/chat.ts`.
+- Re-exports `makeSessionReplay`, `SessionReplay`, `ReplayEntry` unchanged — public read-side surface preserved.
 
 ### `daemon/src/app.ts`
 
@@ -83,8 +82,6 @@ No edit. Its second consumer disappears; `extractTurnText`, `extractToolUses`, `
 Update the line-3 front-matter bullet from `- **Status:** Accepted` to `- **Status:** Accepted (amended 2026-05-16 — see below)`, and append a new `## Amendments` section at the end of the file:
 
 > **2026-05-16 — §"Why session-replay's CC-JSONL reader keeps the parsers" superseded by VOS-99.** The second adapter (session-replay's legacy JSONL reader) was deleted because no live pre-VOS-80 chat data required preservation. `cc-shape.ts` now has a single consumer (`provider.ts`'s `normalizeCcEvent`). The cross-layer import from `chat/` into `providers/claude-code/*` is gone.
-
-Inline amendment chosen over a new ADR-0003 — the change is too small to warrant a fresh decision record; the surrounding context in ADR-0001 makes the amendment self-explanatory.
 
 ## 3. Test plan
 
@@ -126,8 +123,6 @@ Single PR, single subagent, ~one-shot edit. Recommended order to keep the type c
 **Risk: a chat exists with `session_id` set but no DB rows.** Behavioural impact: that chat now renders empty in the plugin instead of attempting to seed from JSONL. Mitigation: user-confirmed no such data matters. No code mitigation.
 
 **Risk: ADR-0001 readers cite the now-superseded paragraph.** Mitigation: the §Status amendment is appended in the same PR.
-
-**Risk: a hidden caller in the plugin or another daemon module reaches into the deleted `ReplayOpts` shape.** Mitigation: TypeScript surfaces this at compile time. Trust tsc.
 
 **Reversibility:** trivial via `git revert` until merged. Post-merge: rebuilding the JSONL reader requires reinstating the three deleted functions from history — straightforward, no schema cost.
 
