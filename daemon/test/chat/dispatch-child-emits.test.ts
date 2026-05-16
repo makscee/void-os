@@ -172,4 +172,71 @@ describe("dispatch-child onPart emits chat.* frames with task_id + child run_id"
     expect(tuses[0].tool_call_id).toBe("tc-1");
     expect(tres[0].tool_call_id).toBe("tc-1");
   });
+
+  it("mixed-frame ordering: chat.tool_use emitted BEFORE chat.token for same frame", async () => {
+    // Ordering contract: for a provider frame whose content array contains
+    // BOTH text and tool_use, the two-pass loop emits tool_use inline
+    // (first pass) then emits the single chat.token at frame-end (second pass).
+    // This test scripts a single assistant message with content:
+    //   [{type:"text",text:"A"}, {type:"tool_use", id:"tu-x", name:"noop", input:{}}]
+    // and asserts that chat.tool_use appears before chat.token in the captured
+    // emit sequence (mirrors orchestrator.ts ordering contract at lines 514-552).
+    const db = freshDb();
+    const contextId = "ctx-mixed-1";
+    const childTaskId = "child-mixed-1";
+    seedChild(db, { contextId, childTaskId });
+
+    const bus = createEventBus({ db });
+
+    const legacyEvents: LegacyProviderEvent[] = [
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "A" },
+            { type: "tool_use", id: "tu-x", name: "noop", input: {} },
+          ],
+        },
+      },
+    ];
+
+    const wsFrames: Array<Record<string, unknown>> = [];
+    const spyEmit = (type: string, payload: Record<string, unknown>): void => {
+      wsFrames.push({ type, ...payload });
+    };
+
+    const dispatch = makeDispatchChildTask({
+      db,
+      bus,
+      cwd: "/tmp",
+      tracesDir: "/tmp",
+      buildProvider: () => makeFakeProvider(legacyEvents),
+      emit: spyEmit,
+    });
+
+    const terminalP = new Promise<void>((resolve) => {
+      const off = bus.subscribe("task.state_changed", (ev) => {
+        const p = ev.payload as { taskId?: string; state?: string };
+        if (p.taskId === childTaskId) {
+          off();
+          resolve();
+        }
+      });
+    });
+
+    await dispatch(childTaskId, { agentName: "journaler", message: "hi" });
+    await terminalP;
+
+    const relevantFrames = wsFrames.filter(
+      (f) => f.type === "chat.tool_use" || f.type === "chat.token",
+    );
+    // Must have at least one tool_use and one token frame.
+    const toolUseIdx = relevantFrames.findIndex((f) => f.type === "chat.tool_use");
+    const tokenIdx = relevantFrames.findIndex((f) => f.type === "chat.token");
+    expect(toolUseIdx).toBeGreaterThanOrEqual(0);
+    expect(tokenIdx).toBeGreaterThanOrEqual(0);
+    // Ordering contract: tool_use appears BEFORE chat.token in the same frame.
+    expect(toolUseIdx).toBeLessThan(tokenIdx);
+  });
 });

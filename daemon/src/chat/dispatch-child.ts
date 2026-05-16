@@ -41,7 +41,7 @@ import type { EventBus } from "../events/index.ts";
 import type { Provider, ProviderHandle } from "../providers/index.ts";
 import { makeProvider, type ProviderEnv } from "../providers/factory.ts";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo.ts";
-import type { Part, TextPart } from "../types/a2a.ts";
+import type { Part, TextPart, DataPart } from "../types/a2a.ts";
 
 export interface DispatchChildDeps {
   db: Database;
@@ -200,9 +200,14 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
         if (evt.role === "ROLE_AGENT") firstAssistantSeen = true;
         // VOS-91 T4: fan-out chat.token / chat.tool_use / chat.tool_result
         // per provider frame so WS clients can render child task streams in
-        // real time. Mirrors orchestrator.ts two-pass pattern (lines 515-551):
+        // real time. Mirrors orchestrator.ts two-pass pattern (lines 514-552):
         // accumulate frameText across TextParts in the frame, emit tool_use /
         // tool_result inline, then emit a single chat.token at end of frame.
+        // Ordering contract (mirrors orchestrator): for a mixed frame containing
+        // both text and tool blocks, tool_use / tool_result WS frames are emitted
+        // FIRST (inline, in parts order), then the single chat.token for the
+        // concatenated text is emitted LAST. Consumers must tolerate tool frames
+        // preceding text frames within the same provider frame.
         let frameText = "";
         for (const p of evt.parts) {
           agentParts.push(p);
@@ -211,7 +216,7 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
             frameText += text;
             continue;
           }
-          const data = (p as { data?: { kind?: string } }).data;
+          const data = (p as DataPart).data;
           if (!data || typeof data !== "object") continue;
           const kind = (data as { kind?: unknown }).kind;
           if (kind === "tool_use") {
