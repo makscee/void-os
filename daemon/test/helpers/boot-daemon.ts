@@ -32,7 +32,6 @@ import {
   resumeParentOnChildTerminal,
   type Orchestrator,
 } from "../../src/chat/orchestrator.ts";
-import { makeTitlerStub } from "../../src/chat/titler-stub.ts";
 import { mountMcp } from "../../src/adapters/mcp/index.ts";
 import { mountAnswerRoute } from "../../src/api/answer.ts";
 import { createAskUserBridge } from "../../src/chat/ask-user-bridge.ts";
@@ -161,7 +160,7 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
       provider,
       cwd: vaultRoot,
       emit,
-      titler: makeTitlerStub(),
+      titler: { title: async () => {} },
     });
     orchByAgent.set(agent, o);
     return o;
