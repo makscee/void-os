@@ -51,7 +51,8 @@ The lazy-import branch (current lines 322–333) is deleted. The behavioural cha
 ### `daemon/src/api/chat.ts`
 
 - `makeChatRouter`'s options surface currently includes `opts.replay?: ReplayOpts` plumbed into `makeSessionReplay(db, opts.replay)`. Drop the `replay` option and the parameter forward. Tests that constructed routers with a `replay:` override are pruned in §3.
-- Re-exports `makeSessionReplay`, `SessionReplay`, `ReplayEntry` unchanged — public read-side surface preserved.
+- Remove `type ReplayOpts` from the import statement at `api/chat.ts:17-19` (the type is deleted in `session-replay.ts`; leaving the import line points at nothing and `tsc` fails).
+- Re-exports `makeSessionReplay`, `SessionReplay`, `ReplayEntry` unchanged — public read-side surface preserved. (If `ReplayOpts` was re-exported from `api/chat.ts`, drop that re-export too.)
 
 ### `daemon/src/app.ts`
 
@@ -63,10 +64,15 @@ DELETE (235 LOC). The file's sole purpose is the lazy-JSONL-import behaviour; wi
 
 ### `daemon/test/chat/session-replay.test.ts` (794 LOC)
 
-Audit + prune:
-- Tests that wrote a `.jsonl` to disk to drive the lazy import: delete. These will be identifiable by `writeFileSync(...jsonl...)`, `mkdtempSync`, `projectsRoot`, `encodeCwd` overrides, or constructing `makeSessionReplay(db, { ... })` with non-empty opts.
-- Tests that seed the messages table directly (via `messages.appendMessage` or via running the orchestrator/fake provider): keep.
-- After the prune, expected residue: DB-walk surface tests, trace-diagnostics tests, empty-chat tests. Estimate retention ≈ 30–40% of file LOC; treat the number as advisory, not a target.
+Audit + prune. **Delete a test iff both conditions hold:**
+- **(a)** the test constructs `makeSessionReplay` with non-empty opts (`projectsRoot`, `cwd`, or `encodeCwd`) OR writes a `.jsonl` file to drive the lazy import path; AND
+- **(b)** the test does **not** also assert on `messages-repo`-seeded rows (i.e. removing it costs no DB-walk coverage).
+
+Generic primitives (`mkdtempSync`, `writeFileSync` to non-`.jsonl` paths) are not sufficient signals on their own — many DB-walk fixtures legitimately use them.
+
+**Protocol:** the executing subagent lists the deletion candidates with one-line justification before deleting, and waits for orchestrator confirmation. Tests that only seed the messages table directly (via `messages.appendMessage` or via running the orchestrator/fake provider): keep.
+
+After the prune, expected residue: DB-walk surface tests, trace-diagnostics tests, empty-chat tests. Retention LOC is whatever the (a) AND (b) rule yields — not a target.
 
 ### `daemon/src/providers/claude-code/cc-shape.ts`
 
@@ -74,7 +80,7 @@ No edit. Its second consumer disappears; `extractTurnText`, `extractToolUses`, `
 
 ### `docs/adr/ADR-0001-provider-event-canonicalization.md`
 
-Append a `## Status` amendment (single block under the existing front-matter or at the end of the file):
+Update the line-3 front-matter bullet from `- **Status:** Accepted` to `- **Status:** Accepted (amended 2026-05-16 — see below)`, and append a new `## Amendments` section at the end of the file:
 
 > **2026-05-16 — §"Why session-replay's CC-JSONL reader keeps the parsers" superseded by VOS-99.** The second adapter (session-replay's legacy JSONL reader) was deleted because no live pre-VOS-80 chat data required preservation. `cc-shape.ts` now has a single consumer (`provider.ts`'s `normalizeCcEvent`). The cross-layer import from `chat/` into `providers/claude-code/*` is gone.
 
@@ -110,7 +116,7 @@ Single PR, single subagent, ~one-shot edit. Recommended order to keep the type c
 | Acceptance bullet | Verification |
 |---|---|
 | `chat/session-replay.ts` no longer imports from `providers/claude-code/*` | `grep -r "from.*providers/claude-code" daemon/src/chat/` returns empty (run from worktree) |
-| Legacy CC JSONL replay path deleted (option b) | `git grep -E "importFromJsonl\|legacyJsonlOrder\|recordToEntries"` returns empty in `daemon/` |
+| Legacy CC JSONL replay path deleted (option b) | `git grep -E "importFromJsonl|legacyJsonlOrder|recordToEntries"` returns empty in `daemon/` |
 | Tests assert replay round-trips without CC vocabulary in fixtures | Tool-call-round-trip test in `session-replay.test.ts` reviewed, passes; no `message.content[]` shape in any retained test fixture |
 | No behavioural change to plugin-visible chat history | Pruned `session-replay.test.ts` green; manual void-os plugin spot-check on one chat with a tool-call turn |
 | Code review evidence logged in Work Log | Subagent-driven code review run + entry in task Work Log |
