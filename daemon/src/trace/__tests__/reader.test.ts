@@ -80,3 +80,70 @@ describe("readTrace — gap detection", () => {
     ]);
   });
 });
+
+describe("readTrace — soft corruption handling", () => {
+  test("mid-file garbage line is skipped and recorded as parse gap", () => {
+    const path = join(tmpRoot, "corrupt.jsonl");
+    const before = [0,1,2].map(i => ({ seq: i, ts: "x", kind: "cc.event", payload: { i } }));
+    const after = [3,4].map(i => ({ seq: i, ts: "x", kind: "cc.event", payload: { i } }));
+    writeFileSync(path, fixture(before) + "garbage line\n" + fixture(after));
+    const out = readTrace(path);
+    expect(out.records.length).toBe(5);
+    expect(out.gaps).toEqual([{ afterSeq: 2, missing: 1, reason: "parse" }]);
+  });
+
+  test("bad envelope (seq is a string) is treated as parse gap; no double-count seq gap", () => {
+    const path = join(tmpRoot, "badenv.jsonl");
+    const lines = [
+      JSON.stringify({ seq: 0, ts: "x", kind: "cc.event", payload: {} }),
+      JSON.stringify({ seq: "1", ts: "x", kind: "cc.event", payload: {} }),
+      JSON.stringify({ seq: 2, ts: "x", kind: "cc.event", payload: {} }),
+    ].join("\n") + "\n";
+    writeFileSync(path, lines);
+    const out = readTrace(path);
+    expect(out.records.map(r => r.seq)).toEqual([0, 2]);
+    // Single gap entry: parse-gap captures the bad envelope; the seq jump 0→2
+    // is fully explained by it, so no separate "seq" gap is synthesized.
+    expect(out.gaps).toEqual([
+      { afterSeq: 0, missing: 1, reason: "parse" },
+    ]);
+  });
+
+  test("seq gap larger than parse-gap count leaves a residual seq gap", () => {
+    const path = join(tmpRoot, "residual.jsonl");
+    const lines = [
+      JSON.stringify({ seq: 0, ts: "x", kind: "cc.event", payload: {} }),
+      JSON.stringify({ seq: "1", ts: "x", kind: "cc.event", payload: {} }), // bad envelope
+      JSON.stringify({ seq: 5, ts: "x", kind: "cc.event", payload: {} }),    // seq jump 0→5
+    ].join("\n") + "\n";
+    writeFileSync(path, lines);
+    const out = readTrace(path);
+    expect(out.records.map(r => r.seq)).toEqual([0, 5]);
+    // parse-gap of 1 + residual seq gap of 3 (since 5-0-1=4 missing, minus 1 parse = 3 residual).
+    expect(out.gaps).toEqual([
+      { afterSeq: 0, missing: 1, reason: "parse" },
+      { afterSeq: 0, missing: 3, reason: "seq" },
+    ]);
+  });
+
+  test("two consecutive garbage lines coalesce into one parse gap with missing=2", () => {
+    const path = join(tmpRoot, "coalesce.jsonl");
+    writeFileSync(path,
+      fixture([{ seq: 0, ts: "x", kind: "cc.event", payload: {} }, { seq: 1, ts: "x", kind: "cc.event", payload: {} }]) +
+      "garbage1\ngarbage2\n" +
+      fixture([{ seq: 2, ts: "x", kind: "cc.event", payload: {} }])
+    );
+    const out = readTrace(path);
+    expect(out.records.map(r => r.seq)).toEqual([0, 1, 2]);
+    expect(out.gaps).toEqual([{ afterSeq: 1, missing: 2, reason: "parse" }]);
+  });
+
+  test("reader never throws on bad lines", () => {
+    const path = join(tmpRoot, "allbad.jsonl");
+    writeFileSync(path, "garbage1\ngarbage2\ngarbage3\n");
+    expect(() => readTrace(path)).not.toThrow();
+    const out = readTrace(path);
+    expect(out.records).toEqual([]);
+    expect(out.gaps).toEqual([{ afterSeq: -1, missing: 3, reason: "parse" }]);
+  });
+});
