@@ -551,7 +551,6 @@ Expected: zero errors in `ask-user.ts`. Errors may remain only in `api/answer.ts
 Run: `cd workspace/void-os/daemon && bun test src/adapters/mcp/tools/ src/providers/fake/__tests__/ask-user.test.ts`
 Expected: PASS. The E2E test exercises the full plugin ↔ daemon round-trip; passing here proves wire-format + behavior preserved.
 
-If the E2E fails: do NOT modify the test. Read the failure carefully — the bridge or this handler swap is wrong.
 
 - [ ] **Step 4: Commit**
 
@@ -602,10 +601,7 @@ export function mountAnswerRoute(app: Hono, deps: AnswerDeps): void {
 
     // Resolve via bridge — handles CAS, message append, state event, message event, and awaiter resolution
     const res = await deps.bridge.resolve({ taskId, toolUseId: body.tool_use_id, answer: body.answer });
-    if (!res.ok) {
-      if (res.reason === "unknown") return c.json({ error: "no_matching_pending_question" }, 409);
-      return c.json({ error: "no_matching_pending_question" }, 409);
-    }
+    if (!res.ok) return c.json({ error: "no_matching_pending_question" }, 409);
 
     // WS broadcast (kept here — outside bridge scope)
     const runRow = deps.db
@@ -652,8 +648,6 @@ git -C workspace/void-os commit -m "refactor(VOS-100): /answer route depends on 
 - Delete: `daemon/src/adapters/mcp/pending-questions.ts`
 - Possibly modify: any straggler that still imports `pending-questions` or `ask-user-repo` directly (the latter should now have exactly one importer — the bridge)
 
-Note: `daemon/src/chat/ask-user-repo.ts` stays. It is now internal-to-bridge — only `ask-user-bridge.ts` imports from it. Folding its four helpers into the bridge file is a deliberate future cleanup, deferred from this task to keep SQL untouched.
-
 - [ ] **Step 1: Grep for remaining imports**
 
 Run:
@@ -671,7 +665,6 @@ Expected:
 - The only `ask-user-repo` importer printed is `daemon/src/chat/ask-user-bridge.ts`. If anything else still imports from it, migrate that file to use the bridge instead.
 
 Stragglers to watch for:
-- `cancelAll()` (from pending-questions): if graceful-shutdown or any test calls it, replace with iterating the bridge's pending registry (add a `bridge.cancelAll(reason)` method if needed — but only if a real caller exists; otherwise drop).
 - A `pending-questions.test.ts` file — delete alongside the source.
 
 - [ ] **Step 2: Delete pending-questions and its test**
@@ -739,7 +732,7 @@ Add entry under the daemon-internal glossary, alphabetically placed (likely afte
 '
 ```
 
-Expected `sw` output: one line with commit SHA + lock-wait-ms. If `sw` prints `(noop)`, the Edit in step 1 did not happen — repeat step 1.
+Expected `sw` output: one line with commit SHA + lock-wait-ms.
 
 (Do not edit the worktree copy of `CONTEXT.md`. The worktree is for code-plane only; state-plane writes go through canonical + `sw` to avoid divergence between worktree copies and canonical master.)
 
