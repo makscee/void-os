@@ -37,6 +37,7 @@ import {
 } from "./chat/orchestrator.ts";
 import { makeDispatchChildTask } from "./chat/dispatch-child.ts";
 import { fetchAnthropicKey } from "./lib/anthropic-key.ts";
+import { subscribeRunEnd } from "./cost/index.ts";
 
 export const VERSION = pkg.version;
 
@@ -77,6 +78,14 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // Hoisted out of the orchestrator-only block so mountMcp can receive it.
   const bus = createEventBus({ db: deps.db });
   const bridge = createAskUserBridge({ db: deps.db, bus });
+
+  // VOS-104 T8b: wire cost ledger subscriber. Without this, `run.end` events
+  // from the cc provider (carrying usageTurns) never persist a `costs` row,
+  // so ChatList's lifetime SUM(cost_usd) stays at 0 forever. Unit tests
+  // wire this in isolation; production wiring was missing.
+  subscribeRunEnd(bus, deps.db, {
+    warn: (event, fields) => console.warn(`[cost] ${event}`, fields ?? {}),
+  });
 
   // VOS-89 T11: when any task reaches a terminal state, check whether its
   // parent is parked in WAITING_ON_AGENT and flip the parent back to WORKING.
