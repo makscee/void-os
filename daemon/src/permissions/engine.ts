@@ -2,6 +2,7 @@
 
 import * as path from 'node:path';
 import picomatch from 'picomatch';
+import { matchPath } from './match';
 
 type ExpandOk  = { ok: true;  expanded: string };
 type ExpandErr = { ok: false; reason: string };
@@ -142,9 +143,7 @@ export function createPermissionEngine(opts: EngineOptions): PermissionEngine {
   }
 
   function compileScope(paths: string[]): (p: string) => boolean {
-    if (paths.length === 0) return () => false;
-    const matchers = paths.map((p) => picomatch(p, PICOMATCH_OPTS));
-    return (p: string) => matchers.some((m) => m(p));
+    return (p: string) => matchPath(p, paths);
   }
 
   function ensureAbs(absPath: string, fn: 'canRead' | 'canWrite'): void {
