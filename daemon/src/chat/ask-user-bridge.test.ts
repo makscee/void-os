@@ -73,4 +73,71 @@ describe("AskUserBridge", () => {
     expect(types.filter((t) => t === "task.state_changed").length).toBe(2);
     expect(types.filter((t) => t === "message.appended").length).toBe(2);
   });
+
+  it("open → cancel('terminal'): open() resolves { canceled: true }, task back to WORKING", async () => {
+    const { contextId, taskId } = seedContextAndTask(db);
+    const toolUseId = "tu-c1";
+    const opened = bridge.open({ taskId, contextId, runId: null, toolUseId, question: "?", options: undefined });
+
+    await bridge.cancel({ taskId, toolUseId, reason: "terminal" });
+
+    const settled = await opened;
+    expect(settled).toEqual({ canceled: true });
+
+    const row = db.query("SELECT state FROM tasks WHERE id = ?").get(taskId) as { state: string };
+    expect(row.state).toBe("TASK_STATE_WORKING");
+  });
+
+  it("open → cancel('canceled'): same shape, user-canceled path", async () => {
+    const { contextId, taskId } = seedContextAndTask(db);
+    const toolUseId = "tu-c2";
+    const opened = bridge.open({ taskId, contextId, runId: null, toolUseId, question: "?", options: undefined });
+
+    await bridge.cancel({ taskId, toolUseId, reason: "canceled" });
+
+    const settled = await opened;
+    expect(settled).toEqual({ canceled: true });
+  });
+
+  it("open → timeout: deadline fires, open() resolves { timeout: true }, task back to WORKING", async () => {
+    const fastBridge = createAskUserBridge({ db, bus, deadlineMs: 10 });
+    const { contextId, taskId } = seedContextAndTask(db);
+    const toolUseId = "tu-t1";
+    const opened = fastBridge.open({ taskId, contextId, runId: null, toolUseId, question: "?", options: undefined });
+
+    const settled = await opened;
+    expect(settled).toEqual({ timeout: true });
+
+    const row = db.query("SELECT state FROM tasks WHERE id = ?").get(taskId) as { state: string };
+    expect(row.state).toBe("TASK_STATE_WORKING");
+  });
+
+  it("resolve(unknown toolUseId) → { ok: false, reason: 'unknown' }", async () => {
+    const { taskId } = seedContextAndTask(db);
+    const res = await bridge.resolve({ taskId, toolUseId: "never-opened", answer: "x" });
+    expect(res).toEqual({ ok: false, reason: "unknown" });
+  });
+
+  it("resolve after cancel → { ok: false, reason: 'unknown' } (pending entry already gone)", async () => {
+    const { contextId, taskId } = seedContextAndTask(db);
+    const toolUseId = "tu-rac";
+    const opened = bridge.open({ taskId, contextId, runId: null, toolUseId, question: "?", options: undefined });
+    await bridge.cancel({ taskId, toolUseId, reason: "canceled" });
+    await opened;
+    const res = await bridge.resolve({ taskId, toolUseId, answer: "x" });
+    expect(res).toEqual({ ok: false, reason: "unknown" });
+  });
+
+  it("double resolve: second call → { ok: false, reason: 'unknown' }, no double bus emission", async () => {
+    const { contextId, taskId } = seedContextAndTask(db);
+    const toolUseId = "tu-dr";
+    const opened = bridge.open({ taskId, contextId, runId: null, toolUseId, question: "?", options: undefined });
+    const r1 = await bridge.resolve({ taskId, toolUseId, answer: "first" });
+    expect(r1).toEqual({ ok: true });
+    await opened;
+    const before = emitted.length;
+    const r2 = await bridge.resolve({ taskId, toolUseId, answer: "second" });
+    expect(r2).toEqual({ ok: false, reason: "unknown" });
+    expect(emitted.length).toBe(before);
+  });
 });
