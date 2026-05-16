@@ -278,7 +278,7 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
   // on FAILED so translateChildResult can surface the real error string
   // to the parent ask_agent caller. Without this, the parent sees
   // "child task failed: unknown" since the raw error is lost.
-  if (terminalState === "TASK_STATE_FAILED" && errorMessage !== null) {
+  if (terminalState === "TASK_STATE_FAILED") {
     const existingRow = db
       .query("SELECT metadata FROM tasks WHERE id = ?")
       .get(childTaskId) as { metadata: string | null } | undefined;
@@ -293,7 +293,11 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
         // malformed metadata — overwrite with fresh object
       }
     }
-    meta.errorMessage = errorMessage;
+    const providerName =
+      (provider as unknown as { providerName?: string }).providerName ??
+      "provider";
+    const truncated = (errorMessage ?? "unknown").slice(0, 200);
+    meta.errorMessage = `${providerName}: ${truncated}`;
     db.run(
       "UPDATE tasks SET state = ?, metadata = ?, updated_at = ? WHERE id = ?",
       [terminalState, JSON.stringify(meta), Date.now(), childTaskId],
