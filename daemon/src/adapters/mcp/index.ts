@@ -106,8 +106,6 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
 // `pendingRegistry` for T8 to import directly.
 export const pendingRegistry: PendingRegistry = createPendingRegistry();
 
-const ASK_USER_DEADLINE_MS = 30 * 60 * 1000;
-
 export function buildMcpServer(deps: McpDeps): Server {
   const server = new Server(
     { name: "void-os", version: pkg.version },
