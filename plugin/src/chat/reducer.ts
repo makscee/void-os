@@ -762,6 +762,23 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
             },
           };
         }
+        case "chat.task.state_changed": {
+          const tid = f.task_id;
+          if (!state.childTasks[tid]) return state;
+          const wireState = f.state;
+          const uiState: ChildState =
+            wireState === "INPUT_REQUIRED" ? "INPUT_REQUIRED" :
+            wireState === "COMPLETED" || wireState === "FAILED" || wireState === "CANCELED" ? wireState :
+            "WORKING";
+          const error = f.error ?? null;
+          return {
+            ...state,
+            childTasks: {
+              ...state.childTasks,
+              [tid]: { ...state.childTasks[tid], state: uiState, error },
+            },
+          };
+        }
         default:
           return state;
       }

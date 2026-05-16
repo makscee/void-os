@@ -95,3 +95,94 @@ describe("chatReducer — chat.child_task_started", () => {
     expect(s).toBe(before);
   });
 });
+
+describe("chatReducer — chat.task.state_changed", () => {
+  function stateWithChild() {
+    let s = initialChatState("ctx-1");
+    s = chatReducer(s, {
+      kind: "frame",
+      frame: {
+        type: "chat.child_task_started",
+        chat_id: "ctx-1",
+        parent_task_id: "t-parent",
+        parent_tool_call_id: "tc-1",
+        child_task_id: "t-child",
+        agent: "journaler",
+      },
+    });
+    return s;
+  }
+
+  it("maps daemon states to ChildTaskStream.state", () => {
+    const cases: Array<[string, string]> = [
+      ["SUBMITTED",        "WORKING"],
+      ["WORKING",          "WORKING"],
+      ["WAITING_ON_AGENT", "WORKING"],
+      ["INPUT_REQUIRED",   "INPUT_REQUIRED"],
+      ["COMPLETED",        "COMPLETED"],
+      ["FAILED",           "FAILED"],
+      ["CANCELED",         "CANCELED"],
+    ];
+    let s = stateWithChild();
+    for (const [wireState, uiState] of cases) {
+      s = chatReducer(s, {
+        kind: "frame",
+        frame: {
+          type: "chat.task.state_changed",
+          chat_id: "ctx-1",
+          task_id: "t-child",
+          parent_task_id: "t-parent",
+          state: wireState as "SUBMITTED" | "WORKING" | "WAITING_ON_AGENT" | "INPUT_REQUIRED" | "COMPLETED" | "FAILED" | "CANCELED",
+        },
+      });
+      expect(s.childTasks["t-child"].state).toBe(uiState);
+    }
+  });
+
+  it("FAILED captures error string", () => {
+    let s = stateWithChild();
+    s = chatReducer(s, {
+      kind: "frame",
+      frame: {
+        type: "chat.task.state_changed",
+        chat_id: "ctx-1",
+        task_id: "t-child",
+        parent_task_id: "t-parent",
+        state: "FAILED",
+        error: "fake: provider auth fail",
+      },
+    });
+    expect(s.childTasks["t-child"].state).toBe("FAILED");
+    expect(s.childTasks["t-child"].error).toBe("fake: provider auth fail");
+  });
+
+  it("sets error to null when no error field present", () => {
+    let s = stateWithChild();
+    s = chatReducer(s, {
+      kind: "frame",
+      frame: {
+        type: "chat.task.state_changed",
+        chat_id: "ctx-1",
+        task_id: "t-child",
+        parent_task_id: "t-parent",
+        state: "COMPLETED",
+      },
+    });
+    expect(s.childTasks["t-child"].error).toBeNull();
+  });
+
+  it("unknown task_id is a no-op (same state reference)", () => {
+    const s = stateWithChild();
+    const after = chatReducer(s, {
+      kind: "frame",
+      frame: {
+        type: "chat.task.state_changed",
+        chat_id: "ctx-1",
+        task_id: "t-unknown",
+        parent_task_id: null,
+        state: "COMPLETED",
+      },
+    });
+    expect(after).toBe(s);
+  });
+});
