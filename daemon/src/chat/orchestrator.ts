@@ -512,9 +512,10 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
               sessionCaptured = true;
             }
           },
-          onPart: ({ parts, frameText }) => {
+          onPart: ({ parts, frameText, role }) => {
+            if (role === "ROLE_AGENT") firstAssistantSeen = true;
             for (const p of parts) {
-              agentParts.push(p); // outer buffer — survives drainRun throws
+              agentParts.push(p); // ROLE_AGENT buffer — survives drainRun throws
               const data = (p as DataPart).data;
               if (!data || typeof data !== "object") continue;
               const kind = (data as { kind?: unknown }).kind;
@@ -549,7 +550,6 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           },
         });
 
-        firstAssistantSeen = agentParts.length > 0;
         activeHandles.delete(runId);
 
         // Happy-path write: preserves orchestrator.ts:558 gate exactly.
