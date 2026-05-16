@@ -151,9 +151,25 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
         };
         // VOS-106: /mcp now requires ?agent=<name> for calling-agent
         // resolution (mirrors the spawn-settings URL the real CC adapter
-        // writes into mcp.json).
+        // writes into mcp.json). `ProviderSpawnRequest` (ADR-0001) does
+        // NOT carry `agent` — the calling agent identity is set on the
+        // provider instance via `opts.agent` by the factory
+        // (daemon/src/providers/factory.ts → app.ts wires
+        // `agent: deps.defaultAgent ?? "maya"`).
+        //
+        // Precedence: `req.agent` (legacy test extension hack — some
+        // unit tests cast `ProviderSpawnRequest & { agent: string }` so
+        // they can vary the calling agent per call without rebuilding
+        // the provider) > `opts.agent` (production wiring) > "fake"
+        // (legacy default; will surface UNKNOWN_AGENT cleanly rather
+        // than the truthy literal string "undefined" that the previous
+        // code emitted when `req.agent` was missing).
+        const callingAgent =
+          (req as ProviderSpawnRequest & { agent?: string }).agent ??
+          opts.agent ??
+          "fake";
         const mcpUrl =
-          `${opts.daemonBase}/mcp?agent=${encodeURIComponent(req.agent)}` +
+          `${opts.daemonBase}/mcp?agent=${encodeURIComponent(callingAgent)}` +
           (runId ? `&run=${encodeURIComponent(runId)}` : "");
         const res = await fetch(mcpUrl, {
           method: "POST",
