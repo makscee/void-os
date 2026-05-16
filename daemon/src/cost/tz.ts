@@ -11,13 +11,16 @@ export function dayRangeMs(now: number, tz: string): { startMs: number; endMs: n
     second: "2-digit",
     hour12: false,
   });
-  const parts = Object.fromEntries(
+  const parts: Record<string, string> = Object.fromEntries(
     fmt.formatToParts(new Date(now)).map((p) => [p.type, p.value]),
   );
   if (parts.hour === "24") parts.hour = "00";
-  const localMidnightWall = `${parts.year}-${parts.month}-${parts.day}T00:00:00`;
+  const year = parts.year ?? "1970";
+  const month = parts.month ?? "01";
+  const day = parts.day ?? "01";
+  const localMidnightWall = `${year}-${month}-${day}T00:00:00`;
   const startMs = wallTimeToUtcMs(localMidnightWall, tz);
-  const tomorrowWall = nextDayWall(parts.year, parts.month, parts.day);
+  const tomorrowWall = nextDayWall(year, month, day);
   const endMs = wallTimeToUtcMs(tomorrowWall, tz);
   return { startMs, endMs };
 }
