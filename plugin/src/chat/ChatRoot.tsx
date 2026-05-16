@@ -316,7 +316,8 @@ export function ChatRoot(props: ChatRootProps) {
       if (
         f.type === "run.start" ||
         f.type === "run.end" ||
-        f.type === "run.error"
+        f.type === "run.error" ||
+        f.type === "chat.task.state_changed"
       ) {
         debouncedListRefresh();
       }
