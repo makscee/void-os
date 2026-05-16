@@ -126,6 +126,13 @@ function normalizeReplay(raw: unknown): ReplayMessage[] {
       });
       continue;
     }
+    if (role === "child_task_started") {
+      // T7 synthetic entry — passthrough so reducer's refetched handler
+      // can rebuild childTasks across refetches. Reducer casts via
+      // `as unknown as Array<ReplayMessage & {...}>` at the read site.
+      out.push(o as unknown as ReplayMessage);
+      continue;
+    }
   }
   return out;
 }
