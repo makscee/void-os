@@ -10,7 +10,7 @@ test("sub-cent values round down to $0.00", () => {
   expect(formatUsd(0.0049)).toBe("$0.00");
 });
 
-test("rounds half-up at the cent (0.005 → $0.01)", () => {
+test("rounds 0.005 up to $0.01 (IEEE-754-dependent)", () => {
   expect(formatUsd(0.005)).toBe("$0.01");
 });
 
