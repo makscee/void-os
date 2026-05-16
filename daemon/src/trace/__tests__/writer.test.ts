@@ -1,12 +1,12 @@
 // daemon/src/trace/__tests__/writer.test.ts
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterAll } from "bun:test";
 import { readFileSync, rmSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceWriter } from "../writer";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "trace-writer-"));
-afterEach(() => {
+afterAll(() => {
   try { rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
 });
 
@@ -25,5 +25,26 @@ describe("TraceWriter — basic", () => {
     expect(rec.kind).toBe("turn.start");
     expect(rec.payload).toEqual({ runId: "r1" });
     expect(typeof rec.ts).toBe("string");
+  });
+
+  test("100 records: monotonic seq 0..99, ts non-decreasing, payloads round-trip", () => {
+    const path = join(tmpRoot, "many.jsonl");
+    const w = TraceWriter.open(path);
+    for (let i = 0; i < 100; i++) {
+      w.write("cc.event", { i });
+    }
+    w.close();
+
+    const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
+    expect(lines.length).toBe(100);
+    let prevTs = "";
+    for (let i = 0; i < 100; i++) {
+      const r = JSON.parse(lines[i]);
+      expect(r.seq).toBe(i);
+      expect(r.kind).toBe("cc.event");
+      expect(r.payload).toEqual({ i });
+      expect(r.ts >= prevTs).toBe(true);
+      prevTs = r.ts;
+    }
   });
 });
