@@ -663,6 +663,19 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         }
         case "chat.token": {
           if (!runId) return state;
+          const taskId = typeof f.task_id === "string" ? f.task_id : null;
+          if (taskId && state.childTasks[taskId]) {
+            const cur = state.childTasks[taskId];
+            const delta = typeof f.delta === "string" ? f.delta : "";
+            if (!delta) return state;
+            return {
+              ...state,
+              childTasks: {
+                ...state.childTasks,
+                [taskId]: { ...cur, liveTokens: cur.liveTokens + delta },
+              },
+            };
+          }
           const delta = typeof f.delta === "string" ? f.delta : "";
           return appendLiveDelta(state, delta);
         }
@@ -674,6 +687,19 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           const input = (f.input && typeof f.input === "object")
             ? (f.input as Record<string, unknown>)
             : {};
+          const taskIdTu = typeof f.task_id === "string" ? f.task_id : null;
+          if (taskIdTu && state.childTasks[taskIdTu]) {
+            const cur = state.childTasks[taskIdTu];
+            if (cur.liveToolEvents.some((p) => p.toolCallId === toolCallId)) return state;
+            const newPart: ToolPart = { kind: "tool", toolCallId, name, input, isError: false };
+            return {
+              ...state,
+              childTasks: {
+                ...state.childTasks,
+                [taskIdTu]: { ...cur, liveToolEvents: cur.liveToolEvents.concat(newPart) },
+              },
+            };
+          }
           // Arrival-order tracker: if this tool fired before any tokens AND
           // no prior tools, mark the overlay as "tools first" so buildOverlay
           // keeps tools at index 0 when text streams in later (ask_user case).
@@ -699,6 +725,33 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           const toolCallId = typeof f.tool_call_id === "string" ? f.tool_call_id : null;
           if (!toolCallId) return state;
           const isError = f.is_error === true;
+          const taskIdTr = typeof f.task_id === "string" ? f.task_id : null;
+          if (taskIdTr && state.childTasks[taskIdTr]) {
+            const cur = state.childTasks[taskIdTr];
+            const outText = normalizeToolOutput(f.output);
+            const idx = cur.liveToolEvents.findIndex((p) => p.toolCallId === toolCallId);
+            let nextEvents: ToolPart[];
+            if (idx === -1) {
+              nextEvents = cur.liveToolEvents.concat({
+                kind: "tool",
+                toolCallId,
+                name: "",
+                input: {},
+                output: outText,
+                isError,
+              });
+            } else {
+              nextEvents = cur.liveToolEvents.slice();
+              nextEvents[idx] = { ...nextEvents[idx], output: outText, isError };
+            }
+            return {
+              ...state,
+              childTasks: {
+                ...state.childTasks,
+                [taskIdTr]: { ...cur, liveToolEvents: nextEvents },
+              },
+            };
+          }
           const next = applyLiveToolResult(state, toolCallId, f.output, isError);
           if (state.pendingAskUser && state.pendingAskUser.toolUseId === toolCallId) {
             return { ...next, pendingAskUser: null };
