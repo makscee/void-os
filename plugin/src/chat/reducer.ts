@@ -41,6 +41,10 @@ export type ToolPart = {
   output?: string;
   /** True when daemon flagged the tool result as an error. Defaults to false. */
   isError: boolean;
+  /** When set, this tool call spawned a child task. Points to the child task id
+   *  in ChatState.childTasks. Populated by the child-task sub-thread feature
+   *  (VOS-91). */
+  childTaskId?: string;
 };
 export type AssistantPart = TextPart | ToolPart;
 
@@ -67,6 +71,37 @@ export interface ChatMessage {
 }
 
 export type RunState = "idle" | "running" | "error";
+
+/** State of a single child-task sub-thread (VOS-91).
+ *  Keyed by taskId in ChatState.childTasks. */
+export interface ChildTaskStream {
+  taskId: string;
+  /** Stable synthetic run id for the child overlay: `"child-${taskId}"`. */
+  runId: string;
+  /** The tool_call_id on the parent assistant turn that spawned this child. */
+  parentToolCallId: string;
+  /** chatId of the parent chat thread. */
+  parentTaskId: string;
+  /** Agent name reported by the child daemon. */
+  agent: string;
+  state: "WORKING" | "INPUT_REQUIRED" | "COMPLETED" | "FAILED" | "CANCELED";
+  error: string | null;
+  /** Streaming token buffer for the child's current run (mirrors liveTokens). */
+  liveTokens: string;
+  /** Streaming tool events for the child's current run (mirrors liveToolEvents). */
+  liveToolEvents: ToolPart[];
+  /** Settled message history fetched from the child daemon (mirrors messages). */
+  messages: ChatMessage[];
+  /** UI expansion mode. "auto" = infer from state, "expanded"/"collapsed" = user override. */
+  manualToggle: "auto" | "expanded" | "collapsed";
+}
+
+export type ChildState = ChildTaskStream["state"];
+export const TERMINAL_CHILD_STATES: ReadonlySet<ChildState> = new Set([
+  "COMPLETED",
+  "FAILED",
+  "CANCELED",
+]);
 
 /** A user message that was typed while a run was streaming. Held locally until
  *  the active run ends, then flushed FIFO into POST /chat/:id/message. */
@@ -158,6 +193,12 @@ export interface ChatState {
    *   - flipped to `true` by chat.tool_use only when both liveTokens === ""
    *     and liveToolEvents.length === 0 (i.e. nothing streamed yet) */
   liveToolsFirst: boolean;
+  /** Child task sub-threads keyed by taskId (VOS-91). Populated by
+   *  chat.child_task_started / chat.task.state_changed frames. */
+  childTasks: Record<string, ChildTaskStream>;
+  /** Maps a parent tool_call_id → childTaskId for O(1) lookup when routing
+   *  child WS frames (chat.token, chat.tool_use, …) back to the right child. */
+  toolCallToChild: Record<string, string>;
 }
 
 export const initialChatState = (chatId: string | null = null): ChatState => ({
@@ -172,6 +213,8 @@ export const initialChatState = (chatId: string | null = null): ChatState => ({
   queues: {},
   pendingAskUser: null,
   liveToolsFirst: false,
+  childTasks: {},
+  toolCallToChild: {},
 });
 
 /** Classify a run.end / run.error error string into a notice kind. The
