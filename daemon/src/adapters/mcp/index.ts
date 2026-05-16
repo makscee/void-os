@@ -32,8 +32,7 @@ import type { AgentDefn } from "../../permissions/engine.ts";
 import { honoBridge } from "./hono-bridge.ts";
 import { handleVaultRead, vaultReadDef } from "./tools/vault-read.ts";
 import { ASK_USER_TOOL_DEF, runAskUser } from "./tools/ask-user.ts";
-import { ASK_AGENT_TOOL_DEF } from "./tools/ask-agent-def.ts";
-import { runAskAgent, type AskAgentArgs } from "./tools/ask-agent.ts";
+import { ASK_AGENT_TOOL_DEF, runAskAgent, type AskAgentArgs } from "./tools/ask-agent.ts";
 import {
   createPendingRegistry,
   type PendingRegistry,

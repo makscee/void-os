@@ -319,6 +319,130 @@ describe("runAskAgent (composition)", () => {
     expect(kids.n).toBe(0);
   });
 
+  test("non-AskAgentError wrapping: loadAgentDefn plain Error → internal: prefix", async () => {
+    const { contextId, parentId } = seed(db);
+    const bus = createEventBus();
+    const ctx: AskAgentCtx = {
+      db,
+      bus,
+      taskId: parentId,
+      contextId,
+      loadAgentDefn: () => {
+        throw new Error("boom-defn");
+      },
+      dispatchChildTask: async () => {},
+      now: () => Math.floor(Date.now() / 1000),
+    };
+
+    const result = await runAskAgent(ctx, {
+      target_agent_id: "journaler",
+      message: "hi",
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringMatching(/^internal: boom-defn/) }],
+    });
+    // Parent unchanged, no child minted.
+    const parent = db.query("SELECT state FROM tasks WHERE id=?").get(parentId) as
+      | { state: string }
+      | undefined;
+    expect(parent?.state).toBe("TASK_STATE_WORKING");
+    const kids = db
+      .query("SELECT count(*) as n FROM tasks WHERE parent_task_id=?")
+      .get(parentId) as { n: number } | undefined;
+    expect(kids?.n).toBe(0);
+  });
+
+  test("mint rollback: parent not in WORKING leaves no orphan child", async () => {
+    const { contextId, parentId } = seed(db);
+    // Flip parent out of WORKING before the call so mint's CAS-update fails.
+    db.run(
+      `UPDATE tasks SET state='TASK_STATE_SUBMITTED' WHERE id=?`,
+      [parentId],
+    );
+    const caller: AgentDefn = { name: "maya" };
+    const ctx = buildCtx(db, contextId, parentId, caller);
+
+    const result = await runAskAgent(ctx, {
+      target_agent_id: "journaler",
+      message: "hi",
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringMatching(/parent task not in WORKING/i) }],
+    });
+    const kids = db
+      .query("SELECT count(*) as n FROM tasks WHERE parent_task_id=?")
+      .get(parentId) as { n: number } | undefined;
+    expect(kids?.n).toBe(0);
+  });
+
+  test("FAILED metadata fallback: errorMessage surfaces; malformed → 'unknown'", async () => {
+    // Sub-case A: well-formed metadata.errorMessage="boom".
+    {
+      const { contextId, parentId } = seed(db);
+      const caller: AgentDefn = { name: "maya" };
+      const ctx = buildCtx(db, contextId, parentId, caller, async (childTaskId) => {
+        const now = Math.floor(Date.now() / 1000);
+        db.run(
+          `UPDATE tasks
+             SET state='TASK_STATE_FAILED',
+                 metadata=?,
+                 updated_at=?
+           WHERE id=?`,
+          [JSON.stringify({ errorMessage: "boom" }), now, childTaskId],
+        );
+        ctx.bus.emit({
+          type: "task.state_changed",
+          chatId: contextId,
+          payload: { taskId: childTaskId, state: "TASK_STATE_FAILED" },
+        });
+      });
+      const result = await runAskAgent(ctx, {
+        target_agent_id: "journaler",
+        message: "hi",
+      });
+      expect((result as { isError?: boolean }).isError).toBe(true);
+      expect(
+        (result as { content: Array<{ text: string }> }).content[0]!.text,
+      ).toMatch(/boom/);
+    }
+
+    // Sub-case B: malformed metadata → "unknown".
+    {
+      // Fresh DB to avoid colliding with sub-case A's seeded ids.
+      db = new Database(":memory:");
+      runMigrationsFromDir(db, MIGRATIONS);
+      const { contextId, parentId } = seed(db);
+      const caller: AgentDefn = { name: "maya" };
+      const ctx = buildCtx(db, contextId, parentId, caller, async (childTaskId) => {
+        const now = Math.floor(Date.now() / 1000);
+        db.run(
+          `UPDATE tasks
+             SET state='TASK_STATE_FAILED',
+                 metadata='not-json',
+                 updated_at=?
+           WHERE id=?`,
+          [now, childTaskId],
+        );
+        ctx.bus.emit({
+          type: "task.state_changed",
+          chatId: contextId,
+          payload: { taskId: childTaskId, state: "TASK_STATE_FAILED" },
+        });
+      });
+      const result = await runAskAgent(ctx, {
+        target_agent_id: "journaler",
+        message: "hi",
+      });
+      expect(
+        (result as { content: Array<{ text: string }> }).content[0]!.text,
+      ).toMatch(/unknown/);
+    }
+  });
+
   test("Finding 4: emits task.state_changed when parent flips to WAITING_ON_AGENT", async () => {
     const { contextId, parentId } = seed(db);
     const caller: AgentDefn = { name: "maya" };
