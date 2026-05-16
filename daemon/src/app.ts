@@ -31,8 +31,10 @@ import { makeTitler, type Titler } from "./chat/titler.ts";
 import { makeTitlerStub } from "./chat/titler-stub.ts";
 import {
   makeOrchestrator,
+  resumeParentOnChildTerminal,
   type Orchestrator,
 } from "./chat/orchestrator.ts";
+import { makeDispatchChildTask } from "./chat/dispatch-child.ts";
 import { fetchAnthropicKey } from "./lib/anthropic-key.ts";
 
 export const VERSION = pkg.version;
@@ -73,6 +75,25 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // (ask_user emits task.state_changed / message.appended via this bus).
   // Hoisted out of the orchestrator-only block so mountMcp can receive it.
   const bus = createEventBus({ db: deps.db });
+
+  // VOS-89 T11: when any task reaches a terminal state, check whether its
+  // parent is parked in WAITING_ON_AGENT and flip the parent back to WORKING.
+  // Mirrors the answer.ts INPUT_REQUIRED -> WORKING resume, but the trigger
+  // is a child task terminating (ask_agent flow) rather than a user POST.
+  // Wired here so even test-injected orchestrators get parent-resume.
+  const ASK_AGENT_TERMINALS: ReadonlySet<string> = new Set([
+    "TASK_STATE_COMPLETED",
+    "TASK_STATE_FAILED",
+    "TASK_STATE_CANCELED",
+  ]);
+  bus.subscribe("task.state_changed", (ev) => {
+    const p = ev.payload as { taskId?: string; state?: string } | undefined;
+    if (!p?.taskId || !p.state) return;
+    if (!ASK_AGENT_TERMINALS.has(p.state)) return;
+    resumeParentOnChildTerminal(deps.db, p.taskId, (t, payload) =>
+      bus.emit({ type: t, payload }),
+    );
+  });
 
   if (!orchestrator || !titler) {
     const repo = makeChatRepo(deps.db);
@@ -115,7 +136,22 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   app.route("/", chatsApi(deps.db));
   app.route("/", agentsApi(deps.db));
   app.route("/", chatApi(deps.db, { orchestrator }));
-  mountMcp(app, { vaultRoot: deps.vaultRoot, db: deps.db, bus });
+  // VOS-89 T15.5: real production dispatcher for ask_agent children. Per-
+  // agent Provider memoisation lives inside the dispatcher; cwd +
+  // tracesDir mirror the orchestrator wiring above so child runs share
+  // the same trace tree + working dir as parent runs.
+  const dispatchChildTask = makeDispatchChildTask({
+    db: deps.db,
+    bus,
+    cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
+    tracesDir: path.join(deps.vaultRoot, ".traces"),
+  });
+  mountMcp(app, {
+    vaultRoot: deps.vaultRoot,
+    db: deps.db,
+    bus,
+    dispatchChildTask,
+  });
   // VOS-88 T8: user-facing answer route. Shares the SAME `pendingRegistry`
   // singleton with mountMcp so the MCP tool handler (which awaits the slot)
   // and the HTTP route (which resolves it) reference the same map.

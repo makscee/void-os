@@ -28,9 +28,12 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import pkg from "../../../package.json" with { type: "json" };
 import type { EventBus } from "../../events/index.ts";
+import type { AgentDefn } from "../../permissions/engine.ts";
 import { honoBridge } from "./hono-bridge.ts";
 import { handleVaultRead, vaultReadDef } from "./tools/vault-read.ts";
 import { ASK_USER_TOOL_DEF, runAskUser } from "./tools/ask-user.ts";
+import { ASK_AGENT_TOOL_DEF } from "./tools/ask-agent-def.ts";
+import { runAskAgent, type AskAgentArgs } from "./tools/ask-agent.ts";
 import {
   createPendingRegistry,
   type PendingRegistry,
@@ -40,6 +43,63 @@ export interface McpDeps {
   vaultRoot: string;
   db: Database;
   bus: EventBus;
+  /**
+   * VOS-89 T10: optional override for the AgentDefn loader. When omitted,
+   * a default implementation reads `agent_cards.card_json` and parses it.
+   * Tests inject a stub to avoid populating agent_cards.
+   */
+  loadAgentDefn?: (agentName: string) => AgentDefn;
+  /**
+   * Dispatcher for freshly-minted child Tasks. Production buildApp passes
+   * the real implementation from `daemon/src/chat/dispatch-child.ts`
+   * (VOS-89 T15.5); MCP-only tests that don't need a child to actually
+   * run can omit this and rely on the placeholder, which logs a warning
+   * and returns. The placeholder is intentionally noisy so a misconfigured
+   * production wire surfaces in logs rather than silently dropping
+   * children on the floor.
+   */
+  dispatchChildTask?: (
+    childTaskId: string,
+    args: { agentName: string; message: string; systemMessage?: string },
+  ) => Promise<void>;
+}
+
+/**
+ * VOS-89 T10: Static MCP tool list. Exported so tests (and any future
+ * tools/list shaping logic) can inspect the canonical schema without
+ * spinning up a Server. The `setRequestHandler(ListToolsRequestSchema)`
+ * call below returns this exact array.
+ */
+export function listMcpTools() {
+  return [vaultReadDef, ASK_USER_TOOL_DEF, ASK_AGENT_TOOL_DEF];
+}
+
+/**
+ * VOS-89 T10: default AgentDefn loader — reads `agent_cards.card_json`
+ * and parses it. The card JSON is expected to carry at least `name`;
+ * `ask_agent_allow` is optional, and when absent the field is left
+ * `undefined` (NOT empty array), which the permission gate in
+ * runAskAgent treats as permissive at the agent level.
+ */
+export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn {
+  const row = db
+    .query("SELECT card_json FROM agent_cards WHERE agent_name = ?")
+    .get(agentName) as { card_json: string } | undefined;
+  if (!row) {
+    throw new Error(`unknown agent: ${agentName}`);
+  }
+  const parsed = JSON.parse(row.card_json) as Record<string, unknown>;
+  const defn: AgentDefn = { name: agentName };
+  if (Array.isArray(parsed.ask_agent_allow)) {
+    defn.ask_agent_allow = parsed.ask_agent_allow as string[];
+  }
+  if (Array.isArray(parsed.read_scope)) {
+    defn.read_scope = parsed.read_scope as string[];
+  }
+  if (Array.isArray(parsed.write_scope)) {
+    defn.write_scope = parsed.write_scope as string[];
+  }
+  return defn;
 }
 
 // VOS-88 T7: module-scope singleton. Shared by the ask_user CallTool handler
@@ -56,8 +116,24 @@ export function buildMcpServer(deps: McpDeps): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [vaultReadDef, ASK_USER_TOOL_DEF],
+    tools: listMcpTools(),
   }));
+
+  // Resolve the AgentDefn loader + child-task dispatcher. Production
+  // buildApp injects both; tests for the MCP layer in isolation can omit
+  // either and fall through to the defaults.
+  const loadAgentDefn =
+    deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(deps.db, name));
+  const dispatchChildTask =
+    deps.dispatchChildTask ??
+    (async (childTaskId, args) => {
+      // Placeholder for MCP-only tests: leaves the child row in
+      // TASK_STATE_SUBMITTED. A misconfigured production wire surfaces
+      // here as a noisy warning rather than silently dropping children.
+      console.warn(
+        `[VOS-89] dispatchChildTask placeholder invoked: childTaskId=${childTaskId} agent=${args.agentName}`,
+      );
+    });
 
   server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToolResult> => {
     const { name, arguments: args } = req.params;
@@ -92,6 +168,38 @@ export function buildMcpServer(deps: McpDeps): Server {
           now: () => Date.now(),
         },
         args,
+      );
+      return res as unknown as CallToolResult;
+    }
+    if (name === "ask_agent") {
+      // VOS-89 T10: like ask_user, MCP is stateless — caller's runtime must
+      // inject task_id / context_id into the tool arguments. We strip them
+      // off before forwarding the typed AskAgentArgs to runAskAgent.
+      const a = (args ?? {}) as Record<string, unknown>;
+      const taskId = typeof a.task_id === "string" ? a.task_id : undefined;
+      if (!taskId) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "ASK_AGENT_MISSING_TASK_ID" }],
+        };
+      }
+      const contextId = typeof a.context_id === "string" ? a.context_id : taskId;
+      const res = await runAskAgent(
+        {
+          db: deps.db,
+          bus: deps.bus,
+          taskId,
+          contextId,
+          loadAgentDefn,
+          dispatchChildTask,
+          now: () => Date.now(),
+        },
+        {
+          target_agent_id: String(a.target_agent_id ?? ""),
+          message: String(a.message ?? ""),
+          system_message:
+            typeof a.system_message === "string" ? a.system_message : undefined,
+        } satisfies AskAgentArgs,
       );
       return res as unknown as CallToolResult;
     }

@@ -14,8 +14,8 @@
 
 import { describe, it, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runMigrationsFromDir } from "../../src/adapters/sqlite/migrations";
 import {
   setTaskInputRequired,
   clearTaskPending,
@@ -25,18 +25,10 @@ import {
 
 const MIGRATIONS = join(import.meta.dir, "../../src/adapters/sqlite/migrations");
 
-function runMigrations(db: Database) {
-  const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
-  for (const f of files) {
-    const sql = readFileSync(join(MIGRATIONS, f), "utf8");
-    db.exec(sql);
-  }
-}
-
 function freshDb(): Database {
   const db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
-  runMigrations(db);
+  runMigrationsFromDir(db, MIGRATIONS);
   // Seed reconciled against 0007 schema (NOT NULL: agent_name on contexts;
   // tokens_in/tokens_out/cost_usd/metadata on tasks; chat_id/agent/kind/
   // status/started_at on runs from earlier migrations).

@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { runMigrationsFromDir } from "../src/adapters/sqlite/migrations";
+import { applyMigrations, loadMigrations } from "../src/adapters/sqlite/migrations";
 
 const MIGRATIONS_DIR = join(import.meta.dir, "../src/adapters/sqlite/migrations");
 
@@ -29,7 +29,14 @@ describe("migration 0007 — A2A schema alignment", () => {
   beforeAll(() => {
     db = new Database(":memory:");
     db.exec("PRAGMA foreign_keys = ON");
-    runMigrationsFromDir(db, MIGRATIONS_DIR);
+    // Scope to first 7 migrations: this file asserts that 0007 alone lands
+    // the narrow v1 CHECK enum on tasks.state. Later migrations (e.g. 0010)
+    // legitimately expand that enum and would otherwise invalidate the
+    // CHECK-enforcement assertions below.
+    const migrations = loadMigrations(MIGRATIONS_DIR).filter(
+      (m) => m.version.slice(0, 4) <= "0007",
+    );
+    applyMigrations(db, migrations);
   });
 
   it("drops legacy tables", () => {

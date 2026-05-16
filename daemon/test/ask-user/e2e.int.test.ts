@@ -27,25 +27,17 @@
 // block".
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { Database } from "bun:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { runMigrationsFromDir } from "../../src/adapters/sqlite/migrations.ts";
 import { mountMcp, pendingRegistry } from "../../src/adapters/mcp/index.ts";
 import { mountAnswerRoute } from "../../src/api/answer.ts";
 import { createEventBus } from "../../src/events/index.ts";
 
 const MIGRATIONS = join(import.meta.dir, "../../src/adapters/sqlite/migrations");
-
-function runMigrations(db: Database) {
-  const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
-  for (const f of files) {
-    const sql = readFileSync(join(MIGRATIONS, f), "utf8");
-    db.exec(sql);
-  }
-}
 
 interface Ctx {
   db: Database;
@@ -55,7 +47,7 @@ interface Ctx {
 async function startApp(): Promise<Ctx> {
   const db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
-  runMigrations(db);
+  runMigrationsFromDir(db, MIGRATIONS);
   db.run(
     "INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived) VALUES ('ctx', 'maya', NULL, 0, 0, 0)",
   );

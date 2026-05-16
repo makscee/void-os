@@ -60,6 +60,13 @@ export interface AgentDefn {
   name: string;
   read_scope?: string[];
   write_scope?: string[];
+  /**
+   * VOS-89: optional allowlist of agent names this agent may target via the
+   * ask_agent tool. `undefined` means "no allowlist enforced at the agent
+   * level" (system-level rules still apply). An empty array means "may not
+   * ask any agent".
+   */
+  ask_agent_allow?: string[];
 }
 
 export interface ResolvedScopes {

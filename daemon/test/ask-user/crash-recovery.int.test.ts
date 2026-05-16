@@ -21,9 +21,9 @@
 
 import { describe, it, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
+import { runMigrationsFromDir } from "../../src/adapters/sqlite/migrations";
 import { createEventBus } from "../../src/events";
 import { createPendingRegistry } from "../../src/adapters/mcp/pending-questions";
 import { mountAnswerRoute } from "../../src/api/answer";
@@ -34,19 +34,11 @@ import {
 
 const MIGRATIONS = join(import.meta.dir, "../../src/adapters/sqlite/migrations");
 
-function runMigrations(db: Database) {
-  const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
-  for (const f of files) {
-    const sql = readFileSync(join(MIGRATIONS, f), "utf8");
-    db.exec(sql);
-  }
-}
-
 describe("ask_user crash recovery", () => {
   it("orphaned INPUT_REQUIRED task: answer POST flips state and emits dispatch event", async () => {
     const db = new Database(":memory:");
     db.exec("PRAGMA foreign_keys = ON");
-    runMigrations(db);
+    runMigrationsFromDir(db, MIGRATIONS);
 
     db.run(
       "INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived) VALUES ('ctx', 'maya', NULL, 0, 0, 0)",

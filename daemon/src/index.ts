@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import { buildApp, VERSION, wsHandler } from "./app.ts";
 import { openDatabase } from "./adapters/sqlite/index.ts";
 import { bootRecovery } from "./boot.ts";
+import { reconcileOrphans } from "./chat/orchestrator.ts";
 import { scanVaultAgents } from "./agents/scan.ts";
 import { makeAgentRepo } from "./agents/repo.ts";
 
@@ -35,6 +36,13 @@ const db = openDatabase(dbPath);
 
 // VOS-79 T10: sweep orphan running/pending runs left by a previous crash.
 bootRecovery(db);
+
+// VOS-89 T13: reconcile task-tree orphans from a mid-flight daemon crash.
+// (a) WAITING_ON_AGENT parent whose child already terminal → parent → WORKING.
+// (b) Non-terminal descendant of any CANCELED ancestor → CANCELED (cascade).
+// Runs before buildApp/mountMcp so MCP never accepts ask_agent / answer
+// against a stale tree.
+reconcileOrphans(db);
 
 // VOS-92: scan vault/agents/ and mirror into the `agents` table.
 // Runs after migrations (openDatabase) and before buildApp so all routes

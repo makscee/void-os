@@ -27,6 +27,11 @@ const DAEMON_ROOT = path.resolve(HERE, "..", "..", "daemon");
 const FIXTURE_VAULT = path.join(HERE, "fixtures", "vault");
 const DAEMON_FIXTURE_VAULT = path.join(HERE, "fixtures", "daemon-vault");
 const FAKE_SCRIPT = path.join(HERE, "fixtures", "cc", "hello.jsonl");
+// VOS-89 T16: per-agent fake-provider scripts for the ask_agent E2E.
+// These are forwarded to the daemon as VOS_FAKE_SCRIPT_<agent> env vars
+// so the fake provider factory (resolveFakeScript) picks them per child.
+const ASK_AGENT_MAYA_SCRIPT = path.join(HERE, "fixtures", "ask-agent", "maya.jsonl");
+const ASK_AGENT_JOURNALER_SCRIPT = path.join(HERE, "fixtures", "ask-agent", "journaler.jsonl");
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -105,6 +110,22 @@ export default async function globalSetup() {
   fs.cpSync(FIXTURE_VAULT, VAULT_PATH, { recursive: true });
   const PLUGIN_OUT = path.join(VAULT_PATH, ".obsidian", "plugins", "void-os");
 
+  // VOS-89 T16: seed vault/agents/maya + vault/agents/journaler so the daemon's
+  // boot-time vault scanner (src/index.ts) populates the `agents` table for
+  // both. The DAEMON's vault root is `daemonVault` (set below), NOT the
+  // Obsidian fixture vault, so the agent files must live there.
+  const daemonAgentsDir = path.join(daemonVault, "agents");
+  fs.mkdirSync(path.join(daemonAgentsDir, "maya"), { recursive: true });
+  fs.mkdirSync(path.join(daemonAgentsDir, "journaler"), { recursive: true });
+  fs.writeFileSync(
+    path.join(daemonAgentsDir, "maya", "agent.md"),
+    "---\nname: maya\ndescription: front desk\nmodel: opus\n---\n",
+  );
+  fs.writeFileSync(
+    path.join(daemonAgentsDir, "journaler", "agent.md"),
+    "---\nname: journaler\ndescription: journal helper\nmodel: haiku\n---\n",
+  );
+
   // Pre-register the fixture vault in obsidian.json so Obsidian skips the
   // onboarding/starter screen and opens the vault directly.
   const vaultId = crypto.createHash("md5").update(VAULT_PATH).digest("hex").slice(0, 16);
@@ -150,6 +171,9 @@ export default async function globalSetup() {
     VOS_PROVIDER: "fake",
     VOS_TITLER: "stub",
     VOS_FAKE_SCRIPT: fakeScriptPath,
+    VOS_FAKE_SCRIPT_maya: ASK_AGENT_MAYA_SCRIPT,
+    VOS_FAKE_SCRIPT_journaler: ASK_AGENT_JOURNALER_SCRIPT,
+    VOS_FAKE_PER_EVENT_DELAY_MS_maya: "200",
   };
   delete env.ANTHROPIC_API_KEY;
   delete env.VOID_KEYS_URL;
@@ -166,6 +190,28 @@ export default async function globalSetup() {
   } catch (err) {
     daemon.kill("SIGKILL");
     throw err;
+  }
+
+  // VOS-89 T16: seed agent_cards for maya + journaler. Production code
+  // does NOT (yet) populate agent_cards from the vault scan — runAskAgent's
+  // existence check (SELECT 1 FROM agent_cards WHERE agent_name = ?) would
+  // otherwise reject the call. This seeding step mirrors what
+  // bootInProcessDaemon does in daemon/test/helpers/boot-daemon.ts. We use
+  // node:sqlite (Playwright runs under Node, not Bun) against the daemon's
+  // DB file; safe because at this point the daemon has finished migrations
+  // + initial boot work, and INSERT OR IGNORE means re-runs are idempotent.
+  {
+    const { DatabaseSync } = await import("node:sqlite");
+    const seedDb = new DatabaseSync(dbPath);
+    try {
+      const stmt = seedDb.prepare(
+        "INSERT OR IGNORE INTO agent_cards (agent_name, card_json, source_mtime) VALUES (?, ?, 0)",
+      );
+      stmt.run("maya", JSON.stringify({ name: "maya" }));
+      stmt.run("journaler", JSON.stringify({ name: "journaler" }));
+    } finally {
+      seedDb.close();
+    }
   }
 
   // Spawn Obsidian with CDP debugger + fixture vault.
@@ -199,6 +245,7 @@ export default async function globalSetup() {
     vaultPath: VAULT_PATH,
     obsidianUserDataDir,
     fakeScriptPath,
+    dbPath,
   };
   const statePath = path.join(tmpdir, "state.json");
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2));

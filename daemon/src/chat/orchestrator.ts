@@ -100,6 +100,268 @@ export interface Orchestrator {
   cancel(chatId: string): Promise<CancelResult>;
 }
 
+/** VOS-89 T11: child task reached a terminal state → if its parent was
+ * parked in WAITING_ON_AGENT, flip the parent back to WORKING so its run
+ * can resume. No-op when:
+ *   - the child has no parent_task_id (top-level task), or
+ *   - the parent is in any state other than WAITING_ON_AGENT (e.g. it was
+ *     itself cancelled or completed independently — we never resurrect).
+ *
+ * Idempotent: the UPDATE's WHERE clause guards the state predicate, so
+ * repeated emits of the same terminal state are safe. Mirrors the
+ * INPUT_REQUIRED → WORKING resume done inline in `dispatch()` (the user-
+ * reply path); here the trigger is a sibling task reaching terminal
+ * rather than a user POST.
+ *
+ * VOS-89 T15.5: after the WAITING→WORKING flip, attempt to settle the
+ * parent's terminal state. If the parent's chat has no active run AND no
+ * non-terminal children remain, the parent's lifecycle is over — flip it
+ * to COMPLETED. Covers the case where the run already ended (provider
+ * stream drained) before the child finished, so run.end's own attempt at
+ * the COMPLETED flip rejected (parent was still WAITING). When the child
+ * later terminates, this branch closes the loop. */
+export function resumeParentOnChildTerminal(
+  db: Database,
+  childTaskId: string,
+  emit?: (type: string, payload: Record<string, unknown>) => void,
+): void {
+  const child = db
+    .query("SELECT parent_task_id FROM tasks WHERE id = ?")
+    .get(childTaskId) as { parent_task_id: string | null } | undefined;
+  if (!child?.parent_task_id) return;
+  db.run(
+    `UPDATE tasks
+     SET state = 'TASK_STATE_WORKING', updated_at = strftime('%s','now')
+     WHERE id = ? AND state = 'TASK_STATE_WAITING_ON_AGENT'`,
+    [child.parent_task_id],
+  );
+  // Try to settle the parent. Only fires when the parent's chat has no
+  // current_run_id (i.e. the run has already cleaned up) AND no children
+  // remain non-terminal. Both predicates are evaluated by the helper.
+  const completed = tryCompleteParentTaskIfRunEnded(db, child.parent_task_id);
+  if (completed && emit) {
+    emit("task.state_changed", {
+      taskId: child.parent_task_id,
+      state: "TASK_STATE_COMPLETED",
+    });
+  }
+}
+
+/** VOS-89 T15.5: terminal task-state flip on run.end. CAS-guarded so:
+ *  - WORKING + no non-terminal children → flip to `terminal`
+ *  - any other state (INPUT_REQUIRED, WAITING_ON_AGENT, CANCELED, ...) →
+ *    no-op. The parent stays parked until its waiter (user / child)
+ *    resolves; the resume hook will retry the flip then.
+ *
+ *  We exclude tasks that have non-terminal children even if status==done.
+ *  This guards the rare race where a child is dispatched mid-stream but
+ *  the orchestrator's run.end fires before the child terminates — the
+ *  parent should not COMPLETE while a child is still running. (Today the
+ *  parent would already be WAITING_ON_AGENT in that case, so the state
+ *  predicate alone catches it; the children-check is a defensive belt-
+ *  and-braces.) */
+function tryCompleteTaskOnRunEnd(
+  db: Database,
+  taskId: string,
+  terminal: "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED",
+): boolean {
+  const res = db.run(
+    `UPDATE tasks
+        SET state = ?, updated_at = strftime('%s','now')
+      WHERE id = ?
+        AND state = 'TASK_STATE_WORKING'
+        AND NOT EXISTS (
+          SELECT 1 FROM tasks ch
+           WHERE ch.parent_task_id = tasks.id
+             AND ch.state NOT IN (
+               'TASK_STATE_COMPLETED',
+               'TASK_STATE_FAILED',
+               'TASK_STATE_CANCELED'
+             )
+        )`,
+    [terminal, taskId],
+  );
+  return res.changes > 0;
+}
+
+/** VOS-89 T15.5: settle the parent task to COMPLETED after a child wakeup
+ *  IF the parent's chat has no active run AND all children are terminal.
+ *  Skips when the chat still has a current_run_id (run is in flight; the
+ *  orchestrator's own finally block will handle the flip on run.end). */
+function tryCompleteParentTaskIfRunEnded(
+  db: Database,
+  parentTaskId: string,
+): boolean {
+  const ctx = db
+    .query(
+      `SELECT c.current_run_id AS current_run_id
+         FROM tasks t
+         JOIN contexts c ON t.context_id = c.id
+        WHERE t.id = ?`,
+    )
+    .get(parentTaskId) as { current_run_id: string | null } | undefined;
+  if (!ctx) return false;
+  if (ctx.current_run_id !== null) return false;
+  return tryCompleteTaskOnRunEnd(db, parentTaskId, "TASK_STATE_COMPLETED");
+}
+
+/** VOS-89 T12: cancel-cascade. Walks the task tree under `rootTaskId`
+ * (recursive CTE on `tasks.parent_task_id`) and flips every NON-terminal
+ * descendant to TASK_STATE_CANCELED in a SINGLE transaction. The root
+ * itself is left untouched — callers cancel it separately (e.g. via
+ * `orch.cancel(chatId)` to terminate any in-flight provider handle).
+ *
+ * Terminal states (COMPLETED / FAILED / CANCELED) are excluded from the
+ * sweep — once a child has finished on its own, we never overwrite its
+ * outcome. Returns the ids that were actually cancelled, in CTE traversal
+ * order (parent-before-child by depth).
+ *
+ * Wiring: NOT yet plumbed into a higher-level cancel entry-point —
+ * `orch.cancel(chatId)` only kills the in-flight run / provider handle,
+ * it does not currently reach into the task tree. A future task should
+ * call `cascadeCancel` after that flip and emit `task.state_changed` per
+ * returned id so the resume listener (app.ts T11) can react.
+ *
+ * No emit happens here: this helper is DB-only by design (mirrors
+ * `resumeParentOnChildTerminal`). The caller owns event emission so the
+ * helper stays unit-testable without a bus. */
+export function cascadeCancel(db: Database, rootTaskId: string): string[] {
+  const cancelled: string[] = [];
+  const tx = db.transaction(() => {
+    // Recursive CTE collects every non-terminal descendant of `rootTaskId`.
+    // The base case is direct children (parent_task_id = root); the
+    // recursive step extends through the tree. The root itself is excluded
+    // by starting the CTE from `parent_task_id = ?` rather than `id = ?`.
+    const rows = db
+      .query(
+        `WITH RECURSIVE descendants(id, state) AS (
+           SELECT id, state FROM tasks WHERE parent_task_id = ?
+           UNION ALL
+           SELECT t.id, t.state
+             FROM tasks t
+             JOIN descendants d ON t.parent_task_id = d.id
+         )
+         SELECT id FROM descendants
+          WHERE state NOT IN (
+            'TASK_STATE_COMPLETED',
+            'TASK_STATE_FAILED',
+            'TASK_STATE_CANCELED'
+          )`,
+      )
+      .all(rootTaskId) as Array<{ id: string }>;
+    if (rows.length === 0) return;
+    const update = db.prepare(
+      `UPDATE tasks
+         SET state = 'TASK_STATE_CANCELED', updated_at = strftime('%s','now')
+       WHERE id = ?
+         AND state NOT IN (
+           'TASK_STATE_COMPLETED',
+           'TASK_STATE_FAILED',
+           'TASK_STATE_CANCELED'
+         )`,
+    );
+    for (const r of rows) {
+      const info = update.run(r.id);
+      // changes==1 only when the row was still non-terminal at UPDATE time.
+      // Within a single tx no concurrent writer exists, so this matches the
+      // SELECT 1:1 — but we honour the actual UPDATE result to be safe.
+      if (info.changes > 0) cancelled.push(r.id);
+    }
+  });
+  tx();
+  return cancelled;
+}
+
+/** VOS-89 T13: startup reconciler.
+ *
+ * Daemon may crash mid-flight while:
+ *   (a) a parent task is parked in TASK_STATE_WAITING_ON_AGENT and its
+ *       dispatched child has already reached terminal — the runtime
+ *       resume listener (app.ts T11) was not running to flip the parent
+ *       back to WORKING, so on next boot the parent would be stuck forever;
+ *   (b) an ancestor was already CANCELED but a descendant was still
+ *       WORKING (the runtime cascade had not finished, or the cancel
+ *       reached only the in-flight provider handle without reaching the
+ *       task tree) — descendants would orphan-run forever once the
+ *       daemon is back.
+ *
+ * `reconcileOrphans(db)` is called at boot, before the MCP server starts
+ * accepting connections, and fixes both classes in a SINGLE transaction:
+ *
+ *   (a) WAITING_ON_AGENT parent whose at-least-one child is terminal →
+ *       parent state = WORKING. CAS-guarded so a concurrent writer
+ *       (impossible at boot, defensive) cannot race.
+ *
+ *   (b) Recursive CTE rooted at every CANCELED task descending via
+ *       parent_task_id → flip every non-terminal descendant to CANCELED.
+ *
+ * Idempotent: re-running on an already-reconciled DB is a no-op (every
+ * UPDATE is guarded by a state predicate that rejects already-correct
+ * rows). DB-only by design — emits no events; runtime listeners are not
+ * yet wired at this point in the boot sequence. */
+export function reconcileOrphans(db: Database): void {
+  const tx = db.transaction(() => {
+    // (a) Parent parked WAITING_ON_AGENT but a child already terminal.
+    // Use EXISTS with a state predicate so the UPDATE only touches rows
+    // that genuinely need flipping. Distinct join to avoid double-counting
+    // when multiple children are terminal — the UPDATE result is the same
+    // regardless of how many children matched.
+    db.run(
+      `UPDATE tasks
+         SET state = 'TASK_STATE_WORKING', updated_at = strftime('%s','now')
+       WHERE state = 'TASK_STATE_WAITING_ON_AGENT'
+         AND EXISTS (
+           SELECT 1 FROM tasks ch
+            WHERE ch.parent_task_id = tasks.id
+              AND ch.state IN (
+                'TASK_STATE_COMPLETED',
+                'TASK_STATE_FAILED',
+                'TASK_STATE_CANCELED'
+              )
+         )`,
+    );
+
+    // (b) Recursive CTE: descend from every CANCELED root through
+    // parent_task_id chains and cancel any non-terminal descendant.
+    // Base case = direct children of any CANCELED task; recursive step
+    // extends down. The CTE only carries non-terminal rows so we never
+    // descend into / overwrite a subtree whose ancestor already finished
+    // independently (terminal states are preserved). Final UPDATE is
+    // re-guarded by the same predicate for defence-in-depth.
+    db.run(
+      `WITH RECURSIVE orphans(id) AS (
+         SELECT t.id
+           FROM tasks t
+           JOIN tasks p ON t.parent_task_id = p.id
+          WHERE p.state = 'TASK_STATE_CANCELED'
+            AND t.state NOT IN (
+              'TASK_STATE_COMPLETED',
+              'TASK_STATE_FAILED',
+              'TASK_STATE_CANCELED'
+            )
+         UNION ALL
+         SELECT t.id
+           FROM tasks t
+           JOIN orphans o ON t.parent_task_id = o.id
+          WHERE t.state NOT IN (
+            'TASK_STATE_COMPLETED',
+            'TASK_STATE_FAILED',
+            'TASK_STATE_CANCELED'
+          )
+       )
+       UPDATE tasks
+          SET state = 'TASK_STATE_CANCELED', updated_at = strftime('%s','now')
+        WHERE id IN (SELECT id FROM orphans)
+          AND state NOT IN (
+            'TASK_STATE_COMPLETED',
+            'TASK_STATE_FAILED',
+            'TASK_STATE_CANCELED'
+          )`,
+    );
+  });
+  tx();
+}
+
 /** 409 conflict — another dispatch holds the lock. HTTP layer (T9) maps
  * `err.status` and `err.current_run_id` directly into the response. */
 export class Conflict409 extends Error {
@@ -460,6 +722,37 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
               cleanupErr instanceof Error
                 ? cleanupErr.message
                 : String(cleanupErr),
+          });
+        }
+        // VOS-89 T15.5: settle the task's terminal state. CAS-guarded:
+        // only flips when the task is in WORKING with no non-terminal
+        // children. If the task is parked in INPUT_REQUIRED or
+        // WAITING_ON_AGENT, this is a no-op — the corresponding wakeup
+        // path (answer route / resumeParentOnChildTerminal) will retry
+        // the flip when the wait resolves.
+        const terminalState =
+          status === "done"
+            ? "TASK_STATE_COMPLETED"
+            : status === "error"
+              ? "TASK_STATE_FAILED"
+              : "TASK_STATE_CANCELED";
+        try {
+          const flipped = tryCompleteTaskOnRunEnd(db, taskId, terminalState);
+          if (flipped) {
+            emit("task.state_changed", {
+              taskId,
+              state: terminalState,
+            });
+          }
+        } catch (taskFlipErr) {
+          emit("task.terminal_flip_failed", {
+            chat_id: chatId,
+            run_id: runId,
+            task_id: taskId,
+            error:
+              taskFlipErr instanceof Error
+                ? taskFlipErr.message
+                : String(taskFlipErr),
           });
         }
         emit("run.end", {
