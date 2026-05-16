@@ -41,7 +41,7 @@ import type { EventBus } from "../events/index.ts";
 import type { Provider, ProviderHandle } from "../providers/index.ts";
 import { makeProvider, type ProviderEnv } from "../providers/factory.ts";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo.ts";
-import type { Part, TextPart } from "../types/a2a.ts";
+import { drainRun } from "./run-driver.ts";
 
 export interface DispatchChildDeps {
   db: Database;
@@ -161,8 +161,6 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
   );
 
   let handle: ProviderHandle | undefined;
-  const agentParts: Part[] = [];
-  let firstAssistantSeen = false;
   let terminalState: "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" =
     "TASK_STATE_COMPLETED";
   let errorMessage: string | null = null;
@@ -183,21 +181,21 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
     // normalizes wire format on yield; dispatch-child sees only
     // `SessionEvent | PartsEvent`. CC-shape parsing lives upstream in
     // providers/claude-code/cc-shape.ts.
-    for await (const evt of handle.events) {
-      if (evt.type === "parts") {
-        if (evt.role === "ROLE_AGENT") firstAssistantSeen = true;
-        for (const p of evt.parts) {
-          agentParts.push(p);
-          // dispatch-child does not emit chat.token/tool_use/tool_result —
-          // child runs are headless from the UI's perspective; the parent's
-          // ask_agent surfaces a single tool_result at the end. So we only
-          // buffer here and skip the per-part fan-out the orchestrator does.
-          if (typeof (p as TextPart).text === "string") continue;
-        }
-      }
-      // session events: dispatch-child has no chat row to update; ignored.
+    // No onSession/onPart callbacks — children spawn fresh and render via
+    // messages-repo. No signal — children are not cancellable today.
+    const outcome = await drainRun({ handle });
+    const firstAssistantSeen = outcome.firstAssistantSeen;
+
+    if (firstAssistantSeen && outcome.parts.length > 0) {
+      messages.appendMessage(
+        childTaskId,
+        contextId,
+        null, // child has no run row
+        "ROLE_AGENT",
+        outcome.parts,
+        Date.now(),
+      );
     }
-    await handle.done;
   } catch (e) {
     terminalState = "TASK_STATE_FAILED";
     errorMessage = e instanceof Error ? e.message : String(e);
@@ -208,17 +206,6 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
         error: errorMessage,
       },
     });
-  }
-
-  if (firstAssistantSeen && agentParts.length > 0) {
-    messages.appendMessage(
-      childTaskId,
-      contextId,
-      null, // child has no run row
-      "ROLE_AGENT",
-      agentParts,
-      Date.now(),
-    );
   }
 
   // VOS-89 review-fix Finding 2: persist errorMessage to tasks.metadata
