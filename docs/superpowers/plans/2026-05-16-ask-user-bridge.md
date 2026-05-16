@@ -35,7 +35,7 @@
 
 ---
 
-## Task 1: AskUserBridge — Interface + happy-path test (TDD)
+### Task 1: AskUserBridge — Interface + happy-path test (TDD)
 
 **Files:**
 - Test: `daemon/src/chat/ask-user-bridge.test.ts` (create)
@@ -375,7 +375,7 @@ git -C workspace/void-os commit -m "feat(VOS-100): AskUserBridge module + happy-
 
 ---
 
-## Task 2: Bridge — cancel, timeout, error-path tests
+### Task 2: Bridge — cancel, timeout, error-path tests
 
 **Files:**
 - Modify: `daemon/src/chat/ask-user-bridge.test.ts`
@@ -468,7 +468,7 @@ git -C workspace/void-os commit -m "test(VOS-100): bridge cancel/timeout/error p
 
 ---
 
-## Task 3: Wire bridge into composition root
+### Task 3: Wire bridge into composition root
 
 **Files:**
 - Modify: `daemon/src/app.ts`
@@ -524,7 +524,7 @@ git -C workspace/void-os commit -m "feat(VOS-100): wire AskUserBridge into compo
 
 ---
 
-## Task 4: Migrate `ask-user.ts` MCP tool handler
+### Task 4: Migrate `ask-user.ts` MCP tool handler
 
 **Files:**
 - Modify: `daemon/src/adapters/mcp/tools/ask-user.ts`
@@ -594,7 +594,7 @@ git -C workspace/void-os commit -m "refactor(VOS-100): ask_user MCP tool depends
 
 ---
 
-## Task 5: Migrate `api/answer.ts` route handler
+### Task 5: Migrate `api/answer.ts` route handler
 
 **Files:**
 - Modify: `daemon/src/api/answer.ts`
@@ -678,7 +678,7 @@ git -C workspace/void-os commit -m "refactor(VOS-100): /answer route depends on 
 
 ---
 
-## Task 6: Delete dead files + sweep stragglers
+### Task 6: Delete dead files + sweep stragglers
 
 **Files:**
 - Delete: `daemon/src/chat/ask-user-repo.ts`
@@ -726,7 +726,7 @@ git -C workspace/void-os commit -m "chore(VOS-100): delete ask-user-repo + pendi
 
 ---
 
-## Task 7: Update CONTEXT.md glossary
+### Task 7: Update CONTEXT.md glossary
 
 **Files:**
 - Modify: `vault/projects/void-os/CONTEXT.md` (path is in the hub repo: `/Users/admin/hub-wt/VOS-100/vault/projects/void-os/CONTEXT.md`)
@@ -764,7 +764,7 @@ Expected sw output: a single line with commit SHA + lock-wait-ms.
 
 ---
 
-## Task 8: Final gate — full test suite + acceptance check
+### Task 8: Final gate — full test suite + acceptance check
 
 **Files:**
 - None (verification only)
@@ -805,7 +805,7 @@ If needed:
 
 ---
 
-## Task 9: Code review gate (mandatory before `/done`)
+### Task 9: Code review gate (mandatory before `/done`)
 
 **Files:**
 - None (review only)
