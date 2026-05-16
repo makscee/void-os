@@ -114,7 +114,14 @@ async function downloadAndExtract(cacheDir: string, appPath: string, version: st
     if (!fs.existsSync(srcApp)) {
       throw new Error(`obsidian-cache: no Obsidian.app at mount ${mountPoint}`);
     }
-    fs.cpSync(srcApp, path.join(tmpDir, "Obsidian.app"), { recursive: true });
+    // Use `ditto` (mac-native) instead of fs.cpSync — cpSync dereferences
+    // the symlinks inside the .app's Frameworks (Versions/Current, etc.),
+    // producing a "damaged" bundle that Gatekeeper rejects on launch.
+    const dst = path.join(tmpDir, "Obsidian.app");
+    const cp = spawnSync("ditto", [srcApp, dst], { encoding: "utf8" });
+    if (cp.status !== 0) {
+      throw new Error(`obsidian-cache: ditto failed (exit ${cp.status}): ${cp.stderr}`);
+    }
   } finally {
     const det = spawnSync("hdiutil", ["detach", "-quiet", mountPoint], { encoding: "utf8" });
     if (det.status !== 0) {
