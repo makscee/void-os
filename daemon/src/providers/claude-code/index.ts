@@ -6,7 +6,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { EventBus, UsageTurn } from "../../events/index.js";
-import { createStreamParser } from "./parser.js";
+import { createStreamParser, classifyToolEvents } from "./parser.js";
 import { createWatchdog } from "./watchdog.js";
 import { parseUsageFromAssistantEvent } from "./usage-extract.js";
 import { TraceWriter } from "../../trace/writer";
@@ -228,6 +228,16 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       const parser = createStreamParser({
         onEvent: (event) => {
           trace.write("cc.event", event);
+          // VOS-84: synthesize tool.call / tool.result envelopes alongside
+          // raw cc.event so downstream consumers (replay, audit) can read
+          // tool pairing without re-parsing CC's nested block shape.
+          for (const cls of classifyToolEvents(event)) {
+            if (cls.kind === "tool.call") {
+              trace.write("tool.call", { toolUseId: cls.toolUseId, name: cls.name, input: cls.input });
+            } else {
+              trace.write("tool.result", { toolUseId: cls.toolUseId, content: cls.content, isError: cls.isError });
+            }
+          }
           // VOS-87 T4: extract per-turn usage from `assistant` events
           // before the bus fan-out. Pure helper returns null when no
           // usage block is present (e.g. tool_use-only partials), so

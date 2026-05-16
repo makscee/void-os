@@ -109,3 +109,50 @@ export const createStreamParser = (h: ParserHandlers): StreamParser => {
     sessionId: () => _sessionId,
   };
 };
+
+// VOS-84: Tool-event classifier used by the provider's stream loop to
+// synthesize `tool.call` / `tool.result` trace envelopes alongside the raw
+// `cc.event` record. Discriminator verified against this file's existing
+// tool-tracking code (see handleLine above):
+//   block.type === "tool_use"   → tool.call   (uses block.id, name, input)
+//   block.type === "tool_result"→ tool.result (uses block.tool_use_id,
+//                                              content, is_error)
+// Blocks live at event.message.content[]. Non-array / missing returns [].
+export type ClassifiedTool =
+  | { kind: "tool.call"; toolUseId: string; name: string; input: unknown }
+  | { kind: "tool.result"; toolUseId: string; content: unknown; isError?: boolean };
+
+export function classifyToolEvents(event: unknown): ClassifiedTool[] {
+  const out: ClassifiedTool[] = [];
+  const ev = event as { message?: { content?: unknown } } | null | undefined;
+  const blocks = ev?.message?.content;
+  if (!Array.isArray(blocks)) return out;
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as {
+      type?: string;
+      id?: string;
+      name?: string;
+      input?: unknown;
+      tool_use_id?: string;
+      content?: unknown;
+      is_error?: boolean;
+    };
+    if (b.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string") {
+      out.push({
+        kind: "tool.call",
+        toolUseId: b.id,
+        name: b.name,
+        input: b.input,
+      });
+    } else if (b.type === "tool_result" && typeof b.tool_use_id === "string") {
+      out.push({
+        kind: "tool.result",
+        toolUseId: b.tool_use_id,
+        content: b.content,
+        isError: b.is_error ?? undefined,
+      });
+    }
+  }
+  return out;
+}
