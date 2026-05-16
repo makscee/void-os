@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"e2e-ask-user"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"thinking…"}]}}
+{"type":"vos_ask_user","question":"pick one","options":["A","B"]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"chose ${answer}"}]}}

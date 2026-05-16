@@ -85,8 +85,26 @@ async function waitForCdp(cdpPort: number, timeoutMs: number): Promise<void> {
   throw new Error(`Obsidian CDP did not become ready on :${cdpPort} within ${timeoutMs}ms`);
 }
 
-export default async function globalSetup() {
-  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "void-os-e2e-"));
+// VOS-107 T9: parameterized setup so a second Playwright project can spin up
+// its own isolated daemon + Obsidian with a different per-agent fake script.
+// The default export keeps the legacy (no-arg) call shape for the main
+// project. A sibling `globalSetup-<project>.ts` file imports `setupE2E`
+// and calls it with overrides.
+export interface SetupE2EOpts {
+  /** Override the `VOS_FAKE_SCRIPT_maya` env value (path on disk). */
+  mayaScriptPath?: string;
+  /** Env var name the sidecar state.json path is exposed under. The default
+   *  is `VOS_E2E_STATE` (read by the main specs). A second project should
+   *  use a different name so its state doesn't clobber the shared one. */
+  stateEnvVar?: string;
+  /** Suffix appended to the tmpdir name to ease debugging. */
+  tmpDirSuffix?: string;
+}
+
+export async function setupE2E(opts: SetupE2EOpts = {}) {
+  const stateEnvVar = opts.stateEnvVar ?? "VOS_E2E_STATE";
+  const tmpdirPrefix = `void-os-e2e-${opts.tmpDirSuffix ?? ""}`;
+  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), tmpdirPrefix));
   const daemonVault = path.join(tmpdir, "vault");
   const dbPath = path.join(tmpdir, "state.sqlite");
   const obsidianUserDataDir = path.join(tmpdir, "obsidian-user-data");
@@ -195,7 +213,7 @@ export default async function globalSetup() {
     VOS_PROVIDER: "fake",
     VOS_TITLER: "stub",
     VOS_FAKE_SCRIPT: fakeScriptPath,
-    VOS_FAKE_SCRIPT_maya: ASK_AGENT_MAYA_SCRIPT,
+    VOS_FAKE_SCRIPT_maya: opts.mayaScriptPath ?? ASK_AGENT_MAYA_SCRIPT,
     // VOS-91 T19: journaler script lives on a mutable per-run path so the
     // nested spec can hot-swap a depth-2 fixture in. Default = depth-1
     // (subthread) fixture, copied in above.
@@ -296,5 +314,11 @@ export default async function globalSetup() {
   };
   const statePath = path.join(tmpdir, "state.json");
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-  process.env.VOS_E2E_STATE = statePath;
+  process.env[stateEnvVar] = statePath;
+}
+
+// Default export preserves the original (no-arg) entry shape used by
+// `playwright.config.ts`'s top-level `globalSetup`.
+export default async function globalSetup() {
+  await setupE2E();
 }
