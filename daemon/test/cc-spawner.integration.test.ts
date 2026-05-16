@@ -13,6 +13,7 @@ import {
   createCcSpawner,
   NoSessionError,
 } from "../src/providers/claude-code/index.js";
+import { readTrace } from "../src/trace/reader.js";
 
 const FAKE = resolve(import.meta.dir, "fixtures/fake-claudev");
 
@@ -75,6 +76,53 @@ describe("CC spawner (fake claudev)", () => {
       expect(types).toContain("run.session");
       expect(types).toContain("run.end");
       expect(types.filter((t) => t === "cc.event").length).toBeGreaterThan(0);
+
+      // VOS-84 T19: assert trace envelope shape — turn.start first, turn.end
+      // last. Sourced from the same row the daemon writes (trace_path).
+      const traceRow = db.prepare(
+        "SELECT trace_path FROM runs WHERE id=?",
+      ).get(proc.runId) as { trace_path: string };
+      const { records } = readTrace(traceRow.trace_path);
+      const kinds = records.map((r) => r.kind);
+      expect(kinds[0]).toBe("turn.start");
+      expect(kinds[kinds.length - 1]!).toBe("turn.end");
+    } finally {
+      if (proc) { try { await proc.kill(); } catch { /* already dead */ } }
+      teardown(dir, db);
+    }
+  });
+
+  test("tool-call scenario: trace records tool.call/tool.result pair with matching toolUseId", async () => {
+    const { dir, db, bus, tracesDir, events: _capturedEvents } = setup();
+    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
+    let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
+    try {
+      proc = await spawner.spawn({
+        prompt: "--scenario tool-call",
+        agent: "test",
+        cwd: dir,
+      });
+      const result = await proc.wait();
+      expect(result.exitCode).toBe(0);
+
+      const traceRow = db.prepare(
+        "SELECT trace_path FROM runs WHERE id=?",
+      ).get(proc.runId) as { trace_path: string };
+      const { records } = readTrace(traceRow.trace_path);
+      const kinds = records.map((r) => r.kind);
+      expect(kinds[0]).toBe("turn.start");
+      expect(kinds[kinds.length - 1]!).toBe("turn.end");
+
+      const toolCalls = records.filter((r) => r.kind === "tool.call");
+      const toolResults = records.filter((r) => r.kind === "tool.result");
+      expect(toolCalls.length).toBeGreaterThan(0);
+      expect(toolResults.length).toBeGreaterThan(0);
+      const callIds = new Set(
+        toolCalls.map((r) => (r.payload as { toolUseId: string }).toolUseId),
+      );
+      for (const tr of toolResults) {
+        expect(callIds.has((tr.payload as { toolUseId: string }).toolUseId)).toBe(true);
+      }
     } finally {
       if (proc) { try { await proc.kill(); } catch { /* already dead */ } }
       teardown(dir, db);
