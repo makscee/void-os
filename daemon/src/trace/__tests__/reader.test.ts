@@ -58,3 +58,25 @@ describe("readTrace — partial trailing", () => {
     expect(out.records.length).toBe(1);
   });
 });
+
+describe("readTrace — gap detection", () => {
+  test("seqs [0,1,2,5,6] produces one seq gap {afterSeq:2, missing:2}", () => {
+    const path = join(tmpRoot, "gap.jsonl");
+    const records = [0,1,2,5,6].map(i => ({ seq: i, ts: "x", kind: "cc.event", payload: { i } }));
+    writeFileSync(path, fixture(records));
+    const out = readTrace(path);
+    expect(out.records.length).toBe(5);
+    expect(out.gaps).toEqual([{ afterSeq: 2, missing: 2, reason: "seq" }]);
+  });
+
+  test("seqs [0,3,4,9] produces two seq gaps", () => {
+    const path = join(tmpRoot, "gaps2.jsonl");
+    const records = [0,3,4,9].map(i => ({ seq: i, ts: "x", kind: "cc.event", payload: { i } }));
+    writeFileSync(path, fixture(records));
+    const out = readTrace(path);
+    expect(out.gaps).toEqual([
+      { afterSeq: 0, missing: 2, reason: "seq" },
+      { afterSeq: 4, missing: 4, reason: "seq" },
+    ]);
+  });
+});
