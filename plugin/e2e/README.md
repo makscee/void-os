@@ -5,8 +5,8 @@ End-to-end tests booting real Obsidian + built plugin + isolated void-os daemon.
 ## Prereqs
 
 - macOS (v1 is macOS-headed only)
-- Obsidian installed at `/Applications/Obsidian.app` (VOS-94 will cache a local copy under `.cache/`)
 - bun (this repo's package manager)
+- Internet access on first run (downloads pinned Obsidian binary into `plugin/e2e/.cache/`)
 
 ## Run
 
@@ -124,4 +124,18 @@ To exercise tool calls: emit an assistant event with `content: [{ type: "tool_us
 - **`workers: 1`.** Electron + Obsidian don't tolerate multiple instances on the same `--user-data-dir`. Specs share one Obsidian instance per run.
 - **Spec order matters less than test isolation.** Specs share daemon state across runs. The first to send a message creates DB rows; later specs see them. Each spec should mint its own chat if it needs a clean slate.
 - **Free-port → daemon-listen has a small TOCTOU window.** Acceptable on a dev workstation; revisit before CI.
-- **Shared Obsidian binary** (`/Applications/Obsidian.app`). VOS-94 will replace with a local cached binary.
+- **Local Obsidian binary cache** under `plugin/e2e/.cache/` (see below). The host install is not used.
+
+## Obsidian binary cache
+
+The harness owns its own Obsidian binary under `plugin/e2e/.cache/` (gitignored). `globalSetup.ts` calls `ensureObsidian()` from `plugin/e2e/obsidian-cache.ts`, which downloads the pinned `Obsidian-<VERSION>.dmg` on first run and reuses the extracted `.app` on every subsequent run. The host's `/Applications/Obsidian.app` is never touched.
+
+- **Where:** `plugin/e2e/.cache/Obsidian.app/Contents/MacOS/Obsidian`
+- **Version pin:** `OBSIDIAN_VERSION` const in `plugin/e2e/obsidian-cache.ts`
+- **First run:** one-time download + extract (~30–90s depending on network).
+- **Subsequent runs:** unchanged speed (~5s globalSetup overhead).
+- **How to clear:** `rm -rf plugin/e2e/.cache`. Next `bun run e2e` re-downloads.
+- **How to bump version:** edit `OBSIDIAN_VERSION` in `plugin/e2e/obsidian-cache.ts`. Next run wipes the cached bundle and re-downloads — no manual cleanup.
+- **Concurrency:** two parallel runs serialize via `plugin/e2e/.cache/.download.lock`. SIGKILL or hard reboot during a download is auto-recovered on the next run via a pidfile + mtime stale-lock heuristic.
+- **Platform:** macOS-only. Linux/CI support is a separate follow-up.
+- **Manual smoke test of the cache itself:** `bun run e2e/scripts/test-obsidian-cache.ts` from the `plugin/` directory.
