@@ -83,8 +83,8 @@ Wire-format unchanged — plugin sees identical `chat.token` / `chat.tool_use` /
 
 ## Error handling
 
-- `resolve()` on unknown `toolUseId` → `{ ok: false; reason: 'unknown' }`. HTTP route maps to 404. Preserves today's behavior.
-- `resolve()` when CAS finds Task not in INPUT_REQUIRED (e.g., already resolved, already canceled) → `{ ok: false; reason: 'not_pending' }`. HTTP route maps to 409. Preserves today's atomic-CAS guard.
+- `resolve()` on unknown `toolUseId` → `{ ok: false; reason: 'unknown' }`. HTTP route maps to 409 `no_matching_pending_question` (same as today — today's route returns 409 for any unknown/not-pending case; the bridge surfaces the two cases separately for clearer logging but the HTTP mapping is preserved).
+- `resolve()` when CAS finds Task not in INPUT_REQUIRED (e.g., already resolved, already canceled) → `{ ok: false; reason: 'not_pending' }`. HTTP route maps to 409 `no_matching_pending_question`. Preserves today's atomic-CAS guard.
 - `open()` after `cancel()` fires for the same `toolUseId` → `open()` returns `{ canceled: true }`; the pending entry is removed before `cancel()` returns.
 - Timeout → `{ timeout: true }`; the `ask_user` tool handler maps this to `ASK_USER_TIMEOUT` exactly as today.
 - Double `resolve()` for the same `toolUseId` is idempotent — second call returns `{ ok: false; reason: 'not_pending' }`.
