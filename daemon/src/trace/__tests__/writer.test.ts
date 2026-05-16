@@ -47,4 +47,21 @@ describe("TraceWriter — basic", () => {
       prevTs = r.ts;
     }
   });
+
+  test("fdatasyncSync called once per record", () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("node:fs");
+    const orig = fs.fdatasyncSync;
+    let calls = 0;
+    fs.fdatasyncSync = (fd: number) => { calls++; return orig(fd); };
+    try {
+      const path = join(tmpRoot, "fsync.jsonl");
+      const w = TraceWriter.open(path);
+      for (let i = 0; i < 7; i++) w.write("cc.event", { i });
+      w.close();
+      expect(calls).toBe(7);
+    } finally {
+      fs.fdatasyncSync = orig;
+    }
+  });
 });

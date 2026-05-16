@@ -1,5 +1,10 @@
 // daemon/src/trace/writer.ts
-import { openSync, writeSync, closeSync, fdatasyncSync, statSync, readFileSync } from "node:fs";
+// Use `require` (not `import * as fs`) so test spies that patch
+// `require("node:fs").fdatasyncSync` patch the same binding the
+// implementation calls. Bun's ESM namespace is sealed; CommonJS
+// require returns a mutable object shared across require() callers.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const fs = require("node:fs") as typeof import("node:fs");
 import type { TraceKind } from "./types";
 import { TraceAlreadyOpenError } from "./types";
 
@@ -27,7 +32,7 @@ export class TraceWriter {
     if (openWriters.has(path)) {
       throw new TraceAlreadyOpenError(path);
     }
-    const fd = openSync(path, "a");
+    const fd = fs.openSync(path, "a");
     const initialSeq = TraceWriter.computeInitialSeq(path);
     const fsync = opts?.fsync ?? true;
     const w = new TraceWriter(path, fd, initialSeq, fsync);
@@ -48,8 +53,8 @@ export class TraceWriter {
     if (this.fd === null) throw new Error("TraceWriter: write after close");
     const seq = this._seq;
     const line = JSON.stringify({ seq, ts: new Date().toISOString(), kind, payload }) + "\n";
-    writeSync(this.fd, line);
-    if (this.fsync) fdatasyncSync(this.fd);
+    fs.writeSync(this.fd, line);
+    if (this.fsync) fs.fdatasyncSync(this.fd);
     this._seq = seq + 1;
     return seq;
   }
@@ -57,7 +62,7 @@ export class TraceWriter {
   close(): void {
     if (this.fd === null) return;
     try {
-      closeSync(this.fd);
+      fs.closeSync(this.fd);
     } catch { /* swallow — fd may already be closed */ }
     this.fd = null;
     openWriters.delete(this.path);
