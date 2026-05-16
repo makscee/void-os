@@ -94,7 +94,9 @@ async function callAskAgentOverMcp(args: {
 }): Promise<unknown> {
   const client = new Client({ name: "vos91-t19-spec", version: "0.0.0" });
   const transport = new StreamableHTTPClientTransport(
-    new URL(`http://127.0.0.1:${args.port}/mcp`),
+    // VOS-106 T8: /mcp requires ?agent=<name> for calling-agent identity.
+    // The caller here is maya (parent dispatching ask_agent to a child).
+    new URL(`http://127.0.0.1:${args.port}/mcp?agent=maya`),
   );
   await client.connect(transport);
   try {
