@@ -737,6 +737,31 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
             errorNotice: { kind: classifyError(f.error), runId },
           };
         }
+        case "chat.child_task_started": {
+          const cid = f.child_task_id;
+          if (state.childTasks[cid]) return state; // idempotent on reconnect
+          const stream: ChildTaskStream = {
+            taskId: cid,
+            runId: `child-${cid}`,
+            parentToolCallId: f.parent_tool_call_id,
+            parentTaskId: f.parent_task_id,
+            agent: f.agent,
+            state: "WORKING",
+            error: null,
+            liveTokens: "",
+            liveToolEvents: [],
+            messages: [],
+            manualToggle: "auto",
+          };
+          return {
+            ...state,
+            childTasks: { ...state.childTasks, [cid]: stream },
+            toolCallToChild: {
+              ...state.toolCallToChild,
+              [stream.parentToolCallId]: cid,
+            },
+          };
+        }
         default:
           return state;
       }
