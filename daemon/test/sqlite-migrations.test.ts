@@ -99,6 +99,35 @@ describe("sqlite migrations", () => {
     }
   });
 
+  test("0012 adds task_id + provider columns and idx_costs_task to costs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "void-os-sqlite-"));
+    const dbPath = join(dir, "state.sqlite");
+    try {
+      const db = openDatabase(dbPath);
+
+      const cols = db
+        .prepare("PRAGMA table_info(costs)")
+        .all() as Array<{ name: string; notnull: number; dflt_value: string | null }>;
+      const byName = Object.fromEntries(cols.map((c) => [c.name, c]));
+      expect(byName.task_id).toBeDefined();
+      expect(byName.task_id!.notnull).toBe(0);
+      expect(byName.provider).toBeDefined();
+      expect(byName.provider!.notnull).toBe(1);
+      expect(byName.provider!.dflt_value).toBe("'claude-code'");
+
+      const idx = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='costs'",
+        )
+        .all() as Array<{ name: string }>;
+      expect(idx.map((r) => r.name)).toContain("idx_costs_task");
+
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("re-opening the database does not re-apply migrations", () => {
     const dir = mkdtempSync(join(tmpdir(), "void-os-sqlite-"));
     const dbPath = join(dir, "state.sqlite");

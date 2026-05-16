@@ -5,9 +5,10 @@ import type { Database } from "bun:sqlite";
 import { mkdirSync, createWriteStream } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { EventBus } from "../../events/index.js";
+import type { EventBus, UsageTurn } from "../../events/index.js";
 import { createStreamParser } from "./parser.js";
 import { createWatchdog } from "./watchdog.js";
+import { parseUsageFromAssistantEvent } from "./usage-extract.js";
 
 export interface CcSpawnRequest {
   prompt: string;
@@ -170,6 +171,13 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       const tracePath = join(deps.tracesDir, `${runId}.jsonl`);
       const traceStream = createWriteStream(tracePath, { flags: "a" });
 
+      // VOS-87 T4: accumulate per-turn usage from CC `assistant` events.
+      // Consumed at finalize and emitted on `run.end` so the cost subscriber
+      // (cost/index.ts) can record per-turn rows. Pre-VOS-87 the spawner
+      // never extracted usage and the subscriber always hit the
+      // `cost.missing_usage` warn branch — silent prod bug (VOS-81).
+      const usageTurns: UsageTurn[] = [];
+
       // Insert runs row up-front so 'running' is visible.
       deps.db.prepare(
         "INSERT INTO runs (id, chat_id, agent, kind, status, started_at, trace_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -211,6 +219,12 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       const parser = createStreamParser({
         onEvent: (event) => {
           traceStream.write(JSON.stringify(event) + "\n");
+          // VOS-87 T4: extract per-turn usage from `assistant` events
+          // before the bus fan-out. Pure helper returns null when no
+          // usage block is present (e.g. tool_use-only partials), so
+          // the array only grows for accountable turns.
+          const turn = parseUsageFromAssistantEvent(event);
+          if (turn) usageTurns.push(turn);
           deps.bus.emit({
             type: "cc.event",
             runId,
@@ -334,11 +348,33 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         deps.db.prepare(
           "UPDATE runs SET status=?, ended_at=?, exit_code=?, kill_reason=? WHERE id=?",
         ).run(status, ended, exitCode, killReason, runId);
+        // VOS-87 T4: resolve task_id off the runs row (may be null for
+        // chats without a parent task — orchestrator sets it during
+        // dispatch). Carried on run.end so cost subscriber can stamp
+        // costs.task_id per row.
+        const taskRow = deps.db
+          .prepare("SELECT task_id FROM runs WHERE id = ?")
+          .get(runId) as { task_id: string | null } | undefined;
+        const taskId = taskRow?.task_id ?? null;
+        // VOS-87 T4: full RunEndPayload (agent, endedAt, usageTurns,
+        // taskId) per events/index.ts. Legacy fields (exitCode,
+        // durationMs, reason) kept additively so existing consumers
+        // (status flips, e2e tests) keep working — additive payload
+        // extension was chosen over a separate `run.usage` event to
+        // avoid event-fan churn.
         deps.bus.emit({
           type: "run.end",
           runId,
           chatId: req.chatId,
-          payload: { exitCode, durationMs: ended - started, reason },
+          payload: {
+            agent: req.agent,
+            endedAt: ended,
+            usageTurns,
+            taskId,
+            exitCode,
+            durationMs: ended - started,
+            reason,
+          },
         });
         if (sessionId === undefined && rejectSid) {
           rejectSid(new NoSessionError(runId));

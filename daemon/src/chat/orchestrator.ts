@@ -755,11 +755,19 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 : String(taskFlipErr),
           });
         }
+        // VOS-87 T4: stamp task_id on the WebSocket envelope so UI
+        // clients can scope cost rollups to the right task without a
+        // second round-trip. The cost subscriber lives on the bus and
+        // is fed by the cc-spawner's run.end (full RunEndPayload); this
+        // emit is the WebSocket fan-out only and keeps its existing
+        // snake_case envelope shape. Additive — existing consumers
+        // ignore the new field.
         emit("run.end", {
           chat_id: chatId,
           run_id: runId,
           status,
           error: errorMessage,
+          task_id: taskId,
         });
         // Drop cancel-request flag — run is terminal, no further bail needed.
         cancelRequested.delete(runId);
