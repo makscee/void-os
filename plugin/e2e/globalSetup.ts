@@ -194,7 +194,7 @@ export default async function globalSetup() {
   }
 
   // VOS-89 T16: seed agent_cards for maya + journaler. Production code
-  // does NOT (yet) populate agent_cards from the vault scan — runAskAgent's
+  // does NOT (yet) populate agent_cards from the vault scan — the ask_agent handler's
   // existence check (SELECT 1 FROM agent_cards WHERE agent_name = ?) would
   // otherwise reject the call. This seeding step mirrors what
   // bootInProcessDaemon does in daemon/test/helpers/boot-daemon.ts. We use

@@ -12,7 +12,7 @@
 //
 // The real production wire is: claude-code subprocess emits a tool_use
 // frame; the CC client invokes the MCP server's `ask_agent` tool over
-// Streamable HTTP; runAskAgent mints the child + parks the parent. The
+// Streamable HTTP; the ask_agent handler mints the child + parks the parent. The
 // fake provider in this harness does NOT call back into the MCP server —
 // it just emits canned events. So the test plays the LLM-runtime role:
 // it watches `chat.tool_use` events on the bus, and when it sees an
@@ -76,7 +76,11 @@ function bindToPort(app: Hono): { stop: () => void; port: number } {
 }
 
 describe("ask_agent integration (maya -> journaler via fake providers)", () => {
-  test("happy path: child completes, parent resumes, both COMPLETED", async () => {
+  // VOS-97 T6: ids now travel on `params._meta` (per ADR-0002 §"Caller-side
+  // _meta injection"). The MCP SDK Client.callTool forwards the full params
+  // shape into the JSON-RPC envelope; the SDK server-side transport parses
+  // it out into RequestHandlerExtra._meta. The hono bridge is a byte pipe.
+  test("happy path child completes, parent resumes", async () => {
     // ── 1. Per-agent fake-provider scripts ────────────────────────────
     // maya emits a system handshake (so session_id is captured) + an
     // assistant turn carrying both narrative text AND a tool_use block
@@ -154,7 +158,7 @@ describe("ask_agent integration (maya -> journaler via fake providers)", () => {
     // Production: the CC subprocess sees its own tool_use stream and
     // invokes MCP. Here, the test plays that role: when the orchestrator
     // emits chat.tool_use{name:"ask_agent"} we issue the real MCP call
-    // (which lands in runAskAgent, mints the child, parks the parent,
+    // (which lands in the ask_agent handler, mints the child, parks the parent,
     // dispatches journaler via dispatchChildTask, and resolves on child
     // terminal). We track the call promise so we can await its resolution
     // and assert it returned the journaler's text.
@@ -292,10 +296,12 @@ async function callAskAgentOverMcp(args: {
     return await client.callTool({
       name: "ask_agent",
       arguments: {
-        task_id: args.taskId,
-        context_id: args.contextId,
         target_agent_id: args.targetAgentId,
         message: args.message,
+      },
+      _meta: {
+        task_id: args.taskId,
+        context_id: args.contextId,
       },
     });
   } finally {

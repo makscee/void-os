@@ -97,7 +97,7 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
   const vaultRoot = mkdtempSync(join(tmpdir(), "vos89-t15-boot-"));
   mkdirSync(join(vaultRoot, "agents"), { recursive: true });
 
-  // Seed agent_cards rows so runAskAgent's existence check passes. No
+  // Seed agent_cards rows so the ask_agent handler's existence check passes. No
   // per-agent allowlist is set unless the caller injects one — the
   // permission gate treats absent `ask_agent_allow` as permissive.
   const agentNames = Object.keys(opts.agentScripts);

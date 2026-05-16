@@ -26,7 +26,7 @@
 //     then resolves the open task via `openTaskFor`. This keeps the route
 //     idempotent w.r.t. the renamed schema.
 //   - Bus emit envelope uses `DaemonEvent` shape (`type` + `payload`) —
-//     mirrors the existing `runAskUser` handler emit pattern. No `as any`.
+//     mirrors the existing ask_user handler emit pattern. No `as any`.
 //   - VOS-90 T8: the WS broadcast is an OPTIONAL dep so existing test fixtures
 //     that only pass `bus` keep compiling. When wired in production (app.ts),
 //     the `emit` callable is the same `broadcast()` shim used by orchestrator.

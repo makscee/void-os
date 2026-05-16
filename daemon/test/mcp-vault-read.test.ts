@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { Database } from "bun:sqlite";
-import { handleVaultRead, vaultReadDef } from "../src/adapters/mcp/tools/vault-read.ts";
+import { makeVaultRead, vaultReadDef } from "../src/adapters/mcp/tools/vault-read.ts";
 
 // Mirrors daemon/src/adapters/sqlite/migrations/0001_init.sql
 const SCHEMA = `
@@ -27,30 +27,39 @@ function mkVault(): Ctx {
   };
 }
 
+function fakeExtra() {
+  return { _meta: {} } as any;
+}
+
 describe("vault.read tool", () => {
   let ctx: Ctx;
   beforeEach(() => { ctx = mkVault(); });
 
   test("definition shape", () => {
-    expect(vaultReadDef.name).toBe("vault.read");
-    expect(vaultReadDef.inputSchema.required).toEqual(["path"]);
+    // VOS-97: vaultReadDef now exposes a Zod raw shape; no JSON Schema literal.
+    expect(vaultReadDef.inputSchema).toBeDefined();
+    const shape = vaultReadDef.inputSchema as Record<string, { _def?: unknown }>;
+    expect(shape.path?._def).toBeDefined();
   });
 
   test("returns content + sha for an existing file", async () => {
     fs.mkdirSync(path.join(ctx.vaultRoot, "notes"));
     fs.writeFileSync(path.join(ctx.vaultRoot, "notes", "x.md"), "hello world");
-    const out = await handleVaultRead({ path: "notes/x.md" }, { vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const out = await handler({ path: "notes/x.md" }, fakeExtra());
     expect(out.isError).toBeFalsy();
-    expect(out.content[0]).toMatchObject({ type: "text", text: "hello world" });
-    expect(out.structuredContent!.path).toBe("notes/x.md");
-    expect(out.structuredContent!.sha).toMatch(/^[a-f0-9]{64}$/);
-    expect(out.structuredContent!.bytes).toBe(11);
+    expect((out.content[0] as { type: string; text: string })).toMatchObject({ type: "text", text: "hello world" });
+    const sc = out.structuredContent as { path: string; sha: string; bytes: number };
+    expect(sc.path).toBe("notes/x.md");
+    expect(sc.sha).toMatch(/^[a-f0-9]{64}$/);
+    expect(sc.bytes).toBe(11);
     // VOS-83: events persistence removed; vault.read no longer records rows.
     ctx.cleanup();
   });
 
   test("rejects path that escapes the vault root", async () => {
-    const out = await handleVaultRead({ path: "../etc/passwd" }, { vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const out = await handler({ path: "../etc/passwd" }, fakeExtra());
     expect(out.isError).toBe(true);
     expect((out.content[0] as { text: string }).text).toContain("PATH_ESCAPES_VAULT_ROOT");
     // VOS-83: events persistence removed; error path no longer records rows.
@@ -58,14 +67,16 @@ describe("vault.read tool", () => {
   });
 
   test("rejects absolute path with PATH_MUST_BE_RELATIVE", async () => {
-    const out = await handleVaultRead({ path: "/etc/passwd" }, { vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const out = await handler({ path: "/etc/passwd" }, fakeExtra());
     expect(out.isError).toBe(true);
     expect((out.content[0] as { text: string }).text).toContain("PATH_MUST_BE_RELATIVE");
     ctx.cleanup();
   });
 
   test("missing file → ENOENT", async () => {
-    const out = await handleVaultRead({ path: "missing.md" }, { vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const out = await handler({ path: "missing.md" }, fakeExtra());
     expect(out.isError).toBe(true);
     expect((out.content[0] as { text: string }).text).toContain("ENOENT");
     ctx.cleanup();
@@ -73,7 +84,8 @@ describe("vault.read tool", () => {
 
   test("directory → NOT_A_FILE", async () => {
     fs.mkdirSync(path.join(ctx.vaultRoot, "a-dir"));
-    const out = await handleVaultRead({ path: "a-dir" }, { vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const handler = makeVaultRead({ vaultRoot: ctx.vaultRoot, db: ctx.db });
+    const out = await handler({ path: "a-dir" }, fakeExtra());
     expect(out.isError).toBe(true);
     expect((out.content[0] as { text: string }).text).toContain("NOT_A_FILE");
     ctx.cleanup();

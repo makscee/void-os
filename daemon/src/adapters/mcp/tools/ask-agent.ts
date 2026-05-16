@@ -1,41 +1,42 @@
-// VOS-95: collapsed ask_agent MCP tool.
+// VOS-97 T4: ask_agent MCP tool — factory + Zod input shape + ids from _meta.
 //
-// Everything for ask_agent lives here: tool schema, error type + MCP error
-// translator, depth probe, mint+flip transaction, bus-await helper, terminal
-// translator, runAskAgent handler. Previously split into six siblings
-// (-def, -errors, -depth, -mint, -wait, -result) — re-extract if a second
-// production consumer appears for any of those concerns.
+// Replaces the prior ASK_AGENT_TOOL_DEF (JSON Schema literal) + runAskAgent(ctx, args)
+// surface. Runtime ids (task_id, context_id) now arrive via MCP `params._meta`
+// per ADR-0002; the input schema carries only domain args.
+//
+// Module-local helpers (mintChildAndFlipParent, waitForChildTerminal,
+// translateChildResult, askAgentChainDepth, MAX_ASK_AGENT_DEPTH) are unchanged
+// from VOS-95; only the public surface (tool def + handler) was rewritten.
 
+// VOS-97 T5 fix: import zod from the v3 subpath — see vault-read.ts header
+// for the rationale (SDK uses zod@3 internally; project ships zod@4).
+import { z } from "zod/v3";
 import type { Database } from "bun:sqlite";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { EventBus, DaemonEvent } from "../../../events";
 import type { AgentDefn } from "../../../permissions/engine";
 
 // -----------------------------------------------------------------------------
-// Tool schema (was ask-agent-def.ts).
+// Tool def (Zod raw shape).
 // -----------------------------------------------------------------------------
 
-export const ASK_AGENT_TOOL_DEF = {
-  name: "ask_agent",
+export const askAgentInput = {
+  target_agent_id: z.string().min(1),
+  message: z.string().min(1),
+  system_message: z.string().optional(),
+} satisfies z.ZodRawShape;
+
+export const askAgentDef = {
   description:
     "Ask another agent (in the same Context). The daemon mints a child A2A Task; " +
     "this call suspends until the child reaches a terminal state and returns its " +
     "final assistant text.",
-  inputSchema: {
-    type: "object" as const,
-    properties: {
-      target_agent_id: { type: "string", minLength: 1 },
-      message: { type: "string", minLength: 1 },
-      system_message: { type: "string" },
-      // Caller-injected per ask_user precedent: stateless MCP transport.
-      task_id: { type: "string", minLength: 1 },
-      context_id: { type: "string", minLength: 1 },
-    },
-    required: ["target_agent_id", "message"],
-  },
+  inputSchema: askAgentInput,
 };
 
 // -----------------------------------------------------------------------------
-// Errors (was ask-agent-errors.ts).
+// Errors.
 // -----------------------------------------------------------------------------
 
 export class AskAgentError extends Error {
@@ -58,8 +59,12 @@ function toMcpError(err: unknown): McpErrorResult {
   return { isError: true, content: [{ type: "text", text }] };
 }
 
+function errResult(text: string): CallToolResult {
+  return { isError: true, content: [{ type: "text", text }] };
+}
+
 // -----------------------------------------------------------------------------
-// Depth probe (was ask-agent-depth.ts).
+// Depth probe.
 // -----------------------------------------------------------------------------
 
 const MAX_ASK_AGENT_DEPTH = 5;
@@ -82,7 +87,7 @@ function askAgentChainDepth(db: Database, taskId: string): number {
 }
 
 // -----------------------------------------------------------------------------
-// Mint + flip (was ask-agent-mint.ts).
+// Mint + flip.
 // -----------------------------------------------------------------------------
 
 interface MintArgs {
@@ -121,7 +126,7 @@ function mintChildAndFlipParent(db: Database, a: MintArgs): void {
 }
 
 // -----------------------------------------------------------------------------
-// Bus-await helper (was ask-agent-wait.ts).
+// Bus-await helper.
 // -----------------------------------------------------------------------------
 
 type TerminalState =
@@ -171,7 +176,7 @@ function waitForChildTerminal(args: {
 }
 
 // -----------------------------------------------------------------------------
-// Terminal translator (was ask-agent-result.ts).
+// Terminal translator.
 // -----------------------------------------------------------------------------
 
 export interface ToolResult {
@@ -224,14 +229,12 @@ function translateChildResult(
 }
 
 // -----------------------------------------------------------------------------
-// Handler.
+// Factory + handler.
 // -----------------------------------------------------------------------------
 
-export interface AskAgentCtx {
+export interface AskAgentDeps {
   db: Database;
   bus: EventBus;
-  taskId: string;
-  contextId: string;
   /** Resolve an AgentDefn by agent name. Throws if the name is unknown. */
   loadAgentDefn: (agentName: string) => AgentDefn;
   /** Dispatch the freshly-minted child onto the runner thread. */
@@ -242,106 +245,109 @@ export interface AskAgentCtx {
   now: () => number;
 }
 
-export interface AskAgentArgs {
-  target_agent_id: string;
-  message: string;
-  system_message?: string;
-}
+export function makeAskAgent(deps: AskAgentDeps) {
+  return async (
+    args: z.objectOutputType<typeof askAgentInput, z.ZodTypeAny>,
+    extra: RequestHandlerExtra<any, any>,
+  ): Promise<CallToolResult> => {
+    const meta = (extra._meta ?? {}) as Record<string, unknown>;
+    const taskId = typeof meta.task_id === "string" ? meta.task_id : undefined;
+    if (!taskId) return errResult("ASK_AGENT_MISSING_TASK_ID");
+    const contextId =
+      typeof meta.context_id === "string" ? meta.context_id : taskId;
 
-export async function runAskAgent(
-  ctx: AskAgentCtx,
-  args: AskAgentArgs,
-): Promise<ToolResult | McpErrorResult> {
-  try {
-    // 1. Existence — agent_cards lookup (migration 0007).
-    const exists = ctx.db
-      .query("SELECT 1 AS one FROM agent_cards WHERE agent_name = ?")
-      .get(args.target_agent_id);
-    if (!exists) {
-      throw new AskAgentError(`unknown agent: ${args.target_agent_id}`);
+    try {
+      // 1. Existence — agent_cards lookup (migration 0007).
+      const exists = deps.db
+        .query("SELECT 1 AS one FROM agent_cards WHERE agent_name = ?")
+        .get(args.target_agent_id);
+      if (!exists) {
+        throw new AskAgentError(`unknown agent: ${args.target_agent_id}`);
+      }
+
+      // 2. Caller identity. tasks has no agent_name column; the caller agent is
+      // the context's agent_name.
+      const callerRow = deps.db
+        .query(
+          `SELECT c.agent_name AS agent_name
+             FROM tasks t
+             JOIN contexts c ON t.context_id = c.id
+            WHERE t.id = ?`,
+        )
+        .get(taskId) as { agent_name: string } | undefined;
+      if (!callerRow) {
+        throw new AskAgentError("caller task missing");
+      }
+      const caller = deps.loadAgentDefn(callerRow.agent_name);
+
+      // 3. Permission — empty/undefined ask_agent_allow is permissive at the
+      // agent level; an explicit array is an allowlist.
+      if (
+        caller.ask_agent_allow !== undefined &&
+        !caller.ask_agent_allow.includes(args.target_agent_id)
+      ) {
+        throw new AskAgentError("permission denied");
+      }
+
+      // 4. Depth guard. About-to-mint child lives one level deeper, so reject
+      // when current depth >= MAX_ASK_AGENT_DEPTH - 1.
+      if (askAgentChainDepth(deps.db, taskId) >= MAX_ASK_AGENT_DEPTH - 1) {
+        throw new AskAgentError("ask_agent depth limit exceeded");
+      }
+
+      // 5. Allocate child task id.
+      const childTaskId = crypto.randomUUID();
+
+      // 6. Subscribe BEFORE mint so any state-changed emit fired between mint
+      // commit and await is captured.
+      const waitP = waitForChildTerminal({
+        db: deps.db,
+        bus: deps.bus,
+        childTaskId,
+      });
+
+      // 7. Mint child + flip parent in single tx. Parent not WORKING -> rollback,
+      // no child row remains.
+      mintChildAndFlipParent(deps.db, {
+        childId: childTaskId,
+        parentId: taskId,
+        contextId,
+        targetAgent: args.target_agent_id,
+      });
+
+      // VOS-89 Finding 4: emit parent's WORKING -> WAITING_ON_AGENT flip. The
+      // mint runs in a sibling tx without bus access, so emission lives here.
+      deps.bus.emit({
+        type: "task.state_changed",
+        chatId: contextId,
+        payload: {
+          taskId,
+          state: "TASK_STATE_WAITING_ON_AGENT",
+        },
+      });
+
+      // 8. Dispatch child task.
+      await deps.dispatchChildTask(childTaskId, {
+        agentName: args.target_agent_id,
+        message: args.message,
+        systemMessage: args.system_message,
+      });
+
+      // 9/10. Await child terminal with post-dispatch DB recheck to close the
+      // "dispatcher flipped state without emitting" window.
+      const postRow = deps.db
+        .query("SELECT state FROM tasks WHERE id = ?")
+        .get(childTaskId) as { state: string } | undefined;
+      const state =
+        postRow && TERMINALS.has(postRow.state)
+          ? (postRow.state as TerminalState)
+          : await waitP;
+
+      // 11. Translate terminal -> tool result (or throw -> mcp error).
+      const result = translateChildResult(deps.db, childTaskId, state);
+      return result as CallToolResult;
+    } catch (e) {
+      return toMcpError(e);
     }
-
-    // 2. Caller identity. tasks has no agent_name column; the caller agent is
-    // the context's agent_name.
-    const callerRow = ctx.db
-      .query(
-        `SELECT c.agent_name AS agent_name
-           FROM tasks t
-           JOIN contexts c ON t.context_id = c.id
-          WHERE t.id = ?`,
-      )
-      .get(ctx.taskId) as { agent_name: string } | undefined;
-    if (!callerRow) {
-      throw new AskAgentError("caller task missing");
-    }
-    const caller = ctx.loadAgentDefn(callerRow.agent_name);
-
-    // 3. Permission — empty/undefined ask_agent_allow is permissive at the
-    // agent level; an explicit array is an allowlist.
-    if (
-      caller.ask_agent_allow !== undefined &&
-      !caller.ask_agent_allow.includes(args.target_agent_id)
-    ) {
-      throw new AskAgentError("permission denied");
-    }
-
-    // 4. Depth guard. About-to-mint child lives one level deeper, so reject
-    // when current depth >= MAX_ASK_AGENT_DEPTH - 1.
-    if (askAgentChainDepth(ctx.db, ctx.taskId) >= MAX_ASK_AGENT_DEPTH - 1) {
-      throw new AskAgentError("ask_agent depth limit exceeded");
-    }
-
-    // 5. Allocate child task id.
-    const childTaskId = crypto.randomUUID();
-
-    // 6. Subscribe BEFORE mint so any state-changed emit fired between mint
-    // commit and await is captured.
-    const waitP = waitForChildTerminal({
-      db: ctx.db,
-      bus: ctx.bus,
-      childTaskId,
-    });
-
-    // 7. Mint child + flip parent in single tx. Parent not WORKING -> rollback,
-    // no child row remains.
-    mintChildAndFlipParent(ctx.db, {
-      childId: childTaskId,
-      parentId: ctx.taskId,
-      contextId: ctx.contextId,
-      targetAgent: args.target_agent_id,
-    });
-
-    // VOS-89 Finding 4: emit parent's WORKING -> WAITING_ON_AGENT flip. The
-    // mint runs in a sibling tx without bus access, so emission lives here.
-    ctx.bus.emit({
-      type: "task.state_changed",
-      chatId: ctx.contextId,
-      payload: {
-        taskId: ctx.taskId,
-        state: "TASK_STATE_WAITING_ON_AGENT",
-      },
-    });
-
-    // 8. Dispatch child task.
-    await ctx.dispatchChildTask(childTaskId, {
-      agentName: args.target_agent_id,
-      message: args.message,
-      systemMessage: args.system_message,
-    });
-
-    // 9/10. Await child terminal with post-dispatch DB recheck to close the
-    // "dispatcher flipped state without emitting" window.
-    const postRow = ctx.db
-      .query("SELECT state FROM tasks WHERE id = ?")
-      .get(childTaskId) as { state: string } | undefined;
-    const state =
-      postRow && TERMINALS.has(postRow.state)
-        ? (postRow.state as TerminalState)
-        : await waitP;
-
-    // 11. Translate terminal -> tool result (or throw -> mcp error).
-    return translateChildResult(ctx.db, childTaskId, state);
-  } catch (e) {
-    return toMcpError(e);
-  }
+  };
 }

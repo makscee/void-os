@@ -122,11 +122,14 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
             arguments: {
               question,
               ...(options ? { options } : {}),
+            },
+            // VOS-97 T6: ids + tool-use correlation hint move from
+            // arguments → params._meta (per ADR-0002). Daemon-side handlers
+            // read them from RequestHandlerExtra._meta.
+            _meta: {
               task_id: taskId,
               context_id: contextId,
               ...(runId ? { run_id: runId } : {}),
-              // Hand the daemon the same tool_use id we already emitted on
-              // the assistant stream so /chat/:id/answer can correlate.
               _vos_tool_use_id: toolUseId,
             },
           },

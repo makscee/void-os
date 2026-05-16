@@ -15,7 +15,7 @@
 //      MCP server's `ask_agent` tool over Streamable HTTP — playing the
 //      role that a real claude-code subprocess would play (the fake
 //      provider does NOT loop back into MCP itself).
-//   4. Daemon MCP runAskAgent: mints child task + flips parent to
+//   4. Daemon MCP ask_agent handler: mints child task + flips parent to
 //      WAITING_ON_AGENT, then dispatches journaler via the production
 //      makeDispatchChildTask. Journaler's fake provider drains
 //      journaler.jsonl ("A"), child flips COMPLETED, parent resumes via

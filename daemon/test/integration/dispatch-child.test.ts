@@ -77,7 +77,11 @@ afterEach(async () => {
 });
 
 describe("VOS-89 T15.5: production buildApp wires dispatchChildTask", () => {
-  test("ask_agent against production buildApp runs child via fake provider and translates result", async () => {
+  // VOS-97 T6: ids now travel on `params._meta` (per ADR-0002 §"Caller-side
+  // _meta injection"). The MCP SDK Client.callTool forwards `_meta` through
+  // the JSON-RPC envelope; the SDK server-side transport surfaces it via
+  // RequestHandlerExtra._meta. The hono bridge is a byte pipe.
+  test("ask_agent runs child via fake provider", async () => {
     // ── 1. Per-agent fake-provider scripts ────────────────────────────
     const tmp = mkdtempSync(join(tmpdir(), "vos89-t15-5-"));
     const journScript = join(tmp, "journaler.jsonl");
@@ -108,7 +112,7 @@ describe("VOS-89 T15.5: production buildApp wires dispatchChildTask", () => {
     db.exec("PRAGMA foreign_keys = ON");
     runMigrationsFromDir(db, MIGRATIONS_DIR);
 
-    // Seed agent_cards (existence check in runAskAgent step 1).
+    // Seed agent_cards (existence check in the ask_agent handler step 1).
     db.run(
       "INSERT INTO agent_cards (agent_name, card_json, source_mtime) VALUES (?, ?, 0)",
       ["maya", JSON.stringify({ name: "maya" })],
@@ -162,10 +166,12 @@ describe("VOS-89 T15.5: production buildApp wires dispatchChildTask", () => {
     const callP = mcpClient.callTool({
       name: "ask_agent",
       arguments: {
-        task_id: parentTaskId,
-        context_id: contextId,
         target_agent_id: "journaler",
         message: "summarise please",
+      },
+      _meta: {
+        task_id: parentTaskId,
+        context_id: contextId,
       },
     });
     const result = (await callP) as {
