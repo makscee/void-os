@@ -140,3 +140,10 @@ The migration depends on being able to set `params._meta` on outbound MCP tool c
 **Reversibility:**
 
 - Reversible by re-introducing a custom `setRequestHandler(CallToolRequestSchema, ...)` ladder around `mcp.server`. The Zod schemas survive a reversal — they are independently useful as input validators. Not anticipated.
+
+## Spike outcome (2026-05-16)
+
+`_meta` injection on CC subprocess MCP client: **CONFIRMED**.
+- Evidence: `daemon/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.d.ts:1109` — `callTool(params: CallToolRequest['params'], ...)` accepts the full `CallToolRequest['params']` shape. `CallToolRequestSchema` (`dist/esm/types.d.ts:29732`, extended at `:29788`) defines `params` as a passthrough Zod object that includes `_meta: z.ZodOptional<...>` alongside `name` and `arguments`. A caller can pass `client.callTool({ name, arguments, _meta: { task_id, context_id, run_id, _vos_tool_use_id } })` and the SDK forwards `_meta` on the JSON-RPC envelope unchanged.
+- Note: the void-os daemon does not itself construct a `Client` toward CC; CC spawns its own MCP client subprocess and talks to the daemon's `McpServer` over the streamable-HTTP transport via `hono-bridge`. The spike therefore relies on the SDK type surface as the contract. The hono bridge must forward `params._meta` on inbound HTTP requests unchanged (Task 6 verifies/fixes this).
+- Path forward: runtime ids in `_meta` per the primary plan; Tasks 2–7 proceed as written with no fallback to ids-in-input-schema.
