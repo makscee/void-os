@@ -194,3 +194,26 @@ test("list returns cost_usd as lifetime SUM(costs.cost_usd) per chat", () => {
   expect(byId[a.id].cost_usd).toBeCloseTo(0.42, 5);
   expect(byId[b.id].cost_usd).toBeCloseTo(1.50, 5);
 });
+
+test("list returns input_required=false when no tasks in INPUT_REQUIRED state", () => {
+  const repo = makeChatRepo(freshDb());
+  repo.create({ agent: "maya" });
+  const rows = repo.list();
+  expect(rows[0].input_required).toBe(false);
+});
+
+test("list returns input_required=true when any task in chat is INPUT_REQUIRED", () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  // `create` mints a task in TASK_STATE_WORKING — flip it.
+  setTaskState(db, c.task_id, "TASK_STATE_INPUT_REQUIRED");
+  const rows = repo.list();
+  const row = rows.find((r) => r.id === c.id)!;
+  expect(row.input_required).toBe(true);
+
+  // Flip back → flag clears.
+  setTaskState(db, c.task_id, "TASK_STATE_WORKING");
+  const rows2 = repo.list();
+  expect(rows2.find((r) => r.id === c.id)!.input_required).toBe(false);
+});
