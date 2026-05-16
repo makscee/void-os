@@ -505,3 +505,50 @@ describe("chatReducer — refetched rebuilds childTasks (T15)", () => {
     expect(s.childTasks["t-child"].manualToggle).toBe("collapsed");
   });
 });
+
+// ── T16: child_toggle reducer action ─────────────────────────────────────────
+
+describe("child_toggle action", () => {
+  function seedChild(chatId = "ctx-1", childId = "t-child") {
+    let s = initialChatState(chatId);
+    s = chatReducer(s, {
+      kind: "frame",
+      frame: {
+        type: "chat.child_task_started",
+        chat_id: chatId,
+        parent_task_id: "t-parent",
+        parent_tool_call_id: "tc-1",
+        child_task_id: childId,
+        agent: "journaler",
+      } as any,
+    });
+    return s;
+  }
+
+  it("child_toggle updates manualToggle from auto → collapsed", () => {
+    let s = seedChild();
+    expect(s.childTasks["t-child"].manualToggle).toBe("auto");
+    s = chatReducer(s, { kind: "child_toggle", childTaskId: "t-child", next: "collapsed" });
+    expect(s.childTasks["t-child"].manualToggle).toBe("collapsed");
+  });
+
+  it("child_toggle updates manualToggle from collapsed → expanded", () => {
+    let s = seedChild();
+    s = chatReducer(s, { kind: "child_toggle", childTaskId: "t-child", next: "collapsed" });
+    s = chatReducer(s, { kind: "child_toggle", childTaskId: "t-child", next: "expanded" });
+    expect(s.childTasks["t-child"].manualToggle).toBe("expanded");
+  });
+
+  it("child_toggle is a no-op when childTaskId is unknown", () => {
+    const s = seedChild();
+    const after = chatReducer(s, { kind: "child_toggle", childTaskId: "no-such-id", next: "expanded" });
+    expect(after).toBe(s); // referential no-op
+  });
+
+  it("child_toggle is a no-op when toggle already matches", () => {
+    let s = seedChild();
+    s = chatReducer(s, { kind: "child_toggle", childTaskId: "t-child", next: "collapsed" });
+    const after = chatReducer(s, { kind: "child_toggle", childTaskId: "t-child", next: "collapsed" });
+    expect(after).toBe(s); // referential no-op
+  });
+});

@@ -20,7 +20,7 @@
 // per-chat local queue. On run.end (any status) we pop + POST. ESC fires
 // POST /chat/:id/cancel (no-op on 409).
 
-import { useEffect, useMemo, useReducer, useRef, useCallback } from "react";
+import { useEffect, useMemo, useReducer, useRef, useCallback, type Dispatch } from "react";
 import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
@@ -34,6 +34,7 @@ import {
   initialChatState,
   type ChatMessage,
   type ChatState,
+  type LocalAction,
   type ToolPart,
 } from "./reducer";
 
@@ -172,6 +173,12 @@ export interface ChatRuntimeHandle {
    *  loses race with another tab). Clears pendingAskUser so the banner
    *  detaches without waiting for the daemon's tool_result echo. */
   notifyAnswer409: () => void;
+  /** Full reducer state — exposed so ChatRoot can thread it into ChildTaskContext
+   *  for AskAgentTool rendering (VOS-91 T16). */
+  chatState: ChatState;
+  /** Reducer dispatch — exposed so ChatRoot can thread it into ChildTaskContext
+   *  for child_toggle actions from AskAgentTool (VOS-91 T16). */
+  dispatch: Dispatch<LocalAction>;
 }
 
 export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
@@ -460,6 +467,8 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     send: sendText,
     pendingAskUser: state.pendingAskUser,
     notifyAnswer409,
+    chatState: state,
+    dispatch,
   };
 }
 

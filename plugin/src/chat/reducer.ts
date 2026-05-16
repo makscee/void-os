@@ -246,7 +246,10 @@ export type LocalAction =
    *  the partial assistant entry as cancelled. No-op when not running. */
   | { kind: "local_cancel" }
   | { kind: "local_answer_409" }
-  | { kind: "frame"; frame: DaemonFrame };
+  | { kind: "frame"; frame: DaemonFrame }
+  /** Toggle a child task's expansion state. "auto" reverts to state-driven logic;
+   *  "expanded" / "collapsed" are sticky user overrides. (VOS-91 T16) */
+  | { kind: "child_toggle"; childTaskId: string; next: "expanded" | "collapsed" };
 
 /** Normalize daemon `output` field — string or block array of {type:"text",text} —
  *  to a plain string. */
@@ -721,6 +724,18 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
     case "local_answer_409": {
       if (!state.pendingAskUser) return state;
       return { ...state, pendingAskUser: null };
+    }
+    case "child_toggle": {
+      const cur = state.childTasks[action.childTaskId];
+      if (!cur) return state;
+      if (cur.manualToggle === action.next) return state;
+      return {
+        ...state,
+        childTasks: {
+          ...state.childTasks,
+          [action.childTaskId]: { ...cur, manualToggle: action.next },
+        },
+      };
     }
     case "frame": {
       const f = action.frame;
