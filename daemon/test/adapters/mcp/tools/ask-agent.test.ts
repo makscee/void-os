@@ -18,13 +18,14 @@ import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { runMigrationsFromDir } from "../../../../src/adapters/sqlite/migrations";
 import { createEventBus } from "../../../../src/events";
-import { makeAskAgent, type AskAgentDeps } from "../../../../src/adapters/mcp/tools/ask-agent";
+import { makeAskAgent, mintChildAndFlipParent, type AskAgentDeps } from "../../../../src/adapters/mcp/tools/ask-agent";
 import type { AgentDefn } from "../../../../src/permissions/engine";
 
 // Construct the canonical RequestHandlerExtra envelope carrying _meta.task_id /
-// _meta.context_id per ADR-0002 (VOS-97 migration).
-function metaExtra(taskId: string, contextId: string) {
-  return { _meta: { task_id: taskId, context_id: contextId } } as any;
+// _meta.context_id per ADR-0002 (VOS-97 migration). tool_call_id is provided
+// so mintChildAndFlipParent's parentToolCallId guard is satisfied.
+function metaExtra(taskId: string, contextId: string, toolCallId = "test-tool-call-id") {
+  return { _meta: { task_id: taskId, context_id: contextId, tool_call_id: toolCallId } } as any;
 }
 
 const MIGRATIONS = join(
@@ -69,6 +70,7 @@ function buildCtx(
   _parentId: string,
   caller: AgentDefn,
   dispatchSim?: (childTaskId: string) => void | Promise<void>,
+  emit?: (type: string, payload: Record<string, unknown>) => void,
 ): BuiltCtx {
   const bus = createEventBus();
   const deps: AskAgentDeps = {
@@ -79,6 +81,7 @@ function buildCtx(
       if (dispatchSim) await dispatchSim(childTaskId);
     },
     now: () => Math.floor(Date.now() / 1000),
+    emit,
   };
   return { bus, deps };
 }
@@ -450,6 +453,134 @@ describe("ask_agent handler (composition)", () => {
         (result as { content: Array<{ text: string }> }).content[0]!.text,
       ).toMatch(/unknown/);
     }
+  });
+
+  // VOS-91 T2: mintChildAndFlipParent persists parent_tool_call_id
+  test("mint: persists parent_tool_call_id on the child row", () => {
+    const { contextId, parentId } = seed(db);
+    mintChildAndFlipParent(db, {
+      childId: "task-child",
+      contextId,
+      parentId,
+      targetAgent: "journaler",
+      parentToolCallId: "tool-call-abc",
+    });
+    const row = db.query("SELECT parent_tool_call_id FROM tasks WHERE id=?")
+      .get("task-child") as { parent_tool_call_id: string | null };
+    expect(row.parent_tool_call_id).toBe("tool-call-abc");
+  });
+
+  test("mint: throws if parentToolCallId is missing", () => {
+    const { contextId, parentId } = seed(db);
+    expect(() =>
+      // @ts-expect-error — exercising the runtime guard
+      mintChildAndFlipParent(db, {
+        childId: "task-child", contextId, parentId,
+        targetAgent: "journaler",
+      }),
+    ).toThrow(/parentToolCallId required/);
+  });
+
+  test("handler: missing tool_call_id returns structured error, does not throw", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+    const ctx = buildCtx(db, contextId, parentId, caller);
+
+    // Pass _meta without tool_call_id; task_id is valid so the taskId guard passes.
+    const extraNoToolCallId = {
+      _meta: { task_id: parentId, context_id: contextId },
+    } as any;
+
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      extraNoToolCallId,
+    );
+
+    expect(result.isError).toBe(true);
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "ASK_AGENT_MISSING_TOOL_CALL_ID",
+    );
+    // Parent must be untouched; no child minted.
+    const parent = db.query("SELECT state FROM tasks WHERE id=?").get(parentId) as
+      | { state: string }
+      | undefined;
+    expect(parent?.state).toBe("TASK_STATE_WORKING");
+    const kids = db
+      .query("SELECT count(*) as n FROM tasks WHERE parent_task_id=?")
+      .get(parentId) as { n: number } | undefined;
+    expect(kids?.n).toBe(0);
+  });
+
+  test("handler: empty-string tool_call_id returns structured error, does not throw", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+    const ctx = buildCtx(db, contextId, parentId, caller);
+
+    const extraEmptyToolCallId = {
+      _meta: { task_id: parentId, context_id: contextId, tool_call_id: "" },
+    } as any;
+
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      extraEmptyToolCallId,
+    );
+
+    expect(result.isError).toBe(true);
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "ASK_AGENT_MISSING_TOOL_CALL_ID",
+    );
+  });
+
+  // VOS-91 T3: emits chat.child_task_started after mint, before dispatch
+  test("emits chat.child_task_started after mint commits", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+
+    const captured: Array<Record<string, unknown>> = [];
+    const emitSpy = (type: string, payload: Record<string, unknown>) => {
+      if (type === "chat.child_task_started") captured.push(payload);
+    };
+
+    const ctx = buildCtx(
+      db,
+      contextId,
+      parentId,
+      caller,
+      async (childTaskId) => {
+        // Drive child to COMPLETED so the handler can return.
+        const now = Math.floor(Date.now() / 1000);
+        db.run(
+          `INSERT INTO messages (task_id, context_id, run_id, role, parts, parts_text, ts, ord)
+           VALUES (?, ?, NULL, 'ROLE_AGENT', '[]', 'OK', ?, 0)`,
+          [childTaskId, contextId, now],
+        );
+        db.run(
+          `UPDATE tasks SET state='TASK_STATE_COMPLETED', updated_at=? WHERE id=?`,
+          [now, childTaskId],
+        );
+        ctx.bus.emit({
+          type: "task.state_changed",
+          chatId: contextId,
+          payload: { taskId: childTaskId, state: "TASK_STATE_COMPLETED" },
+        });
+      },
+      emitSpy,
+    );
+
+    await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({
+      chat_id: contextId,
+      parent_task_id: parentId,
+      parent_tool_call_id: "test-tool-call-id",
+      agent: "journaler",
+    });
+    expect(typeof captured[0]!.child_task_id).toBe("string");
+    expect((captured[0]!.child_task_id as string).length).toBeGreaterThan(0);
   });
 
   test("Finding 4: emits task.state_changed when parent flips to WAITING_ON_AGENT", async () => {

@@ -32,7 +32,15 @@ const FAKE_SCRIPT = path.join(HERE, "fixtures", "cc", "hello.jsonl");
 // These are forwarded to the daemon as VOS_FAKE_SCRIPT_<agent> env vars
 // so the fake provider factory (resolveFakeScript) picks them per child.
 const ASK_AGENT_MAYA_SCRIPT = path.join(HERE, "fixtures", "ask-agent", "maya.jsonl");
-const ASK_AGENT_JOURNALER_SCRIPT = path.join(HERE, "fixtures", "ask-agent", "journaler.jsonl");
+// VOS-91 T18: richer journaler fixture (chunk-1/chunk-2/noop/final-answer-A)
+// used by both ask_agent and ask-agent-subthread specs. ask-agent.spec.ts
+// asserts toContain("A") so final-answer-A still satisfies it.
+const ASK_AGENT_JOURNALER_SCRIPT = path.join(HERE, "fixtures", "ask-agent-subthread", "journaler.jsonl");
+// VOS-91 T19: depth-2 nested fixture (journaler → deep). Mirror of the
+// subthread default + a deep agent script. Nested spec swaps the active
+// journaler script onto journalerActivePath; deep script is pinned at
+// deepActivePath via VOS_FAKE_SCRIPT_deep.
+const ASK_AGENT_NESTED_DEEP_SCRIPT = path.join(HERE, "fixtures", "ask-agent-nested", "deep.jsonl");
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -103,6 +111,15 @@ export default async function globalSetup() {
   const fakeScriptPath = path.join(fakeScriptDir, "active.jsonl");
   fs.copyFileSync(FAKE_SCRIPT, fakeScriptPath);
 
+  // VOS-91 T19: per-agent mutable script paths so the nested spec can swap
+  // journaler's fixture (depth-1 → depth-2) without breaking sibling specs.
+  // Default contents = the subthread depth-1 fixture, so the subthread spec
+  // and ask-agent spec keep their original behaviour.
+  const journalerActivePath = path.join(fakeScriptDir, "journaler-active.jsonl");
+  fs.copyFileSync(ASK_AGENT_JOURNALER_SCRIPT, journalerActivePath);
+  const deepActivePath = path.join(fakeScriptDir, "deep-active.jsonl");
+  fs.copyFileSync(ASK_AGENT_NESTED_DEEP_SCRIPT, deepActivePath);
+
   // Copy the committed fixture vault into tmpdir so Obsidian's runtime writes
   // (workspace.json, appearance.json, plugin-data tweaks) don't pollute the
   // checked-in fixture. The build output + resolved data.json go into the
@@ -118,6 +135,8 @@ export default async function globalSetup() {
   const daemonAgentsDir = path.join(daemonVault, "agents");
   fs.mkdirSync(path.join(daemonAgentsDir, "maya"), { recursive: true });
   fs.mkdirSync(path.join(daemonAgentsDir, "journaler"), { recursive: true });
+  // VOS-91 T19: seed `deep` for the nested-spec depth-2 chain.
+  fs.mkdirSync(path.join(daemonAgentsDir, "deep"), { recursive: true });
   fs.writeFileSync(
     path.join(daemonAgentsDir, "maya", "agent.md"),
     "---\nname: maya\ndescription: front desk\nmodel: opus\n---\n",
@@ -125,6 +144,10 @@ export default async function globalSetup() {
   fs.writeFileSync(
     path.join(daemonAgentsDir, "journaler", "agent.md"),
     "---\nname: journaler\ndescription: journal helper\nmodel: haiku\n---\n",
+  );
+  fs.writeFileSync(
+    path.join(daemonAgentsDir, "deep", "agent.md"),
+    "---\nname: deep\ndescription: deep thinker\nmodel: haiku\n---\n",
   );
 
   // Pre-register the fixture vault in obsidian.json so Obsidian skips the
@@ -173,8 +196,19 @@ export default async function globalSetup() {
     VOS_TITLER: "stub",
     VOS_FAKE_SCRIPT: fakeScriptPath,
     VOS_FAKE_SCRIPT_maya: ASK_AGENT_MAYA_SCRIPT,
-    VOS_FAKE_SCRIPT_journaler: ASK_AGENT_JOURNALER_SCRIPT,
+    // VOS-91 T19: journaler script lives on a mutable per-run path so the
+    // nested spec can hot-swap a depth-2 fixture in. Default = depth-1
+    // (subthread) fixture, copied in above.
+    VOS_FAKE_SCRIPT_journaler: journalerActivePath,
+    // VOS-91 T19: deep agent backs the depth-2 inner call.
+    VOS_FAKE_SCRIPT_deep: deepActivePath,
     VOS_FAKE_PER_EVENT_DELAY_MS_maya: "200",
+    // VOS-91 T18: slow journaler events so WORKING state is observable in UI.
+    VOS_FAKE_PER_EVENT_DELAY_MS_journaler: "200",
+    // VOS-91 T19: slow deep events so the inner card is observable in WORKING
+    // before its turn ends. Larger than journaler's delay so the inner card
+    // can be asserted before the outer auto-collapses.
+    VOS_FAKE_PER_EVENT_DELAY_MS_deep: "500",
   };
   delete env.ANTHROPIC_API_KEY;
   delete env.VOID_KEYS_URL;
@@ -210,6 +244,8 @@ export default async function globalSetup() {
       );
       stmt.run("maya", JSON.stringify({ name: "maya" }));
       stmt.run("journaler", JSON.stringify({ name: "journaler" }));
+      // VOS-91 T19: seed deep for the nested spec's depth-2 chain.
+      stmt.run("deep", JSON.stringify({ name: "deep" }));
     } finally {
       seedDb.close();
     }
@@ -253,6 +289,9 @@ export default async function globalSetup() {
     vaultPath: VAULT_PATH,
     obsidianUserDataDir,
     fakeScriptPath,
+    // VOS-91 T19: mutable per-agent fixture paths the nested spec swaps.
+    journalerActivePath,
+    deepActivePath,
     dbPath,
   };
   const statePath = path.join(tmpdir, "state.json");

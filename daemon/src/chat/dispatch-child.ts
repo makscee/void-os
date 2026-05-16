@@ -42,6 +42,7 @@ import type { Provider, ProviderHandle } from "../providers/index.ts";
 import { makeProvider, type ProviderEnv } from "../providers/factory.ts";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo.ts";
 import { drainRun } from "./run-driver.ts";
+import type { TextPart, DataPart } from "../types/a2a.ts";
 
 export interface DispatchChildDeps {
   db: Database;
@@ -57,6 +58,9 @@ export interface DispatchChildDeps {
   /** Override Provider construction. Tests inject a stub here to skip the
    *  real claude-code/fake factory call. */
   buildProvider?: (agentName: string) => Provider;
+  /** WS fan-out helper. Defaults to module-level broadcast() in buildApp,
+   *  overridable from tests. Mirrors orchestrator's deps.emit. */
+  emit?: (type: string, payload: Record<string, unknown>) => void;
 }
 
 export type DispatchChildFn = (
@@ -72,6 +76,10 @@ export type DispatchChildFn = (
 export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn {
   const messages = makeMessagesRepo(deps.db);
   const providerByAgent = new Map<string, Provider>();
+  // Default to no-op so tests that don't inject emit still work.
+  // In production, buildApp always passes its local `emit` (= broadcast)
+  // explicitly to avoid a circular import between dispatch-child ↔ app.
+  const emit = deps.emit ?? ((_type: string, _payload: Record<string, unknown>) => {});
 
   const buildProvider =
     deps.buildProvider ??
@@ -109,6 +117,7 @@ export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn 
           childTaskId,
           message: args.message,
           cwd: deps.cwd,
+          emit,
         }).catch((err) => {
           // The runner already flips the child to FAILED + emits
           // task.state_changed in its catch path. This outer catch is a
@@ -140,10 +149,14 @@ interface RunChildArgs {
    *  provider.spawn so the child runs in the same working directory as
    *  the parent (mirrors orchestrator wiring), NOT a hardcoded "/tmp". */
   cwd: string;
+  /** WS fan-out helper threaded from DispatchChildDeps. Used to emit
+   *  chat.token / chat.tool_use / chat.tool_result frames per provider part. */
+  emit: (type: string, payload: Record<string, unknown>) => void;
 }
 
 async function runChildOnProvider(args: RunChildArgs): Promise<void> {
-  const { db, bus, messages, provider, childTaskId, message, cwd } = args;
+  const { db, bus, messages, provider, childTaskId, message, cwd, emit } = args;
+  const childRunId = "child-" + childTaskId;
 
   const ctxRow = db
     .query("SELECT context_id FROM tasks WHERE id = ?")
@@ -182,9 +195,51 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
     // normalizes wire format on yield; dispatch-child sees only
     // `SessionEvent | PartsEvent`. CC-shape parsing lives upstream in
     // providers/claude-code/cc-shape.ts.
-    // No onSession/onPart callbacks — children spawn fresh and render via
-    // messages-repo. No signal — children are not cancellable today.
-    outcome = await drainRun({ handle });
+    // No onSession callback — child has no chat row to update.
+    // onPart fans out chat.token / chat.tool_use / chat.tool_result so WS
+    // clients can render the child task stream live (VOS-91 T4). drainRun
+    // owns parts accumulation + firstAssistantSeen tracking; this hook
+    // only emits side-effects, mirroring orchestrator's two-pass ordering:
+    // tool_use / tool_result inline (in parts order), then a single
+    // chat.token for the concatenated frame text.
+    outcome = await drainRun({
+      handle,
+      onPart: (frame) => {
+        for (const p of frame.parts) {
+          if (typeof (p as TextPart).text === "string") continue;
+          const data = (p as DataPart).data;
+          if (!data || typeof data !== "object") continue;
+          const kind = (data as { kind?: unknown }).kind;
+          if (kind === "tool_use") {
+            emit("chat.tool_use", {
+              chat_id: contextId,
+              task_id: childTaskId,
+              run_id: childRunId,
+              tool_call_id: (data as { tool_call_id?: string }).tool_call_id,
+              name: (data as { tool_name?: string }).tool_name,
+              input: (data as { input?: unknown }).input,
+            } as Record<string, unknown>);
+          } else if (kind === "tool_result") {
+            emit("chat.tool_result", {
+              chat_id: contextId,
+              task_id: childTaskId,
+              run_id: childRunId,
+              tool_call_id: (data as { tool_call_id?: string }).tool_call_id,
+              output: (data as { output?: unknown }).output,
+              is_error: (data as { is_error?: unknown }).is_error === true,
+            } as Record<string, unknown>);
+          }
+        }
+        if (frame.frameText) {
+          emit("chat.token", {
+            chat_id: contextId,
+            task_id: childTaskId,
+            run_id: childRunId,
+            delta: frame.frameText,
+          });
+        }
+      },
+    });
   } catch (e) {
     terminalState = "TASK_STATE_FAILED";
     errorMessage = e instanceof Error ? e.message : String(e);
@@ -215,7 +270,7 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
   // on FAILED so translateChildResult can surface the real error string
   // to the parent ask_agent caller. Without this, the parent sees
   // "child task failed: unknown" since the raw error is lost.
-  if (terminalState === "TASK_STATE_FAILED" && errorMessage !== null) {
+  if (terminalState === "TASK_STATE_FAILED") {
     const existingRow = db
       .query("SELECT metadata FROM tasks WHERE id = ?")
       .get(childTaskId) as { metadata: string | null } | undefined;
@@ -230,7 +285,11 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
         // malformed metadata — overwrite with fresh object
       }
     }
-    meta.errorMessage = errorMessage;
+    const providerName =
+      (provider as unknown as { providerName?: string }).providerName ??
+      "provider";
+    const truncated = (errorMessage ?? "unknown").slice(0, 200);
+    meta.errorMessage = `${providerName}: ${truncated}`;
     db.run(
       "UPDATE tasks SET state = ?, metadata = ?, updated_at = ? WHERE id = ?",
       [terminalState, JSON.stringify(meta), Date.now(), childTaskId],

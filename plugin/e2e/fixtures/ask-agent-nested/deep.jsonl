@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"e2e-nested-deep"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"d-chunk-1 "}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"chunk-2 "}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final-answer-D"}]}}
+{"type":"result","subtype":"success"}

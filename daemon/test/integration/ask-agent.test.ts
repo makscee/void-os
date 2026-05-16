@@ -302,6 +302,7 @@ async function callAskAgentOverMcp(args: {
       _meta: {
         task_id: args.taskId,
         context_id: args.contextId,
+        tool_call_id: `ask-agent-test-tc-${args.taskId}`,
       },
     });
   } finally {

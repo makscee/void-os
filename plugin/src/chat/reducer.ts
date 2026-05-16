@@ -41,6 +41,10 @@ export type ToolPart = {
   output?: string;
   /** True when daemon flagged the tool result as an error. Defaults to false. */
   isError: boolean;
+  /** When set, this tool call spawned a child task. Points to the child task id
+   *  in ChatState.childTasks. Populated by the child-task sub-thread feature
+   *  (VOS-91). */
+  childTaskId?: string;
 };
 export type AssistantPart = TextPart | ToolPart;
 
@@ -67,6 +71,37 @@ export interface ChatMessage {
 }
 
 export type RunState = "idle" | "running" | "error";
+
+/** State of a single child-task sub-thread (VOS-91).
+ *  Keyed by taskId in ChatState.childTasks. */
+export interface ChildTaskStream {
+  taskId: string;
+  /** Stable synthetic run id for the child overlay: `"child-${taskId}"`. */
+  runId: string;
+  /** The tool_call_id on the parent assistant turn that spawned this child. */
+  parentToolCallId: string;
+  /** chatId of the parent chat thread. */
+  parentTaskId: string;
+  /** Agent name reported by the child daemon. */
+  agent: string;
+  state: "WORKING" | "INPUT_REQUIRED" | "COMPLETED" | "FAILED" | "CANCELED";
+  error: string | null;
+  /** Streaming token buffer for the child's current run (mirrors liveTokens). */
+  liveTokens: string;
+  /** Streaming tool events for the child's current run (mirrors liveToolEvents). */
+  liveToolEvents: ToolPart[];
+  /** Settled message history fetched from the child daemon (mirrors messages). */
+  messages: ChatMessage[];
+  /** UI expansion mode. "auto" = infer from state, "expanded"/"collapsed" = user override. */
+  manualToggle: "auto" | "expanded" | "collapsed";
+}
+
+export type ChildState = ChildTaskStream["state"];
+export const TERMINAL_CHILD_STATES: ReadonlySet<ChildState> = new Set([
+  "COMPLETED",
+  "FAILED",
+  "CANCELED",
+]);
 
 /** A user message that was typed while a run was streaming. Held locally until
  *  the active run ends, then flushed FIFO into POST /chat/:id/message. */
@@ -158,6 +193,12 @@ export interface ChatState {
    *   - flipped to `true` by chat.tool_use only when both liveTokens === ""
    *     and liveToolEvents.length === 0 (i.e. nothing streamed yet) */
   liveToolsFirst: boolean;
+  /** Child task sub-threads keyed by taskId (VOS-91). Populated by
+   *  chat.child_task_started / chat.task.state_changed frames. */
+  childTasks: Record<string, ChildTaskStream>;
+  /** Maps a parent tool_call_id → childTaskId for O(1) lookup when routing
+   *  child WS frames (chat.token, chat.tool_use, …) back to the right child. */
+  toolCallToChild: Record<string, string>;
 }
 
 export const initialChatState = (chatId: string | null = null): ChatState => ({
@@ -172,6 +213,8 @@ export const initialChatState = (chatId: string | null = null): ChatState => ({
   queues: {},
   pendingAskUser: null,
   liveToolsFirst: false,
+  childTasks: {},
+  toolCallToChild: {},
 });
 
 /** Classify a run.end / run.error error string into a notice kind. The
@@ -203,7 +246,10 @@ export type LocalAction =
    *  the partial assistant entry as cancelled. No-op when not running. */
   | { kind: "local_cancel" }
   | { kind: "local_answer_409" }
-  | { kind: "frame"; frame: DaemonFrame };
+  | { kind: "frame"; frame: DaemonFrame }
+  /** Toggle a child task's expansion state. "auto" reverts to state-driven logic;
+   *  "expanded" / "collapsed" are sticky user overrides. (VOS-91 T16) */
+  | { kind: "child_toggle"; childTaskId: string; next: "expanded" | "collapsed" };
 
 /** Normalize daemon `output` field — string or block array of {type:"text",text} —
  *  to a plain string. */
@@ -458,9 +504,89 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
     case "refetched": {
       // Stale-response guard: ignore if reducer has since switched away.
       if (state.chatId !== action.chatId) return state;
-      let messages = replayToMessages(action.messages);
       const isRefetch = action.kind === "refetched";
       const stoppedRunId = isRefetch ? action.stoppedRunId : undefined;
+
+      // ── T15: rebuild childTasks from synthetic child_task_started entries ──
+
+      // 1. Snapshot prior manualToggle so user-set expansions survive refetch.
+      const priorToggle = new Map<string, ChildTaskStream["manualToggle"]>();
+      for (const [tid, st] of Object.entries(state.childTasks)) {
+        priorToggle.set(tid, st.manualToggle);
+      }
+
+      // 2. Build nextChildTasks from child_task_started synthetic entries.
+      const nextChildTasks: Record<string, ChildTaskStream> = {};
+      const nextToolCallToChild: Record<string, string> = {};
+      const childEntries: Record<string, ReplayMessage[]> = {};
+      const rawMessages = action.messages as unknown as Array<ReplayMessage & { role: string; task_id?: string; child_task_id?: string; parent_task_id?: string; parent_tool_call_id?: string; agent?: string; task_state?: string; chat_id?: string }>;
+      const startEntries = rawMessages.filter((m) => m.role === "child_task_started");
+      for (const cts of startEntries) {
+        const cid = cts.child_task_id!;
+        const wireState = cts.task_state ?? "WORKING";
+        const uiState: ChildState =
+          wireState === "INPUT_REQUIRED" ? "INPUT_REQUIRED" :
+          wireState === "COMPLETED" || wireState === "FAILED" || wireState === "CANCELED"
+            ? (wireState as ChildState)
+            : "WORKING";
+        nextChildTasks[cid] = {
+          taskId: cid,
+          runId: `child-${cid}`,
+          parentToolCallId: cts.parent_tool_call_id!,
+          parentTaskId: cts.parent_task_id!,
+          agent: cts.agent ?? "",
+          state: uiState,
+          error: null,
+          liveTokens: "",
+          liveToolEvents: [],
+          messages: [],
+          manualToggle: priorToggle.get(cid) ?? "auto",
+        };
+        nextToolCallToChild[cts.parent_tool_call_id!] = cid;
+        childEntries[cid] = [];
+      }
+
+      // 3. Partition replay entries by task_id — child rows are pulled out.
+      const parentEntries: ReplayMessage[] = [];
+      for (const m of rawMessages) {
+        if (m.role === "child_task_started") continue;
+        const tid = m.task_id;
+        if (tid && nextChildTasks[tid]) {
+          childEntries[tid].push(m as ReplayMessage);
+        } else {
+          parentEntries.push(m as ReplayMessage);
+        }
+      }
+
+      // 4. Build messages for each child group; attach childTaskId on ask_agent ToolParts.
+      for (const cid of Object.keys(nextChildTasks)) {
+        const childMsgs = replayToMessages(childEntries[cid]);
+        for (const msg of childMsgs) {
+          if (!msg.parts) continue;
+          for (let pi = 0; pi < msg.parts.length; pi++) {
+            const p = msg.parts[pi];
+            if (p.kind !== "tool" || p.name !== "ask_agent") continue;
+            const grandchildId = nextToolCallToChild[p.toolCallId];
+            if (grandchildId) msg.parts[pi] = { ...p, childTaskId: grandchildId };
+          }
+        }
+        nextChildTasks[cid].messages = childMsgs;
+      }
+
+      // 5. Build parent messages + attach childTaskId on ask_agent ToolParts.
+      let messages = replayToMessages(parentEntries);
+      for (const msg of messages) {
+        if (!msg.parts) continue;
+        for (let pi = 0; pi < msg.parts.length; pi++) {
+          const p = msg.parts[pi];
+          if (p.kind !== "tool" || p.name !== "ask_agent") continue;
+          const childId = nextToolCallToChild[p.toolCallId];
+          if (childId) msg.parts[pi] = { ...p, childTaskId: childId };
+        }
+      }
+
+      // ── end T15 ──
+
       const shouldTagStopped =
         stoppedRunId !== undefined &&
         (state.pendingStoppedRunId === stoppedRunId ||
@@ -468,17 +594,22 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       if (shouldTagStopped) {
         messages = tagLastAssistantCancelled(messages, stoppedRunId);
       }
-      // Rehydrate pendingAskUser from the message list. The single-slot
-      // invariant lives on the daemon side; the reducer just observes.
-      const askUserRows = action.messages
+      // Rehydrate pendingAskUser from ALL replay entries (parent + child).
+      // Bug fix (T15): if a CHILD task issued ask_user, its row has
+      // task_id === childTaskId and was partitioned into childEntries[], so
+      // scanning only parentEntries misses it. The daemon's single-slot
+      // invariant (ASK_USER_ALREADY_OPEN) guarantees at most one unpaired
+      // ask_user across the whole Context regardless of which task issued it.
+      const allRows = rawMessages.filter((m) => m.role !== "child_task_started") as ReplayMessage[];
+      const askUserRows = allRows
         .map((m, i) => ({ m, i }))
-        .filter(({ m }) => m.role === "tool_use" && m.name === "ask_user");
+        .filter(({ m }) => m.role === "tool_use" && (m as ReplayMessage & { role: "tool_use" }).name === "ask_user");
       const unpaired: Array<{ tool_use: ReplayMessage & { role: "tool_use" }; idx: number }> = [];
       for (const { m, i } of askUserRows) {
         const tu = m as ReplayMessage & { role: "tool_use" };
-        const paired = action.messages
+        const paired = allRows
           .slice(i + 1)
-          .some((later) => later.role === "tool_result" && later.tool_call_id === tu.tool_call_id);
+          .some((later) => later.role === "tool_result" && (later as ReplayMessage & { role: "tool_result" }).tool_call_id === tu.tool_call_id);
         if (!paired) unpaired.push({ tool_use: tu, idx: i });
       }
       let nextPendingAskUser: ChatState["pendingAskUser"] = null;
@@ -505,6 +636,8 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       return {
         ...state,
         messages,
+        childTasks: nextChildTasks,
+        toolCallToChild: nextToolCallToChild,
         // Refetch reflects the canonical post-run state — clear overlay so
         // we don't double-render the streaming turn next to its persisted form.
         liveTokens: isRefetch ? "" : state.liveTokens,
@@ -592,6 +725,18 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       if (!state.pendingAskUser) return state;
       return { ...state, pendingAskUser: null };
     }
+    case "child_toggle": {
+      const cur = state.childTasks[action.childTaskId];
+      if (!cur) return state;
+      if (cur.manualToggle === action.next) return state;
+      return {
+        ...state,
+        childTasks: {
+          ...state.childTasks,
+          [action.childTaskId]: { ...cur, manualToggle: action.next },
+        },
+      };
+    }
     case "frame": {
       const f = action.frame;
       const fChat = typeof f.chat_id === "string" ? f.chat_id : null;
@@ -620,6 +765,23 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         }
         case "chat.token": {
           if (!runId) return state;
+          const taskId = typeof f.task_id === "string" ? f.task_id : null;
+          // Drop unrouted child frame (task_id set but not in childTasks).
+          if (taskId && !state.childTasks[taskId]) {
+            return state;
+          }
+          if (taskId && state.childTasks[taskId]) {
+            const cur = state.childTasks[taskId];
+            const delta = typeof f.delta === "string" ? f.delta : "";
+            if (!delta) return state;
+            return {
+              ...state,
+              childTasks: {
+                ...state.childTasks,
+                [taskId]: { ...cur, liveTokens: cur.liveTokens + delta },
+              },
+            };
+          }
           const delta = typeof f.delta === "string" ? f.delta : "";
           return appendLiveDelta(state, delta);
         }
@@ -631,6 +793,23 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           const input = (f.input && typeof f.input === "object")
             ? (f.input as Record<string, unknown>)
             : {};
+          const taskIdTu = typeof f.task_id === "string" ? f.task_id : null;
+          // Drop unrouted child frame (task_id set but not in childTasks).
+          if (taskIdTu && !state.childTasks[taskIdTu]) {
+            return state;
+          }
+          if (taskIdTu && state.childTasks[taskIdTu]) {
+            const cur = state.childTasks[taskIdTu];
+            if (cur.liveToolEvents.some((p) => p.toolCallId === toolCallId)) return state;
+            const newPart: ToolPart = { kind: "tool", toolCallId, name, input, isError: false };
+            return {
+              ...state,
+              childTasks: {
+                ...state.childTasks,
+                [taskIdTu]: { ...cur, liveToolEvents: cur.liveToolEvents.concat(newPart) },
+              },
+            };
+          }
           // Arrival-order tracker: if this tool fired before any tokens AND
           // no prior tools, mark the overlay as "tools first" so buildOverlay
           // keeps tools at index 0 when text streams in later (ask_user case).
@@ -656,6 +835,37 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
           const toolCallId = typeof f.tool_call_id === "string" ? f.tool_call_id : null;
           if (!toolCallId) return state;
           const isError = f.is_error === true;
+          const taskIdTr = typeof f.task_id === "string" ? f.task_id : null;
+          // Drop unrouted child frame (task_id set but not in childTasks).
+          if (taskIdTr && !state.childTasks[taskIdTr]) {
+            return state;
+          }
+          if (taskIdTr && state.childTasks[taskIdTr]) {
+            const cur = state.childTasks[taskIdTr];
+            const outText = normalizeToolOutput(f.output);
+            const idx = cur.liveToolEvents.findIndex((p) => p.toolCallId === toolCallId);
+            let nextEvents: ToolPart[];
+            if (idx === -1) {
+              nextEvents = cur.liveToolEvents.concat({
+                kind: "tool",
+                toolCallId,
+                name: "",
+                input: {},
+                output: outText,
+                isError,
+              });
+            } else {
+              nextEvents = cur.liveToolEvents.slice();
+              nextEvents[idx] = { ...nextEvents[idx], output: outText, isError };
+            }
+            return {
+              ...state,
+              childTasks: {
+                ...state.childTasks,
+                [taskIdTr]: { ...cur, liveToolEvents: nextEvents },
+              },
+            };
+          }
           const next = applyLiveToolResult(state, toolCallId, f.output, isError);
           if (state.pendingAskUser && state.pendingAskUser.toolUseId === toolCallId) {
             return { ...next, pendingAskUser: null };
@@ -692,6 +902,48 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
             ...clearOverlay(state),
             runState: "error",
             errorNotice: { kind: classifyError(f.error), runId },
+          };
+        }
+        case "chat.child_task_started": {
+          const cid = f.child_task_id;
+          if (state.childTasks[cid]) return state; // idempotent on reconnect
+          const stream: ChildTaskStream = {
+            taskId: cid,
+            runId: `child-${cid}`,
+            parentToolCallId: f.parent_tool_call_id,
+            parentTaskId: f.parent_task_id,
+            agent: f.agent,
+            state: "WORKING",
+            error: null,
+            liveTokens: "",
+            liveToolEvents: [],
+            messages: [],
+            manualToggle: "auto",
+          };
+          return {
+            ...state,
+            childTasks: { ...state.childTasks, [cid]: stream },
+            toolCallToChild: {
+              ...state.toolCallToChild,
+              [stream.parentToolCallId]: cid,
+            },
+          };
+        }
+        case "chat.task.state_changed": {
+          const tid = f.task_id;
+          if (!state.childTasks[tid]) return state;
+          const wireState = f.state;
+          const uiState: ChildState =
+            wireState === "INPUT_REQUIRED" ? "INPUT_REQUIRED" :
+            wireState === "COMPLETED" || wireState === "FAILED" || wireState === "CANCELED" ? wireState :
+            "WORKING";
+          const error = f.error ?? null;
+          return {
+            ...state,
+            childTasks: {
+              ...state.childTasks,
+              [tid]: { ...state.childTasks[tid], state: uiState, error },
+            },
           };
         }
         default:

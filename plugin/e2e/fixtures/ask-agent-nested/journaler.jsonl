@@ -1,0 +1,8 @@
+{"type":"system","subtype":"init","session_id":"e2e-nested-journaler"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"j-chunk-1 "}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"calling deep"},{"type":"tool_use","id":"tu-ask-inner","name":"ask_agent","input":{"target_agent_id":"deep","message":"go deeper"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"j-after-1 "}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"j-after-2 "}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"j-after-3 "}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"j-after-4 "}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"j-after-5 "}]}}

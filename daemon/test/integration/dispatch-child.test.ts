@@ -172,6 +172,7 @@ describe("VOS-89 T15.5: production buildApp wires dispatchChildTask", () => {
       _meta: {
         task_id: parentTaskId,
         context_id: contextId,
+        tool_call_id: "dispatch-child-test-tc",
       },
     });
     const result = (await callP) as {

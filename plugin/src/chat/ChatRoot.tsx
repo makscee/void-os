@@ -24,7 +24,9 @@ import { CostMeter } from "./CostMeter";
 import { BashTool } from "./tools/BashTool";
 import { GenericTool } from "./tools/GenericTool";
 import { AskUserTool } from "./tools/AskUserTool";
+import { AskAgentTool } from "./tools/AskAgentTool";
 import { AskUserContext, type AskUserContextValue } from "./AskUserContext";
+import { ChildTaskContext } from "./ChildTaskContext";
 
 export interface ChatRootProps {
   bus: FrameBus;
@@ -369,15 +371,22 @@ export function ChatRoot(props: ChatRootProps) {
     setActiveChatId(id);
   }, []);
 
+  const childTaskCtx = React.useMemo(
+    () => ({ chatState: handle.chatState, dispatch: handle.dispatch }),
+    [handle.chatState, handle.dispatch],
+  );
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <AskUserContext.Provider value={askUserCtx}>
+      <ChildTaskContext.Provider value={childTaskCtx}>
       <div data-testid="vos-chat-root" className="vos:contents">
       {/* Tool UI registration. `BashTool` is from makeAssistantToolUI — it
           renders nothing visible itself; its mount side-effect registers a
           renderer for toolName === "Bash" inside the assistant-ui store. */}
       <BashTool />
       <AskUserTool />
+      <AskAgentTool />
       <div className="vos:flex vos:flex-row vos:h-full vos:w-full">
         <div className="vos:flex vos:flex-col vos:h-full vos:w-[260px] vos:shrink-0 vos:bg-[var(--background-secondary)]">
           <ChatList
@@ -504,6 +513,7 @@ export function ChatRoot(props: ChatRootProps) {
         </div>
       </div>
       </div>
+      </ChildTaskContext.Provider>
       </AskUserContext.Provider>
     </AssistantRuntimeProvider>
   );
