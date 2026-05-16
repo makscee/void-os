@@ -11,7 +11,31 @@ export type DaemonFrame = {
   ts?: number;
   // payload fields (chat_id, run_id, delta, status, agent, ...) live here.
   [k: string]: unknown;
-};
+} & (
+  | { type: "run.start" }
+  | { type: "chat.message_user" }
+  | { type: "chat.token"; task_id?: string }
+  | { type: "chat.tool_use"; task_id?: string }
+  | { type: "chat.tool_result"; task_id?: string }
+  | { type: "run.end" }
+  | { type: "run.error" }
+  | {
+      type: "chat.child_task_started";
+      chat_id: string;
+      parent_task_id: string;
+      parent_tool_call_id: string;
+      child_task_id: string;
+      agent: string;
+    }
+  | {
+      type: "chat.task.state_changed";
+      chat_id: string;
+      task_id: string;
+      parent_task_id: string | null;
+      state: "SUBMITTED" | "WORKING" | "WAITING_ON_AGENT" | "INPUT_REQUIRED" | "COMPLETED" | "FAILED" | "CANCELED";
+      error?: string;
+    }
+);
 
 export type FrameHandler = (f: DaemonFrame) => void;
 
