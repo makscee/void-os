@@ -41,8 +41,30 @@ export class TraceWriter {
   }
 
   private static computeInitialSeq(path: string): number {
-    // Stub — Task 6 implements resume-from-last-seq. For now: always 0.
-    return 0;
+    let size = 0;
+    try {
+      size = fs.statSync(path).size;
+    } catch {
+      return 0; // missing file
+    }
+    if (size === 0) return 0;
+    const buf = fs.readFileSync(path);
+    // Find last '\n'. If none, the file has no complete line → start at 0.
+    const lastNl = buf.lastIndexOf(0x0a);
+    if (lastNl < 0) return 0;
+    // The last full line is bytes up to lastNl (exclusive). Find the start of
+    // that line (the prior newline, or 0).
+    const priorNl = buf.lastIndexOf(0x0a, lastNl - 1);
+    const lineStart = priorNl < 0 ? 0 : priorNl + 1;
+    const lineBytes = buf.subarray(lineStart, lastNl);
+    if (lineBytes.length === 0) return 0;
+    try {
+      const rec = JSON.parse(lineBytes.toString("utf8"));
+      if (Number.isInteger(rec.seq) && rec.seq >= 0) return rec.seq + 1;
+      return 0;
+    } catch {
+      return 0;
+    }
   }
 
   get seq(): number {

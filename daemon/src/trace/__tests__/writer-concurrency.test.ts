@@ -53,4 +53,34 @@ describe("TraceWriter — concurrency", () => {
       expect(JSON.parse(linesB[i])).toMatchObject({ seq: i, payload: { b: i } });
     }
   });
+
+  test("reopen on non-empty file resumes seq at lastSeq + 1", () => {
+    const path = join(tmpRoot, "reopen.jsonl");
+    const w1 = TraceWriter.open(path);
+    w1.write("cc.event", { i: 0 });
+    w1.write("cc.event", { i: 1 });
+    w1.write("cc.event", { i: 2 });
+    w1.close();
+
+    const w2 = TraceWriter.open(path);
+    expect(w2.seq).toBe(3);
+    w2.write("cc.event", { i: 3 });
+    w2.write("cc.event", { i: 4 });
+    w2.close();
+
+    const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
+    expect(lines.length).toBe(5);
+    for (let i = 0; i < 5; i++) {
+      expect(JSON.parse(lines[i]).seq).toBe(i);
+    }
+  });
+
+  test("reopen on empty file starts seq at 0", () => {
+    const path = join(tmpRoot, "empty.jsonl");
+    // Touch the file empty.
+    TraceWriter.open(path).close();
+    const w = TraceWriter.open(path);
+    expect(w.seq).toBe(0);
+    w.close();
+  });
 });
