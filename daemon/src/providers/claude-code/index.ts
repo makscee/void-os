@@ -13,6 +13,7 @@ import { TraceWriter } from "../../trace/writer";
 import type { AgentDefn, PermissionEngine } from "../../permissions/engine.js";
 import { SYSTEM_DENY_FOR_WRITE } from "../../permissions/engine.js";
 import { buildSpawnSettings } from "./spawn-settings.ts";
+import { readAgentPersonaBody } from "./persona.ts";
 
 export interface CcSpawnRequest {
   prompt: string;
@@ -244,12 +245,26 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         throw err;
       }
 
+      // VOS-106 T10.B: persona injection. Read agent.md body at spawn time
+      // and append it to CC's default system prompt via
+      // `--append-system-prompt`. Without this the model never sees the
+      // routing/voice/hard-rule instructions from agent.md — scope-gating
+      // alone is not enough to make e.g. maya emit `ask_agent(...)`. We
+      // tolerate missing/empty/malformed agent.md by skipping the flag and
+      // tracing the reason so operators can distinguish "no persona" from
+      // "persona broken".
+      const persona = readAgentPersonaBody(req.cwd, req.agent);
+      if (persona.reason !== "ok") {
+        trace.write("persona.missing", { agent: req.agent, reason: persona.reason });
+      }
+
       const args = [
         "-p", req.prompt,
         "--output-format", "stream-json",
         "--verbose",
         "--settings", settingsPath,
         "--mcp-config", mcpConfigPath,
+        ...(persona.body ? ["--append-system-prompt", persona.body] : []),
         ...(req.resumeFrom ? ["--resume", req.resumeFrom] : []),
       ];
       const spawnFn = deps.spawnFn ?? Bun.spawn;
