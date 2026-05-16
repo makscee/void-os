@@ -363,11 +363,12 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
   // per orchestrator so tests with multiple orchestrators don't share state.
   const messages: MessagesRepo = makeMessagesRepo(db);
 
-  // Per-run cancel registry. Populated by dispatch() at run.start time and
+  // Per-run cancel registry. Registered per-dispatch, aborted on cancel,
+  // deleted on run end. Populated by dispatch() at run.start time and
   // consulted in both the streaming loop (after-yield bail) and the finally
   // block (status="cancelled" instead of "done"). `cancel(chatId)` looks
-  // up the current_run_id, flips the flag, and calls handle.cancel() on
-  // the live ProviderHandle — so the subprocess receives SIGTERM/SIGKILL
+  // up the current_run_id, aborts the controller, and calls handle.cancel()
+  // on the live ProviderHandle — so the subprocess receives SIGTERM/SIGKILL
   // and the for-await loop unblocks. Cleared on run end.
   const cancelControllers = new Map<string, AbortController>();
   const isCancelled = (runId: string) =>
@@ -491,10 +492,13 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           contextId: chatId,
           resumeFrom: chat.session_id ?? undefined,
         });
-        if (!cancelControllers.has(runId)) {
-          cancelControllers.set(runId, new AbortController());
+        let cancelController = cancelControllers.get(runId);
+        if (!cancelController) {
+          cancelController = new AbortController();
+          cancelControllers.set(runId, cancelController);
         }
-        const cancelSignal = cancelControllers.get(runId)!.signal;
+        // passed to drainRun in Task 4
+        const cancelSignal = cancelController.signal;
         activeHandles.set(runId, handle);
         for await (const evt of handle.events) {
           // VOS-80 S5: cancel-bail. The for-await may already have a buffered
@@ -608,7 +612,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         activeHandles.delete(runId);
         // VOS-80 S5: a cancel may race with the iterator throwing (e.g.
         // spawner-iter propagates "cancelled" sentinel via throw). When
-        // cancelRequested is set for this run, the error path was caused
+        // isCancelled(runId) is true for this run, the error path was caused
         // by cancel — don't surface it as run.error.
         if (isCancelled(runId)) {
           // swallowed: finally block handles status="cancelled" + run.end
