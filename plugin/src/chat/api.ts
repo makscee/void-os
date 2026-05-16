@@ -82,9 +82,15 @@ function normalizeReplay(raw: unknown): ReplayMessage[] {
     const o = r as Record<string, unknown>;
     const role = o.role;
     const ts = typeof o.ts === "number" ? (o.ts as number) : undefined;
+    // VOS-91 T19: surface task_id through normalize so the reducer rebuild
+    // can partition child-task replay entries into childTasks[cid].messages.
+    // Stripping it broke reload-replay assertions (chunks vanished from the
+    // expanded sub-thread body after page reload).
+    const taskId = typeof o.task_id === "string" ? (o.task_id as string) : undefined;
     if (role === "user" || role === "assistant") {
       if (typeof o.content !== "string") continue;
       const entry: ReplayMessage = { role, content: o.content, ts };
+      if (taskId !== undefined) (entry as { task_id?: string }).task_id = taskId;
       // Daemon's messages-repo stamps cancelled=true on assistant rows
       // belonging to a cancelled run (VOS-80). Surface so the renderer
       // shows the "stopped" badge from server truth.
@@ -102,7 +108,9 @@ function normalizeReplay(raw: unknown): ReplayMessage[] {
         o.input && typeof o.input === "object" && !Array.isArray(o.input)
           ? (o.input as Record<string, unknown>)
           : {};
-      out.push({ role: "tool_use", tool_call_id: toolCallId, name, input, ts });
+      const entry: ReplayMessage = { role: "tool_use", tool_call_id: toolCallId, name, input, ts };
+      if (taskId !== undefined) (entry as { task_id?: string }).task_id = taskId;
+      out.push(entry);
       continue;
     }
     if (role === "tool_result") {
@@ -117,13 +125,15 @@ function normalizeReplay(raw: unknown): ReplayMessage[] {
             ? (o.output as Array<{ type?: string; text?: string }>)
             : "";
       const isError = o.is_error === true;
-      out.push({
+      const entry: ReplayMessage = {
         role: "tool_result",
         tool_call_id: toolCallId,
         output,
         is_error: isError,
         ts,
-      });
+      };
+      if (taskId !== undefined) (entry as { task_id?: string }).task_id = taskId;
+      out.push(entry);
       continue;
     }
     if (role === "child_task_started") {

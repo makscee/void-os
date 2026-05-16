@@ -54,9 +54,18 @@ interface NestedToolPartProps {
 function NestedToolPart(props: NestedToolPartProps): React.ReactElement {
   const { part, chatState, depth, onToggle } = props;
   if (part.name === "ask_agent") {
+    // VOS-91 T19: live liveToolEvents don't carry childTaskId (the reducer
+    // attaches that during refetch rebuild only). For the live depth-2 path
+    // we resolve it via toolCallToChild so the inner card links once
+    // child_task_started arrives. Refetched paths still pass part.childTaskId
+    // directly; this hop is a no-op when both agree.
+    const linked: ToolPart =
+      part.childTaskId
+        ? part
+        : { ...part, childTaskId: chatState.toolCallToChild[part.toolCallId] };
     return (
       <AskAgentCard
-        part={part}
+        part={linked}
         chatState={chatState}
         depth={depth}
         onToggle={onToggle}
