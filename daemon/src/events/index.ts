@@ -1,7 +1,6 @@
 // In-process pub/sub event bus. SQLite persistence was removed in
 // VOS-83 / migration 0007 — the legacy `events` table is dropped there.
-// emit() still fans out to subscribers; query() is a no-op stub kept
-// for interface compatibility until callers are removed.
+// emit() fans out to subscribers; persistence/query removed in VOS-102.
 
 import type { Database } from "bun:sqlite";
 
@@ -44,16 +43,9 @@ export interface RunEndEvent extends DaemonEvent {
   };
 }
 
-export interface EventQuery {
-  since?: number;
-  type?: string;
-  runId?: string;
-}
-
 export interface EventBus {
   emit(event: DaemonEvent): void;
   subscribe(type: string, handler: (event: DaemonEvent) => void): () => void;
-  query(filter: EventQuery): Promise<DaemonEvent[]>;
 }
 
 interface Deps {
@@ -85,10 +77,6 @@ export const createEventBus = (deps: Deps = {}): EventBus => {
       if (!set) { set = new Set(); subs.set(type, set); }
       set.add(handler);
       return () => { set!.delete(handler); };
-    },
-    async query(_filter) {
-      // Persistence removed in VOS-83. The `events` table no longer exists.
-      return [];
     },
   };
 };

@@ -30,7 +30,6 @@ import { makeProvider } from "./providers/factory.ts";
 import { makeChatRepo } from "./chat/repo.ts";
 import { makeSessionReplay } from "./chat/session-replay.ts";
 import { makeTitler, type Titler } from "./chat/titler.ts";
-import { makeTitlerStub } from "./chat/titler-stub.ts";
 import {
   makeOrchestrator,
   resumeParentOnChildTerminal,
@@ -107,7 +106,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
         process.env.VOS_TITLER === "stub" ||
         (process.env.VOS_TITLER == null && process.env.VOS_PROVIDER === "fake");
       if (useStub) {
-        titler = makeTitlerStub();
+        titler = { title: async () => {} } satisfies Titler;
       } else {
         const sdk = await buildAnthropicSdk();
         titler = makeTitler({ repo, sdk, replay, emit });
