@@ -19,6 +19,7 @@ interface E2EState {
   cdpPort: number;
   vaultPath: string;
   obsidianUserDataDir: string;
+  fakeScriptPath: string;
 }
 
 async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
@@ -69,9 +70,21 @@ test("chat round-trip: user sends a message, fake provider replies", async () =>
     // activeChatId is set in React state right after createChat resolves.
     await page.getByTestId("new-chat-btn").click({ force: true, timeout: 5_000 });
 
+    // VOS-92 wired new-chat-btn to open the agent picker (Obsidian
+    // SuggestModal). Daemon-vault fixture seeds the agents table with a
+    // `maya` row; click the first suggestion-item to confirm and wait for
+    // the picker to detach before driving the composer.
+    const pickerInput = page.locator(".prompt input.prompt-input");
+    await expect(pickerInput).toBeVisible({ timeout: 10_000 });
+    const firstSuggestion = page.locator(".suggestion-item").first();
+    await expect(firstSuggestion).toBeVisible({ timeout: 10_000 });
+    await firstSuggestion.click();
+    await expect(page.locator(".prompt")).toHaveCount(0, { timeout: 5_000 });
+
     // Composer textarea (ComposerPrimitive.Input, placeholder="Message").
     const composer = chatRoot.getByPlaceholder("Message");
     await expect(composer).toBeVisible({ timeout: 5_000 });
+    await expect(composer).toBeEditable({ timeout: 5_000 });
     await composer.fill("ping");
 
     // Send button: when no run is in flight, ChatRoot renders

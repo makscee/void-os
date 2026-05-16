@@ -77,7 +77,18 @@ export async function runAskUser(
   raw: unknown,
 ): Promise<AskUserResult> {
   const args = AskUserInput.parse(raw);
-  const toolUseId = randomUUID();
+  // VOS-90 T1: the fake provider yields its own synthesized assistant
+  // `tool_use` block BEFORE calling MCP ask_user, then drives the test by
+  // POSTing /chat/:id/answer with that same id. For the answer route's CAS
+  // correlation to succeed, runAskUser must persist the same id rather than
+  // minting a fresh one. Production agents never set this hint — they only
+  // emit standard MCP `arguments` — so they keep getting a fresh UUID.
+  const rawAny = (raw ?? {}) as Record<string, unknown>;
+  const injectedId =
+    typeof rawAny._vos_tool_use_id === "string" && rawAny._vos_tool_use_id.length > 0
+      ? rawAny._vos_tool_use_id
+      : undefined;
+  const toolUseId = injectedId ?? randomUUID();
 
   // Transaction: write tool_use message + CAS state flip together.
   const tx = ctx.db.transaction(() => {

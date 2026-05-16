@@ -49,6 +49,15 @@ try {
   console.warn(`  agents: scan failed: ${e instanceof Error ? e.message : e} — continuing with existing rows`);
 }
 
+// VOS-90 T1: in fake-provider mode, the provider issues MCP `ask_user`
+// calls back to this daemon over loopback. The provider factory reads
+// `VOS_DAEMON_BASE` to learn the daemon's own URL. PORT/HOST are known
+// here at boot, so we can derive the base URL before buildApp constructs
+// the provider. Production (VOS_PROVIDER unset / claude-code) ignores it.
+if (process.env.VOS_PROVIDER === "fake" && !process.env.VOS_DAEMON_BASE) {
+  process.env.VOS_DAEMON_BASE = `http://127.0.0.1:${PORT}`;
+}
+
 const app = await buildApp({ db, vaultRoot });
 
 const server = Bun.serve({

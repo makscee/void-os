@@ -47,9 +47,14 @@ function fixture() {
   );
   const bus = createEventBus();
   const pending = createPendingRegistry();
+  // VOS-90 T8: capture broadcasts so tests can assert chat.tool_result.
+  const wsFrames: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const emit = (type: string, payload: Record<string, unknown>) => {
+    wsFrames.push({ type, payload });
+  };
   const app = new Hono();
-  mountAnswerRoute(app, { db, bus, pending });
-  return { db, bus, pending, app };
+  mountAnswerRoute(app, { db, bus, pending, emit });
+  return { db, bus, pending, app, wsFrames };
 }
 
 describe("POST /chat/:chat_id/answer", () => {
@@ -132,5 +137,43 @@ describe("POST /chat/:chat_id/answer", () => {
       body: JSON.stringify({ tool_use_id: "tu-1" }),
     });
     expect(res.status).toBe(400);
+  });
+
+  // VOS-90 T8: WS `chat.tool_result` is what lets the plugin reducer clear
+  // pendingAskUser + the tool's pending flag inline (no refetch). Without
+  // this frame the e2e flakes on "banner not cleared" / "button still
+  // visible". Frame shape mirrors orchestrator.ts:335 so the existing
+  // plugin reducer case "chat.tool_result" applies unchanged.
+  it("publishes chat.tool_result WS frame on success", async () => {
+    const { db, pending, app, wsFrames } = fixture();
+    setTaskInputRequired(db, "t", "tu-99", "ok?", undefined);
+    const p = pending.register("tu-99", 5_000);
+    const res = await app.request("/chat/ctx/answer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool_use_id: "tu-99", answer: "yes" }),
+    });
+    expect(res.status).toBe(200);
+    await p;
+    const frame = wsFrames.find((f) => f.type === "chat.tool_result");
+    expect(frame).toBeDefined();
+    expect(frame!.payload).toEqual({
+      chat_id: "ctx",
+      run_id: "r",
+      tool_call_id: "tu-99",
+      output: "yes",
+      is_error: false,
+    });
+  });
+
+  it("does NOT publish chat.tool_result on 409", async () => {
+    const { app, wsFrames } = fixture();
+    const res = await app.request("/chat/ctx/answer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool_use_id: "tu-1", answer: "yes" }),
+    });
+    expect(res.status).toBe(409);
+    expect(wsFrames.find((f) => f.type === "chat.tool_result")).toBeUndefined();
   });
 });

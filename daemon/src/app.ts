@@ -119,7 +119,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // VOS-88 T8: user-facing answer route. Shares the SAME `pendingRegistry`
   // singleton with mountMcp so the MCP tool handler (which awaits the slot)
   // and the HTTP route (which resolves it) reference the same map.
-  mountAnswerRoute(app, { db: deps.db, bus, pending: pendingRegistry });
+  mountAnswerRoute(app, { db: deps.db, bus, pending: pendingRegistry, emit });
   return app;
 };
 

@@ -12,6 +12,8 @@ import type { EventBus } from "../events/index.ts";
 export interface ProviderEnv {
   VOS_PROVIDER?: string;
   VOS_FAKE_SCRIPT?: string;
+  /** Daemon's own base URL for loopback MCP calls in fake mode. */
+  VOS_DAEMON_BASE?: string;
 }
 
 export interface ProviderDeps {
@@ -38,7 +40,7 @@ export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
     if (!scriptPath) {
       throw new Error("VOS_PROVIDER=fake requires VOS_FAKE_SCRIPT env var");
     }
-    return makeFakeProvider({ scriptPath });
+    return makeFakeProvider({ scriptPath, daemonBase: env.VOS_DAEMON_BASE });
   }
   throw new Error(`unknown provider: ${kind}`);
 }

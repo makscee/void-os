@@ -236,7 +236,15 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           cwd,
           chatId,
           resumeFrom: chat.session_id ?? undefined,
-        });
+          // VOS-90 T1 bridge: fake provider's vos_ask_user directive needs
+          // taskId + contextId to call the daemon's MCP /mcp endpoint with
+          // the right correlation args. Production providers (claude-code)
+          // ignore unknown spawn-request fields, so widening here is safe.
+          // Cast: ProviderSpawnRequest does not declare these — the fake
+          // provider widens at the call site.
+          taskId,
+          contextId: chatId,
+        } as Parameters<typeof provider.spawn>[0]);
         activeHandles.set(runId, handle);
         for await (const evt of handle.events) {
           // VOS-80 S5: cancel-bail. The for-await may already have a buffered

@@ -23,6 +23,8 @@ import { ChatList } from "./ChatList";
 import { CostMeter } from "./CostMeter";
 import { BashTool } from "./tools/BashTool";
 import { GenericTool } from "./tools/GenericTool";
+import { AskUserTool } from "./tools/AskUserTool";
+import { AskUserContext, type AskUserContextValue } from "./AskUserContext";
 
 export interface ChatRootProps {
   bus: FrameBus;
@@ -249,11 +251,24 @@ export function ChatRoot(props: ChatRootProps) {
   const [refreshKey, setRefreshKey] = React.useState(0);
   const bumpRefresh = React.useCallback(() => setRefreshKey((n) => n + 1), []);
 
+  const [toast, setToast] = React.useState<{ id: number; text: string } | null>(null);
+  const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = React.useCallback((text: string) => {
+    const id = Date.now() + Math.random();
+    setToast({ id, text });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 3500);
+  }, []);
+  React.useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
   const handle = useChatRuntime({
     bus: props.bus,
     api: props.api,
     chatId: activeChatId,
     defaultAgent: props.defaultAgent,
+    onComposerToast: showToast,
     onChatIdMinted: async (id) => {
       setActiveChatId(id);
       await props.onChatIdMinted?.(id);
@@ -261,6 +276,17 @@ export function ChatRoot(props: ChatRootProps) {
     },
   });
   const runtime = handle.runtime;
+
+  const notifyAnswer409 = handle.notifyAnswer409;
+  const askUserCtx: AskUserContextValue = React.useMemo(
+    () => ({
+      chatId: activeChatId,
+      answer: (toolUseId, text) => props.api.answer(activeChatId ?? "", toolUseId, text),
+      showToast,
+      notifyAnswer409,
+    }),
+    [activeChatId, props.api, showToast, notifyAnswer409],
+  );
 
   // Refresh chat list on run start AND any terminal frame. run.start updates
   // the sidebar status dot; run.end/run.error refreshes last_msg + clears the
@@ -345,11 +371,13 @@ export function ChatRoot(props: ChatRootProps) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <AskUserContext.Provider value={askUserCtx}>
       <div data-testid="vos-chat-root" className="vos:contents">
       {/* Tool UI registration. `BashTool` is from makeAssistantToolUI — it
           renders nothing visible itself; its mount side-effect registers a
           renderer for toolName === "Bash" inside the assistant-ui store. */}
       <BashTool />
+      <AskUserTool />
       <div className="vos:flex vos:flex-row vos:h-full vos:w-full">
         <div className="vos:flex vos:flex-col vos:h-full vos:w-[260px] vos:shrink-0 vos:bg-[var(--background-secondary)]">
           <ChatList
@@ -398,24 +426,61 @@ export function ChatRoot(props: ChatRootProps) {
                 void handle.cancel();
               }}
             >
+              {handle.pendingAskUser && (() => {
+                const isButtonsOnly = (handle.pendingAskUser.options?.length ?? 0) > 0;
+                const question = handle.pendingAskUser.question || "";
+                const truncated =
+                  question.length > 80 ? question.slice(0, 77) + "…" : question;
+                return (
+                  <div
+                    data-testid="ask-user-banner"
+                    data-banner-mode={isButtonsOnly ? "blocked" : "answer"}
+                    className="vos:mt-[var(--size-4-2)] vos:mb-[var(--size-4-1)] vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--background-secondary)] vos:text-xs vos:text-[var(--text-muted)] vos:border vos:border-[var(--background-modifier-border)]"
+                  >
+                    {isButtonsOnly
+                      ? "Pick one of the options above to continue."
+                      : `Answering: ${truncated}`}
+                  </div>
+                );
+              })()}
               <ComposerPrimitive.Root
                 className="vos:flex vos:items-end vos:gap-[var(--size-4-2)] vos:my-[var(--size-4-3)] vos:p-[var(--size-4-2)] vos:rounded-[var(--radius-m)] vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:shadow-[0_0_0_1px_var(--interactive-accent)]"
               >
                 <ComposerPrimitive.Input
                   rows={1}
                   autoFocus
-                  placeholder="Message"
-                  className="vos:flex-1 vos:bg-transparent vos:resize-none vos:outline-none vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:text-[var(--text-normal)] placeholder:vos:text-[var(--text-muted)]"
+                  placeholder={
+                    handle.pendingAskUser && !handle.pendingAskUser.options?.length
+                      ? "Type your answer…"
+                      : handle.pendingAskUser
+                      ? "Use the buttons above"
+                      : "Message"
+                  }
+                  disabled={
+                    handle.pendingAskUser !== null &&
+                    (handle.pendingAskUser.options?.length ?? 0) > 0
+                  }
+                  data-testid={
+                    handle.pendingAskUser && !(handle.pendingAskUser.options?.length)
+                      ? "ask-user-composer"
+                      : undefined
+                  }
+                  className="vos:flex-1 vos:bg-transparent vos:resize-none vos:outline-none vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:text-[var(--text-normal)] placeholder:vos:text-[var(--text-muted)] disabled:vos:opacity-50"
                 />
-                {handle.isRunning ? (
-                  <QueueSendButton send={handle.send} />
-                ) : (
-                  <ComposerPrimitive.Send
-                    className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)] disabled:vos:bg-[var(--background-modifier-form-field)] disabled:vos:text-[var(--text-faint)] disabled:vos:cursor-not-allowed"
-                  >
-                    Send
-                  </ComposerPrimitive.Send>
-                )}
+                {(() => {
+                  const inButtonsOnly =
+                    handle.pendingAskUser !== null &&
+                    (handle.pendingAskUser.options?.length ?? 0) > 0;
+                  if (inButtonsOnly) return null;
+                  if (handle.isRunning) return <QueueSendButton send={handle.send} />;
+                  return (
+                    <ComposerPrimitive.Send
+                      className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)] disabled:vos:bg-[var(--background-modifier-form-field)] disabled:vos:text-[var(--text-faint)] disabled:vos:cursor-not-allowed"
+                    >
+                      Send
+                    </ComposerPrimitive.Send>
+                  );
+                })()}
               </ComposerPrimitive.Root>
               {handle.isRunning && (
                 <div
@@ -425,11 +490,21 @@ export function ChatRoot(props: ChatRootProps) {
                   ESC to interrupt
                 </div>
               )}
+              {toast && (
+                <div
+                  key={toast.id}
+                  data-testid="ask-user-toast"
+                  className="vos:mb-[var(--size-4-2)] vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--background-modifier-error,#a0303d)] vos:text-[var(--text-on-accent)] vos:text-xs vos:inline-block"
+                >
+                  {toast.text}
+                </div>
+              )}
             </div>
           </ThreadPrimitive.Root>
         </div>
       </div>
       </div>
+      </AskUserContext.Provider>
     </AssistantRuntimeProvider>
   );
 }

@@ -27,9 +27,17 @@ function row(name: string, description = `${name} desc`): AgentRow {
   return { name, description, model: "opus", vault_path: `/x/${name}.md`, updated_at: 1 };
 }
 
+// VOS-90 T8: migration 0008 seeds a default `maya` agent so the plugin
+// picker has a fallback option on a fresh install. Tests that need a
+// "blank slate" must DELETE the seed before asserting.
+function clearAgents(db: Database) {
+  db.exec("DELETE FROM agents");
+}
+
 describe("GET /agents", () => {
   test("empty repo → { agents: [] }", async () => {
     const db = freshDb();
+    clearAgents(db);
     const app = makeApp(db);
     const res = await app.request("/agents");
     expect(res.status).toBe(200);
@@ -40,6 +48,7 @@ describe("GET /agents", () => {
 
   test("returns {name, description} entries, maya first then alphabetical", async () => {
     const db = freshDb();
+    clearAgents(db);
     const repo = makeAgentRepo(db);
     repo.upsertAll([row("zeta"), row("journaler"), row("maya"), row("alpha")]);
 
@@ -57,6 +66,7 @@ describe("GET /agents", () => {
 
   test("maya absent → alphabetical only", async () => {
     const db = freshDb();
+    clearAgents(db);
     const repo = makeAgentRepo(db);
     repo.upsertAll([row("zeta"), row("alpha")]);
 
@@ -64,6 +74,16 @@ describe("GET /agents", () => {
     const res = await app.request("/agents");
     const body = await res.json() as { agents: Array<{ name: string }> };
     expect(body.agents.map((a) => a.name)).toEqual(["alpha", "zeta"]);
+    db.close();
+  });
+
+  test("fresh DB has seeded maya (migration 0008)", async () => {
+    const db = freshDb();
+    const app = makeApp(db);
+    const res = await app.request("/agents");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { agents: Array<{ name: string; description: string }> };
+    expect(body.agents.map((a) => a.name)).toEqual(["maya"]);
     db.close();
   });
 });

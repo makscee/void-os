@@ -44,6 +44,9 @@ export interface ChatRuntimeDeps {
   onChatIdMinted?: (id: string) => void | Promise<void>;
   defaultAgent?: string;
   onSendError?: (chatId: string, err: unknown) => void;
+  /** Receives transient toast strings ("question already resolved", buttons-only
+   *  inert hint, etc.). ChatRoot wires this to its in-chat toast surface. */
+  onComposerToast?: (text: string) => void;
 }
 
 export const QUEUED_MARKER = "vos-queued";
@@ -111,12 +114,31 @@ function buildOverlay(
   liveTokens: string,
   liveToolEvents: ToolPart[],
   cancelled: boolean,
+  toolsFirst: boolean,
 ): ChatMessage | null {
   if (!runId) return null;
   if (!liveTokens && liveToolEvents.length === 0) return null;
+  // Arrival-order ordering: when tools landed BEFORE any text streamed
+  // (e.g. ask_user fires a tool_use first, then text "chose red" arrives
+  // post-answer), keep tools at their original index positions so the
+  // tool part doesn't shift from index 0 → index 1 when text arrives.
+  // Otherwise (text first, then tools) the historic [text, ...tools]
+  // order is correct and stable.
+  //
+  // Stability matters because assistant-ui's MessagePart is keyed by
+  // partIndex (see MessagePartsGrouped.js + ExternalThread.js part lookups
+  // via tapClientLookup-by-index). A part shifting index between renders
+  // mid-tool-call surfaces as `tapClientLookup: Index N out of bounds
+  // (length: N)` when the rendered tool UI's part lookup races with the
+  // store's part-list update. VOS-90 T8.
   const parts: ChatMessage["parts"] = [];
-  if (liveTokens) parts.push({ kind: "text", text: liveTokens });
-  for (const t of liveToolEvents) parts.push(t);
+  if (toolsFirst) {
+    for (const t of liveToolEvents) parts.push(t);
+    if (liveTokens) parts.push({ kind: "text", text: liveTokens });
+  } else {
+    if (liveTokens) parts.push({ kind: "text", text: liveTokens });
+    for (const t of liveToolEvents) parts.push(t);
+  }
   return {
     id: runId,
     role: "assistant",
@@ -143,6 +165,13 @@ export interface ChatRuntimeHandle {
   cancel: () => Promise<boolean>;
   isRunning: boolean;
   send: (text: string) => Promise<void>;
+  /** Mirror of reducer state.pendingAskUser, exposed for ChatRoot composer-mode
+   *  branching. */
+  pendingAskUser: ChatState["pendingAskUser"];
+  /** Dispatcher exposed for AskUserTool's 409 path (option-button click
+   *  loses race with another tab). Clears pendingAskUser so the banner
+   *  detaches without waiting for the daemon's tool_result echo. */
+  notifyAnswer409: () => void;
 }
 
 export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
@@ -271,6 +300,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
         state.liveTokens,
         state.liveToolEvents,
         false,
+        state.liveToolsFirst,
       );
       if (overlay) base.push(toThreadMessage(overlay));
     } else if (state.pendingStoppedRunId) {
@@ -279,6 +309,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
         state.liveTokens,
         state.liveToolEvents,
         true,
+        state.liveToolsFirst,
       );
       if (overlay) base.push(toThreadMessage(overlay));
     }
@@ -309,6 +340,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     state.activeRunId,
     state.liveTokens,
     state.liveToolEvents,
+    state.liveToolsFirst,
     state.pendingStoppedRunId,
     state.errorNotice,
     state.queues,
@@ -329,6 +361,41 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
         await deps.onChatIdMinted?.(chatId);
       }
 
+      // ask_user routing. Read directly from `state.pendingAskUser` — the
+      // callback's dep array includes it, so the latest reducer snapshot is
+      // captured on every commit. React's commit phase has already flushed
+      // before any user-driven send call lands here.
+      const pending = state.pendingAskUser;
+      if (pending) {
+        if (pending.options && pending.options.length > 0) {
+          // Buttons-only mode — Send is hidden but Enter can still fire. Inert.
+          deps.onComposerToast?.("Pick one of the options above to continue.");
+          return;
+        }
+        // Free-form answer mode.
+        try {
+          const r = await deps.api.answer(chatId, pending.toolUseId, text);
+          if (!r.ok) {
+            if (r.status === 409) {
+              dispatch({ kind: "local_answer_409" });
+              deps.onComposerToast?.("Question already resolved.");
+              return;
+            }
+            deps.onComposerToast?.(`Couldn't send (${r.status}).`);
+            return;
+          }
+          // Success: composer-clearing is the caller's job (mirrors
+          // QueueSendButton). Reducer clears pendingAskUser when the matching
+          // tool_result frame lands.
+          return;
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error("[void-os] /answer failed", err);
+          deps.onComposerToast?.("Couldn't send — try again.");
+          return;
+        }
+      }
+
       const runningNow = prevRunStateRef.current === "running";
       if (runningNow) {
         const qid = `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -347,7 +414,7 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
         try { deps.onSendError?.(chatId, err); } catch { /* swallow */ }
       }
     },
-    [deps.api, deps.defaultAgent, deps.onChatIdMinted, deps.onSendError],
+    [deps, state.pendingAskUser],
   );
 
   const onNew = useCallback(
@@ -382,7 +449,18 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
     convertMessage: (m) => m,
   });
 
-  return { runtime, cancel, isRunning, send: sendText };
+  const notifyAnswer409 = useCallback(() => {
+    dispatch({ kind: "local_answer_409" });
+  }, []);
+
+  return {
+    runtime,
+    cancel,
+    isRunning,
+    send: sendText,
+    pendingAskUser: state.pendingAskUser,
+    notifyAnswer409,
+  };
 }
 
 // Re-exported for tests.
