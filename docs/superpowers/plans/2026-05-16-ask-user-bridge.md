@@ -4,7 +4,7 @@
 
 **Goal:** Introduce `AskUserBridge` Module as the single owner of the `ask_user` round-trip (Task → INPUT_REQUIRED → HTTP answer → Task → WORKING). Delete `chat/ask-user-repo.ts` and `adapters/mcp/pending-questions.ts`; collapse their responsibilities into the bridge. MCP `ask_user` tool and `POST /chat/:id/answer` route depend only on the bridge Interface.
 
-**Architecture:** New file `daemon/src/chat/ask-user-bridge.ts` exports `AskUserBridge` interface + `createAskUserBridge({ db, bus })` factory. Four private CAS / append SQL ops + in-memory `Map<toolUseId, Awaiter>` registry live inside. Bus emission for state/message events moves out of `ask-user.ts` (open path) and `api/answer.ts` (resolve path) into the bridge so both paths emit identically. Wire-format unchanged; SQL bodies copied verbatim.
+**Architecture:** New file `daemon/src/chat/ask-user-bridge.ts` exports `AskUserBridge` interface + `createAskUserBridge({ db, bus })` factory. Bridge owns the Interface, the `Map<toolUseId, Awaiter>` pending registry, the round-trip lifecycle, and bus emission. The four CAS / append SQL ops stay in `chat/ask-user-repo.ts` — the bridge **delegates** to them (single Module owns the SQL, single Module owns the Interface). `ask-user-repo.ts` becomes internal-to-bridge — no other file imports from it. Bus emission for state/message events moves out of `ask-user.ts` (open path) and `api/answer.ts` (resolve path) into the bridge so both paths emit identically. Wire-format unchanged.
 
 **Tech Stack:** TypeScript, Bun, `bun:test`, `bun:sqlite`, Hono. Existing patterns: factory deps + Zod input shapes per MCP tool ([[ADR-0002]]).
 
@@ -26,8 +26,10 @@
 - `vault/projects/void-os/CONTEXT.md` — add `AskUserBridge` glossary entry under daemon-internal section
 
 **Delete (final task):**
-- `daemon/src/chat/ask-user-repo.ts`
 - `daemon/src/adapters/mcp/pending-questions.ts`
+
+**Kept but no longer publicly imported (only bridge calls into it):**
+- `daemon/src/chat/ask-user-repo.ts` — the four CAS / append helpers. Stays as private impl detail of the bridge. Folding it into the bridge is a future cleanup, deferred from this task to keep SQL untouched and risk low.
 
 **Test (existing, must pass unchanged):**
 - `daemon/src/providers/fake/__tests__/ask-user.test.ts` (E2E round-trip)
@@ -132,7 +134,12 @@ Create `daemon/src/chat/ask-user-bridge.ts`:
 ```typescript
 import type { Database } from "bun:sqlite";
 import type { EventBus } from "../events/index.ts";
-import { makeMessagesRepo } from "./messages-repo.ts";
+import {
+  setTaskInputRequired,
+  clearTaskPending,
+  appendToolUseMessage,
+  appendToolResultMessage,
+} from "./ask-user-repo.ts";
 
 export interface OpenArgs {
   taskId: string;
@@ -146,7 +153,8 @@ export interface OpenArgs {
 export type OpenResult =
   | { answer: string }
   | { canceled: true }
-  | { timeout: true };
+  | { timeout: true }
+  | { raceLost: true };
 
 export interface ResolveArgs {
   taskId: string;
@@ -172,8 +180,11 @@ export interface AskUserBridge {
 }
 
 interface Awaiter {
-  resolve: (r: OpenResult) => void;
+  resolveFn: (r: OpenResult) => void;
   timer: ReturnType<typeof setTimeout> | null;
+  settled: boolean;          // first-writer-wins flag — guards timer vs resolve vs cancel race
+  contextId: string;
+  taskId: string;
 }
 
 export interface CreateAskUserBridgeDeps {
@@ -188,127 +199,93 @@ export function createAskUserBridge(deps: CreateAskUserBridgeDeps): AskUserBridg
   const { db, bus } = deps;
   const deadlineMs = deps.deadlineMs ?? DEFAULT_DEADLINE_MS;
   const pending = new Map<string, Awaiter>();
-  const messages = makeMessagesRepo(db);
 
-  // --- Private CAS + append ops (copied verbatim from ask-user-repo.ts) ---
-
-  function setTaskInputRequired(
-    taskId: string, toolUseId: string, question: string, options: string[] | undefined,
-  ): boolean {
-    const stash = JSON.stringify({ tool_use_id: toolUseId, question, options: options ?? null });
-    const info = db
-      .query(
-        `UPDATE tasks SET state = 'TASK_STATE_INPUT_REQUIRED', pending = ?, updated_at = strftime('%s','now')
-         WHERE id = ? AND state = 'TASK_STATE_WORKING'`,
-      )
-      .run(stash, taskId);
-    return info.changes > 0;
+  function emitStateChanged(contextId: string, taskId: string, state: string): void {
+    bus.emit({ type: "task.state_changed", chatId: contextId, payload: { taskId, state } });
   }
 
-  function clearTaskPending(taskId: string, toolUseId: string): boolean {
-    const info = db
-      .query(
-        `UPDATE tasks SET state = 'TASK_STATE_WORKING', pending = NULL, updated_at = strftime('%s','now')
-         WHERE id = ? AND state = 'TASK_STATE_INPUT_REQUIRED'
-           AND json_extract(pending, '$.tool_use_id') = ?`,
-      )
-      .run(taskId, toolUseId);
-    return info.changes > 0;
+  function emitMessageAppended(contextId: string, taskId: string, messageId: number): void {
+    bus.emit({ type: "message.appended", chatId: contextId, payload: { taskId, messageId } });
   }
-
-  function appendToolUseMessage(a: OpenArgs): number {
-    return messages.appendMessage({
-      taskId: a.taskId,
-      contextId: a.contextId,
-      runId: a.runId,
-      role: "tool",
-      parts: [
-        {
-          kind: "data",
-          data: { kind: "tool_use", tool_use_id: a.toolUseId, name: "ask_user", input: { question: a.question, options: a.options ?? null } },
-        },
-      ],
-    });
-  }
-
-  function appendToolResultMessage(taskId: string, contextId: string, runId: string | null, toolUseId: string, answer: string): number {
-    return messages.appendMessage({
-      taskId, contextId, runId,
-      role: "tool",
-      parts: [
-        { kind: "data", data: { kind: "tool_result", tool_use_id: toolUseId, output: answer, is_error: false } },
-      ],
-    });
-  }
-
-  // --- Public Interface ---
 
   function open(args: OpenArgs): Promise<OpenResult> {
     return new Promise<OpenResult>((resolveFn) => {
-      const tx = db.transaction(() => {
-        if (!setTaskInputRequired(args.taskId, args.toolUseId, args.question, args.options)) {
-          throw new Error("TASK_NOT_WORKING");
-        }
-        appendToolUseMessage(args);
-      });
+      // CAS + history-write in one tx — delegates to ask-user-repo helpers (real SQL lives there).
+      let messageId: number | null = null;
       try {
+        const tx = db.transaction(() => {
+          if (!setTaskInputRequired(db, args.taskId, args.toolUseId, args.question, args.options)) {
+            throw new Error("CAS_LOST");
+          }
+          messageId = appendToolUseMessage(db, {
+            taskId: args.taskId,
+            contextId: args.contextId,
+            runId: args.runId,
+            toolUseId: args.toolUseId,
+            question: args.question,
+            options: args.options,
+          });
+        });
         tx();
       } catch (err) {
-        // CAS lost / task not in WORKING — surface as immediate canceled
-        resolveFn({ canceled: true });
+        // Task not in WORKING (or already pending another question). Distinct from user-cancel.
+        resolveFn({ raceLost: true });
         return;
       }
 
-      bus.emit({
-        type: "task.state_changed",
-        chatId: args.contextId,
-        payload: { taskId: args.taskId, state: "TASK_STATE_INPUT_REQUIRED" },
-      });
-      bus.emit({
-        type: "message.appended",
-        chatId: args.contextId,
-        payload: { taskId: args.taskId },
-      });
+      emitStateChanged(args.contextId, args.taskId, "TASK_STATE_INPUT_REQUIRED");
+      if (messageId !== null) emitMessageAppended(args.contextId, args.taskId, messageId);
 
-      const timer = setTimeout(() => {
-        const a = pending.get(args.toolUseId);
-        if (!a) return;
+      const awaiter: Awaiter = {
+        resolveFn,
+        timer: null,
+        settled: false,
+        contextId: args.contextId,
+        taskId: args.taskId,
+      };
+
+      awaiter.timer = setTimeout(() => {
+        // Settled check first — resolve() or cancel() may have won the race already.
+        if (awaiter.settled) return;
+        awaiter.settled = true;
         pending.delete(args.toolUseId);
-        // Timeout = revert task to WORKING + emit state event
-        const cleared = clearTaskPending(args.taskId, args.toolUseId);
-        if (cleared) {
-          bus.emit({
-            type: "task.state_changed",
-            chatId: args.contextId,
-            payload: { taskId: args.taskId, state: "TASK_STATE_WORKING" },
-          });
-        }
-        a.resolve({ timeout: true });
+        const cleared = clearTaskPending(db, args.taskId, args.toolUseId);
+        if (cleared) emitStateChanged(args.contextId, args.taskId, "TASK_STATE_WORKING");
+        resolveFn({ timeout: true });
       }, deadlineMs);
 
-      pending.set(args.toolUseId, { resolve: resolveFn, timer });
+      pending.set(args.toolUseId, awaiter);
     });
   }
 
   async function resolveAction(args: ResolveArgs): Promise<ResolveResult> {
-    const a = pending.get(args.toolUseId);
-    if (!a) return { ok: false, reason: "unknown" };
+    const awaiter = pending.get(args.toolUseId);
+    if (!awaiter || awaiter.settled) return { ok: false, reason: "unknown" };
 
-    // Load contextId + runId for message append + bus emission
-    const ctxRow = db
-      .query("SELECT context_id FROM tasks WHERE id = ?")
-      .get(args.taskId) as { context_id: string } | null;
+    // Look up contextId + active runId for the tool_result message append.
+    const ctxRow = db.query("SELECT context_id FROM tasks WHERE id = ?").get(args.taskId) as
+      | { context_id: string }
+      | null;
     if (!ctxRow) return { ok: false, reason: "unknown" };
     const contextId = ctxRow.context_id;
     const runRow = db
-      .query("SELECT id FROM runs WHERE task_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1")
+      .query(
+        "SELECT id FROM runs WHERE task_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
+      )
       .get(args.taskId) as { id: string } | null;
     const runId = runRow?.id ?? null;
 
+    let messageId: number | null = null;
     try {
       const tx = db.transaction(() => {
-        if (!clearTaskPending(args.taskId, args.toolUseId)) throw new Error("PENDING_MISMATCH");
-        appendToolResultMessage(args.taskId, contextId, runId, args.toolUseId, args.answer);
+        if (!clearTaskPending(db, args.taskId, args.toolUseId)) throw new Error("PENDING_MISMATCH");
+        messageId = appendToolResultMessage(db, {
+          taskId: args.taskId,
+          contextId,
+          runId,
+          toolUseId: args.toolUseId,
+          answer: args.answer,
+        });
       });
       tx();
     } catch (err) {
@@ -317,49 +294,39 @@ export function createAskUserBridge(deps: CreateAskUserBridgeDeps): AskUserBridg
       throw err;
     }
 
-    // Clear timer + remove pending + resolve awaiter
-    if (a.timer) clearTimeout(a.timer);
+    // Win the local race against the timer; only then clear + emit.
+    awaiter.settled = true;
+    if (awaiter.timer) clearTimeout(awaiter.timer);
     pending.delete(args.toolUseId);
-    a.resolve({ answer: args.answer });
 
-    bus.emit({
-      type: "task.state_changed",
-      chatId: contextId,
-      payload: { taskId: args.taskId, state: "TASK_STATE_WORKING" },
-    });
-    bus.emit({
-      type: "message.appended",
-      chatId: contextId,
-      payload: { taskId: args.taskId },
-    });
+    emitStateChanged(contextId, args.taskId, "TASK_STATE_WORKING");
+    if (messageId !== null) emitMessageAppended(contextId, args.taskId, messageId);
 
+    awaiter.resolveFn({ answer: args.answer });
     return { ok: true };
   }
 
   async function cancel(args: CancelArgs): Promise<void> {
-    const a = pending.get(args.toolUseId);
-    if (!a) return;
-    if (a.timer) clearTimeout(a.timer);
+    const awaiter = pending.get(args.toolUseId);
+    if (!awaiter || awaiter.settled) return;
+    awaiter.settled = true;
+    if (awaiter.timer) clearTimeout(awaiter.timer);
     pending.delete(args.toolUseId);
-    const cleared = clearTaskPending(args.taskId, args.toolUseId);
-    if (cleared) {
-      const ctxRow = db
-        .query("SELECT context_id FROM tasks WHERE id = ?")
-        .get(args.taskId) as { context_id: string } | null;
-      if (ctxRow) {
-        bus.emit({
-          type: "task.state_changed",
-          chatId: ctxRow.context_id,
-          payload: { taskId: args.taskId, state: "TASK_STATE_WORKING" },
-        });
-      }
-    }
-    a.resolve({ canceled: true });
+
+    const cleared = clearTaskPending(db, args.taskId, args.toolUseId);
+    if (cleared) emitStateChanged(awaiter.contextId, args.taskId, "TASK_STATE_WORKING");
+
+    awaiter.resolveFn({ canceled: true });
   }
 
   return { open, resolve: resolveAction, cancel, size: () => pending.size };
 }
 ```
+
+Notes for the implementing engineer:
+- The four SQL/history helpers (`setTaskInputRequired`, `clearTaskPending`, `appendToolUseMessage`, `appendToolResultMessage`) live in `daemon/src/chat/ask-user-repo.ts`. **Do not re-inline their bodies in the bridge.** Schema details (the `tasks.metadata` JSON path, `ms` timestamps, `DataPart` `tool_call_id`/`tool_name` field names, `ROLE_AGENT`/`ROLE_USER` role values, `messages-repo.appendMessage` positional arg list) all live in those helpers and must not be duplicated.
+- The `settled` flag is the only race guard; `pending.delete()` is not a guard on its own (timer can fire between `get` and `delete`).
+- `OpenResult.raceLost` distinguishes "task was not in WORKING when open() ran" (programmer error / concurrent ask_user) from "user canceled" or "deadline expired". The `ask_user` MCP handler maps it to `ASK_USER_RACE`.
 
 - [ ] **Step 4: Run test to verify happy path passes**
 
@@ -562,6 +529,7 @@ export function makeAskUser(deps: AskUserDeps) {
 
     if ("answer" in result) return { content: [{ type: "text", text: result.answer }] };
     if ("timeout" in result) return { content: [{ type: "text", text: "ASK_USER_TIMEOUT" }], isError: true };
+    if ("raceLost" in result) return { content: [{ type: "text", text: "ASK_USER_RACE" }], isError: true };
     return { content: [{ type: "text", text: "ASK_USER_CANCELLED" }], isError: true };
   };
 }
@@ -678,50 +646,58 @@ git -C workspace/void-os commit -m "refactor(VOS-100): /answer route depends on 
 
 ---
 
-### Task 6: Delete dead files + sweep stragglers
+### Task 6: Delete pending-questions.ts + sweep stragglers
 
 **Files:**
-- Delete: `daemon/src/chat/ask-user-repo.ts`
 - Delete: `daemon/src/adapters/mcp/pending-questions.ts`
-- Possibly modify: any straggler that still imports either
+- Possibly modify: any straggler that still imports `pending-questions` or `ask-user-repo` directly (the latter should now have exactly one importer — the bridge)
+
+Note: `daemon/src/chat/ask-user-repo.ts` stays. It is now internal-to-bridge — only `ask-user-bridge.ts` imports from it. Folding its four helpers into the bridge file is a deliberate future cleanup, deferred from this task to keep SQL untouched.
 
 - [ ] **Step 1: Grep for remaining imports**
 
 Run:
 ```bash
-grep -rn "ask-user-repo" workspace/void-os/daemon/src/ || echo "clean: ask-user-repo"
-grep -rn "pending-questions" workspace/void-os/daemon/src/ || echo "clean: pending-questions"
-grep -rn "pendingRegistry" workspace/void-os/daemon/src/ || echo "clean: pendingRegistry"
+cd workspace/void-os && \
+  grep -rn "pending-questions" daemon/src/ || echo "clean: pending-questions" ; \
+  grep -rn "pendingRegistry" daemon/src/ || echo "clean: pendingRegistry" ; \
+  echo "--- ask-user-repo importers (must be exactly: ask-user-bridge.ts) ---" ; \
+  grep -rn "from.*ask-user-repo" daemon/src/
 ```
 
-Expected: each prints "clean: ...".
+Expected:
+- `clean: pending-questions`
+- `clean: pendingRegistry`
+- The only `ask-user-repo` importer printed is `daemon/src/chat/ask-user-bridge.ts`. If anything else still imports from it, migrate that file to use the bridge instead.
 
-If any non-test/non-dead-file import remains, fix it in this task. Common stragglers:
-- `cancelAll()` was used by graceful-shutdown — if so, replace with calling `bridge.cancel()` for each pending entry, OR drop the feature if no longer needed (decide based on actual caller; document choice in commit msg).
-- Other test files (`*-repo.test.ts` for ask-user-repo) — delete alongside the source they test.
+Stragglers to watch for:
+- `cancelAll()` (from pending-questions): if graceful-shutdown or any test calls it, replace with iterating the bridge's pending registry (add a `bridge.cancelAll(reason)` method if needed — but only if a real caller exists; otherwise drop).
+- A `pending-questions.test.ts` file — delete alongside the source.
 
-- [ ] **Step 2: Delete the two files**
+- [ ] **Step 2: Delete pending-questions and its test**
 
 ```bash
-git -C workspace/void-os rm daemon/src/chat/ask-user-repo.ts
-git -C workspace/void-os rm daemon/src/adapters/mcp/pending-questions.ts
-# Also delete companion tests if they exist:
-git -C workspace/void-os rm daemon/src/chat/ask-user-repo.test.ts 2>/dev/null || true
-git -C workspace/void-os rm daemon/src/adapters/mcp/pending-questions.test.ts 2>/dev/null || true
+cd workspace/void-os && \
+  git rm daemon/src/adapters/mcp/pending-questions.ts && \
+  git rm daemon/src/adapters/mcp/pending-questions.test.ts 2>/dev/null || true
 ```
 
 - [ ] **Step 3: Full type-check + full test suite**
 
-Run: `cd workspace/void-os/daemon && bun tsc --noEmit && bun test`
+```bash
+cd workspace/void-os/daemon && bun tsc --noEmit && bun test
+```
+
 Expected: zero TS errors. All tests green.
 
-If a test imports a deleted file: that test was exercising internals that the bridge now owns — either delete the test (covered by `ask-user-bridge.test.ts`) or migrate the assertion to target the bridge. Decide per-test.
+If a test imports a deleted file or `pendingRegistry`: that test was exercising the old singleton bridge — either delete it (its coverage moves to `ask-user-bridge.test.ts`) or rewrite to consume the bridge directly. Decide per-test.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C workspace/void-os add -A
-git -C workspace/void-os commit -m "chore(VOS-100): delete ask-user-repo + pending-questions"
+cd workspace/void-os && \
+  git add -A && \
+  git commit -m "chore(VOS-100): delete pending-questions; bridge is sole owner"
 ```
 
 ---
@@ -747,9 +723,14 @@ Add entry under the daemon-internal glossary, alphabetically placed (likely afte
 **AskUserBridge.** Daemon-internal Module that owns the *Task pauses for user input → resumes on HTTP answer* round-trip. Single dependency for both the `ask_user` MCP tool and the `POST /chat/:id/answer` route. Encapsulates: INPUT_REQUIRED state flip (`setTaskInputRequired`/`clearTaskPending` CAS), tool_use/tool_result message append, in-memory pending registry (`toolUseId → Promise<answer>`, 30-min deadline), bus emission on resolve. Replaces ask-user-repo.ts + pending-questions.ts coupling.
 ```
 
-- [ ] **Step 3: Commit via sw**
+- [ ] **Step 3: Edit canonical hub copy, then commit via sw**
 
-Run from anywhere:
+`CONTEXT.md` is a state-plane file, so the edit must land in canonical hub master via `sw`. To keep this single-step and deterministic, **edit the canonical copy directly** (not the worktree copy), then `sw` stages it:
+
+1. Open `/Users/admin/hub/vault/projects/void-os/CONTEXT.md` with the Edit tool. Insert the `AskUserBridge` glossary entry from Step 2 in the daemon-internal section, alphabetically placed.
+
+2. Commit via `sw`:
+
 ```bash
 /Users/admin/hub/tools/state-write/sw "docs(VOS-100): CONTEXT.md glossary — AskUserBridge" -- bash -c '
   set -e
@@ -758,9 +739,9 @@ Run from anywhere:
 '
 ```
 
-Note: the edit happens in the worktree, but `sw` operates on canonical hub master. If the worktree edit is the source: copy the file via `cp /Users/admin/hub-wt/VOS-100/vault/projects/void-os/CONTEXT.md /Users/admin/hub/vault/projects/void-os/CONTEXT.md` BEFORE running `sw`. Alternatively, edit canonical hub copy directly with the Edit tool, then run `sw` to commit.
+Expected `sw` output: one line with commit SHA + lock-wait-ms. If `sw` prints `(noop)`, the Edit in step 1 did not happen — repeat step 1.
 
-Expected sw output: a single line with commit SHA + lock-wait-ms.
+(Do not edit the worktree copy of `CONTEXT.md`. The worktree is for code-plane only; state-plane writes go through canonical + `sw` to avoid divergence between worktree copies and canonical master.)
 
 ---
 

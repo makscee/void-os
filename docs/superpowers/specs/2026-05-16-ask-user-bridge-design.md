@@ -14,7 +14,7 @@ Five files share a single round-trip (`ask_user` MCP tool ↔ HTTP `POST /chat/:
 
 ## Decision
 
-Introduce `daemon/src/chat/ask-user-bridge.ts` as the single owner of the *Task pauses for user input → resumes on HTTP answer* round-trip. Delete `chat/ask-user-repo.ts` and `adapters/mcp/pending-questions.ts`; their responsibilities collapse into the bridge.
+Introduce `daemon/src/chat/ask-user-bridge.ts` as the single owner of the *Task pauses for user input → resumes on HTTP answer* round-trip. Delete `adapters/mcp/pending-questions.ts`. Keep `chat/ask-user-repo.ts` as internal-to-bridge — only the bridge imports its four SQL/history helpers; deleting it and inlining the helpers into the bridge is a deferred follow-up (keeps SQL untouched in this task to minimize risk).
 
 ## Interface
 
@@ -57,15 +57,15 @@ export function createAskUserBridge(deps: { db: Database; bus: EventBus }): AskU
 
 ## Internals (private)
 
-- In-memory pending registry: `Map<toolUseId, { resolve; reject; deadline }>`. Lives inside the bridge instance — not exported.
-- Four CAS / append SQL ops become private methods:
-  - `setTaskInputRequired` — atomic CAS UPDATE Task → INPUT_REQUIRED + pending stash
-  - `clearTaskPending` — atomic CAS UPDATE Task → WORKING
-  - `appendToolUseMessage` — INSERT message with `tool_use` DataPart
-  - `appendToolResultMessage` — INSERT message with `tool_result` DataPart
-- SQL bodies preserved verbatim from `ask-user-repo.ts` — zero schema change.
-- 30-minute deadline per pending entry → `{ timeout: true }`. Same value as today.
-- Bus emission on `resolve()` (`task.state_changed: WORKING`, `message.appended`) moves out of `api/answer.ts` into the bridge so HTTP route and any future resolver path emit identically.
+- In-memory pending registry: `Map<toolUseId, Awaiter>`. Each `Awaiter` carries `{ resolveFn, timer, settled, contextId, taskId }`. The `settled` flag is the single race guard between `resolve()`, `cancel()`, and the timeout timer (a no-op delete on `pending` is not a guard — the timer can fire between `get` and `delete`).
+- The four SQL / history helpers stay in `chat/ask-user-repo.ts`:
+  - `setTaskInputRequired(db, taskId, toolUseId, question, options)` — atomic CAS UPDATE Task `WORKING → INPUT_REQUIRED`, stash `(tool_use_id, question, options)` inside the `tasks.metadata` JSON document via `json_set`.
+  - `clearTaskPending(db, taskId, toolUseId)` — atomic CAS UPDATE Task `INPUT_REQUIRED → WORKING`, `json_remove` the stash, but only if `metadata.pending_tool_use_id` matches the supplied `toolUseId`.
+  - `appendToolUseMessage(db, args)` — `appendMessage(taskId, contextId, runId, "ROLE_AGENT", [DataPart{tool_use, tool_call_id, tool_name: "ask_user", input}])`.
+  - `appendToolResultMessage(db, args)` — `appendMessage(taskId, contextId, runId, "ROLE_USER", [DataPart{tool_result, tool_call_id, output, is_error: false}])`.
+- The bridge composes these — does not re-inline SQL, role strings, or `DataPart` shape. Schema, timestamp units (`Date.now()` ms), and `messages-repo` ROLE_AGENT UPSERT-on-`run_id` contract are all owned by `ask-user-repo.ts` and `messages-repo.ts`. Zero schema change in this task.
+- 30-minute deadline per pending entry → `{ timeout: true }`. Same value as today (the existing `makeAskUser` factory's `deadlineMs`).
+- Bus emission moves from the two callsites (`ask-user.ts` open path, `api/answer.ts` resolve path) into the bridge so both paths emit identically. The bridge emits `task.state_changed` and `message.appended` (with `messageId`) on `open` (INPUT_REQUIRED) and on `resolve` (WORKING). `cancel`/timeout emit only the `WORKING` state event (no new message).
 
 ## Migration
 
@@ -73,7 +73,7 @@ export function createAskUserBridge(deps: { db: Database; bus: EventBus }): AskU
 |---|---|
 | `adapters/mcp/tools/ask-user.ts` imports `setTaskInputRequired`, `appendToolUseMessage`, `clearTaskPending` from `chat/ask-user-repo` and the `PendingRegistry` from `adapters/mcp/pending-questions` | imports `AskUserBridge` from `chat/ask-user-bridge`; handler body collapses to `bridge.open()` with `bridge.cancel({ reason: 'canceled' })` in the abort path |
 | `adapters/mcp/pending-questions.ts` (PendingRegistry interface + factory) | **deleted**; logic inlined as bridge private state |
-| `chat/ask-user-repo.ts` (4 exports) | **deleted**; functions become private bridge methods |
+| `chat/ask-user-repo.ts` (4 exports) | **kept**, but only the bridge imports from it. No other file may import these four functions directly. Deleting this file and folding the helpers into the bridge is a deferred follow-up. |
 | `api/answer.ts` imports `clearTaskPending`, `appendToolResultMessage`, takes `PendingRegistry` dep, emits bus events inline | imports `AskUserBridge`, takes `bridge` dep, calls `bridge.resolve()`, returns mapped HTTP status; no inline bus emission |
 | MCP tool factory `makeAskUser(deps)` takes `{ db, pending, ... }` | takes `{ bridge, ... }` |
 | HTTP route wiring takes `{ db, pending, bus }` | takes `{ bridge }` |
@@ -111,7 +111,7 @@ Wire-format unchanged — plugin sees identical `chat.token` / `chat.tool_use` /
 - `ask_agent` / `WAITING_ON_AGENT` round-trip — different state, different resolver shape; if later analysis shows the same coupling pattern recurring there, extract an analogous `AgentBridge` then.
 - Future MCP tools (`run_skill`, `vault.write`, `spawn_worktree_task`) — none pause a Task on external resolution, so none consume `AskUserBridge`.
 - Bus event payload changes — emitted events keep today's shape and field names.
-- Schema / SQL changes — CAS bodies copied verbatim.
+- Schema / SQL changes — CAS bodies stay in `ask-user-repo.ts`, untouched.
 - Timeout-policy changes (30 min stays).
 
 ## References
