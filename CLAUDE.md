@@ -1,3 +1,7 @@
+# void-os repo location (relocated 2026-05-16)
+
+Canonical path: `/Users/admin/hub/workspace/void-os` (was `~/void-os`). All VOS-* tasks tracked in hub at `/Users/admin/hub/vault/work/tasks/`. Workflow conventions in `/Users/admin/hub/CLAUDE.md` (Unified Workflow section). Worktrees stay at `~/void-os-wt/<ID>/` (NOT `~/hub-wt/`). Default branch: `main`. Direct push to GitHub allowed via `/done` (external repo merge per hub convention).
+
 # context-mode — MANDATORY routing rules
 
 You have context-mode MCP tools available. These rules are NOT optional — they protect your context window from flooding. A single unrouted command can dump 56 KB into context and waste the entire session.
