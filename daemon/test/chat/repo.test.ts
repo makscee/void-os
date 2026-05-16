@@ -10,7 +10,7 @@
 
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { makeChatRepo, openTaskFor, setTaskState } from "../../src/chat/repo";
 
@@ -26,15 +26,8 @@ const MIGRATIONS_DIR = join(
 
 function freshDb(): Database {
   const db = new Database(":memory:");
-  for (const m of [
-    "0001_init.sql",
-    "0002_runs_columns.sql",
-    "0003_chat_lifecycle.sql",
-    "0004_messages.sql",
-    "0005_costs_cache.sql",
-    "0006_costs_chat_id.sql",
-    "0007_a2a_tables.sql",
-  ]) {
+  const migs = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
+  for (const m of migs) {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
   return db;
@@ -170,4 +163,57 @@ test("setLastMsg bumps updated_at (last_msg column dropped, preview now from mes
   // last_msg column no longer exists — get() returns NULL.
   expect(after.last_msg).toBeNull();
   expect(after.updated_at).toBeGreaterThan(before);
+});
+
+test("list returns cost_usd=0 for chats with no cost rows", () => {
+  const repo = makeChatRepo(freshDb());
+  repo.create({ agent: "maya" });
+  const rows = repo.list();
+  expect(rows.length).toBe(1);
+  expect(rows[0].cost_usd).toBe(0);
+  expect(typeof rows[0].cost_usd).toBe("number");
+});
+
+test("list returns cost_usd as lifetime SUM(costs.cost_usd) per chat", () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const a = repo.create({ agent: "maya" });
+  const b = repo.create({ agent: "maya" });
+  const now = Date.now();
+  // Named columns only for what we need; other costs columns have NOT NULL
+  // DEFAULT 0 or are nullable (task_id), so we don't need to bind them.
+  const insert = db.prepare(
+    `INSERT INTO costs (run_id, chat_id, agent, provider, ts, cost_usd, model)
+     VALUES (?, ?, 'maya', 'claude-code', ?, ?, 'sonnet')`,
+  );
+  insert.run("r1", a.id, now, 0.10);
+  insert.run("r2", a.id, now, 0.32);
+  insert.run("r3", b.id, now, 1.50);
+  const rows = repo.list();
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  expect(byId[a.id].cost_usd).toBeCloseTo(0.42, 5);
+  expect(byId[b.id].cost_usd).toBeCloseTo(1.50, 5);
+});
+
+test("list returns input_required=false when no tasks in INPUT_REQUIRED state", () => {
+  const repo = makeChatRepo(freshDb());
+  repo.create({ agent: "maya" });
+  const rows = repo.list();
+  expect(rows[0].input_required).toBe(false);
+});
+
+test("list returns input_required=true when any task in chat is INPUT_REQUIRED", () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+  // `create` mints a task in TASK_STATE_WORKING — flip it.
+  setTaskState(db, c.task_id, "TASK_STATE_INPUT_REQUIRED");
+  const rows = repo.list();
+  const row = rows.find((r) => r.id === c.id)!;
+  expect(row.input_required).toBe(true);
+
+  // Flip back → flag clears.
+  setTaskState(db, c.task_id, "TASK_STATE_WORKING");
+  const rows2 = repo.list();
+  expect(rows2.find((r) => r.id === c.id)!.input_required).toBe(false);
 });

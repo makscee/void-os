@@ -58,6 +58,8 @@ export interface ChatListItem {
   last_msg: string | null;
   updated_at: number;
   last_run_status: string | null;
+  cost_usd: number;
+  input_required: boolean;
 }
 
 /** Result of context creation. Carries the minted open-task id so the
@@ -137,12 +139,19 @@ export function makeChatRepo(db: Database): ChatRepo {
       // for the context (200-char preview shape preserved by the orchestrator
       // calling setLastMsg on terminal turns — which now upserts onto the
       // first 200 chars of parts_text; see setLastMsg).
-      return db
+      //
+      // VOS-104: also surface lifetime SUM(costs.cost_usd) per chat and a
+      // boolean flag indicating whether any task in the chat is currently in
+      // TASK_STATE_INPUT_REQUIRED. SQLite returns an integer for the CASE
+      // expression — coerce to a JS boolean at the boundary so the HTTP JSON
+      // carries `true`/`false` rather than `0`/`1`.
+      const rows = db
         .query(
           `SELECT c.id, c.agent_name AS agent, c.title,
                   (SELECT substr(m.parts_text, 1, 200)
                      FROM messages m
                     WHERE m.context_id = c.id AND m.role = 'ROLE_AGENT'
+                      AND m.parts_text != ''
                     ORDER BY m.ts DESC, m.ord DESC
                     LIMIT 1) AS last_msg,
                   c.updated_at,
@@ -150,11 +159,32 @@ export function makeChatRepo(db: Database): ChatRepo {
                      FROM runs r
                     WHERE r.chat_id = c.id
                     ORDER BY r.started_at DESC
-                    LIMIT 1) AS last_run_status
+                    LIMIT 1) AS last_run_status,
+                  COALESCE(
+                    (SELECT SUM(cost_usd) FROM costs WHERE chat_id = c.id),
+                    0
+                  ) AS cost_usd,
+                  CASE WHEN EXISTS (
+                    SELECT 1 FROM tasks
+                     WHERE context_id = c.id
+                       AND state = 'TASK_STATE_INPUT_REQUIRED'
+                  ) THEN 1 ELSE 0 END AS input_required_int
              FROM contexts c
             ORDER BY c.updated_at DESC`,
         )
-        .all() as ChatListItem[];
+        .all() as Array<
+          Omit<ChatListItem, "input_required"> & { input_required_int: 0 | 1 }
+        >;
+      return rows.map((r) => ({
+        id: r.id,
+        agent: r.agent,
+        title: r.title,
+        last_msg: r.last_msg,
+        updated_at: r.updated_at,
+        last_run_status: r.last_run_status,
+        cost_usd: r.cost_usd,
+        input_required: r.input_required_int === 1,
+      }));
     },
     get(id) {
       return (

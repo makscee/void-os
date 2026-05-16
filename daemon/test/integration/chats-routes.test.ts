@@ -253,6 +253,55 @@ test("POST /chat/:id/message — 500 on unexpected orchestrator error", async ()
   expect(body.error).toContain("spawner exploded");
 });
 
+// ─── VOS-104: cost_usd + input_required on /chats list ─────────────────
+
+test("GET /chats includes cost_usd and input_required per row", async () => {
+  const { app, db } = await bootstrap();
+
+  // Chat A: flip its task to INPUT_REQUIRED and insert a $0.50 cost row.
+  const created = (await (
+    await app.request("/chats", {
+      method: "POST",
+      body: JSON.stringify({ agent: "maya" }),
+      headers: { "content-type": "application/json" },
+    })
+  ).json()) as { id: string };
+  const taskId = db
+    .query("SELECT id FROM tasks WHERE context_id = ?")
+    .get(created.id) as { id: string };
+  db.run("UPDATE tasks SET state = 'TASK_STATE_INPUT_REQUIRED' WHERE id = ?", [
+    taskId.id,
+  ]);
+  db.run(
+    `INSERT INTO costs (run_id, chat_id, agent, ts, cost_usd, model)
+     VALUES ('r1', ?, 'maya', ?, 0.50, 'sonnet')`,
+    [created.id, Date.now()],
+  );
+
+  // Chat B: untouched — no costs, default WORKING state.
+  const other = (await (
+    await app.request("/chats", {
+      method: "POST",
+      body: JSON.stringify({ agent: "maya" }),
+      headers: { "content-type": "application/json" },
+    })
+  ).json()) as { id: string };
+
+  const list = (await (await app.request("/chats")).json()) as Array<{
+    id: string;
+    cost_usd: number;
+    input_required: boolean;
+  }>;
+  const byId = Object.fromEntries(list.map((r) => [r.id, r]));
+  expect(byId[created.id]!.cost_usd).toBeCloseTo(0.5, 5);
+  expect(byId[created.id]!.input_required).toBe(true);
+  expect(byId[other.id]!.cost_usd).toBe(0);
+  expect(byId[other.id]!.input_required).toBe(false);
+  // Boolean coercion, not raw SQLite 0/1.
+  expect(typeof byId[other.id]!.input_required).toBe("boolean");
+  expect(typeof byId[created.id]!.input_required).toBe("boolean");
+});
+
 test("POST /chat/:id/message — 400 when text missing/empty", async () => {
   const orch: Orchestrator = {
     async dispatch() {

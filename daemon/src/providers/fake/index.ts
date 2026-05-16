@@ -26,6 +26,9 @@ import type {
 import { TraceWriter } from "../../trace/writer";
 import { classifyToolEvents } from "../claude-code/parser.ts";
 import { normalizeCcEvent } from "../claude-code/cc-shape.ts";
+import { parseUsageFromAssistantEvent } from "../claude-code/usage-extract.ts";
+import type { Database } from "bun:sqlite";
+import type { EventBus, UsageTurn } from "../../events/index.ts";
 
 /**
  * Resolve fake provider script path with per-agent override.
@@ -73,6 +76,14 @@ export interface FakeProviderOpts {
   tracesDir?: string;
   /** VOS-84: agent name embedded in `turn.start`. Defaults to "fake". */
   agent?: string;
+  /** VOS-104: optional EventBus. When provided, the fake emits a `run.end`
+   *  envelope on the bus carrying `usageTurns` parsed from assistant `usage`
+   *  blocks, mirroring the cc-spawner so the cost subscriber persists rows
+   *  under fake-driven e2e runs. */
+  bus?: EventBus;
+  /** VOS-104: db handle used to resolve `task_id` for the bus run.end
+   *  payload (the cost subscriber needs it to update tasks.cost_usd). */
+  db?: Database;
 }
 
 type Substitution = { answer: string } | null;
@@ -98,6 +109,10 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
       let sessionId: string | undefined;
       let started = false;
       let substitution: Substitution = null;
+      // VOS-104: collect usage turns from assistant events for the cost
+      // subscriber. Mirrors cc-spawner's accumulation; emitted on the bus
+      // at run.end so subscribeRunEnd can persist a `costs` row.
+      const usageTurns: UsageTurn[] = [];
 
       async function callAskUser(
         toolUseId: string,
@@ -209,6 +224,36 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
           trace.close();
           trace = null;
         };
+        // VOS-104: bus run.end emit shim. The cost subscriber listens on the
+        // bus (NOT the WS broadcast), so without this the fake never persists
+        // a `costs` row even when assistant events carry usage blocks. The
+        // emit fires only when a bus is wired AND the run reaches normal exit.
+        const emitBusRunEnd = (reason: "exit" | "cancel" | "timeout" | "error", exitCode: number | null) => {
+          if (!opts.bus || reason !== "exit") return;
+          let taskId: string | null = req.taskId ?? null;
+          if (!taskId && opts.db) {
+            try {
+              const row = opts.db
+                .query("SELECT task_id FROM runs WHERE id = ?")
+                .get(req.runId) as { task_id: string | null } | null;
+              taskId = row?.task_id ?? null;
+            } catch { /* ignore — best-effort */ }
+          }
+          opts.bus.emit({
+            type: "run.end",
+            runId: req.runId,
+            chatId: req.contextId,
+            payload: {
+              agent: opts.agent ?? "fake",
+              endedAt: Date.now(),
+              usageTurns,
+              taskId,
+              exitCode: exitCode ?? 0,
+              durationMs: Date.now() - startedAt,
+              reason: "exited",
+            },
+          });
+        };
         let raw: string;
         try {
           raw = await readFile(scriptPath, "utf8");
@@ -293,6 +338,17 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
               );
             }
           }
+          // VOS-104: capture per-turn usage from assistant events, mirroring
+          // cc-spawner. Pure parse — only takes effect if the script line
+          // includes a `usage` block on the assistant message.
+          {
+            const turn = parseUsageFromAssistantEvent(ev as unknown as Parameters<typeof parseUsageFromAssistantEvent>[0]);
+            if (turn) {
+              // Override provider so the cost subscriber's pricing table
+              // resolves under "fake" (or whatever this provider reports as).
+              usageTurns.push({ ...turn, provider: "fake" });
+            }
+          }
           // VOS-84: mirror standard scripted events into the trace.
           if (trace) {
             trace.write("cc.event", ev);
@@ -315,6 +371,7 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
           if (perEventDelayMs > 0) await new Promise((r) => setTimeout(r, perEventDelayMs));
         }
         closeTrace("ok", 0);
+        emitBusRunEnd("exit", 0);
         resolveDone({ reason: "exit", exitCode: 0, sessionId });
       }
 

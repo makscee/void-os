@@ -21,6 +21,7 @@
 
 import * as React from "react";
 import type { ChatApi, ChatSummary } from "./api";
+import { formatUsd } from "./format-usd";
 
 export interface ChatListProps {
   api: ChatApi;
@@ -152,6 +153,16 @@ export function ChatList(props: ChatListProps) {
                   : "vos:border-transparent hover:vos:bg-[var(--background-modifier-hover)]")
               }
             >
+              <span
+                aria-hidden={!c.input_required}
+                aria-label={c.input_required ? "input required" : undefined}
+                data-testid="input-required-dot"
+                className={
+                  "vos:inline-block vos:w-1.5 vos:h-1.5 vos:rounded-full vos:shrink-0 " +
+                  (c.input_required ? "" : "vos:invisible")
+                }
+                style={{ backgroundColor: c.input_required ? "var(--text-warning, #d8a657)" : "transparent" }}
+              />
               <span className="vos:flex-1 vos:min-w-0">
                 <span
                   className={
@@ -161,6 +172,12 @@ export function ChatList(props: ChatListProps) {
                 >
                   {preview(c)}
                 </span>
+              </span>
+              <span
+                data-testid="cost-cell"
+                className="vos:inline-block vos:min-w-[3.5rem] vos:text-right vos:text-[11px] vos:text-[var(--text-muted)] vos:tabular-nums vos:shrink-0"
+              >
+                {formatUsd(c.cost_usd)}
               </span>
               <span
                 aria-hidden

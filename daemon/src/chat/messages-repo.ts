@@ -46,6 +46,14 @@ export interface MessagesRepo {
     role: Role,
     parts: Part[],
     ts?: number,
+    /**
+     * VOS-104 T8b: optional override for the flattened `parts_text` column.
+     * Used by the ask-user-bridge to surface the question text in chat-list
+     * previews even though the row's parts payload is a tool_use DataPart
+     * (which would otherwise produce an empty parts_text and cause the row
+     * to be filtered out by ChatList's isEmpty predicate).
+     */
+    partsTextOverride?: string,
   ): number;
 
   walk(contextId: string): ReplayEntry[];
@@ -69,10 +77,10 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
   };
 
   return {
-    appendMessage(taskId, contextId, runId, role, parts, ts) {
+    appendMessage(taskId, contextId, runId, role, parts, ts, partsTextOverride) {
       const t = ts ?? Date.now();
       const partsJson = JSON.stringify(parts);
-      const partsText = flattenText(parts);
+      const partsText = partsTextOverride ?? flattenText(parts);
 
       if (role === "ROLE_AGENT" && runId !== null) {
         const existing = db

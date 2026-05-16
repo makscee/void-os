@@ -131,12 +131,19 @@ function appendToolUseMessage(db: Database, a: AppendToolUseArgs): number {
       input,
     },
   };
+  // VOS-104 T8b: surface the question text in `parts_text` so this row
+  // contributes to ChatList previews while the run is paused at ask_user.
+  // Without an override, flattenText returns "" (the row is just a tool_use
+  // DataPart with no text Parts), the list subquery returns NULL/empty,
+  // and the plugin's `isEmpty` predicate hides the chat row.
   return makeMessagesRepo(db).appendMessage(
     a.taskId,
     a.contextId,
     a.runId,
     "ROLE_AGENT",
     [part],
+    undefined,
+    a.question,
   );
 }
 
