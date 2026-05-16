@@ -22,6 +22,41 @@ describe("runMigrationsFromDir", () => {
     expect(names).toContain("cache_create_tokens");
     expect(names).toContain("cache_read_tokens");
   });
+
+  it("0012 adds task_id + provider to costs", () => {
+    const db = new Database(":memory:");
+    runMigrationsFromDir(db, MIGRATIONS_DIR);
+
+    const cols = db.query("PRAGMA table_info(costs)").all() as Array<{
+      name: string;
+      type: string;
+      dflt_value: string | null;
+      notnull: number;
+    }>;
+    const byName = Object.fromEntries(cols.map((c) => [c.name, c]));
+    expect(byName.task_id).toBeDefined();
+    expect(byName.task_id!.notnull).toBe(0);
+    expect(byName.provider).toBeDefined();
+    expect(byName.provider!.notnull).toBe(1);
+    expect(byName.provider!.dflt_value).toBe("'claude-code'");
+
+    const indexes = db.query("PRAGMA index_list(costs)").all() as Array<{
+      name: string;
+    }>;
+    expect(indexes.map((i) => i.name)).toContain("idx_costs_task");
+
+    // FK target check
+    const fks = db.query("PRAGMA foreign_key_list(costs)").all() as Array<{
+      table: string;
+      from: string;
+      to: string;
+      on_delete: string;
+    }>;
+    const taskFk = fks.find((f) => f.from === "task_id");
+    expect(taskFk).toBeDefined();
+    expect(taskFk!.table).toBe("tasks");
+    expect(taskFk!.on_delete).toBe("SET NULL");
+  });
 });
 
 describe("SQLite version assertion", () => {
