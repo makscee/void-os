@@ -64,8 +64,17 @@ async function bootProbeDaemon(): Promise<{ app: Hono; vaultRoot: string; close:
   const bus = createEventBus({ db });
   const bridge = createAskUserBridge({ db, bus });
   const engine = createPermissionEngine({ vaultRoot, homeRoot: process.env.HOME ?? "" });
-  const daemonBase = `http://127.0.0.1:${process.env.PORT ?? "17777"}`;
   const repo = makeChatRepo(db);
+
+  const app = new Hono();
+
+  // Spin up a real HTTP listener so CC subprocesses can reach /mcp.
+  // app.request() (used by the harness itself for chat creation + polling)
+  // continues to work alongside Bun.serve.
+  // idleTimeout: 0 disables the per-request idle deadline so long MCP
+  // SSE/stream connections from CC subprocesses are not killed mid-flight.
+  const server = Bun.serve({ port: 0, fetch: app.fetch, idleTimeout: 0 });
+  const daemonBase = `http://127.0.0.1:${server.port}`;
 
   // Per-agent orchestrator (real claude-code provider).
   const orchByAgent = new Map<string, ReturnType<typeof makeOrchestrator>>();
@@ -94,13 +103,19 @@ async function bootProbeDaemon(): Promise<{ app: Hono; vaultRoot: string; close:
     },
   };
 
-  const app = new Hono();
   app.route("/", chatsApi(db));
   app.route("/", chatApi(db, { orchestrator: routedOrch }));
   mountMcp(app, { vaultRoot, db, bus, bridge, engine });
   mountAnswerRoute(app, { db, bridge });
 
-  return { app, vaultRoot, close: () => db.close() };
+  return {
+    app,
+    vaultRoot,
+    close: () => {
+      server.stop();
+      db.close();
+    },
+  };
 }
 
 async function runProbe(app: Hono, probe: Probe): Promise<{ pass: boolean; reply: string }> {
@@ -119,14 +134,44 @@ async function runProbe(app: Hono, probe: Probe): Promise<{ pass: boolean; reply
   await msgRes.json();
 
   // Poll for terminal state, then fetch the reply.
+  // session-replay shape: discriminated union of TextMessage ({role, content}),
+  // ToolUseEntry ({role:"tool_use", name, input}), ToolResultEntry
+  // ({role:"tool_result", output}). Some probes (e.g. journaler/log-session,
+  // task-tracker/promote) yield a tool_use only with no terminal assistant
+  // text. So we wait for the run to reach a terminal state via /chat/:id and
+  // then build a flattened reply that includes assistant narration + the
+  // JSON of tool_use blocks. This lets path/argument regexes match values
+  // that appear in tool inputs as well as in spoken narration.
   const start = Date.now();
   while (Date.now() - start < 120_000) {
-    const r = await app.request(`/chat/${id}/messages`);
-    const msgs = (await r.json()) as Array<{ role: string; parts: Array<{ text?: string }> }>;
-    const last = msgs[msgs.length - 1];
-    if (last && last.role === "agent") {
-      const reply = last.parts.map((p) => p.text ?? "").join("");
-      return { pass: probe.expectRegex.test(reply), reply };
+    const chatRes = await app.request(`/chat/${id}`);
+    const chat = (await chatRes.json()) as { current_run_id?: string | null };
+    const runIdle =
+      chat &&
+      (chat.current_run_id === null || chat.current_run_id === undefined);
+
+    if (runIdle) {
+      const r = await app.request(`/chat/${id}/messages`);
+      const msgs = (await r.json()) as Array<{
+        role: string;
+        content?: string;
+        name?: string;
+        input?: unknown;
+      }>;
+      const parts: string[] = [];
+      for (const m of msgs) {
+        if (m.role === "assistant" && typeof m.content === "string") {
+          parts.push(m.content);
+        } else if (m.role === "tool_use") {
+          parts.push(`tool_use:${m.name ?? ""} ${JSON.stringify(m.input ?? {})}`);
+        }
+      }
+      // Require at least one assistant or tool_use entry so we don't
+      // accept an empty pre-dispatch poll as terminal.
+      if (parts.length > 0) {
+        const reply = parts.join("\n");
+        return { pass: probe.expectRegex.test(reply), reply };
+      }
     }
     await new Promise((r) => setTimeout(r, 500));
   }
