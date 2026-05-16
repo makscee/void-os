@@ -75,8 +75,29 @@ export class TraceWriter {
     if (this.fd === null) throw new Error("TraceWriter: write after close");
     const seq = this._seq;
     const line = JSON.stringify({ seq, ts: new Date().toISOString(), kind, payload }) + "\n";
-    fs.writeSync(this.fd, line);
-    if (this.fsync) fs.fdatasyncSync(this.fd);
+    try {
+      fs.writeSync(this.fd, line);
+      if (this.fsync) fs.fdatasyncSync(this.fd);
+    } catch (err) {
+      // Best-effort error-envelope write. Must not throw a secondary error
+      // that masks the original.
+      try {
+        const errLine = JSON.stringify({
+          seq,
+          ts: new Date().toISOString(),
+          kind: "error" as TraceKind,
+          payload: {
+            message: (err as Error).message,
+            where: "writeSync",
+            attemptedSeq: seq,
+            attemptedKind: kind,
+          },
+        }) + "\n";
+        fs.writeSync(this.fd, errLine);
+      } catch { /* swallow */ }
+      this._seq = seq + 1; // advance even on failure so subsequent writes do not duplicate seq
+      throw err;
+    }
     this._seq = seq + 1;
     return seq;
   }
