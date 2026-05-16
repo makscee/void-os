@@ -10,7 +10,7 @@ You are running inside a void-os-managed vault. The vault is the user's primary 
 
 | Path | Contains |
 |---|---|
-| `agents/` | Agent definitions (`<name>/agent.md`). |
+| `agents/` | Agent definitions (`<name>/agent.md`). Never agent-writable (under SYSTEM_DENY); hand-edit in Obsidian. |
 | `journal/` | Daily journal entries: `YYYY-MM-DD.md`. |
 | `work/` | Tickets, milestones, goals, work plan. Folder = state. |
 | `projects/` | Long-lived project context, design docs, archived plans. |
