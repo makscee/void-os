@@ -10,6 +10,9 @@ import { createStreamParser, classifyToolEvents } from "./parser.js";
 import { createWatchdog } from "./watchdog.js";
 import { parseUsageFromAssistantEvent } from "./usage-extract.js";
 import { TraceWriter } from "../../trace/writer";
+import type { AgentDefn, PermissionEngine } from "../../permissions/engine.js";
+import { SYSTEM_DENY_FOR_WRITE } from "../../permissions/engine.js";
+import { buildSpawnSettings } from "./spawn-settings.ts";
 
 export interface CcSpawnRequest {
   prompt: string;
@@ -153,6 +156,13 @@ interface CcSpawnerDeps {
   binary?: string;             // defaults to "claudev"
   watchdogTickMs?: number;     // defaults to DEFAULT_WATCHDOG_TICK_MS
   now?: () => number;
+  // VOS-106
+  engine: PermissionEngine;
+  daemonBase: string;
+  hookScriptPath: string;
+  loadAgentDefn: (name: string) => AgentDefn;
+  /** Test seam: override `Bun.spawn`. Defaults to the real Bun.spawn. */
+  spawnFn?: (cmd: string[], opts: Parameters<typeof Bun.spawn>[1]) => ReturnType<typeof Bun.spawn>;
 }
 
 export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
@@ -191,20 +201,66 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         "INSERT INTO runs (id, chat_id, agent, kind, status, started_at, trace_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
       ).run(runId, req.chatId ?? null, req.agent, req.kind ?? "chat", "running", started, tracePath);
 
+      // VOS-106 T6: resolve scopes per agent, write per-run settings + mcp
+      // config to disk, extend argv + env. If scope resolution fails we
+      // surface as a synchronous spawn error (run.error before exit).
+      let settingsPath: string;
+      let mcpConfigPath: string;
+      let hookEnv: Record<string, string>;
+      try {
+        const agentDefn = deps.loadAgentDefn(req.agent);
+        const scopes = deps.engine.resolveScopes(agentDefn);
+        // SYSTEM_DENY_FOR_WRITE patterns are vault-relative + ~-prefixed;
+        // the engine already expanded them at construction time. Re-expand
+        // for the hook env (since the hook runs out-of-process and has no
+        // access to the engine's compiled denyMatchers).
+        const homeRoot = process.env.HOME ?? "";
+        const expandedDeny = SYSTEM_DENY_FOR_WRITE.map((p) =>
+          p.startsWith("vault/") ? `${req.cwd}/${p.slice("vault/".length)}` :
+          p.startsWith("~/") ? `${homeRoot}/${p.slice("~/".length)}` :
+          p,
+        );
+        const built = buildSpawnSettings({
+          agentName: req.agent,
+          scopes,
+          systemDeny: expandedDeny,
+          vaultRoot: req.cwd,
+          daemonBase: deps.daemonBase,
+          runId,
+          settingsDir: deps.tracesDir,
+          hookScriptPath: deps.hookScriptPath,
+        });
+        settingsPath = built.settingsPath;
+        mcpConfigPath = built.mcpConfigPath;
+        hookEnv = built.env;
+      } catch (err) {
+        const e = err as { message?: string };
+        deps.db
+          .prepare("UPDATE runs SET status='error', ended_at=?, error=? WHERE id=?")
+          .run(now(), e.message ?? String(err), runId);
+        deps.bus.emit({ type: "run.error", runId, payload: { error: e.message ?? String(err) } });
+        trace.write("turn.end", { status: "error", durationMs: now() - started, exitCode: null });
+        trace.close();
+        throw err;
+      }
+
       const args = [
         "-p", req.prompt,
         "--output-format", "stream-json",
         "--verbose",
+        "--settings", settingsPath,
+        "--mcp-config", mcpConfigPath,
         ...(req.resumeFrom ? ["--resume", req.resumeFrom] : []),
       ];
+      const spawnFn = deps.spawnFn ?? Bun.spawn;
       let proc: Awaited<ReturnType<typeof Bun.spawn>>;
       try {
-        proc = Bun.spawn([binary, ...args], {
+        proc = spawnFn([binary, ...args], {
           cwd: req.cwd,
           stdout: "pipe",
           stderr: "pipe",
           stdin: "ignore",
-          env: process.env as Record<string, string>,
+          env: { ...(process.env as Record<string, string>), ...hookEnv },
         });
       } catch (err) {
         const e = err as { message?: string };
@@ -462,6 +518,11 @@ export interface ClaudeCodeProviderDeps {
   tracesDir: string;
   agent: string;
   cwd: string;
+  // VOS-106
+  engine: PermissionEngine;
+  daemonBase: string;
+  hookScriptPath: string;
+  loadAgentDefn: (name: string) => AgentDefn;
 }
 
 export function makeClaudeCodeProviderComposed(
@@ -471,6 +532,10 @@ export function makeClaudeCodeProviderComposed(
     bus: deps.bus,
     db: deps.db,
     tracesDir: deps.tracesDir,
+    engine: deps.engine,
+    daemonBase: deps.daemonBase,
+    hookScriptPath: deps.hookScriptPath,
+    loadAgentDefn: deps.loadAgentDefn,
   });
   const iter = makeCcSpawnerIter({
     cc,
