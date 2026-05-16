@@ -151,6 +151,7 @@ export function makeChatRepo(db: Database): ChatRepo {
                   (SELECT substr(m.parts_text, 1, 200)
                      FROM messages m
                     WHERE m.context_id = c.id AND m.role = 'ROLE_AGENT'
+                      AND m.parts_text != ''
                     ORDER BY m.ts DESC, m.ord DESC
                     LIMIT 1) AS last_msg,
                   c.updated_at,
