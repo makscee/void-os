@@ -31,6 +31,16 @@ export interface RunEndEvent extends DaemonEvent {
     endedAt: number;
     usageTurns: UsageTurn[];
     taskId: string | null;   // VOS-87: orchestrator reads from runs row
+    // VOS-87 T4: legacy fields preserved additively so existing
+    // consumers (status flips, e2e tests, watchdog plumbing) keep
+    // compiling. cc-spawner (the sole live bus emit site) populates
+    // all of these; downstream consumers that only care about cost
+    // can ignore them. Optional only because some future provider
+    // may not have them (e.g. an HTTP-based provider with no exit
+    // code); the cc-spawner always sets them.
+    exitCode?: number;
+    durationMs?: number;
+    reason?: "exited" | "timeout" | "killed";
   };
 }
 
