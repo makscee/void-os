@@ -45,7 +45,15 @@ export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
       throw new Error("VOS_PROVIDER=fake requires VOS_FAKE_SCRIPT env var");
     }
     const perEventDelayMs = resolveFakePerEventDelayMs(deps.agent);
-    return makeFakeProvider({ scriptPath, perEventDelayMs, daemonBase: env.VOS_DAEMON_BASE });
+    return makeFakeProvider({
+      scriptPath,
+      perEventDelayMs,
+      daemonBase: env.VOS_DAEMON_BASE,
+      // VOS-84: pass tracesDir + agent so the fake writes JSONL traces
+      // matching the cc-spawner production wiring.
+      tracesDir: deps.tracesDir,
+      agent: deps.agent,
+    });
   }
   throw new Error(`unknown provider: ${kind}`);
 }
