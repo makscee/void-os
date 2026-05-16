@@ -62,11 +62,23 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   writeFileSync(mcpConfigPath, JSON.stringify(mcp, null, 2));
 
+  // VOS-106 T10.C: bypass any inherited HTTP(S)_PROXY for loopback so CC's
+  // MCP client can reach the daemon's /mcp endpoint directly. claudev
+  // exports HTTPS_PROXY=http://127.0.0.1:<port> (its usage-tracking CONNECT
+  // proxy), and CC's MCP HTTP transport otherwise routes our plain-HTTP
+  // loopback URL through that proxy — which rejects HTTP forwarding with
+  // "This is a CONNECT proxy", surfacing as `mcp_servers[void-os].status="failed"`
+  // in system.init. Merging NO_PROXY here keeps any operator-set NO_PROXY
+  // suffixed onto loopback rather than clobbered.
+  const inheritedNoProxy = (process.env.NO_PROXY ?? "").trim();
+  const noProxyEntries = ["127.0.0.1", "localhost", "::1"];
+  if (inheritedNoProxy) noProxyEntries.push(inheritedNoProxy);
   const env: Record<string, string> = {
     VOS_READ_PATHS: JSON.stringify(args.scopes.readPaths),
     VOS_WRITE_PATHS: JSON.stringify(args.scopes.writePaths),
     VOS_SYSTEM_DENY: JSON.stringify(args.systemDeny),
     VOS_VAULT_ROOT: args.vaultRoot,
+    NO_PROXY: noProxyEntries.join(","),
   };
 
   return { settingsPath, mcpConfigPath, env };

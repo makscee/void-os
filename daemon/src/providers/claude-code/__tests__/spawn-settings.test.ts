@@ -73,6 +73,55 @@ describe("buildSpawnSettings", () => {
     expect(env.VOS_VAULT_ROOT).toBe(VAULT);
   });
 
+  it("env.NO_PROXY pins loopback so claudev's HTTPS_PROXY does not capture /mcp", () => {
+    // VOS-106 T10.C regression: without NO_PROXY=127.0.0.1,localhost,::1
+    // claudev's exported HTTPS_PROXY routes CC's MCP HTTP transport through
+    // the CONNECT-only proxy and the handshake fails with
+    // `mcp_servers[void-os].status="failed"`.
+    const prev = process.env.NO_PROXY;
+    delete process.env.NO_PROXY;
+    try {
+      const { env } = buildSpawnSettings({
+        agentName: "x",
+        scopes: { readPaths: ["/r"], writePaths: ["/w"] },
+        systemDeny: [],
+        vaultRoot: VAULT,
+        daemonBase: "http://127.0.0.1:17777",
+        runId: "r",
+        settingsDir: freshDir(),
+        hookScriptPath: "/h",
+      });
+      const entries = (env.NO_PROXY ?? "").split(",");
+      expect(entries).toContain("127.0.0.1");
+      expect(entries).toContain("localhost");
+      expect(entries).toContain("::1");
+    } finally {
+      if (prev === undefined) delete process.env.NO_PROXY; else process.env.NO_PROXY = prev;
+    }
+  });
+
+  it("env.NO_PROXY preserves operator-set NO_PROXY entries", () => {
+    const prev = process.env.NO_PROXY;
+    process.env.NO_PROXY = "example.internal,10.0.0.0/8";
+    try {
+      const { env } = buildSpawnSettings({
+        agentName: "x",
+        scopes: { readPaths: [], writePaths: [] },
+        systemDeny: [],
+        vaultRoot: VAULT,
+        daemonBase: "http://127.0.0.1:17777",
+        runId: "r",
+        settingsDir: freshDir(),
+        hookScriptPath: "/h",
+      });
+      expect(env.NO_PROXY).toContain("127.0.0.1");
+      expect(env.NO_PROXY).toContain("example.internal");
+      expect(env.NO_PROXY).toContain("10.0.0.0/8");
+    } finally {
+      if (prev === undefined) delete process.env.NO_PROXY; else process.env.NO_PROXY = prev;
+    }
+  });
+
   it("additionalDirectories excludes paths under vaultRoot (cwd already covers them)", () => {
     const dir = freshDir();
     const { settingsPath } = buildSpawnSettings({
