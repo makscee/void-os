@@ -8,6 +8,7 @@
     "dev": "bun --hot run src/index.ts",
     "start": "bun run src/index.ts",
     "test": "bun test",
+    "test:probes": "bun run test/probes/loader-integration.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
