@@ -251,6 +251,36 @@ test("depth-2 nested ask_agent: maya → journaler → deep, live + auto-collaps
 
     // Drain inflight bridges (avoid dangling fetch noise on teardown).
     await Promise.allSettled(inflight);
+
+    // VOS-107 T7 audit: lock the depth-2 contract at the DB boundary too.
+    // The plan suggested asserting `data-subthread-depth >= 2` on a DOM
+    // attribute; no such attribute exists in the product (AskAgentTool.tsx
+    // only emits data-state/data-expanded/data-child-task-id). Nested DOM
+    // structure already proves depth-2 visually, but to make the contract
+    // resilient to future render refactors we additionally assert the
+    // parent_task_id chain in the tasks table: root (maya) -> journaler
+    // -> deep, three rows linked by parent_task_id forming a 3-deep chain.
+    //
+    // AUDIT note: do NOT add a data-subthread-depth attribute to product
+    // code — DOM nesting + DB chain together are the contract.
+    const outerChildIdFinal = outerChildId!;
+    const dbR = new DatabaseSync(state.dbPath, { readOnly: true });
+    try {
+      const journaler = dbR
+        .prepare("SELECT id, parent_task_id, target_agent FROM tasks WHERE id=?")
+        .get(outerChildIdFinal) as { id: string; parent_task_id: string | null; target_agent: string };
+      expect(journaler.target_agent).toBe("journaler");
+      expect(journaler.parent_task_id).not.toBeNull();
+      const root = dbR
+        .prepare("SELECT id, parent_task_id FROM tasks WHERE id=?")
+        .get(journaler.parent_task_id) as { id: string; parent_task_id: string | null };
+      expect(root.parent_task_id).toBeNull();
+      const deep = dbR
+        .prepare("SELECT id, parent_task_id, target_agent FROM tasks WHERE parent_task_id=? AND target_agent='deep'")
+        .get(journaler.id) as { id: string; parent_task_id: string; target_agent: string } | undefined;
+      expect(deep, "depth-2 chain must include a 'deep' child of journaler").toBeTruthy();
+      expect(deep!.parent_task_id).toBe(journaler.id);
+    } finally { dbR.close(); }
   } finally {
     try { events.ws.close(); } catch { /* ignore */ }
     await browser.close();
