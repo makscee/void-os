@@ -109,6 +109,28 @@ async function sendMessageViaApi(
   expect([200, 201, 202]).toContain(res.status());
 }
 
+/**
+ * Fire-and-forget variant. `POST /chat/:id/message` does NOT return until the
+ * orchestrator's run.end fires (orchestrator.dispatch awaits the full for-await
+ * drain of provider events before returning). Scenarios that pause mid-run on
+ * `vos_ask_user` deadlock when the test awaits the POST: the answer POST never
+ * gets issued, the run never ends, the message POST never returns.
+ *
+ * This helper kicks the POST off the event loop and returns immediately. The
+ * caller is responsible for re-asserting through downstream side effects (chat
+ * row appears, dot becomes visible, etc.). We attach a `.catch()` so a future
+ * test failure doesn't surface as an unhandled-rejection during teardown.
+ */
+function fireMessageViaApi(
+  api: APIRequestContext,
+  chatId: string,
+  text: string,
+): Promise<unknown> {
+  return api
+    .post(`/chat/${chatId}/message`, { data: { text } })
+    .catch(() => undefined);
+}
+
 function formatExpectedUsd(n: number): string {
   if (n < 0.005) return "$0.00";
   return "$" + n.toFixed(2);
@@ -169,7 +191,10 @@ test.describe("VOS-104 chat list polish", () => {
     });
     try {
       const chatId = await mintChatViaApi(api, "maya");
-      await sendMessageViaApi(api, chatId, "go");
+      // Fire-and-forget — orchestrator.dispatch blocks until run.end, and this
+      // run parks on `vos_ask_user` until /answer is POSTed below. Awaiting
+      // the message POST here would deadlock the test.
+      const messagePromise = fireMessageViaApi(api, chatId, "go");
 
       const row = p.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
       await expect(row).toBeVisible({ timeout: 30_000 });
@@ -211,6 +236,10 @@ test.describe("VOS-104 chat list polish", () => {
         async () => dot.evaluate((el) => getComputedStyle(el).visibility),
         { timeout: 15_000, intervals: [200, 500, 1000] },
       ).toBe("hidden");
+
+      // Drain the fire-and-forget message POST so afterEach() restoring the
+      // pinned maya script doesn't race with an in-flight orchestrator run.
+      await messagePromise;
     } finally {
       await api.dispose();
     }
