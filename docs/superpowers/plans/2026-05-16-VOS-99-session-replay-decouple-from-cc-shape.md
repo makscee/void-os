@@ -293,12 +293,12 @@ Expected: no output.
 - [ ] **Step 4: Type-check the daemon**
 
 ```bash
-cd daemon && bun tsc --noEmit 2>&1 | head -40; cd ..
+cd daemon && bun run typecheck 2>&1 | head -40; cd ..
 ```
 
-Expected: zero errors. If `api/chat.ts` still has stale `ReplayOpts` references, fix them per Step 2 and re-run.
+(`daemon/package.json` has `"typecheck": "tsc --noEmit"`.)
 
-If `bun tsc` is not the project's type-check command, fall back to `bun run --silent typecheck` or `bun build daemon/src/**/*.ts --target=bun --no-bundle` and check stderr. The project's `package.json` `scripts` is authoritative — if a `typecheck` or `check-types` script exists, prefer it.
+Expected: zero errors. If `api/chat.ts` still has stale `ReplayOpts` references, fix them per Step 2 and re-run.
 
 - [ ] **Step 5: Commit Tasks 2 + 3 together**
 
@@ -324,21 +324,42 @@ Refs VOS-99."
 **Files:**
 - Modify: `daemon/test/chat/session-replay.test.ts` (794 LOC, expected to shrink)
 
-Per spec §2.5: **delete a test iff** (a) it constructs `makeSessionReplay` with non-empty opts **OR** writes a `.jsonl` file to drive the lazy import path, **AND** (b) it does **not** also assert on `messages-repo`-seeded rows. The candidate-list-before-delete protocol is mandatory.
+**Deletion gate** (refines spec §2.5 after verifying repo state: all 18 existing `makeSessionReplay(db, …)` calls in this file pass opts, so "non-empty opts" cannot stand alone as a deletion signal).
+
+**Delete a test iff both conditions hold:**
+- **(a)** the test writes a `.jsonl` file to disk **OR** passes `projectsRoot` / `cwd` / `encodeCwd` to `makeSessionReplay` to drive disk reads (the actual JSONL-fixture coupling); AND
+- **(b)** the test does **not** also assert on `messages-repo`-seeded rows (removing it costs no DB-walk coverage).
+
+The `makeSessionReplay(db, { … })` → `makeSessionReplay(db)` conversion is a **separate mechanical pass**, not a deletion signal — once `ReplayOpts` is deleted in Tasks 2–3 the trailing arg is dead syntax. Strip it from retained tests via the sed pass in Step 0 below.
+
+The candidate-list-before-delete protocol is mandatory: print the list, stop, await orchestrator confirmation.
+
+- [ ] **Step 0: Mechanical opts-arg strip (must run before any deletion analysis)**
+
+Once Tasks 2 + 3 are merged, the `, { … }` second arg to `makeSessionReplay` is dead. Strip it across all surviving tests so the deletion gate (a) operates on disk-fixture coupling, not on opts presence:
+
+```bash
+# Preview matches first.
+grep -nE "makeSessionReplay\(db,\s*\{" daemon/test/chat/session-replay.test.ts
+```
+
+Then for each retained test that previously injected `projectsRoot`/`cwd`/`encodeCwd` from a tempdir, decide per gate (a): if the test stays, the opts block is replaced with `makeSessionReplay(db)` (and any tempdir scaffolding for disk reads becomes dead — remove it). If the test is deleted via gate (a)+(b), skip — it's going anyway.
+
+Do this manually per test, not with a global sed — each test has its own setup paragraph and a blind global replace would corrupt tests that legitimately use the tempdir for other purposes (e.g. messages-repo seed via orchestrator).
 
 - [ ] **Step 1: Identify candidate deletion blocks**
 
 Run the discovery greps:
 
 ```bash
-echo "--- (a1) makeSessionReplay calls with non-empty opts ---"
-grep -nE "makeSessionReplay\([^)]*,\s*\{" daemon/test/chat/session-replay.test.ts || echo "(none)"
-
-echo "--- (a2) test files writing .jsonl ---"
+echo "--- (a1) tests writing .jsonl ---"
 grep -nE "writeFileSync\(.+\.jsonl|jsonl.*writeFileSync" daemon/test/chat/session-replay.test.ts || echo "(none)"
 
-echo "--- (a3) projectsRoot/encodeCwd overrides ---"
-grep -nE "projectsRoot|encodeCwd" daemon/test/chat/session-replay.test.ts || echo "(none)"
+echo "--- (a2) projectsRoot / cwd / encodeCwd overrides ---"
+grep -nE "projectsRoot|encodeCwd|\bcwd:" daemon/test/chat/session-replay.test.ts || echo "(none)"
+
+echo "--- (b) messages-repo seed calls ---"
+grep -nE "messages\.appendMessage|appendMessage\(" daemon/test/chat/session-replay.test.ts || echo "(none)"
 
 echo "--- test() / it() boundaries (for block extraction) ---"
 grep -nE "^(test|it|describe)\(" daemon/test/chat/session-replay.test.ts | head -40
@@ -370,17 +391,14 @@ If a test for "chat row exists with `session_id` set but zero messages rows → 
 test("walk returns [] for a chat with session_id but no messages rows", () => {
   const db = freshDb();
   const chatRepo = makeChatRepo(db);
-  const chatId = chatRepo.create({
-    /* fields per chatRepo.create signature; copy from a retained test's
-       create-and-seed pair, then omit any appendMessage call */
-    session_id: "session-no-rows",
-  });
+  const { id } = chatRepo.create({ agent: "claude-code" });
+  chatRepo.setSession(id, "session-no-rows");
   const replay = makeSessionReplay(db);
-  expect(replay.walk(chatId)).toEqual([]);
+  expect(replay.walk(id)).toEqual([]);
 });
 ```
 
-The exact `chatRepo.create` call shape varies by what's already in the file — copy from a retained test's setup and trim. The assertion is the load-bearing part.
+Signature reference (`daemon/src/chat/repo.ts`): `create(opts: { agent: string }): CreateChatResult` (the chat id is `CreateChatResult.id`); `setSession(id, sessionId): void`.
 
 - [ ] **Step 5: Confirm the tool-call round-trip assertion exists (spec §3 acceptance #3)**
 
@@ -486,18 +504,18 @@ grep -rn "from.*providers/claude-code" daemon/src/chat/
 
 Expected: no output, exit code 1.
 
-- [ ] **Step 3: Acceptance grep #2 (deleted symbols gone from `daemon/`)**
+- [ ] **Step 3: Acceptance grep #2 (deleted symbols gone repo-wide)**
 
 ```bash
-git grep -E "importFromJsonl|legacyJsonlOrder|recordToEntries" daemon/
+git grep -E "importFromJsonl|legacyJsonlOrder|recordToEntries"
 ```
 
-Expected: no output.
+Expected: no output. Repo-root scope (no path filter) catches stray references in `cli/`, `plugin/`, `scripts/`, `docs/` examples, etc. Any non-`daemon/` hit is real scope creep — surface it, do not silently merge.
 
-- [ ] **Step 4: Acceptance grep #3 (`ReplayOpts` purged)**
+- [ ] **Step 4: Acceptance grep #3 (`ReplayOpts` purged repo-wide)**
 
 ```bash
-git grep "ReplayOpts" daemon/
+git grep "ReplayOpts"
 ```
 
 Expected: no output.
