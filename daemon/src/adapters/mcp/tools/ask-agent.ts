@@ -258,7 +258,10 @@ export function makeAskAgent(deps: AskAgentDeps) {
     const contextId =
       typeof meta.context_id === "string" ? meta.context_id : taskId;
     const toolCallId =
-      typeof meta.tool_call_id === "string" ? meta.tool_call_id : "";
+      typeof meta.tool_call_id === "string" && meta.tool_call_id !== ""
+        ? meta.tool_call_id
+        : undefined;
+    if (!toolCallId) return errResult("ASK_AGENT_MISSING_TOOL_CALL_ID");
 
     try {
       // 1. Existence — agent_cards lookup (migration 0007).

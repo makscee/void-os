@@ -479,6 +479,56 @@ describe("ask_agent handler (composition)", () => {
     ).toThrow(/parentToolCallId required/);
   });
 
+  test("handler: missing tool_call_id returns structured error, does not throw", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+    const ctx = buildCtx(db, contextId, parentId, caller);
+
+    // Pass _meta without tool_call_id; task_id is valid so the taskId guard passes.
+    const extraNoToolCallId = {
+      _meta: { task_id: parentId, context_id: contextId },
+    } as any;
+
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      extraNoToolCallId,
+    );
+
+    expect(result.isError).toBe(true);
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "ASK_AGENT_MISSING_TOOL_CALL_ID",
+    );
+    // Parent must be untouched; no child minted.
+    const parent = db.query("SELECT state FROM tasks WHERE id=?").get(parentId) as
+      | { state: string }
+      | undefined;
+    expect(parent?.state).toBe("TASK_STATE_WORKING");
+    const kids = db
+      .query("SELECT count(*) as n FROM tasks WHERE parent_task_id=?")
+      .get(parentId) as { n: number } | undefined;
+    expect(kids?.n).toBe(0);
+  });
+
+  test("handler: empty-string tool_call_id returns structured error, does not throw", async () => {
+    const { contextId, parentId } = seed(db);
+    const caller: AgentDefn = { name: "maya" };
+    const ctx = buildCtx(db, contextId, parentId, caller);
+
+    const extraEmptyToolCallId = {
+      _meta: { task_id: parentId, context_id: contextId, tool_call_id: "" },
+    } as any;
+
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      extraEmptyToolCallId,
+    );
+
+    expect(result.isError).toBe(true);
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "ASK_AGENT_MISSING_TOOL_CALL_ID",
+    );
+  });
+
   test("Finding 4: emits task.state_changed when parent flips to WAITING_ON_AGENT", async () => {
     const { contextId, parentId } = seed(db);
     const caller: AgentDefn = { name: "maya" };
