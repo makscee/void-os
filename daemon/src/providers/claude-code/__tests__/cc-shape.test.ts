@@ -1,15 +1,100 @@
-// util tests — VOS-80 S4 (tool-call panel daemon contract).
+// CC-shape parser tests — VOS-96 T9.
 //
-// Covers extractToolUses + extractToolResults: the shared CC-shape parsers
-// that both orchestrator (live stream) and session-replay (JSONL walk) use
-// to surface tool events as separate WS frames + replay entries.
+// Migrated from:
+//   - daemon/test/chat/util.test.ts (deleted in T9)
+//   - daemon/test/chat/orchestrator.test.ts (extractAssistantText cases — the
+//     deprecated extract.ts shim simply delegated to extractTurnText, so the
+//     assertions are reproduced verbatim against extractTurnText here)
+//
+// Covers the three exported CC-shape parsers that both the orchestrator
+// (live stream) and session-replay (JSONL walk) use to surface tool events
+// as separate WS frames + replay entries.
 
 import { test, expect } from "bun:test";
 import {
   extractTurnText,
   extractToolUses,
   extractToolResults,
-} from "../../src/chat/util";
+} from "../cc-shape";
+
+// ── extractTurnText (was extractAssistantText via shim) ────────────────
+
+test("extractTurnText: single text block", () => {
+  expect(
+    extractTurnText({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
+    }),
+  ).toBe("hello");
+});
+
+test("extractTurnText: multiple text blocks concatenate", () => {
+  expect(
+    extractTurnText({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "foo " },
+          { type: "text", text: "bar" },
+        ],
+      },
+    }),
+  ).toBe("foo bar");
+});
+
+test("extractTurnText: mixed text + tool_use blocks return only text", () => {
+  expect(
+    extractTurnText({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "thinking: " },
+          { type: "tool_use", id: "u_1", name: "vault.read", input: {} },
+          { type: "text", text: "done" },
+        ],
+      },
+    }),
+  ).toBe("thinking: done");
+});
+
+test("extractTurnText: missing message returns empty string", () => {
+  expect(extractTurnText({ type: "assistant" } as never)).toBe("");
+});
+
+test("extractTurnText: empty content array returns empty string", () => {
+  expect(
+    extractTurnText({
+      type: "assistant",
+      message: { role: "assistant", content: [] },
+    }),
+  ).toBe("");
+});
+
+test("extractTurnText: tool-use-only content returns empty string", () => {
+  expect(
+    extractTurnText({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "u_1", name: "x", input: {} }],
+      },
+    }),
+  ).toBe("");
+});
+
+test("extractTurnText: ignores tool_result blocks (no text leakage)", () => {
+  expect(
+    extractTurnText({
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "u_1", content: "noise" },
+        ],
+      },
+    }),
+  ).toBe("");
+});
 
 // ── extractToolUses ────────────────────────────────────────────────────
 
@@ -180,18 +265,4 @@ test("extractToolResults: text-only content returns []", () => {
       message: { content: [{ type: "text", text: "hi" }] },
     }),
   ).toEqual([]);
-});
-
-// ── extractTurnText interaction (regression: tool_use/tool_result don't leak)
-
-test("extractTurnText still ignores tool_result blocks (no text leakage)", () => {
-  expect(
-    extractTurnText({
-      message: {
-        content: [
-          { type: "tool_result", tool_use_id: "u_1", content: "noise" },
-        ],
-      },
-    }),
-  ).toBe("");
 });

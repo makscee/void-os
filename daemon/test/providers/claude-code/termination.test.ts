@@ -5,11 +5,14 @@ import type {
   ProviderEvent,
   ProviderSpawnRequest,
 } from "../../../src/providers/types.ts";
+import type { LegacyProviderEvent } from "../../../src/providers/types.ts";
 
 // Fake iterator-style spawner that mimics the existing CcSpawnerIter shape.
 // Tests drive it through each terminal scenario.
+// VOS-96: CcIter now types the seam as `LegacyProviderEvent` (raw CC wire
+// format), since the provider's `events()` generator normalizes on yield.
 function makeFakeIter(opts: {
-  emit?: ProviderEvent[];
+  emit?: LegacyProviderEvent[];
   onExit?: "ok" | "error";
   cancelable?: boolean;
 }) {
@@ -32,12 +35,13 @@ function makeFakeIter(opts: {
 }
 
 function baseReq(): ProviderSpawnRequest {
-  return { runId: "r1", prompt: "hi", cwd: "/tmp" };
+  // VOS-96 T10: ProviderSpawnRequest now requires taskId + contextId (ADR-0001).
+  return { runId: "r1", prompt: "hi", cwd: "/tmp", taskId: "t1", contextId: "c1" };
 }
 
 test("done resolves 'exit' when iterator exhausts cleanly", async () => {
   const provider: Provider = makeClaudeCodeProvider({
-    iter: makeFakeIter({ emit: [{ type: "assistant", message: {} }] }),
+    iter: makeFakeIter({ emit: [{ type: "assistant", message: { content: [{ type: "text", text: "x" }] } }] }),
   });
   const h = provider.spawn(baseReq());
   const seen: ProviderEvent[] = [];
@@ -51,8 +55,8 @@ test("done resolves 'cancel' when cancel() is invoked mid-stream", async () => {
   const provider: Provider = makeClaudeCodeProvider({
     iter: makeFakeIter({
       emit: [
-        { type: "assistant", message: {} },
-        { type: "assistant", message: {} },
+        { type: "assistant", message: { content: [{ type: "text", text: "x" }] } },
+        { type: "assistant", message: { content: [{ type: "text", text: "x" }] } },
       ],
       cancelable: true,
     }),
@@ -112,13 +116,13 @@ test("done resolves 'timeout' when underlying iterator times out", async () => {
     iter: {
       spawn: () =>
         (async function* () {
-          yield { type: "assistant", message: {} } as ProviderEvent;
+          yield { type: "assistant", message: { content: [{ type: "text", text: "x" }] } } as LegacyProviderEvent;
           const e = Object.assign(new Error("watchdog timeout"), { code: "CC_TIMEOUT" });
           throw e;
         })(),
     },
   });
-  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp" });
+  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp", taskId: "t1", contextId: "c1" });
   try { for await (const _ of h.events) {} } catch {}
   const out = await h.done;
   expect(out.reason).toBe("timeout");
@@ -129,13 +133,13 @@ test("done resolves 'cancel' (not 'error') when cancel then iterator throws", as
     iter: {
       spawn: () =>
         (async function* () {
-          yield { type: "assistant", message: {} } as ProviderEvent;
+          yield { type: "assistant", message: { content: [{ type: "text", text: "x" }] } } as LegacyProviderEvent;
           throw new Error("cancelled mid-stream");
         })(),
       cancel: async () => true,
     },
   });
-  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp" });
+  const h = provider.spawn({ runId: "r1", prompt: "x", cwd: "/tmp", taskId: "t1", contextId: "c1" });
   const it = h.events[Symbol.asyncIterator]();
   await it.next();
   await h.cancel();

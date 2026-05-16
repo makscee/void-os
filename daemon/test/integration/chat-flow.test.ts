@@ -33,6 +33,7 @@ import { join } from "node:path";
 import { buildApp } from "../../src/app.ts";
 import { makeOrchestrator } from "../../src/chat/orchestrator.ts";
 import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
+import { normalizeStream } from "../helpers/normalize-stream.ts";
 import { makeChatRepo } from "../../src/chat/repo.ts";
 import { bootRecovery } from "../../src/boot.ts";
 
@@ -68,13 +69,15 @@ function freshDb(): Database {
  * the args it was called with for resume-arg assertions.
  */
 function cannedProvider(sessionId: string) {
-  const calls: Array<{ chatId: string | undefined; resumeFrom: string | undefined; prompt: string }> = [];
+  const calls: Array<{ chatId: string; resumeFrom: string | undefined; prompt: string }> = [];
   const provider: Provider & { calls: typeof calls } = {
     name: "canned",
     get calls() { return calls; },
     spawn(req: ProviderSpawnRequest): ProviderHandle {
-      calls.push({ chatId: req.chatId, resumeFrom: req.resumeFrom, prompt: req.prompt });
-      const events = (async function* () {
+      // VOS-96 T10: ProviderSpawnRequest.chatId removed; contextId is the
+      // canonical chat-shaped identifier (orchestrator sets contextId = chatId).
+      calls.push({ chatId: req.contextId, resumeFrom: req.resumeFrom, prompt: req.prompt });
+      const events = normalizeStream((async function* () {
         yield { type: "system", session_id: sessionId };
         yield {
           type: "assistant",
@@ -90,7 +93,7 @@ function cannedProvider(sessionId: string) {
             content: [{ type: "text", text: "back" }],
           },
         };
-      })();
+      })());
       return {
         events,
         cancel: async () => false,

@@ -21,7 +21,7 @@ import {
   Conflict409,
 } from "../../src/chat/orchestrator";
 import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
-import { extractAssistantText } from "../../src/providers/claude-code/extract.ts";
+import { normalizeStream } from "../helpers/normalize-stream.ts";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -51,11 +51,11 @@ function freshDb(): Database {
 
 // Minimal Provider wrapping an inline async-generator factory.
 // Used by tests that only need to script the event sequence.
-function inlineProvider(gen: () => AsyncIterable<ProviderEvent>): Provider {
+function inlineProvider(gen: () => AsyncIterable<unknown>): Provider {
   return {
     name: "inline",
     spawn(_req: ProviderSpawnRequest): ProviderHandle {
-      const events = gen();
+      const events = normalizeStream(gen());
       return {
         events,
         cancel: async () => false,
@@ -85,7 +85,7 @@ function fakeProvider(opts: FakeProviderOpts = {}): Provider {
       }
       const sid = opts.sessionId ?? "sid-fresh";
       const throwMid = opts.throwMid;
-      const events = (async function* () {
+      const events = normalizeStream((async function* () {
         yield { type: "system", session_id: sid };
         yield {
           type: "assistant",
@@ -93,7 +93,7 @@ function fakeProvider(opts: FakeProviderOpts = {}): Provider {
         };
         if (throwMid) throw new Error("stream blew up");
         yield { type: "tool_use", name: "vault.read", input: { path: "x" } };
-      })();
+      })());
       return {
         events,
         cancel: async () => false,
@@ -154,72 +154,10 @@ test("happy path: lock acquired, run inserted, sessionCaptured, cleanup", async 
   expect(titler.title).toHaveBeenCalledTimes(1);
 });
 
-// ── extractAssistantText unit coverage ─────────────────────────────────
-
-test("extractAssistantText: single text block", () => {
-  expect(
-    extractAssistantText({
-      type: "assistant",
-      message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
-    } as any),
-  ).toBe("hello");
-});
-
-test("extractAssistantText: multiple text blocks concatenate", () => {
-  expect(
-    extractAssistantText({
-      type: "assistant",
-      message: {
-        role: "assistant",
-        content: [
-          { type: "text", text: "foo " },
-          { type: "text", text: "bar" },
-        ],
-      },
-    } as any),
-  ).toBe("foo bar");
-});
-
-test("extractAssistantText: mixed text + tool_use blocks return only text", () => {
-  expect(
-    extractAssistantText({
-      type: "assistant",
-      message: {
-        role: "assistant",
-        content: [
-          { type: "text", text: "thinking: " },
-          { type: "tool_use", id: "u_1", name: "vault.read", input: {} },
-          { type: "text", text: "done" },
-        ],
-      },
-    } as any),
-  ).toBe("thinking: done");
-});
-
-test("extractAssistantText: missing message returns empty string", () => {
-  expect(extractAssistantText({ type: "assistant" } as any)).toBe("");
-});
-
-test("extractAssistantText: empty content array returns empty string", () => {
-  expect(
-    extractAssistantText({
-      type: "assistant",
-      message: { role: "assistant", content: [] },
-    } as any),
-  ).toBe("");
-});
-
-test("extractAssistantText: tool-use-only content returns empty string", () => {
-  expect(
-    extractAssistantText({
-      type: "assistant",
-      message: {
-        role: "assistant",
-        content: [{ type: "tool_use", id: "u_1", name: "x", input: {} }],
-      },
-    } as any),
-  ).toBe("");
-});
+// ── extractAssistantText unit coverage migrated to
+//    src/providers/claude-code/__tests__/cc-shape.test.ts (VOS-96 T9).
+//    The shim aliased extractAssistantText → extractTurnText; cc-shape.test.ts
+//    now exercises extractTurnText directly with the same fixtures.
 
 // ── orchestrator-level: multi-block assistant + empty/tool-only turns ──
 

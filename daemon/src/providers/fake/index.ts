@@ -16,6 +16,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  CanonicalProviderEvent,
+  LegacyProviderEvent,
   Provider,
   ProviderEvent,
   ProviderHandle,
@@ -23,6 +25,7 @@ import type {
 } from "../types.ts";
 import { TraceWriter } from "../../trace/writer";
 import { classifyToolEvents } from "../claude-code/parser.ts";
+import { normalizeCcEvent } from "../claude-code/cc-shape.ts";
 
 /**
  * Resolve fake provider script path with per-agent override.
@@ -85,14 +88,8 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
   return {
     name: "fake",
     spawn(req: ProviderSpawnRequest): ProviderHandle {
-      // The fake provider is only spawned in tests; the test rig injects task
-      // / context / run identifiers as extra properties on the spawn request
-      // (mirroring how production wiring threads them via the orchestrator).
-      // ProviderSpawnRequest does not list them, so widen here.
-      const reqExt = req as ProviderSpawnRequest & {
-        taskId?: string;
-        contextId?: string;
-      };
+      // VOS-96 T10: ProviderSpawnRequest requires `taskId` + `contextId` per
+      // ADR-0001 §Decision; the fake provider reads them directly off `req`.
       let cancelled = false;
       let resolveDone!: (r: { exitCode?: number; sessionId?: string; reason: "exit" | "cancel" | "timeout" | "error" }) => void;
       const done = new Promise<{ exitCode?: number; sessionId?: string; reason: "exit" | "cancel" | "timeout" | "error" }>((res) => {
@@ -113,12 +110,9 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
         // Use the same MCP route the production agent would use. We talk
         // JSON-RPC to /mcp with the ask_user tool name; daemon arms pending
         // registry and only returns when /chat/:id/answer resolves it.
-        const taskId = reqExt.taskId;
-        const contextId = reqExt.contextId ?? taskId;
-        const runId = reqExt.runId;
-        if (!taskId) {
-          throw new Error("vos_ask_user directive requires taskId on spawn request");
-        }
+        const taskId = req.taskId;
+        const contextId = req.contextId;
+        const runId = req.runId;
         const body = {
           jsonrpc: "2.0" as const,
           id: 1,
@@ -173,6 +167,14 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
         return answer;
       }
 
+      // VOS-96 T3 (B2 minimum): normalize on yield so the fake provider
+      // emits canonical `ProviderEvent`s, matching what the CC provider
+      // emits after T3. Scripts on disk stay CC-frame-shaped (per ADR-0001
+      // §Decision); the normalizer runs at the seam. T4 will complete the
+      // fake's migration (drop the widen hack, etc.).
+      const yieldCanonical = (raw: LegacyProviderEvent): CanonicalProviderEvent | null =>
+        normalizeCcEvent(raw);
+
       async function* gen(): AsyncGenerator<ProviderEvent> {
         started = true;
         // VOS-84: optional JSONL trace. Only opens when tracesDir is set
@@ -186,9 +188,9 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
           trace = TraceWriter.open(tracePath);
           trace.write("turn.start", {
             runId: req.runId,
-            chatId: req.chatId ?? null,
+            chatId: req.contextId ?? null,
             agent: opts.agent ?? "fake",
-            kind: req.kind ?? "chat",
+            kind: "chat",
             userMessage: req.prompt,
           });
         }
@@ -225,7 +227,7 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
             const options = Array.isArray(obj.options)
               ? (obj.options as string[])
               : undefined;
-            const askEvent: ProviderEvent = {
+            const askEventLegacy: LegacyProviderEvent = {
               type: "assistant",
               message: {
                 content: [
@@ -245,8 +247,8 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
             // VOS-84: mirror synthesized tool_use into the trace as
             // cc.event + classified tool.call envelopes.
             if (trace) {
-              trace.write("cc.event", askEvent);
-              for (const cls of classifyToolEvents(askEvent)) {
+              trace.write("cc.event", askEventLegacy);
+              for (const cls of classifyToolEvents(askEventLegacy)) {
                 if (cls.kind === "tool.call") {
                   trace.write("tool.call", { toolUseId: cls.toolUseId, name: cls.name, input: cls.input });
                 } else {
@@ -254,7 +256,8 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
                 }
               }
             }
-            yield askEvent;
+            const askCanonical = yieldCanonical(askEventLegacy);
+            if (askCanonical) yield askCanonical;
             // Now wait for the answer to flow back via /chat/:id/answer.
             try {
               substitution = { answer: await answerPromise };
@@ -265,8 +268,8 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
             }
             continue;
           }
-          // Standard ProviderEvent line.
-          const ev = parsed as ProviderEvent;
+          // Standard legacy line — capture session, run substitution, normalize.
+          const ev = parsed as LegacyProviderEvent;
           if (ev.type === "system" && typeof (ev as { session_id?: string }).session_id === "string") {
             sessionId = (ev as { session_id: string }).session_id;
           }
@@ -298,7 +301,8 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
               trace.write("cc.stderr", { chunk: stderrChunk });
             }
           }
-          yield ev;
+          const canonical = yieldCanonical(ev);
+          if (canonical) yield canonical;
           if (perEventDelayMs > 0) await new Promise((r) => setTimeout(r, perEventDelayMs));
         }
         closeTrace("ok", 0);

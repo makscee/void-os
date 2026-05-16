@@ -13,6 +13,7 @@ import { makeChatRepo } from "../../src/chat/repo";
 import { makeOrchestrator } from "../../src/chat/orchestrator";
 import { makeMessagesRepo } from "../../src/chat/messages-repo";
 import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
+import { normalizeStream } from "../helpers/normalize-stream.ts";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -53,7 +54,7 @@ function blockingProvider(): Provider & { wasKilled(): boolean } {
       return killed;
     },
     spawn(_req: ProviderSpawnRequest): ProviderHandle {
-      const events = (async function* () {
+      const events = normalizeStream((async function* () {
         yield { type: "system", session_id: "sid-cancel" };
         yield {
           type: "assistant",
@@ -66,7 +67,7 @@ function blockingProvider(): Provider & { wasKilled(): boolean } {
         while (!killed) {
           await new Promise((r) => setTimeout(r, 5));
         }
-      })();
+      })());
       return {
         events,
         cancel: async () => {
@@ -83,7 +84,7 @@ function blockingProvider(): Provider & { wasKilled(): boolean } {
  * Provider that parks mid-stream with a `killed` flag, exposing per-spawn cancel.
  */
 function parkingProvider(
-  genFn: (killed: () => boolean) => AsyncIterable<ProviderEvent>,
+  genFn: (killed: () => boolean) => AsyncIterable<unknown>,
 ): Provider & { cancel_(): Promise<boolean> } {
   let cancelFn: () => Promise<boolean> = async () => false;
   return {
@@ -92,7 +93,7 @@ function parkingProvider(
     spawn(_req: ProviderSpawnRequest): ProviderHandle {
       let killed = false;
       cancelFn = async () => { killed = true; return true; };
-      const events = genFn(() => killed);
+      const events = normalizeStream(genFn(() => killed));
       return {
         events,
         cancel: async () => { killed = true; return true; },
@@ -244,7 +245,7 @@ test("cancel(): partial-token stream — only emitted text is persisted, no extr
         }
       })();
       return {
-        events: evts,
+        events: normalizeStream(evts),
         cancel: async () => { killed = true; return true; },
         done: Promise.resolve({ reason: "cancel" as const }),
       };
@@ -317,7 +318,7 @@ test("cancel(): mid-tool-call — terminates cleanly without is_error frame leak
         };
       })();
       return {
-        events: evts,
+        events: normalizeStream(evts),
         cancel: async () => { killed = true; return true; },
         done: Promise.resolve({ reason: "cancel" as const }),
       };
@@ -375,7 +376,7 @@ test("cancel() before any tokens: persists empty assistant row tagged cancelled 
         }
       })();
       return {
-        events: evts,
+        events: normalizeStream(evts),
         cancel: async () => { killed = true; return true; },
         done: Promise.resolve({ reason: "cancel" as const }),
       };
@@ -440,7 +441,7 @@ test("cancel() with partial tokens: assistant row carries streamed text + cancel
         }
       })();
       return {
-        events: evts,
+        events: normalizeStream(evts),
         cancel: async () => { killed = true; return true; },
         done: Promise.resolve({ reason: "cancel" as const }),
       };

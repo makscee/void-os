@@ -20,6 +20,8 @@ import type {
   ProviderHandle,
   ProviderSpawnRequest,
 } from "../../src/providers/index.ts";
+import type { LegacyProviderEvent } from "../../src/providers/types.ts";
+import { normalizeStream } from "../helpers/normalize-stream.ts";
 
 const MIGRATIONS_DIR = join(
   import.meta.dir,
@@ -61,7 +63,7 @@ function seed(db: Database): { contextId: string; childTaskId: string } {
  * that proves cwd threading by inspecting what spawn actually saw.
  */
 function captureProvider(opts: {
-  events?: ProviderEvent[];
+  events?: LegacyProviderEvent[];
   throwOnIter?: string;
 }): { provider: Provider; lastReq: { value: ProviderSpawnRequest | null } } {
   const lastReq = { value: null as ProviderSpawnRequest | null };
@@ -70,12 +72,12 @@ function captureProvider(opts: {
     spawn(req: ProviderSpawnRequest): ProviderHandle {
       lastReq.value = req;
       const events = opts.events ?? [];
-      async function* iter(): AsyncIterable<ProviderEvent> {
+      async function* iter(): AsyncIterable<unknown> {
         for (const e of events) yield e;
         if (opts.throwOnIter) throw new Error(opts.throwOnIter);
       }
       return {
-        events: iter(),
+        events: normalizeStream(iter()),
         cancel: async () => false,
         done: Promise.resolve({ reason: "exit" as const }),
       };
@@ -125,8 +127,9 @@ describe("makeDispatchChildTask", () => {
     expect(lastReq.value).not.toBeNull();
     expect(lastReq.value!.cwd).toBe(VAULT_CWD);
     expect(lastReq.value!.cwd).not.toBe("/tmp");
-    // contextId is still threaded as chatId.
-    expect(lastReq.value!.chatId).toBe(contextId);
+    // VOS-96 T10: chatId removed from ProviderSpawnRequest; contextId
+    // is the canonical identifier (ADR-0001 §Decision).
+    expect(lastReq.value!.contextId).toBe(contextId);
   });
 
   test("Finding 2: provider error persists to tasks.metadata.errorMessage", async () => {

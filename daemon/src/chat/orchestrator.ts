@@ -44,30 +44,9 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { type ChatRepo, openTaskFor, setTaskState } from "./repo";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo";
-import type { Part } from "../types/a2a";
-import { extractTurnText, extractToolUses, extractToolResults } from "./util";
-import { extractAssistantText } from "../providers/claude-code/index.ts";
+import type { Part, TextPart, DataPart } from "../types/a2a";
 
 import type { Provider, ProviderHandle } from "../providers/index.ts";
-
-/** Collapse runs of adjacent TextPart entries in a parts buffer into a single
- *  TextPart. The orchestrator pushes one TextPart per assistant token batch
- *  during streaming; the canonical A2A Message stored in the messages table
- *  contains a single concatenated TextPart for the turn's narrative text. */
-function mergeAdjacentTextParts(parts: Part[]): Part[] {
-  const out: Part[] = [];
-  for (const p of parts) {
-    const last = out[out.length - 1];
-    const lastText = (last as { text?: unknown } | undefined)?.text;
-    const curText = (p as { text?: unknown }).text;
-    if (typeof lastText === "string" && typeof curText === "string") {
-      out[out.length - 1] = { ...(last as object), text: lastText + curText } as Part;
-    } else {
-      out.push(p);
-    }
-  }
-  return out;
-}
 
 export interface TitlerLike {
   title(chatId: string): Promise<void>;
@@ -496,17 +475,15 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           runId,
           prompt: text,
           cwd,
-          chatId,
-          resumeFrom: chat.session_id ?? undefined,
-          // VOS-90 T1 bridge: fake provider's vos_ask_user directive needs
-          // taskId + contextId to call the daemon's MCP /mcp endpoint with
-          // the right correlation args. Production providers (claude-code)
-          // ignore unknown spawn-request fields, so widening here is safe.
-          // Cast: ProviderSpawnRequest does not declare these — the fake
-          // provider widens at the call site.
+          // VOS-96 T10 (ADR-0001 §Decision): chatId folded into contextId on
+          // the provider boundary. CC provider passes contextId through to
+          // the spawner's chat_id arg; fake provider uses taskId+contextId
+          // for vos_ask_user MCP correlation. No cast: ProviderSpawnRequest
+          // requires both fields after T10.
           taskId,
           contextId: chatId,
-        } as Parameters<typeof provider.spawn>[0]);
+          resumeFrom: chat.session_id ?? undefined,
+        });
         activeHandles.set(runId, handle);
         for await (const evt of handle.events) {
           // VOS-80 S5: cancel-bail. The for-await may already have a buffered
@@ -515,91 +492,62 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           if (cancelRequested.has(runId)) {
             break;
           }
-          if (evt.type === "system" && typeof evt.session_id === "string") {
+          // VOS-96 T5: canonical event loop per ADR-0001 §Decision. Providers
+          // normalize their wire format on yield, so this loop sees only
+          // `SessionEvent | PartsEvent`. CC-shape parsing lives upstream in
+          // providers/claude-code/cc-shape.ts; orchestrator does no shape
+          // synthesis — DataParts arrive pre-wrapped.
+          if (evt.type === "session") {
             // Double gate: in-memory boolean + the IS NULL check on the
             // canonical row. Across runs (--resume), claudev re-emits the
             // same id; we still want this branch to no-op.
             if (!sessionCaptured && chat.session_id === null) {
-              repo.setSession(chatId, evt.session_id);
+              repo.setSession(chatId, evt.sessionId);
               sessionCaptured = true;
             }
-          } else if (evt.type === "assistant") {
-            firstAssistantSeen = true;
-            // CC stream-json shape: text lives in evt.message.content[] as
-            // {type:"text", text}, possibly interleaved with tool_use blocks.
-            // Pure tool-call assistant turns have no text blocks — skip the
-            // chat.token emit but still surface their tool_use blocks below.
-            const text = extractAssistantText(evt);
-            if (text) {
-              lastAssistantText += text;
-              agentParts.push({ text } as Part);
+          } else if (evt.type === "parts") {
+            // Mark first assistant-side activity for the titler gate; user
+            // role parts (tool_result carriers) don't qualify.
+            if (evt.role === "ROLE_AGENT") firstAssistantSeen = true;
+            // Two-pass over evt.parts so the per-frame chat.token delta
+            // matches the pre-canonicalization contract: one delta per
+            // provider frame, concatenating all TextParts in the frame.
+            // tool_use / tool_result blocks still emit one WS frame each.
+            let frameText = "";
+            for (const p of evt.parts) {
+              agentParts.push(p);
+              const text = (p as TextPart).text;
+              if (typeof text === "string") {
+                frameText += text;
+                continue;
+              }
+              const data = (p as DataPart).data;
+              if (!data || typeof data !== "object") continue;
+              const kind = (data as { kind?: unknown }).kind;
+              if (kind === "tool_use") {
+                emit("chat.tool_use", {
+                  chat_id: chatId,
+                  run_id: runId,
+                  tool_call_id: (data as { tool_call_id?: string }).tool_call_id,
+                  name: (data as { tool_name?: string }).tool_name,
+                  input: (data as { input?: unknown }).input,
+                });
+              } else if (kind === "tool_result") {
+                emit("chat.tool_result", {
+                  chat_id: chatId,
+                  run_id: runId,
+                  tool_call_id: (data as { tool_call_id?: string }).tool_call_id,
+                  output: (data as { output?: unknown }).output,
+                  is_error: (data as { is_error?: unknown }).is_error === true,
+                });
+              }
+            }
+            if (frameText) {
+              lastAssistantText += frameText;
               emit("chat.token", {
                 chat_id: chatId,
                 run_id: runId,
-                delta: text,
-              });
-            }
-            // Surface every tool_use block in this assistant turn as a
-            // dedicated WS frame (S4 tool-call panel hydration).
-            for (const tu of extractToolUses(evt)) {
-              // VOS-83 mig-0007: buffer tool_use as an A2A DataPart inside
-              // the per-turn agentParts. The single appendMessage flush at
-              // turn-terminal commits it (alongside any text + tool_result
-              // parts that streamed in this turn).
-              const tuTs = typeof evt.ts === "number" ? evt.ts : Date.now();
-              agentParts.push({
-                data: {
-                  kind: "tool_use",
-                  tool_call_id: tu.tool_call_id,
-                  tool_name: tu.name,
-                  input: tu.input,
-                },
-                metadata: { ts: tuTs },
-              } as unknown as Part);
-              emit("chat.tool_use", {
-                chat_id: chatId,
-                run_id: runId,
-                tool_call_id: tu.tool_call_id,
-                name: tu.name,
-                input: tu.input,
-              });
-            }
-          } else if (evt.type === "user") {
-            // User-role events with tool_result content[] carry the model's
-            // tool output for the next assistant turn. They are NOT user
-            // messages (chat.message_user was already emitted for the prompt
-            // at dispatch start) — they only surface as chat.tool_result.
-            for (const tr of extractToolResults(evt)) {
-              // VOS-83 mig-0007: buffer tool_result as an A2A DataPart on the
-              // SAME agent turn (matches messages-repo.walk() decoding, which
-              // surfaces both tool_use + tool_result DataParts under the
-              // agent row that contains them).
-              const outText =
-                typeof tr.output === "string"
-                  ? tr.output
-                  : (() => {
-                      try {
-                        return JSON.stringify(tr.output);
-                      } catch {
-                        return String(tr.output);
-                      }
-                    })();
-              const trTs = typeof evt.ts === "number" ? evt.ts : Date.now();
-              agentParts.push({
-                data: {
-                  kind: "tool_result",
-                  tool_call_id: tr.tool_call_id,
-                  output: outText,
-                  is_error: tr.is_error,
-                },
-                metadata: { ts: trTs },
-              } as unknown as Part);
-              emit("chat.tool_result", {
-                chat_id: chatId,
-                run_id: runId,
-                tool_call_id: tr.tool_call_id,
-                output: tr.output,
-                is_error: tr.is_error,
+                delta: frameText,
               });
             }
           }
@@ -612,7 +560,25 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           // appendMessage). last_msg preview is now derived from messages
           // by repo.list(); setLastMsg is retained only for the updated_at
           // bump (used by list ordering).
-          const flushed = mergeAdjacentTextParts(agentParts);
+          //
+          // Inline merge of adjacent TextParts: the orchestrator pushes one
+          // TextPart per assistant token batch during streaming; the
+          // canonical A2A Message stored in the messages table contains a
+          // single concatenated TextPart for the turn's narrative text.
+          const flushed: Part[] = [];
+          for (const p of agentParts) {
+            const last = flushed[flushed.length - 1];
+            const lastText = (last as { text?: unknown } | undefined)?.text;
+            const curText = (p as { text?: unknown }).text;
+            if (typeof lastText === "string" && typeof curText === "string") {
+              flushed[flushed.length - 1] = {
+                ...(last as object),
+                text: lastText + curText,
+              } as Part;
+            } else {
+              flushed.push(p);
+            }
+          }
           if (flushed.length > 0) {
             messages.appendMessage(
               taskId,
@@ -674,8 +640,22 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           // parts) so the LEFT JOIN in messages-repo.walk() can stamp
           // `cancelled: true` on a concrete row. Empty parts renders as
           // STOPPED_MARKER on the plugin. The buffered tool blocks (if any
-          // streamed pre-cancel) are preserved by mergeAdjacentTextParts.
-          const flushed = mergeAdjacentTextParts(agentParts);
+          // streamed pre-cancel) are preserved by the inline adjacent-
+          // TextPart merge below.
+          const flushed: Part[] = [];
+          for (const p of agentParts) {
+            const last = flushed[flushed.length - 1];
+            const lastText = (last as { text?: unknown } | undefined)?.text;
+            const curText = (p as { text?: unknown }).text;
+            if (typeof lastText === "string" && typeof curText === "string") {
+              flushed[flushed.length - 1] = {
+                ...(last as object),
+                text: lastText + curText,
+              } as Part;
+            } else {
+              flushed.push(p);
+            }
+          }
           messages.appendMessage(
             taskId,
             chatId,
@@ -688,7 +668,22 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
             repo.setLastMsg(chatId, lastAssistantText.slice(0, 200));
           }
         } else if (status === "error" && agentParts.length > 0) {
-          const flushed = mergeAdjacentTextParts(agentParts);
+          // Inline merge of adjacent TextParts — see happy-path callsite
+          // above for rationale.
+          const flushed: Part[] = [];
+          for (const p of agentParts) {
+            const last = flushed[flushed.length - 1];
+            const lastText = (last as { text?: unknown } | undefined)?.text;
+            const curText = (p as { text?: unknown }).text;
+            if (typeof lastText === "string" && typeof curText === "string") {
+              flushed[flushed.length - 1] = {
+                ...(last as object),
+                text: lastText + curText,
+              } as Part;
+            } else {
+              flushed.push(p);
+            }
+          }
           messages.appendMessage(
             taskId,
             chatId,

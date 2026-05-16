@@ -40,10 +40,8 @@ import type { Database } from "bun:sqlite";
 import type { EventBus } from "../events/index.ts";
 import type { Provider, ProviderHandle } from "../providers/index.ts";
 import { makeProvider, type ProviderEnv } from "../providers/factory.ts";
-import { extractAssistantText } from "../providers/claude-code/index.ts";
-import { extractToolUses, extractToolResults } from "./util.ts";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo.ts";
-import type { Part } from "../types/a2a.ts";
+import type { Part, TextPart } from "../types/a2a.ts";
 
 export interface DispatchChildDeps {
   db: Database;
@@ -174,50 +172,30 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
       runId: childTaskId, // child has no run row; reuse id for prompt/logs only
       prompt: message,
       cwd,
-      chatId: contextId,
+      // VOS-96 T10: ProviderSpawnRequest.chatId removed (ADR-0001 §Decision).
+      // Child dispatch sets taskId = childTaskId and folds the chat-shaped
+      // identifier into contextId.
+      taskId: childTaskId,
+      contextId,
     });
 
+    // VOS-96 T6: canonical event loop per ADR-0001 §Decision. Provider
+    // normalizes wire format on yield; dispatch-child sees only
+    // `SessionEvent | PartsEvent`. CC-shape parsing lives upstream in
+    // providers/claude-code/cc-shape.ts.
     for await (const evt of handle.events) {
-      if (evt.type === "assistant") {
-        firstAssistantSeen = true;
-        const text = extractAssistantText(evt);
-        if (text) {
-          agentParts.push({ text } as Part);
-        }
-        for (const tu of extractToolUses(evt)) {
-          agentParts.push({
-            data: {
-              kind: "tool_use",
-              tool_call_id: tu.tool_call_id,
-              tool_name: tu.name,
-              input: tu.input,
-            },
-            metadata: { ts: Date.now() },
-          } as unknown as Part);
-        }
-      } else if (evt.type === "user") {
-        for (const tr of extractToolResults(evt)) {
-          const outText =
-            typeof tr.output === "string"
-              ? tr.output
-              : (() => {
-                  try {
-                    return JSON.stringify(tr.output);
-                  } catch {
-                    return String(tr.output);
-                  }
-                })();
-          agentParts.push({
-            data: {
-              kind: "tool_result",
-              tool_call_id: tr.tool_call_id,
-              output: outText,
-              is_error: tr.is_error,
-            },
-            metadata: { ts: Date.now() },
-          } as unknown as Part);
+      if (evt.type === "parts") {
+        if (evt.role === "ROLE_AGENT") firstAssistantSeen = true;
+        for (const p of evt.parts) {
+          agentParts.push(p);
+          // dispatch-child does not emit chat.token/tool_use/tool_result —
+          // child runs are headless from the UI's perspective; the parent's
+          // ask_agent surfaces a single tool_result at the end. So we only
+          // buffer here and skip the per-part fan-out the orchestrator does.
+          if (typeof (p as TextPart).text === "string") continue;
         }
       }
+      // session events: dispatch-child has no chat row to update; ignored.
     }
     await handle.done;
   } catch (e) {

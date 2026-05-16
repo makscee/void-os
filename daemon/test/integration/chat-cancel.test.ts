@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { buildApp } from "../../src/app.ts";
 import { makeOrchestrator } from "../../src/chat/orchestrator.ts";
 import type { Provider, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
+import { normalizeStream } from "../helpers/normalize-stream.ts";
 import { makeChatRepo } from "../../src/chat/repo.ts";
 
 const MIGRATIONS_DIR = join(
@@ -65,7 +66,7 @@ async function bootstrap() {
         }
       })();
       return {
-        events: events_,
+        events: normalizeStream(events_),
         cancel: async () => { killed = true; return true; },
         done: Promise.resolve({ reason: "cancel" as const }),
       };

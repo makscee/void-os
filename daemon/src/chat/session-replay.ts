@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import type { Database } from "bun:sqlite";
 import { makeChatRepo, openTaskFor } from "./repo";
 import { makeMessagesRepo } from "./messages-repo";
-import { extractTurnText, extractToolUses, extractToolResults } from "./util";
+import { extractTurnText, extractToolUses, extractToolResults } from "../providers/claude-code/cc-shape";
 import type { Part, Role } from "../types/a2a";
 import { readTrace } from "../trace/reader";
 

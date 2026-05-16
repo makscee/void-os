@@ -27,7 +27,11 @@
 
 import type { CcSpawner, KillOpts } from "./index.js";
 import type { EventBus, DaemonEvent } from "../../events/index.js";
-import type { ProviderEvent } from "../types.ts";
+import type { LegacyProviderEvent } from "../types.ts";
+// VOS-96 T3: the spawner iterator emits raw CC wire-format frames. The CC
+// provider's `events()` generator normalizes each frame into the canonical
+// `ProviderEvent` union before yielding downstream — see provider.ts.
+type ProviderEvent = LegacyProviderEvent;
 
 export interface SpawnerIterDeps {
   /** Underlying bus-emitting spawner (createCcSpawner output). */

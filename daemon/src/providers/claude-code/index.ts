@@ -449,7 +449,6 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
 
 export { makeClaudeCodeProvider } from "./provider.ts";
 export type { CcIter, MakeClaudeCodeProviderDeps } from "./provider.ts";
-export { extractAssistantText } from "./extract.ts";
 
 import { makeCcSpawnerIter } from "./spawner.ts";
 import { makeClaudeCodeProvider } from "./provider.ts";
