@@ -19,6 +19,7 @@ export interface UsageTurn {
   cacheCreateTokens: number;
   cacheReadTokens: number;
   model: string;
+  provider: string;   // VOS-87: stamped by orchestrator from Provider.name
 }
 
 export interface RunEndEvent extends DaemonEvent {
@@ -29,6 +30,7 @@ export interface RunEndEvent extends DaemonEvent {
     agent: string;
     endedAt: number;
     usageTurns: UsageTurn[];
+    taskId: string | null;   // VOS-87: orchestrator reads from runs row
   };
 }
 
