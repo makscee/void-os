@@ -45,13 +45,15 @@ export interface LegacyProviderEvent {
   [k: string]: unknown;
 }
 
-// During the T1 migration window `ProviderEvent` stays bound to the legacy shape
-// so existing consumers (which rely on its `[k: string]: unknown` index signature
-// and `evt.type === "assistant" | "user" | "system"` ladder) keep type-checking
-// unchanged. T3-T10 will switch consumers and emitters onto `CanonicalProviderEvent`
-// directly; T10 then flips this alias to the canonical union and deletes
-// `LegacyProviderEvent`.
-export type ProviderEvent = LegacyProviderEvent;
+// VOS-96 T3/T5/T6 (B2): `ProviderEvent` is the canonical union per ADR-0001
+// §Decision. Both CC provider.ts and fake provider.ts run incoming raw CC
+// frames through `normalizeCcEvent` before yielding, so downstream consumers
+// (orchestrator, dispatch-child) only ever observe `SessionEvent | PartsEvent`.
+// `LegacyProviderEvent` remains exported solely so internal seams
+// (CC spawner iterator, test inline fakes, fake provider script parser)
+// that still construct raw CC frames pre-normalization can name the shape.
+// T9/T10 delete the legacy alias once those callsites migrate.
+export type ProviderEvent = CanonicalProviderEvent;
 
 // --- Spawn request --------------------------------------------------------
 //

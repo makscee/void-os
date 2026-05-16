@@ -1,9 +1,17 @@
 import type {
+  CanonicalProviderEvent,
+  LegacyProviderEvent,
   Provider,
   ProviderEvent,
   ProviderHandle,
   ProviderSpawnRequest,
 } from "../types.ts";
+import { normalizeCcEvent } from "./cc-shape.ts";
+
+// VOS-96: the CC spawner iterator still emits raw CC wire-format frames.
+// `CcIter` is the pre-normalization seam; provider.ts runs each frame
+// through `normalizeCcEvent` before yielding the canonical event downstream.
+type RawCcEvent = LegacyProviderEvent;
 
 // Internal shape of the existing iterator-style spawner. Decoupled here so
 // callers (tests + app.ts) supply concrete impls. Production wiring in
@@ -13,7 +21,7 @@ export interface CcIter {
     chat_id: string;
     resume: string | null;
     prompt: string;
-  }): AsyncIterable<ProviderEvent>;
+  }): AsyncIterable<RawCcEvent>;
   cancel?(runId: string): Promise<boolean>;
 }
 
@@ -50,10 +58,21 @@ export function makeClaudeCodeProvider(
       async function* events(): AsyncIterable<ProviderEvent> {
         try {
           for await (const e of raw) {
-            if (e.type === "system" && typeof e.session_id === "string") {
-              sessionId = e.session_id;
+            // VOS-96 T3: normalize raw CC frames into canonical `ProviderEvent`s
+            // per ADR-0001 §Decision. The upstream spawner yields legacy CC
+            // shape; we translate on the seam so consumers (orchestrator,
+            // dispatch-child) see only `SessionEvent | PartsEvent`.
+            const canonical: CanonicalProviderEvent | null = normalizeCcEvent(e);
+            if (canonical === null) {
+              // Non-canonical frames (e.g. CC `{type:"result"}` terminal
+              // sentinels) have no consumer-facing equivalent — drop.
+              if (cancelled) break;
+              continue;
             }
-            yield e;
+            if (canonical.type === "session") {
+              sessionId = canonical.sessionId;
+            }
+            yield canonical;
             if (cancelled) break;
           }
           if (!ended) {

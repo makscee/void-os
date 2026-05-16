@@ -18,6 +18,7 @@ import { makeChatRepo } from "../../src/chat/repo";
 import { makeMessagesRepo } from "../../src/chat/messages-repo";
 import { makeOrchestrator } from "../../src/chat/orchestrator";
 import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
+import { normalizeStream } from "../helpers/normalize-stream.ts";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -58,12 +59,12 @@ async function waitFor(
   }
 }
 
-function inlineProvider(gen: () => AsyncIterable<ProviderEvent>): Provider {
+function inlineProvider(gen: () => AsyncIterable<unknown>): Provider {
   return {
     name: "inline",
     spawn(_req: ProviderSpawnRequest): ProviderHandle {
       return {
-        events: gen(),
+        events: normalizeStream(gen()),
         cancel: async () => false,
         done: Promise.resolve({ reason: "exit" as const, exitCode: 0 }),
       };
@@ -158,7 +159,7 @@ test("cancel mid-stream: user + partial assistant in messages table", async () =
         }
       })();
       return {
-        events: evts,
+        events: normalizeStream(evts),
         cancel: async () => { killed = true; return true; },
         done: Promise.resolve({ reason: "cancel" as const }),
       };

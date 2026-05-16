@@ -22,10 +22,17 @@ test("Provider interface is satisfiable by a hand-rolled mock", () => {
   expect(mock.name).toBe("mock");
 });
 
-test("ProviderEvent accepts loose CC NDJSON shape", () => {
-  const evt: ProviderEvent = {
-    type: "assistant",
-    message: { content: [{ type: "text", text: "hi" }] },
+test("ProviderEvent is the canonical discriminated union (ADR-0001)", () => {
+  // VOS-96: ProviderEvent narrowed from the loose CC pass-through to the
+  // canonical `SessionEvent | PartsEvent` union per ADR-0001 §Decision.
+  // Raw CC frames are typed via `LegacyProviderEvent` at internal seams.
+  const session: ProviderEvent = { type: "session", sessionId: "sid-1" };
+  const parts: ProviderEvent = {
+    type: "parts",
+    role: "ROLE_AGENT",
+    parts: [{ text: "hi" }],
+    ts: Date.now(),
   };
-  expect(evt.type).toBe("assistant");
+  expect(session.type).toBe("session");
+  expect(parts.type).toBe("parts");
 });

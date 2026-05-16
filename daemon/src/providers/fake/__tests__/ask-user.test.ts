@@ -78,7 +78,7 @@ describe("fake provider vos_ask_user directive", () => {
     for await (const ev of handle.events) {
       events.push(ev);
       if (!answered && (ev as { type: string }).type === "assistant") {
-        const content = (ev as { message: { content: Array<{ type: string }> } }).message.content;
+        const content = (ev as unknown as { message: { content: Array<{ type: string }> } }).message.content;
         const toolUse = content.find((c) => c.type === "tool_use") as { id?: string } | undefined;
         if (toolUse?.id) {
           answered = true;

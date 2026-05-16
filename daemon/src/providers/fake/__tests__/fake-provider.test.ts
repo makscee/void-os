@@ -25,7 +25,9 @@ describe("makeFakeProvider", () => {
     const handle = provider.spawn({ runId: "r1", prompt: "p", cwd: "/tmp" });
     const seen: string[] = [];
     for await (const ev of handle.events) seen.push(ev.type);
-    expect(seen).toEqual(["system", "assistant"]);
+    // VOS-96 T3: fake provider normalizes CC frames on yield per ADR-0001
+    // §Decision (legacy system/assistant → canonical session/parts).
+    expect(seen).toEqual(["session", "parts"]);
     const result = await handle.done;
     expect(result.reason).toBe("exit");
     expect(result.exitCode).toBe(0);

@@ -22,6 +22,7 @@ import {
 } from "../../src/chat/orchestrator";
 import type { Provider, ProviderEvent, ProviderHandle, ProviderSpawnRequest } from "../../src/providers/index.ts";
 import { extractAssistantText } from "../../src/providers/claude-code/extract.ts";
+import { normalizeStream } from "../helpers/normalize-stream.ts";
 
 const MIGRATIONS_DIR = join(
   __dirname,
@@ -51,11 +52,11 @@ function freshDb(): Database {
 
 // Minimal Provider wrapping an inline async-generator factory.
 // Used by tests that only need to script the event sequence.
-function inlineProvider(gen: () => AsyncIterable<ProviderEvent>): Provider {
+function inlineProvider(gen: () => AsyncIterable<unknown>): Provider {
   return {
     name: "inline",
     spawn(_req: ProviderSpawnRequest): ProviderHandle {
-      const events = gen();
+      const events = normalizeStream(gen());
       return {
         events,
         cancel: async () => false,
@@ -85,7 +86,7 @@ function fakeProvider(opts: FakeProviderOpts = {}): Provider {
       }
       const sid = opts.sessionId ?? "sid-fresh";
       const throwMid = opts.throwMid;
-      const events = (async function* () {
+      const events = normalizeStream((async function* () {
         yield { type: "system", session_id: sid };
         yield {
           type: "assistant",
@@ -93,7 +94,7 @@ function fakeProvider(opts: FakeProviderOpts = {}): Provider {
         };
         if (throwMid) throw new Error("stream blew up");
         yield { type: "tool_use", name: "vault.read", input: { path: "x" } };
-      })();
+      })());
       return {
         events,
         cancel: async () => false,
