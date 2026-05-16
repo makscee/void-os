@@ -14,7 +14,7 @@
 
 ---
 
-## Task 1: Delete the lazy-import test file
+### Task 1: Delete the lazy-import test file
 
 **Files:**
 - Delete: `daemon/test/chat/session-replay-lazy-import.test.ts` (235 LOC, sole purpose = legacy JSONL import path)
@@ -46,7 +46,7 @@ behaviour remains to test."
 
 ---
 
-## Task 2: Strip JSONL path from session-replay.ts
+### Task 2: Strip JSONL path from session-replay.ts
 
 **Files:**
 - Modify: `daemon/src/chat/session-replay.ts` (336 LOC → ~80 LOC)
@@ -194,7 +194,7 @@ Defer the commit to Task 3 — the intermediate state breaks `api/chat.ts`'s `Re
 
 ---
 
-## Task 3: Drop ReplayOpts plumbing from api/chat.ts
+### Task 3: Drop ReplayOpts plumbing from api/chat.ts
 
 **Files:**
 - Modify: `daemon/src/api/chat.ts` (lines 5, 13–32 affected)
@@ -319,7 +319,7 @@ Refs VOS-99."
 
 ---
 
-## Task 4: Prune session-replay.test.ts
+### Task 4: Prune session-replay.test.ts
 
 **Files:**
 - Modify: `daemon/test/chat/session-replay.test.ts` (794 LOC, expected to shrink)
@@ -423,7 +423,7 @@ Refs VOS-99."
 
 ---
 
-## Task 5: Amend ADR-0001
+### Task 5: Amend ADR-0001
 
 **Files:**
 - Modify: `docs/adr/ADR-0001-provider-event-canonicalization.md` (line 3 + EOF append)
@@ -466,7 +466,7 @@ Refs VOS-99."
 
 ---
 
-## Task 6: Full-suite verification + acceptance grep
+### Task 6: Full-suite verification + acceptance grep
 
 **Files:** none modified. Verification only.
 
