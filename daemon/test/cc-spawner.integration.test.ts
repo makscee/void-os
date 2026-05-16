@@ -17,6 +17,23 @@ import { readTrace } from "../src/trace/reader.js";
 
 const FAKE = resolve(import.meta.dir, "fixtures/fake-claudev");
 
+// VOS-106 T7: createCcSpawner now requires engine/daemonBase/hookScriptPath/
+// loadAgentDefn. Integration tests use --binary FAKE and never reach the
+// scope-enforced spawn path, so we inject permissive stubs to satisfy the
+// type and bypass real resolution. The fake fixture doesn't honour
+// `--settings`/`--mcp-config` flags meaningfully — these stubs only need
+// to keep buildSpawnSettings happy.
+const stubDeps = () => ({
+  engine: {
+    resolveScopes: () => ({ readPaths: ["/tmp/**"], writePaths: ["/tmp/**"] }),
+    canRead: () => true,
+    canWrite: () => true,
+  } as never,
+  daemonBase: "http://127.0.0.1:17777",
+  hookScriptPath: "/dev/null",
+  loadAgentDefn: (name: string) => ({ name }),
+});
+
 // VOS-83: EventBus persistence was removed (legacy `events` table dropped in
 // migration 0007). Tests now capture via in-memory subscribe instead of
 // bus.query against SQLite.
@@ -46,7 +63,7 @@ const teardown = (dir: string, db: { close: () => void }) => {
 describe("CC spawner (fake claudev)", () => {
   test("happy scenario: session captured, run.end with exit 0, runs row final", async () => {
     const { dir, db, bus, tracesDir, events: capturedEvents } = setup();
-    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
+    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE, ...stubDeps() });
     let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     try {
       proc = await spawner.spawn({
@@ -94,7 +111,7 @@ describe("CC spawner (fake claudev)", () => {
 
   test("tool-call scenario: trace records tool.call/tool.result pair with matching toolUseId", async () => {
     const { dir, db, bus, tracesDir, events: _capturedEvents } = setup();
-    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
+    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE, ...stubDeps() });
     let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     try {
       proc = await spawner.spawn({
@@ -134,6 +151,7 @@ describe("CC spawner (fake claudev)", () => {
     const spawner = createCcSpawner({
       bus, db, tracesDir, binary: FAKE,
       watchdogTickMs: 50,
+      ...stubDeps(),
     });
     let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     try {
@@ -165,7 +183,7 @@ describe("CC spawner (fake claudev)", () => {
 
   test("crash scenario: cc.stderr emitted, non-zero exit, sessionId() rejects, stderr ts <= run.end ts", async () => {
     const { dir, db, bus, tracesDir, events: capturedEvents } = setup();
-    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
+    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE, ...stubDeps() });
     let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     try {
       proc = await spawner.spawn({
@@ -197,7 +215,7 @@ describe("CC spawner (fake claudev)", () => {
 
   test("resume: --resume <id> reaches fake; second run echoes resume id", async () => {
     const { dir, db, bus, tracesDir, events: capturedEvents } = setup();
-    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
+    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE, ...stubDeps() });
     let first: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     let second: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     try {
@@ -243,7 +261,7 @@ describe("CC spawner (fake claudev)", () => {
   // even a SIGTERM-trapping CC cannot stall.
   test("kill({fast: true}) terminates a parked subprocess within ~1s", async () => {
     const { dir, db, bus, tracesDir, events: capturedEvents } = setup();
-    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE });
+    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE, ...stubDeps() });
     let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
     try {
       // `silent` scenario parks on `exec sleep 60`. Without a kill it

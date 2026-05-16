@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import * as path from "node:path";
+import { existsSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import pkg from "../package.json" with { type: "json" };
 import { mountApi } from "./api/index.ts";
@@ -22,11 +23,13 @@ import { resolveTz } from "./cost/tz.ts";
 import { chatsApi } from "./api/chats.ts";
 import { agentsApi } from "./api/agents.ts";
 import { chatApi } from "./api/chat.ts";
-import { mountMcp } from "./adapters/mcp/index.ts";
+import { mountMcp, defaultLoadAgentDefn } from "./adapters/mcp/index.ts";
 import { mountAnswerRoute } from "./api/answer.ts";
 import { createEventBus } from "./events/index.ts";
 import { createAskUserBridge } from "./chat/ask-user-bridge.ts";
 import { makeProvider } from "./providers/factory.ts";
+import { createPermissionEngine } from "./permissions/engine.ts";
+import { runBootDenyProbe } from "./providers/claude-code/boot-probe.ts";
 import { makeChatRepo } from "./chat/repo.ts";
 import { makeSessionReplay } from "./chat/session-replay.ts";
 import { makeTitler, type Titler } from "./chat/titler.ts";
@@ -54,6 +57,16 @@ export interface BuildAppDeps {
   // wiring once per-chat agent lookup lands; for now mirrors the chats.agent
   // default ("maya").
   defaultAgent?: string;
+  // VOS-106
+  /** Daemon's own base URL — spawned CC reaches /mcp here. Defaults to
+   *  `http://127.0.0.1:${PORT ?? 17777}`. */
+  daemonBase?: string;
+  /**
+   * Opt-IN to the boot deny-probe. Defaults to false so tests stay fast and
+   * don't fork `bun` per buildApp call. Production entrypoint
+   * (`daemon/src/index.ts`) must explicitly pass `runBootProbe: true`.
+   */
+  runBootProbe?: boolean;
 }
 
 export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
@@ -97,6 +110,44 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     );
   });
 
+  // VOS-106: permission engine + hook-script path + (opt-in) boot deny-probe.
+  // Engine + hookScriptPath are used by both the orchestrator's provider
+  // wire-up (real claude-code) and the child dispatcher. Hoisted out of
+  // the `if (!orchestrator)` block so dispatchChildTask gets them even
+  // when tests inject a stub orchestrator.
+  const homeRoot = process.env.HOME ?? "";
+  const engine = createPermissionEngine({ vaultRoot: deps.vaultRoot, homeRoot });
+  const daemonBase =
+    deps.daemonBase ?? `http://127.0.0.1:${process.env.PORT ?? "17777"}`;
+  const hookScriptPath = path.join(
+    import.meta.dir,
+    "providers",
+    "claude-code",
+    "hook-bin",
+    "pre-tool-use.ts",
+  );
+
+  // VOS-106 ADR-0003: daemon currently runs from source tree; the hook
+  // script must be present on disk. If it isn't, fail loudly with a
+  // pointer to the ADR rather than letting the spawned CC discover it
+  // mid-tool-call.
+  if (!existsSync(hookScriptPath)) {
+    throw new Error(
+      `VOS-106: PreToolUse hook script not found at ${hookScriptPath}. ` +
+        `Daemon currently runs from source only; see docs/adr/ADR-0003-daemon-runs-from-source.md.`,
+    );
+  }
+
+  // Boot deny-probe — production-only. Tests inherit the default (off) so
+  // they don't fork `bun` per buildApp. Production entrypoint passes
+  // `runBootProbe: true` explicitly.
+  if (deps.runBootProbe === true) {
+    const probe = await runBootDenyProbe({ hookScriptPath });
+    if (!probe.ok) {
+      throw new Error(`VOS-106 boot deny-probe failed: ${probe.reason}`);
+    }
+  }
+
   if (!orchestrator || !titler) {
     const repo = makeChatRepo(deps.db);
     const replay = makeSessionReplay(deps.db);
@@ -121,6 +172,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
         tracesDir,
         agent: deps.defaultAgent ?? "maya",
         cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
+        engine,
+        daemonBase,
+        hookScriptPath,
+        loadAgentDefn: (name) => defaultLoadAgentDefn(deps.db, name),
       });
       orchestrator = makeOrchestrator({
         db: deps.db,
@@ -147,6 +202,12 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     bus,
     cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
     tracesDir: path.join(deps.vaultRoot, ".traces"),
+    // VOS-106: thread the same engine + hook wiring used by the orchestrator
+    // path so dispatched children spawn under identical scope enforcement.
+    engine,
+    daemonBase,
+    hookScriptPath,
+    loadAgentDefn: (name) => defaultLoadAgentDefn(deps.db, name),
   });
   mountMcp(app, {
     vaultRoot: deps.vaultRoot,
