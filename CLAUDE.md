@@ -2,6 +2,17 @@
 
 Canonical path: `/Users/admin/hub/workspace/void-os` (was `~/void-os`). All VOS-* tasks tracked in hub at `/Users/admin/hub/vault/work/tasks/`. Workflow conventions in `/Users/admin/hub/CLAUDE.md` (Unified Workflow section). Worktrees stay at `~/void-os-wt/<ID>/` (NOT `~/hub-wt/`). Default branch: `main`. Direct push to GitHub allowed via `/done` (external repo merge per hub convention).
 
+# E2E gotchas (plugin/e2e) — READ BEFORE WRITING SPECS
+
+E2E loop is heavy: ~60-90s per run (daemon + Playwright + Obsidian + scripted LLM). Mistakes burn hours. Lessons from VOS-104 T8:
+
+- **No reusable helpers exist.** There is no `createChatThatAsks` / `answerAskUser` / `daemon.api` helper module. Sibling specs build everything inline against `state.fakeScriptPath` + Playwright `request`. If a plan calls for one, lift the lower-level pattern from a working sibling spec.
+- **Top-level orchestrator script is hard-pinned via `VOS_FAKE_SCRIPT_maya`** (set in `plugin/e2e/globalSetup.ts`). The agent picker does NOT route to different scripts — all chats run the maya script regardless of `agent_name`. Per-agent envs (`..._journaler`, `..._deep`) only apply to `ask_agent` *child* dispatches. To drive a top-level `vos_ask_user`, overwrite `plugin/e2e/fixtures/ask-agent/maya.jsonl` in `beforeEach` and restore in `afterEach`. Playwright `workers: 1` makes the swap race-free.
+- **`ask-user.spec.ts` is broken on master** from the same script-pinning issue — do NOT copy it as a reference.
+- **ChatList isEmpty filter hides rows with no text turns.** Plain `vos_ask_user`-only fixtures (e.g. `ask-with-options.jsonl`) produce rows that are filtered out. Emit at least one assistant text turn first ("thinking…") so the row renders.
+- **Bun.serve `idleTimeout` must be raised for long ask_user waits.** Default 10s drops the `/events` stream before the operator can answer. Daemon sets `idleTimeout: 255` — keep it if touching daemon entrypoint.
+- **Drive chats via REST when the picker isn't under test.** `POST /chats` + `POST /chat/:id/message` is faster and less flaky than UI picker. Save Playwright clicks for what the spec actually asserts.
+
 # context-mode — MANDATORY routing rules
 
 You have context-mode MCP tools available. These rules are NOT optional — they protect your context window from flooding. A single unrouted command can dump 56 KB into context and waste the entire session.
