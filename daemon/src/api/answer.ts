@@ -35,7 +35,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
 import type { EventBus } from "../events";
-import type { PendingRegistry } from "../adapters/mcp/pending-questions";
+import type { AskUserBridge } from "../chat/ask-user-bridge.ts";
 import { openTaskFor } from "../chat/repo";
 import {
   appendToolResultMessage,
@@ -50,7 +50,7 @@ const AnswerBody = z.object({
 export interface AnswerDeps {
   db: Database;
   bus: EventBus;
-  pending: PendingRegistry;
+  bridge: AskUserBridge;
   // Optional WS broadcast shim. Production wiring (app.ts) passes the
   // module-level `broadcast` function; tests may omit it (the route then
   // skips the WS frame — only the in-process bus events are surfaced).

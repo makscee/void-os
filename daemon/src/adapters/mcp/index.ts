@@ -24,23 +24,17 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pkg from "../../../package.json" with { type: "json" };
 import type { EventBus } from "../../events/index.ts";
 import type { AgentDefn } from "../../permissions/engine.ts";
+import type { AskUserBridge } from "../../chat/ask-user-bridge.ts";
 import { honoBridge } from "./hono-bridge.ts";
 import { vaultReadDef, makeVaultRead } from "./tools/vault-read.ts";
-import {
-  askUserDef,
-  makeAskUser,
-  ASK_USER_DEADLINE_MS,
-} from "./tools/ask-user.ts";
+import { askUserDef, makeAskUser } from "./tools/ask-user.ts";
 import { askAgentDef, makeAskAgent } from "./tools/ask-agent.ts";
-import {
-  createPendingRegistry,
-  type PendingRegistry,
-} from "./pending-questions.ts";
 
 export interface McpDeps {
   vaultRoot: string;
   db: Database;
   bus: EventBus;
+  bridge: AskUserBridge;
   /**
    * VOS-89 T10: optional override for the AgentDefn loader. When omitted,
    * a default implementation reads `agent_cards.card_json` and parses it.
@@ -90,13 +84,8 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
   return defn;
 }
 
-// VOS-88 T7: module-scope singleton. Shared by the ask_user handler
-// (await) and the T8 POST /chat/:id/answer route (resolve). Exported as
-// `pendingRegistry` for the answer route to import directly.
-export const pendingRegistry: PendingRegistry = createPendingRegistry();
-
 export function buildMcpServer(deps: McpDeps): Server {
-  const { vaultRoot, db, bus } = deps;
+  const { vaultRoot, db, bus, bridge } = deps;
   const loadAgentDefn =
     deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(db, name));
   const dispatchChildTask =
@@ -120,13 +109,7 @@ export function buildMcpServer(deps: McpDeps): Server {
   mcp.registerTool(
     "ask_user",
     askUserDef,
-    makeAskUser({
-      db,
-      bus,
-      pending: pendingRegistry,
-      now: () => Date.now(),
-      deadlineMs: ASK_USER_DEADLINE_MS,
-    }) as never,
+    makeAskUser({ bridge }) as never,
   );
   mcp.registerTool(
     "ask_agent",

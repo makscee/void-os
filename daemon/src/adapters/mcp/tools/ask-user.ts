@@ -14,6 +14,7 @@ import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/proto
 import type { Database } from "bun:sqlite";
 import type { EventBus } from "../../../events";
 import type { PendingRegistry } from "../pending-questions";
+import type { AskUserBridge } from "../../../chat/ask-user-bridge.ts";
 import {
   setTaskInputRequired,
   appendToolUseMessage,
@@ -36,11 +37,7 @@ export const askUserDef = {
 };
 
 export interface AskUserDeps {
-  db: Database;
-  bus: EventBus;
-  pending: PendingRegistry;
-  now: () => number;
-  deadlineMs: number;
+  bridge: AskUserBridge;
 }
 
 function errResult(text: string): CallToolResult {
