@@ -49,8 +49,8 @@ describe("TraceWriter — concurrency", () => {
     expect(linesA.length).toBe(50);
     expect(linesB.length).toBe(50);
     for (let i = 0; i < 50; i++) {
-      expect(JSON.parse(linesA[i])).toMatchObject({ seq: i, payload: { a: i } });
-      expect(JSON.parse(linesB[i])).toMatchObject({ seq: i, payload: { b: i } });
+      expect(JSON.parse(linesA[i]!)).toMatchObject({ seq: i, payload: { a: i } });
+      expect(JSON.parse(linesB[i]!)).toMatchObject({ seq: i, payload: { b: i } });
     }
   });
 
@@ -71,7 +71,7 @@ describe("TraceWriter — concurrency", () => {
     const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
     expect(lines.length).toBe(5);
     for (let i = 0; i < 5; i++) {
-      expect(JSON.parse(lines[i]).seq).toBe(i);
+      expect(JSON.parse(lines[i]!).seq).toBe(i);
     }
   });
 

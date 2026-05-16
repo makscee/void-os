@@ -20,7 +20,7 @@ describe("TraceWriter — basic", () => {
     expect(returnedSeq).toBe(0);
     const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
     expect(lines.length).toBe(1);
-    const rec = JSON.parse(lines[0]);
+    const rec = JSON.parse(lines[0]!);
     expect(rec.seq).toBe(0);
     expect(rec.kind).toBe("turn.start");
     expect(rec.payload).toEqual({ runId: "r1" });
@@ -39,7 +39,7 @@ describe("TraceWriter — basic", () => {
     expect(lines.length).toBe(100);
     let prevTs = "";
     for (let i = 0; i < 100; i++) {
-      const r = JSON.parse(lines[i]);
+      const r = JSON.parse(lines[i]!);
       expect(r.seq).toBe(i);
       expect(r.kind).toBe("cc.event");
       expect(r.payload).toEqual({ i });
@@ -98,7 +98,7 @@ describe("TraceWriter — basic", () => {
       // so allow either 1 or 2 lines but require: if 2 lines, second is error.
       expect(lines.length).toBeGreaterThanOrEqual(1);
       if (lines.length >= 2) {
-        const rec = JSON.parse(lines[1]);
+        const rec = JSON.parse(lines[1]!);
         expect(rec.kind).toBe("error");
         expect(rec.payload.attemptedSeq).toBe(1);
         expect(rec.payload.attemptedKind).toBe("cc.event");
@@ -131,7 +131,7 @@ describe("TraceWriter — basic", () => {
     }
     // Inspect last full line; reopen.
     const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-    const last = JSON.parse(lines[lines.length - 1]);
+    const last = JSON.parse(lines[lines.length - 1]!);
     lastSeqOnDisk = last.seq;
     expect(lastSeqOnDisk).toBe(2); // error envelope at seq 2
 

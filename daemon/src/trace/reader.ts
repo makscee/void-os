@@ -63,7 +63,7 @@ export function readTrace(path: string): ReadTraceResult {
     const parseCount = pendingParseGap;
     flushParseGap();
     if (records.length > 0) {
-      const prev = records[records.length - 1].seq;
+      const prev = records[records.length - 1]!.seq;
       const seqMissing = rec.seq - prev - 1;
       const residual = seqMissing - parseCount;
       if (residual > 0) {
