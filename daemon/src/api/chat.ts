@@ -33,7 +33,7 @@ export function chatApi(db: Database, opts: ChatApiOpts = {}): Hono {
     return c.json(row);
   });
 
-  // T4: replay the visible turn order from CC's single JSONL per session.
+  // T4: replay the visible turn order from the messages table.
   app.get("/chat/:id/messages", (c) => {
     const id = c.req.param("id");
     if (!repo.get(id)) return c.json({ error: "not_found" }, 404);

@@ -119,4 +119,4 @@ Stay CC-frame-shaped (`{type:"assistant", message:{content:[...]}}` JSONL lines)
 
 ### 2026-05-16 — §"Why session-replay's CC-JSONL reader keeps the parsers" superseded by VOS-99
 
-The second adapter (session-replay's legacy JSONL reader) was deleted because no live pre-VOS-80 chat data required preservation. `cc-shape.ts` now has a single consumer (`provider.ts`'s `normalizeCcEvent`). The cross-layer import from `chat/` into `providers/claude-code/*` is gone.
+The second adapter (session-replay's legacy JSONL reader) was deleted because no live pre-VOS-80 chat data required preservation. `cc-shape.ts` is now consumed only inside `providers/claude-code/` (by `provider.ts` and the fake provider). The cross-layer import from `chat/` into `providers/claude-code/*` is gone.
