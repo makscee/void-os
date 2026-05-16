@@ -17,8 +17,14 @@ import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { runMigrationsFromDir } from "../../../../src/adapters/sqlite/migrations";
 import { createEventBus } from "../../../../src/events";
-import { runAskAgent, type AskAgentCtx } from "../../../../src/adapters/mcp/tools/ask-agent";
+import { makeAskAgent, type AskAgentDeps } from "../../../../src/adapters/mcp/tools/ask-agent";
 import type { AgentDefn } from "../../../../src/permissions/engine";
+
+// Construct the canonical RequestHandlerExtra envelope carrying _meta.task_id /
+// _meta.context_id per ADR-0002 (VOS-97 migration).
+function metaExtra(taskId: string, contextId: string) {
+  return { _meta: { task_id: taskId, context_id: contextId } } as any;
+}
 
 const MIGRATIONS = join(
   import.meta.dir,
@@ -51,25 +57,29 @@ function seed(db: Database): { contextId: string; parentId: string } {
   return { contextId, parentId };
 }
 
+interface BuiltCtx {
+  bus: ReturnType<typeof createEventBus>;
+  deps: AskAgentDeps;
+}
+
 function buildCtx(
   db: Database,
-  contextId: string,
-  parentId: string,
+  _contextId: string,
+  _parentId: string,
   caller: AgentDefn,
   dispatchSim?: (childTaskId: string) => void | Promise<void>,
-): AskAgentCtx {
+): BuiltCtx {
   const bus = createEventBus();
-  return {
+  const deps: AskAgentDeps = {
     db,
     bus,
-    taskId: parentId,
-    contextId,
     loadAgentDefn: () => caller,
     dispatchChildTask: async (childTaskId) => {
       if (dispatchSim) await dispatchSim(childTaskId);
     },
     now: () => Math.floor(Date.now() / 1000),
   };
+  return { bus, deps };
 }
 
 describe("runAskAgent (composition)", () => {
@@ -103,10 +113,10 @@ describe("runAskAgent (composition)", () => {
       });
     });
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     expect(result).toEqual({ content: [{ type: "text", text: "A" }] });
 
@@ -129,10 +139,10 @@ describe("runAskAgent (composition)", () => {
     const caller: AgentDefn = { name: "maya" };
     const ctx = buildCtx(db, contextId, parentId, caller);
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "ghost",
-      message: "hi",
-    });
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "ghost", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     expect(result).toMatchObject({
       isError: true,
@@ -154,10 +164,10 @@ describe("runAskAgent (composition)", () => {
     const caller: AgentDefn = { name: "maya", ask_agent_allow: ["other"] };
     const ctx = buildCtx(db, contextId, parentId, caller);
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     expect(result).toMatchObject({
       isError: true,
@@ -187,10 +197,10 @@ describe("runAskAgent (composition)", () => {
       });
     });
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     expect(result).toEqual({ content: [{ type: "text", text: "(no message)" }] });
   });
@@ -215,10 +225,10 @@ describe("runAskAgent (composition)", () => {
       // intentionally no bus.emit
     });
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     expect(result).toEqual({ content: [{ type: "text", text: "FAST" }] });
   });
@@ -240,10 +250,10 @@ describe("runAskAgent (composition)", () => {
       });
     });
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     expect((result as { isError?: boolean }).isError).toBe(true);
     expect(
@@ -268,10 +278,10 @@ describe("runAskAgent (composition)", () => {
       });
     });
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     expect((result as { isError?: boolean }).isError).toBe(true);
     expect(
@@ -301,10 +311,10 @@ describe("runAskAgent (composition)", () => {
     const caller: AgentDefn = { name: "maya" };
     const ctx = buildCtx(db, contextId, "g4", caller);
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra("g4", contextId),
+    );
 
     expect(result).toMatchObject({
       isError: true,
@@ -322,11 +332,9 @@ describe("runAskAgent (composition)", () => {
   test("non-AskAgentError wrapping: loadAgentDefn plain Error → internal: prefix", async () => {
     const { contextId, parentId } = seed(db);
     const bus = createEventBus();
-    const ctx: AskAgentCtx = {
+    const deps: AskAgentDeps = {
       db,
       bus,
-      taskId: parentId,
-      contextId,
       loadAgentDefn: () => {
         throw new Error("boom-defn");
       },
@@ -334,10 +342,10 @@ describe("runAskAgent (composition)", () => {
       now: () => Math.floor(Date.now() / 1000),
     };
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    const result = await makeAskAgent(deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     expect(result).toMatchObject({
       isError: true,
@@ -364,10 +372,10 @@ describe("runAskAgent (composition)", () => {
     const caller: AgentDefn = { name: "maya" };
     const ctx = buildCtx(db, contextId, parentId, caller);
 
-    const result = await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    const result = await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     expect(result).toMatchObject({
       isError: true,
@@ -400,10 +408,10 @@ describe("runAskAgent (composition)", () => {
           payload: { taskId: childTaskId, state: "TASK_STATE_FAILED" },
         });
       });
-      const result = await runAskAgent(ctx, {
-        target_agent_id: "journaler",
-        message: "hi",
-      });
+      const result = await makeAskAgent(ctx.deps)(
+        { target_agent_id: "journaler", message: "hi" },
+        metaExtra(parentId, contextId),
+      );
       expect((result as { isError?: boolean }).isError).toBe(true);
       expect(
         (result as { content: Array<{ text: string }> }).content[0]!.text,
@@ -433,10 +441,10 @@ describe("runAskAgent (composition)", () => {
           payload: { taskId: childTaskId, state: "TASK_STATE_FAILED" },
         });
       });
-      const result = await runAskAgent(ctx, {
-        target_agent_id: "journaler",
-        message: "hi",
-      });
+      const result = await makeAskAgent(ctx.deps)(
+        { target_agent_id: "journaler", message: "hi" },
+        metaExtra(parentId, contextId),
+      );
       expect(
         (result as { content: Array<{ text: string }> }).content[0]!.text,
       ).toMatch(/unknown/);
@@ -474,10 +482,10 @@ describe("runAskAgent (composition)", () => {
       events.push(ev.payload as { taskId?: string; state?: string });
     });
 
-    await runAskAgent(ctx, {
-      target_agent_id: "journaler",
-      message: "hi",
-    });
+    await makeAskAgent(ctx.deps)(
+      { target_agent_id: "journaler", message: "hi" },
+      metaExtra(parentId, contextId),
+    );
 
     // Assert the parent's WAITING_ON_AGENT transition was emitted.
     const parentWaitEv = events.find(
