@@ -14,7 +14,12 @@ import { Readable } from "node:stream";
 import type { Context } from "hono";
 
 export interface BridgeResult {
-  nodeReq: Readable & { headers: Record<string, string>; method: string; url: string };
+  nodeReq: Readable & {
+    headers: Record<string, string>;
+    rawHeaders: string[];
+    method: string;
+    url: string;
+  };
   nodeRes: NodeResShim;
   responsePromise: Promise<Response>;
 }
@@ -33,7 +38,19 @@ interface NodeResShim extends EventEmitter {
 
 export function honoBridge(c: Context): BridgeResult {
   const headers: Record<string, string> = {};
-  c.req.raw.headers.forEach((v, k) => { headers[k] = v; });
+  // `rawHeaders` mirrors Node's IncomingMessage.rawHeaders — a flat
+  // [key0, val0, key1, val1, ...] array. The MCP SDK's
+  // StreamableHTTPServerTransport.handleRequest delegates to
+  // `@hono/node-server`'s `getRequestListener`, which converts
+  // IncomingMessage → Web Request by walking `incoming.rawHeaders`. If
+  // `rawHeaders` is undefined the SDK throws
+  // `TypeError: undefined is not an object (evaluating 'rawHeaders.length')`
+  // and replies with a JSON-RPC Parse error before any tool handler runs.
+  const rawHeaders: string[] = [];
+  c.req.raw.headers.forEach((v, k) => {
+    headers[k] = v;
+    rawHeaders.push(k, v);
+  });
 
   // Body stream — even if absent, give an empty Readable so SDK consumers can
   // attach data/end listeners without crashing.
@@ -43,6 +60,7 @@ export function honoBridge(c: Context): BridgeResult {
     : Readable.from(Buffer.alloc(0));
   const nodeReq = Object.assign(nodeReqStream as Readable, {
     headers,
+    rawHeaders,
     method: c.req.method,
     url: c.req.path + (c.req.url.includes("?") ? c.req.url.slice(c.req.url.indexOf("?")) : ""),
   });
