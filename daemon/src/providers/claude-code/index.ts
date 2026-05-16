@@ -254,7 +254,16 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       // tracing the reason so operators can distinguish "no persona" from
       // "persona broken".
       const persona = readAgentPersonaBody(req.cwd, req.agent);
-      if (persona.reason !== "ok") {
+      if (persona.reason === "truncated") {
+        // VOS-106 T11.4: truncation is operationally distinct from "no
+        // persona" — body still flows to CC, just capped at PERSONA_BODY_LIMIT.
+        // Trace it separately so operators can tell "agent.md grew huge" from
+        // "agent.md missing".
+        trace.write("persona.truncated", {
+          agent: req.agent,
+          bytes: Buffer.byteLength(persona.body, "utf8"),
+        });
+      } else if (persona.reason !== "ok") {
         trace.write("persona.missing", { agent: req.agent, reason: persona.reason });
       }
 

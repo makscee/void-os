@@ -11,7 +11,7 @@ import { runMigrationsFromDir } from "../../../adapters/sqlite/migrations";
 import { createEventBus } from "../../../events";
 import { createPermissionEngine } from "../../../permissions/engine";
 import { createCcSpawner } from "../index";
-import { readAgentPersonaBody } from "../persona";
+import { readAgentPersonaBody, PERSONA_BODY_LIMIT } from "../persona";
 
 const MIGRATIONS = join(
   import.meta.dir,
@@ -108,6 +108,44 @@ describe("readAgentPersonaBody", () => {
     const r = readAgentPersonaBody(vault, "blank");
     expect(r.body).toBe("");
     expect(r.reason).toBe("empty");
+  });
+
+  // VOS-106 T11.4: cap body size to avoid macOS E2BIG when argv carries the
+  // persona via `--append-system-prompt <body>` (ARG_MAX ~256KB). Truncate at
+  // PERSONA_BODY_LIMIT and append a marker so the model knows it was cut.
+  it("truncates body over PERSONA_BODY_LIMIT and reports reason=truncated", () => {
+    // 100KB of body content, well over the 32KB cap.
+    const huge = "x".repeat(100 * 1024);
+    const vaultRoot = mkdtempSync(join(tmpdir(), "vos-106-persona-huge-"));
+    const agentDir = join(vaultRoot, "agents", "fat");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "agent.md"),
+      `---\nname: fat\ndescription: x\nmodel: opus\n---\n${huge}`,
+    );
+    const r = readAgentPersonaBody(vaultRoot, "fat");
+    expect(r.reason).toBe("truncated");
+    // Truncated content + marker — the body length must stay bounded so the
+    // marker addition can't push us back over ARG_MAX.
+    expect(r.body.length).toBeLessThanOrEqual(PERSONA_BODY_LIMIT + 256);
+    expect(r.body).toMatch(/<!-- persona truncated at \d+ bytes \(was \d+ bytes\) -->/);
+  });
+
+  // VOS-106 T11.4: defensive — parseFm (gray-matter) already tolerates
+  // frontmatter-less input, but lock that contract for the persona reader so
+  // a plain-markdown agent.md is `ok` (not `parse_error`).
+  it("returns ok with full content as body when agent.md has no frontmatter", () => {
+    const vaultRoot = mkdtempSync(join(tmpdir(), "vos-106-persona-bare-"));
+    const agentDir = join(vaultRoot, "agents", "bare");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "agent.md"),
+      "# bare\n\nYou are Bare. Emit ask_agent(name, question).\n",
+    );
+    const r = readAgentPersonaBody(vaultRoot, "bare");
+    expect(r.reason).toBe("ok");
+    expect(r.body).toContain("You are Bare");
+    expect(r.body).toContain("ask_agent(name, question)");
   });
 });
 
