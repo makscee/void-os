@@ -11,7 +11,7 @@ import { createWatchdog } from "./watchdog.js";
 import { parseUsageFromAssistantEvent } from "./usage-extract.js";
 import { TraceWriter } from "../../trace/writer";
 import type { AgentDefn, PermissionEngine } from "../../permissions/engine.js";
-import { SYSTEM_DENY_FOR_WRITE } from "../../permissions/engine.js";
+import { resolveSystemDeny } from "../../permissions/engine.js";
 import { buildSpawnSettings } from "./spawn-settings.ts";
 import { readAgentPersonaBody } from "./persona.ts";
 
@@ -211,16 +211,15 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       try {
         const agentDefn = deps.loadAgentDefn(req.agent);
         const scopes = deps.engine.resolveScopes(agentDefn);
-        // SYSTEM_DENY_FOR_WRITE patterns are vault-relative + ~-prefixed;
-        // the engine already expanded them at construction time. Re-expand
-        // for the hook env (since the hook runs out-of-process and has no
-        // access to the engine's compiled denyMatchers).
-        const homeRoot = process.env.HOME ?? "";
-        const expandedDeny = SYSTEM_DENY_FOR_WRITE.map((p) =>
-          p.startsWith("vault/") ? `${req.cwd}/${p.slice("vault/".length)}` :
-          p.startsWith("~/") ? `${homeRoot}/${p.slice("~/".length)}` :
-          p,
-        );
+        // VOS-106 T11.3: SYSTEM_DENY_FOR_WRITE is expanded via the engine's
+        // own `resolveSystemDeny` helper, using the engine's vaultRoot/homeRoot
+        // (NOT `req.cwd` / `process.env.HOME` — those can diverge under
+        // worker/dispatch contexts). This guarantees the hook env sees the
+        // exact same expanded deny list the engine's canWrite() checks against.
+        const expandedDeny = resolveSystemDeny({
+          vaultRoot: deps.engine.vaultRoot,
+          homeRoot: deps.engine.homeRoot,
+        });
         const built = buildSpawnSettings({
           agentName: req.agent,
           scopes,

@@ -28,6 +28,12 @@ const stubDeps = () => ({
     resolveScopes: () => ({ readPaths: ["/tmp/**"], writePaths: ["/tmp/**"] }),
     canRead: () => true,
     canWrite: () => true,
+    // VOS-106 T11.3: spawner reads engine.vaultRoot/homeRoot to expand
+    // SYSTEM_DENY via the shared `resolveSystemDeny` helper. Stubbed roots
+    // must be absolute so picomatch sees a valid prefix; values are
+    // irrelevant since the fake binary never enforces the hook.
+    vaultRoot: "/tmp",
+    homeRoot: "/tmp",
   } as never,
   daemonBase: "http://127.0.0.1:17777",
   hookScriptPath: "/dev/null",

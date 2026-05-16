@@ -2,12 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import * as path from 'node:path';
 import {
   createPermissionEngine,
+  resolveSystemDeny,
   SYSTEM_DENY_FOR_WRITE,
   ZeroScopeError,
   __test__,
   type AgentDefn,
   type PermissionEngine,
 } from '../engine';
+import { matchPath } from '../match';
 
 const VAULT = '/tmp/vos-test-vault';
 const HOME  = '/tmp/vos-test-home';
@@ -187,4 +189,71 @@ describe('canRead / canWrite', () => {
   test('canWrite throws TypeError on relative input', () => {
     expect(() => eng.canWrite('notes/foo.md', agentVault)).toThrow(TypeError);
   });
+});
+
+// VOS-106 T11.2+3: lock in the parity contract between the engine's internal
+// SYSTEM_DENY check and the spawner's out-of-process re-expansion. The hook
+// running in the CC child process gets `expandedDeny` via env (via
+// `resolveSystemDeny`); the engine checks `canWrite` against its own
+// expansion. If those two ever diverge, the hook and engine will disagree on
+// what's writable — exactly the drift T11 was opened to eliminate.
+describe('SYSTEM_DENY parity (engine canWrite vs resolveSystemDeny)', () => {
+  const VAULT = '/tmp/vos-test-vault';
+  const HOME  = '/tmp/vos-test-home';
+  const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
+  // Agent with maximally permissive write_scope, so the only thing that can
+  // make canWrite return false is the SYSTEM_DENY check itself.
+  const agent: AgentDefn = {
+    name: 'parity',
+    read_scope: ['vault/**', '~/**', '/tmp/**'],
+    write_scope: ['vault/**', '~/**', '/tmp/**'],
+  };
+  const expandedDeny = resolveSystemDeny({ vaultRoot: VAULT, homeRoot: HOME });
+
+  test('engine exposes vaultRoot and homeRoot for spawner reuse', () => {
+    expect(eng.vaultRoot).toBe(VAULT);
+    expect(eng.homeRoot).toBe(HOME);
+  });
+
+  test('resolveSystemDeny produces the SYSTEM_DENY count', () => {
+    expect(expandedDeny.length).toBe(SYSTEM_DENY_FOR_WRITE.length);
+  });
+
+  // 20 absolute paths: 10 inside SYSTEM_DENY zones, 10 outside. The boolean
+  // returned by canWrite() under a wide-open write_scope must equal the
+  // negation of matchPath(absPath, expandedDeny) — that's the parity
+  // contract the spawner+hook depend on.
+  const paths: string[] = [
+    // Inside SYSTEM_DENY
+    `${VAULT}/agents/maya/agent.md`,
+    `${VAULT}/agents/journaler/agent.md`,
+    `${VAULT}/.void/state.json`,
+    `${VAULT}/.void/nested/deep.json`,
+    `${VAULT}/.obsidian/workspace.json`,
+    `${VAULT}/.obsidian/plugins/foo/main.js`,
+    `${HOME}/.claude/settings.json`,
+    `${HOME}/.claude/plugins/x.ts`,
+    `${HOME}/.void-os/db.sqlite`,
+    `${HOME}/.void-os/keys/a`,
+    // Outside SYSTEM_DENY
+    `${VAULT}/notes/a.md`,
+    `${VAULT}/journal/2026-05-16.md`,
+    `${VAULT}/inbox/x.md`,
+    `${VAULT}/work/tasks/active/X.md`,
+    `${VAULT}/agentsfoo/x.md`,         // not under agents/
+    `${VAULT}/.voidish/y.md`,          // not .void/
+    `${HOME}/Downloads/x.txt`,
+    `${HOME}/.claudish/x`,             // not .claude/
+    `${HOME}/.void-os-stuff/x`,        // not .void-os/
+    `/tmp/x/y.txt`,
+  ];
+
+  for (const p of paths) {
+    test(`parity: canWrite(${p}) === !matchPath(SYSTEM_DENY)`, () => {
+      const engineAllows = eng.canWrite(p, agent);
+      const denyHit = matchPath(p, expandedDeny);
+      // Under a wide-open write_scope, canWrite returns true iff no deny hit.
+      expect(engineAllows).toBe(!denyHit);
+    });
+  }
 });
