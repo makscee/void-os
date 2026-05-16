@@ -1,7 +1,7 @@
 // VOS-85 permission engine. See docs/superpowers/specs/2026-05-15-vos-85-permission-engine-design.md.
 
 import * as path from 'node:path';
-import picomatch from 'picomatch';
+import { matchPath } from './match';
 
 type ExpandOk  = { ok: true;  expanded: string };
 type ExpandErr = { ok: false; reason: string };
@@ -56,6 +56,26 @@ function expandPattern(
 
 export const __test__ = { expandPattern, literalHead };
 
+/**
+ * VOS-106 T11.3: expand SYSTEM_DENY_FOR_WRITE into absolute glob patterns,
+ * using the same `expandPattern` the engine uses internally. Exposed so the
+ * CC spawner (which has to pass SYSTEM_DENY into a child process env) can
+ * produce byte-for-byte identical patterns to the engine's deny check —
+ * eliminating the prior hand-rolled prefix logic in claude-code/index.ts.
+ *
+ * A bad SYSTEM_DENY_FOR_WRITE pattern is a programmer error, not config,
+ * so unresolvable patterns throw (matching the engine's behavior).
+ */
+export function resolveSystemDeny(opts: { vaultRoot: string; homeRoot: string }): string[] {
+  return SYSTEM_DENY_FOR_WRITE.map((p) => {
+    const r = expandPattern(p, opts);
+    if (!r.ok) {
+      throw new Error(`permission: SYSTEM_DENY_FOR_WRITE has unresolvable pattern ${p}: ${r.reason}`);
+    }
+    return r.expanded;
+  });
+}
+
 export interface AgentDefn {
   name: string;
   read_scope?: string[];
@@ -84,6 +104,11 @@ export interface PermissionEngine {
   resolveScopes(agent: AgentDefn): ResolvedScopes;
   canRead(absPath: string, agent: AgentDefn): boolean;
   canWrite(absPath: string, agent: AgentDefn): boolean;
+  /** VOS-106 T11.3: roots used for pattern expansion — exposed so out-of-process
+   *  callers (CC spawner hook env) can call `resolveSystemDeny` with the SAME
+   *  roots the engine was built with, instead of re-deriving from `req.cwd`. */
+  readonly vaultRoot: string;
+  readonly homeRoot: string;
 }
 
 export class ZeroScopeError extends Error {
@@ -103,21 +128,16 @@ export const SYSTEM_DENY_FOR_WRITE: readonly string[] = [
 
 const DEFAULT_READ_SCOPE: ReadonlyArray<string> = ['vault/**'];
 
-const PICOMATCH_OPTS: picomatch.PicomatchOptions = { dot: true, nocase: false };
-
 export function createPermissionEngine(opts: EngineOptions): PermissionEngine {
   const expandOpts = { vaultRoot: opts.vaultRoot, homeRoot: opts.homeRoot };
   const warn = opts.logger?.warn ?? (() => {});
 
-  // Compile SYSTEM_DENY matchers once. A bad SYSTEM_DENY pattern is a programmer
-  // error (not config), so a missing expansion here is a hard failure.
-  const denyMatchers: Array<(p: string) => boolean> = SYSTEM_DENY_FOR_WRITE.map((p) => {
-    const r = expandPattern(p, expandOpts);
-    if (!r.ok) {
-      throw new Error(`permission: SYSTEM_DENY_FOR_WRITE has unresolvable pattern ${p}: ${r.reason}`);
-    }
-    return picomatch(r.expanded, PICOMATCH_OPTS);
-  });
+  // VOS-106 T11.2: expand SYSTEM_DENY once via the shared helper, then run
+  // each canWrite() through matchPath() — the single source of truth for
+  // glob semantics + path normalization (shared with hook script). Previous
+  // code called picomatch directly here, which meant any future change to
+  // matchPath's normalization would silently bypass the deny check.
+  const expandedSystemDeny: readonly string[] = resolveSystemDeny(expandOpts);
 
   function expandList(patterns: ReadonlyArray<string>): string[] {
     const out: string[] = [];
@@ -142,9 +162,7 @@ export function createPermissionEngine(opts: EngineOptions): PermissionEngine {
   }
 
   function compileScope(paths: string[]): (p: string) => boolean {
-    if (paths.length === 0) return () => false;
-    const matchers = paths.map((p) => picomatch(p, PICOMATCH_OPTS));
-    return (p: string) => matchers.some((m) => m(p));
+    return (p: string) => matchPath(p, paths);
   }
 
   function ensureAbs(absPath: string, fn: 'canRead' | 'canWrite'): void {
@@ -161,10 +179,16 @@ export function createPermissionEngine(opts: EngineOptions): PermissionEngine {
 
   function canWrite(absPath: string, agent: AgentDefn): boolean {
     ensureAbs(absPath, 'canWrite');
-    if (denyMatchers.some((m) => m(absPath))) return false;
+    if (matchPath(absPath, expandedSystemDeny)) return false;
     const { writePaths } = resolveScopes(agent);
     return compileScope(writePaths)(absPath);
   }
 
-  return { resolveScopes, canRead, canWrite };
+  return {
+    resolveScopes,
+    canRead,
+    canWrite,
+    vaultRoot: opts.vaultRoot,
+    homeRoot: opts.homeRoot,
+  };
 }

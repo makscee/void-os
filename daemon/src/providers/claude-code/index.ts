@@ -10,6 +10,10 @@ import { createStreamParser, classifyToolEvents } from "./parser.js";
 import { createWatchdog } from "./watchdog.js";
 import { parseUsageFromAssistantEvent } from "./usage-extract.js";
 import { TraceWriter } from "../../trace/writer";
+import type { AgentDefn, PermissionEngine } from "../../permissions/engine.js";
+import { resolveSystemDeny } from "../../permissions/engine.js";
+import { buildSpawnSettings } from "./spawn-settings.ts";
+import { readAgentPersonaBody } from "./persona.ts";
 
 export interface CcSpawnRequest {
   prompt: string;
@@ -153,6 +157,13 @@ interface CcSpawnerDeps {
   binary?: string;             // defaults to "claudev"
   watchdogTickMs?: number;     // defaults to DEFAULT_WATCHDOG_TICK_MS
   now?: () => number;
+  // VOS-106
+  engine: PermissionEngine;
+  daemonBase: string;
+  hookScriptPath: string;
+  loadAgentDefn: (name: string) => AgentDefn;
+  /** Test seam: override `Bun.spawn`. Defaults to the real Bun.spawn. */
+  spawnFn?: (cmd: string[], opts: Parameters<typeof Bun.spawn>[1]) => ReturnType<typeof Bun.spawn>;
 }
 
 export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
@@ -191,20 +202,88 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         "INSERT INTO runs (id, chat_id, agent, kind, status, started_at, trace_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
       ).run(runId, req.chatId ?? null, req.agent, req.kind ?? "chat", "running", started, tracePath);
 
+      // VOS-106 T6: resolve scopes per agent, write per-run settings + mcp
+      // config to disk, extend argv + env. If scope resolution fails we
+      // surface as a synchronous spawn error (run.error before exit).
+      let settingsPath: string;
+      let mcpConfigPath: string;
+      let hookEnv: Record<string, string>;
+      try {
+        const agentDefn = deps.loadAgentDefn(req.agent);
+        const scopes = deps.engine.resolveScopes(agentDefn);
+        // VOS-106 T11.3: SYSTEM_DENY_FOR_WRITE is expanded via the engine's
+        // own `resolveSystemDeny` helper, using the engine's vaultRoot/homeRoot
+        // (NOT `req.cwd` / `process.env.HOME` — those can diverge under
+        // worker/dispatch contexts). This guarantees the hook env sees the
+        // exact same expanded deny list the engine's canWrite() checks against.
+        const expandedDeny = resolveSystemDeny({
+          vaultRoot: deps.engine.vaultRoot,
+          homeRoot: deps.engine.homeRoot,
+        });
+        const built = buildSpawnSettings({
+          agentName: req.agent,
+          scopes,
+          systemDeny: expandedDeny,
+          vaultRoot: req.cwd,
+          daemonBase: deps.daemonBase,
+          runId,
+          settingsDir: deps.tracesDir,
+          hookScriptPath: deps.hookScriptPath,
+        });
+        settingsPath = built.settingsPath;
+        mcpConfigPath = built.mcpConfigPath;
+        hookEnv = built.env;
+      } catch (err) {
+        const e = err as { message?: string };
+        deps.db
+          .prepare("UPDATE runs SET status='error', ended_at=?, error=? WHERE id=?")
+          .run(now(), e.message ?? String(err), runId);
+        deps.bus.emit({ type: "run.error", runId, payload: { error: e.message ?? String(err) } });
+        trace.write("turn.end", { status: "error", durationMs: now() - started, exitCode: null });
+        trace.close();
+        throw err;
+      }
+
+      // VOS-106 T10.B: persona injection. Read agent.md body at spawn time
+      // and append it to CC's default system prompt via
+      // `--append-system-prompt`. Without this the model never sees the
+      // routing/voice/hard-rule instructions from agent.md — scope-gating
+      // alone is not enough to make e.g. maya emit `ask_agent(...)`. We
+      // tolerate missing/empty/malformed agent.md by skipping the flag and
+      // tracing the reason so operators can distinguish "no persona" from
+      // "persona broken".
+      const persona = readAgentPersonaBody(req.cwd, req.agent);
+      if (persona.reason === "truncated") {
+        // VOS-106 T11.4: truncation is operationally distinct from "no
+        // persona" — body still flows to CC, just capped at PERSONA_BODY_LIMIT.
+        // Trace it separately so operators can tell "agent.md grew huge" from
+        // "agent.md missing".
+        trace.write("persona.truncated", {
+          agent: req.agent,
+          bytes: Buffer.byteLength(persona.body, "utf8"),
+        });
+      } else if (persona.reason !== "ok") {
+        trace.write("persona.missing", { agent: req.agent, reason: persona.reason });
+      }
+
       const args = [
         "-p", req.prompt,
         "--output-format", "stream-json",
         "--verbose",
+        "--settings", settingsPath,
+        "--mcp-config", mcpConfigPath,
+        ...(persona.body ? ["--append-system-prompt", persona.body] : []),
         ...(req.resumeFrom ? ["--resume", req.resumeFrom] : []),
       ];
+      const spawnFn = deps.spawnFn ?? Bun.spawn;
       let proc: Awaited<ReturnType<typeof Bun.spawn>>;
       try {
-        proc = Bun.spawn([binary, ...args], {
+        proc = spawnFn([binary, ...args], {
           cwd: req.cwd,
           stdout: "pipe",
           stderr: "pipe",
           stdin: "ignore",
-          env: process.env as Record<string, string>,
+          env: { ...(process.env as Record<string, string>), ...hookEnv },
         });
       } catch (err) {
         const e = err as { message?: string };
@@ -462,6 +541,11 @@ export interface ClaudeCodeProviderDeps {
   tracesDir: string;
   agent: string;
   cwd: string;
+  // VOS-106
+  engine: PermissionEngine;
+  daemonBase: string;
+  hookScriptPath: string;
+  loadAgentDefn: (name: string) => AgentDefn;
 }
 
 export function makeClaudeCodeProviderComposed(
@@ -471,6 +555,10 @@ export function makeClaudeCodeProviderComposed(
     bus: deps.bus,
     db: deps.db,
     tracesDir: deps.tracesDir,
+    engine: deps.engine,
+    daemonBase: deps.daemonBase,
+    hookScriptPath: deps.hookScriptPath,
+    loadAgentDefn: deps.loadAgentDefn,
   });
   const iter = makeCcSpawnerIter({
     cc,

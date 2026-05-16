@@ -287,9 +287,12 @@ async function callAskAgentOverMcp(args: {
   targetAgentId: string;
   message: string;
 }): Promise<unknown> {
+  // VOS-106 T7.5: /mcp now requires ?agent=<name> for calling-agent
+  // resolution. In this test the parent (maya) is making the ask_agent
+  // call — agent_cards for maya is seeded by bootInProcessDaemon.
   const client = new Client({ name: "vos89-t15-test", version: "0.0.0" });
   const transport = new StreamableHTTPClientTransport(
-    new URL(`http://127.0.0.1:${args.port}/mcp`),
+    new URL(`http://127.0.0.1:${args.port}/mcp?agent=maya`),
   );
   await client.connect(transport);
   try {

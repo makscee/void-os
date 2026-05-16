@@ -39,7 +39,7 @@ import { makeFakeProvider } from "../../src/providers/fake/index.ts";
 import { makeDispatchChildTask } from "../../src/chat/dispatch-child.ts";
 import { chatsApi } from "../../src/api/chats.ts";
 import { chatApi } from "../../src/api/chat.ts";
-import type { AgentDefn } from "../../src/permissions/engine.ts";
+import { createPermissionEngine, type AgentDefn } from "../../src/permissions/engine.ts";
 
 const MIGRATIONS_DIR = join(
   import.meta.dir,
@@ -220,7 +220,19 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
   // handler parks awaiters via bridge.open) and mountAnswerRoute (HTTP
   // /answer resolves them via bridge.resolve).
   const bridge = createAskUserBridge({ db, bus });
-  mountMcp(app, { vaultRoot, db, bus, bridge, dispatchChildTask, loadAgentDefn });
+  // VOS-106 T7.5: mountMcp requires a PermissionEngine. Build one rooted at
+  // the test's vaultRoot with a /tmp/home anchor — vault.read is not the
+  // tool under test here, but the dep is structurally required.
+  const engine = createPermissionEngine({ vaultRoot, homeRoot: "/tmp/home" });
+  mountMcp(app, {
+    vaultRoot,
+    db,
+    bus,
+    bridge,
+    dispatchChildTask,
+    loadAgentDefn,
+    engine,
+  });
   mountAnswerRoute(app, { db, bridge });
 
   return {

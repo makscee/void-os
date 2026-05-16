@@ -134,7 +134,13 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
             },
           },
         };
-        const res = await fetch(`${opts.daemonBase}/mcp`, {
+        // VOS-106: /mcp now requires ?agent=<name> for calling-agent
+        // resolution (mirrors the spawn-settings URL the real CC adapter
+        // writes into mcp.json).
+        const mcpUrl =
+          `${opts.daemonBase}/mcp?agent=${encodeURIComponent(req.agent)}` +
+          (runId ? `&run=${encodeURIComponent(runId)}` : "");
+        const res = await fetch(mcpUrl, {
           method: "POST",
           headers: {
             "content-type": "application/json",

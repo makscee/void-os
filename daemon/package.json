@@ -8,6 +8,7 @@
     "dev": "bun --hot run src/index.ts",
     "start": "bun run src/index.ts",
     "test": "bun test",
+    "test:probes": "bun run test/probes/loader-integration.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
@@ -24,5 +25,10 @@
     "hono": "^4.12.18",
     "zod": "^4.4.3",
     "picomatch": "^4.0.2"
+  },
+  "voidos": {
+    "claudeCodeVersion": "2.1.143 (Claude Code)",
+    "claudevVersion": "0.2.18",
+    "preToolUseFailMode": "fail-closed (verified VOS-106 T0)"
   }
 }

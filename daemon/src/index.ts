@@ -66,7 +66,11 @@ if (process.env.VOS_PROVIDER === "fake" && !process.env.VOS_DAEMON_BASE) {
   process.env.VOS_DAEMON_BASE = `http://127.0.0.1:${PORT}`;
 }
 
-const app = await buildApp({ db, vaultRoot });
+// VOS-106 T7: arm the boot deny-probe at the production entrypoint.
+// Tests inherit the default (off); only this prod-shaped `bun run` path
+// pays the spawn cost. If the probe fails, buildApp throws and the
+// daemon never binds the port — by design.
+const app = await buildApp({ db, vaultRoot, runBootProbe: true });
 
 const server = Bun.serve({
   hostname: HOST,

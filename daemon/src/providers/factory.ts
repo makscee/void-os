@@ -12,6 +12,7 @@ import {
 } from "./fake/index.ts";
 import type { Database } from "bun:sqlite";
 import type { EventBus } from "../events/index.ts";
+import type { PermissionEngine, AgentDefn } from "../permissions/engine.ts";
 
 export interface ProviderEnv {
   VOS_PROVIDER?: string;
@@ -26,6 +27,11 @@ export interface ProviderDeps {
   tracesDir: string;
   agent: string;
   cwd: string;
+  // VOS-106
+  engine: PermissionEngine;
+  daemonBase: string;
+  hookScriptPath: string;
+  loadAgentDefn: (name: string) => AgentDefn;
 }
 
 export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
@@ -37,6 +43,10 @@ export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
       tracesDir: deps.tracesDir,
       agent: deps.agent,
       cwd: deps.cwd,
+      engine: deps.engine,
+      daemonBase: deps.daemonBase,
+      hookScriptPath: deps.hookScriptPath,
+      loadAgentDefn: deps.loadAgentDefn,
     });
   }
   if (kind === "fake") {

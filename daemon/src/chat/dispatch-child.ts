@@ -40,6 +40,7 @@ import type { Database } from "bun:sqlite";
 import type { EventBus } from "../events/index.ts";
 import type { Provider, ProviderHandle } from "../providers/index.ts";
 import { makeProvider, type ProviderEnv } from "../providers/factory.ts";
+import type { AgentDefn, PermissionEngine } from "../permissions/engine.ts";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo.ts";
 import { drainRun } from "./run-driver.ts";
 import type { TextPart, DataPart } from "../types/a2a.ts";
@@ -61,6 +62,13 @@ export interface DispatchChildDeps {
   /** WS fan-out helper. Defaults to module-level broadcast() in buildApp,
    *  overridable from tests. Mirrors orchestrator's deps.emit. */
   emit?: (type: string, payload: Record<string, unknown>) => void;
+  // VOS-106: scope-enforcement wiring threaded through to makeProvider.
+  // Optional only because tests that inject `buildProvider` never reach
+  // the makeProvider path. Production wiring (`app.ts`) always passes them.
+  engine?: PermissionEngine;
+  daemonBase?: string;
+  hookScriptPath?: string;
+  loadAgentDefn?: (name: string) => AgentDefn;
 }
 
 export type DispatchChildFn = (
@@ -90,6 +98,13 @@ export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn 
         tracesDir: deps.tracesDir,
         agent: agentName,
         cwd: deps.cwd,
+        // VOS-106: production wiring (app.ts) always passes these. Tests
+        // that bypass this path inject `buildProvider` and never construct
+        // a real claude-code provider, so `!` is safe.
+        engine: deps.engine!,
+        daemonBase: deps.daemonBase!,
+        hookScriptPath: deps.hookScriptPath!,
+        loadAgentDefn: deps.loadAgentDefn!,
       }));
 
   const providerFor = (agentName: string): Provider => {

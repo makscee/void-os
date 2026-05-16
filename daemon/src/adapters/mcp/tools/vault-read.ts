@@ -22,6 +22,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { Database } from "bun:sqlite";
 import { resolveVaultPath, ERR } from "../../../vault/paths.ts";
+import type { PermissionEngine, AgentDefn } from "../../../permissions/engine.ts";
 
 export const vaultReadInput = {
   path: z.string().min(1),
@@ -36,6 +37,10 @@ export const vaultReadDef = {
 export interface VaultReadDeps {
   vaultRoot: string;   // resolved absolute path
   db: Database;
+  // VOS-106: scope gate. Calling-agent identity flows from URL query
+  // ?agent=<name> resolved by mountMcp before instantiating this handler.
+  engine: PermissionEngine;
+  agent: AgentDefn;
 }
 
 function sha256(s: string): string {
@@ -61,6 +66,12 @@ export function makeVaultRead(deps: VaultReadDeps) {
         ? e.message
         : "IO_ERROR";
       return errResult(code, (e as Error).message);
+    }
+
+    // VOS-106 scope gate. Calling-agent identity flows from URL query
+    // ?agent=<name> resolved by mountMcp before instantiating this handler.
+    if (!deps.engine.canRead(abs, deps.agent)) {
+      return errResult("SCOPE_DENIED", `${rel} outside read_scope for agent ${deps.agent.name}`);
     }
 
     let stat;
