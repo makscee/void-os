@@ -12,6 +12,8 @@
  *      a vos_ask_user has resolved.
  */
 import { readFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   Provider,
@@ -19,6 +21,8 @@ import type {
   ProviderHandle,
   ProviderSpawnRequest,
 } from "../types.ts";
+import { TraceWriter } from "../../trace/writer";
+import { classifyToolEvents } from "../claude-code/parser.ts";
 
 /**
  * Resolve fake provider script path with per-agent override.
@@ -59,6 +63,13 @@ export interface FakeProviderOpts {
   /** Daemon's own base URL (e.g. http://127.0.0.1:<port>). Required when the
    *  script uses the `vos_ask_user` directive; otherwise unused. */
   daemonBase?: string;
+  /** VOS-84: when set, the fake writes a per-run JSONL trace at
+   *  `${tracesDir}/${runId}.jsonl` using TraceWriter, mirroring the
+   *  claude-code spawner. Off by default so legacy fake tests that do not
+   *  inspect traces remain unaffected. */
+  tracesDir?: string;
+  /** VOS-84: agent name embedded in `turn.start`. Defaults to "fake". */
+  agent?: string;
 }
 
 type Substitution = { answer: string } | null;
@@ -164,19 +175,43 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
 
       async function* gen(): AsyncGenerator<ProviderEvent> {
         started = true;
+        // VOS-84: optional JSONL trace. Only opens when tracesDir is set
+        // (production wiring path); legacy tests that pass only
+        // { scriptPath } keep their no-trace behavior.
+        const startedAt = Date.now();
+        let trace: TraceWriter | null = null;
+        if (opts.tracesDir) {
+          mkdirSync(opts.tracesDir, { recursive: true });
+          const tracePath = join(opts.tracesDir, `${req.runId}.jsonl`);
+          trace = TraceWriter.open(tracePath);
+          trace.write("turn.start", {
+            runId: req.runId,
+            chatId: req.chatId ?? null,
+            agent: opts.agent ?? "fake",
+            kind: req.kind ?? "chat",
+            userMessage: req.prompt,
+          });
+        }
+        const closeTrace = (status: "ok" | "failed" | "cancelled" | "error", exitCode: number | null) => {
+          if (!trace) return;
+          trace.write("turn.end", { status, durationMs: Date.now() - startedAt, exitCode });
+          trace.close();
+          trace = null;
+        };
         let raw: string;
         try {
           raw = await readFile(scriptPath, "utf8");
         } catch {
+          closeTrace("error", null);
           resolveDone({ reason: "error" });
           return;
         }
         const lines = raw.split("\n").filter((l) => l.trim().length > 0);
         for (const line of lines) {
-          if (cancelled) { resolveDone({ reason: "cancel" }); return; }
+          if (cancelled) { closeTrace("cancelled", null); resolveDone({ reason: "cancel" }); return; }
           let parsed: unknown;
           try { parsed = JSON.parse(line); }
-          catch { resolveDone({ reason: "error" }); return; }
+          catch { closeTrace("error", null); resolveDone({ reason: "error" }); return; }
           const obj = parsed as { type?: unknown } & Record<string, unknown>;
           if (obj.type === "vos_ask_user") {
             // Synthesize an assistant tool_use block so the orchestrator
@@ -207,11 +242,24 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
             // daemon's pending registry is armed by the time the consumer
             // sees the event and POSTs to /chat/:id/answer.
             const answerPromise = callAskUser(toolUseId, question, options);
+            // VOS-84: mirror synthesized tool_use into the trace as
+            // cc.event + classified tool.call envelopes.
+            if (trace) {
+              trace.write("cc.event", askEvent);
+              for (const cls of classifyToolEvents(askEvent)) {
+                if (cls.kind === "tool.call") {
+                  trace.write("tool.call", { toolUseId: cls.toolUseId, name: cls.name, input: cls.input });
+                } else {
+                  trace.write("tool.result", { toolUseId: cls.toolUseId, content: cls.content, isError: cls.isError });
+                }
+              }
+            }
             yield askEvent;
             // Now wait for the answer to flow back via /chat/:id/answer.
             try {
               substitution = { answer: await answerPromise };
             } catch {
+              closeTrace("error", null);
               resolveDone({ reason: "error" });
               return;
             }
@@ -233,9 +281,27 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
               );
             }
           }
+          // VOS-84: mirror standard scripted events into the trace.
+          if (trace) {
+            trace.write("cc.event", ev);
+            for (const cls of classifyToolEvents(ev)) {
+              if (cls.kind === "tool.call") {
+                trace.write("tool.call", { toolUseId: cls.toolUseId, name: cls.name, input: cls.input });
+              } else {
+                trace.write("tool.result", { toolUseId: cls.toolUseId, content: cls.content, isError: cls.isError });
+              }
+            }
+            // Opt-in stderr emission: script lines may set `_stderr` to a
+            // string chunk to drive cc.stderr envelopes.
+            const stderrChunk = (obj as { _stderr?: unknown })._stderr;
+            if (typeof stderrChunk === "string" && stderrChunk.length > 0) {
+              trace.write("cc.stderr", { chunk: stderrChunk });
+            }
+          }
           yield ev;
           if (perEventDelayMs > 0) await new Promise((r) => setTimeout(r, perEventDelayMs));
         }
+        closeTrace("ok", 0);
         resolveDone({ reason: "exit", exitCode: 0, sessionId });
       }
 

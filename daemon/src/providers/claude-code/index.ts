@@ -2,13 +2,14 @@
 // T5: full wire-up — Bun.spawn + parser + watchdog + runs/events writes.
 
 import type { Database } from "bun:sqlite";
-import { mkdirSync, createWriteStream } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { EventBus, UsageTurn } from "../../events/index.js";
-import { createStreamParser } from "./parser.js";
+import { createStreamParser, classifyToolEvents } from "./parser.js";
 import { createWatchdog } from "./watchdog.js";
 import { parseUsageFromAssistantEvent } from "./usage-extract.js";
+import { TraceWriter } from "../../trace/writer";
 
 export interface CcSpawnRequest {
   prompt: string;
@@ -169,7 +170,14 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       const firstEventTimeoutMs = req.firstEventTimeoutMs ?? DEFAULT_FIRST_EVENT_TIMEOUT_MS;
 
       const tracePath = join(deps.tracesDir, `${runId}.jsonl`);
-      const traceStream = createWriteStream(tracePath, { flags: "a" });
+      const trace = TraceWriter.open(tracePath);
+      trace.write("turn.start", {
+        runId,
+        chatId: req.chatId ?? null,
+        agent: req.agent,
+        kind: req.kind ?? "chat",
+        userMessage: req.prompt,
+      });
 
       // VOS-87 T4: accumulate per-turn usage from CC `assistant` events.
       // Consumed at finalize and emitted on `run.end` so the cost subscriber
@@ -204,7 +212,8 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
           "UPDATE runs SET status='error', ended_at=?, error=? WHERE id=?",
         ).run(now(), e.message ?? String(err), runId);
         deps.bus.emit({ type: "run.error", runId, payload: { error: e.message ?? String(err) } });
-        traceStream.end();
+        trace.write("turn.end", { status: "error", durationMs: now() - started, exitCode: null });
+        trace.close();
         throw err;
       }
 
@@ -218,7 +227,17 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
 
       const parser = createStreamParser({
         onEvent: (event) => {
-          traceStream.write(JSON.stringify(event) + "\n");
+          trace.write("cc.event", event);
+          // VOS-84: synthesize tool.call / tool.result envelopes alongside
+          // raw cc.event so downstream consumers (replay, audit) can read
+          // tool pairing without re-parsing CC's nested block shape.
+          for (const cls of classifyToolEvents(event)) {
+            if (cls.kind === "tool.call") {
+              trace.write("tool.call", { toolUseId: cls.toolUseId, name: cls.name, input: cls.input });
+            } else {
+              trace.write("tool.result", { toolUseId: cls.toolUseId, content: cls.content, isError: cls.isError });
+            }
+          }
           // VOS-87 T4: extract per-turn usage from `assistant` events
           // before the bus fan-out. Pure helper returns null when no
           // usage block is present (e.g. tool_use-only partials), so
@@ -272,7 +291,7 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
             const { value, done } = await reader.read();
             if (done) break;
             const chunk = Buffer.from(value).toString("utf8");
-            traceStream.write(JSON.stringify({ _origin: "stderr", chunk }) + "\n");
+            trace.write("cc.stderr", { chunk });
             deps.bus.emit({ type: "cc.stderr", runId, payload: { chunk } });
           }
         } finally {
@@ -332,7 +351,6 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       const finalize = async (reason: "exited" | "timeout" | "killed", exitCode: number) => {
         await stdoutDone;
         await stderrDone;
-        traceStream.end();
         clearInterval(wdHandle);
         const ended = now();
         // Map runtime reason → runs.status enum documented in 0001_init.sql
@@ -342,6 +360,11 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
           reason === "exited" ? "done" :
           reason === "timeout" ? "error" :
           /* killed */ "cancelled";
+        // VOS-84: emit terminal trace envelope before closing the writer.
+        // Status mirrors the SQLite runs.status value so trace replay and
+        // SQLite agree on terminal disposition.
+        trace.write("turn.end", { status, durationMs: ended - started, exitCode });
+        trace.close();
         const killReason =
           reason === "timeout" ? "timeout" :
           reason === "killed"  ? "killed"  : null;

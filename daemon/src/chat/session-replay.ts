@@ -21,6 +21,7 @@ import { makeChatRepo, openTaskFor } from "./repo";
 import { makeMessagesRepo } from "./messages-repo";
 import { extractTurnText, extractToolUses, extractToolResults } from "./util";
 import type { Part, Role } from "../types/a2a";
+import { readTrace } from "../trace/reader";
 
 /** A visible text turn (user prompt or assistant narration). */
 export interface TextMessage {
@@ -276,6 +277,33 @@ export function makeSessionReplay(
     return true;
   }
 
+  // VOS-84: surface partial/gap diagnostics from the daemon-side VOS-84
+  // trace for the chat's most-recent run. The messages table remains the
+  // authoritative view for /chat/:id/messages (per VOS-80a), so the trace
+  // diagnostics are advisory — they help operators notice torn JSONL or
+  // dropped sequences without changing the wire shape returned to callers.
+  function surfaceTraceDiagnostics(chatId: string): void {
+    type Row = { trace_path: string | null } | undefined;
+    const row = db
+      .query(
+        "SELECT trace_path FROM runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1",
+      )
+      .get(chatId) as Row;
+    if (!row || !row.trace_path) return;
+    const { records, gaps, recoveredPartial } = readTrace(row.trace_path);
+    if (recoveredPartial) {
+      console.warn(
+        `session-replay: trace ${row.trace_path} had partial trailing line, recovered ${records.length} records`,
+      );
+    }
+    if (gaps.length > 0) {
+      console.warn(
+        `session-replay: trace ${row.trace_path} has ${gaps.length} gap(s):`,
+        gaps,
+      );
+    }
+  }
+
   return {
     walk(chatId) {
       const chat = chatRepo.get(chatId);
@@ -284,6 +312,7 @@ export function makeSessionReplay(
       // Fast path: DB has rows → that's the authoritative view.
       const existing = messages.walk(chatId);
       if (existing.length > 0) {
+        surfaceTraceDiagnostics(chatId);
         // For tool_result entries imported from JSONL, the output field
         // was stringified to text by importFromJsonl when the source was
         // non-string. Live writes from the orchestrator (S2) already use
@@ -293,6 +322,11 @@ export function makeSessionReplay(
 
       // Lazy JSONL import for legacy chats (created pre-VOS-80 messages
       // table). If chat has no session_id yet, there's nothing to import.
+      // VOS-84 note: legacy chats read CC's native session JSONL format
+      // (uuid/parent_uuid records), not the daemon-side VOS-84 envelope
+      // trace. readTrace is therefore NOT a drop-in for the legacy
+      // importFromJsonl path — see surfaceTraceDiagnostics for the
+      // daemon-side trace surface.
       if (!chat.session_id) return [];
       const imported = importFromJsonl(chatId, chat.session_id);
       if (!imported) return [];

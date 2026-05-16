@@ -726,3 +726,69 @@ test("realpath encoder: macOS /tmp resolves to -private-tmp-* slug", () => {
   // No JSONL written → expect []. The point is encode() must NOT throw.
   expect(replay.walk(c.id)).toEqual([]);
 });
+
+// VOS-84 T20: surfaceTraceDiagnostics path — replay must NOT throw when the
+// daemon-side VOS-84 trace file resolved via runs.trace_path has a partial
+// trailing line. The diagnostic is advisory (console.warn); the messages
+// table remains authoritative. Adapted from the plan-as-written, which
+// assumed session-replay parses VOS-84 envelopes as its primary path.
+test("session-replay surfaces partial-trailing diagnostic without throwing", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "vos84-replay-partial-"));
+  const tracePath = join(tmp, "trace.jsonl");
+  const fullLines =
+    JSON.stringify({
+      seq: 0,
+      ts: "2026-05-16T00:00:00.000Z",
+      kind: "turn.start",
+      payload: { runId: "r1", agent: "a", kind: "chat" },
+    }) + "\n" +
+    JSON.stringify({
+      seq: 1,
+      ts: "2026-05-16T00:00:00.001Z",
+      kind: "cc.event",
+      payload: { message: { content: [{ type: "text", text: "hello" }] } },
+    }) + "\n";
+  const partial = '{"seq":2,"ts":"2026-05-16T00:00:00.002Z","kind"';
+  writeFileSync(tracePath, fullLines + partial);
+
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const c = repo.create({ agent: "maya" });
+
+  // Seed a messages row so walk() takes the "DB has rows" path that calls
+  // surfaceTraceDiagnostics (per VOS-84 T18 implementation).
+  db.run(
+    "INSERT INTO messages (task_id, context_id, run_id, role, parts, parts_text, ts, ord) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    [c.id, c.id, "r1", "ROLE_USER", JSON.stringify([{ text: "hi" }]), "hi", 1, 1],
+  );
+  db.run(
+    "INSERT INTO runs (id, chat_id, agent, kind, status, started_at, trace_path) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ["r1", c.id, "maya", "chat", "done", 1, tracePath],
+  );
+
+  const replay = makeSessionReplay(db, {
+    projectsRoot: tmp,
+    cwd: "/tmp/partial",
+    encodeCwd: () => "-tmp-partial",
+  });
+
+  // Spy on console.warn — the partial-trailing diagnostic emits a warning
+  // mentioning "partial trailing line".
+  const origWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+  };
+  try {
+    expect(() => replay.walk(c.id)).not.toThrow();
+    const msgs = replay.walk(c.id);
+    // DB row is still authoritative.
+    expect(msgs.map((m) => (m as { content: string }).content)).toEqual(["hi"]);
+    // Diagnostic surfaced for partial trailing line.
+    expect(warnings.some((w) => w.includes("partial trailing line"))).toBe(true);
+  } finally {
+    console.warn = origWarn;
+  }
+});
