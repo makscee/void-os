@@ -167,6 +167,8 @@ describe("makeDispatchChildTask", () => {
       .get(childTaskId) as { state: string; metadata: string };
     expect(row.state).toBe("TASK_STATE_FAILED");
     const meta = JSON.parse(row.metadata) as { errorMessage?: string };
-    expect(meta.errorMessage).toBe("provider exploded: boom-42");
+    // T5 prepends `${providerName}: ` to errorMessage. The stub provider has
+    // no `providerName` property, so the fallback "provider" is used.
+    expect(meta.errorMessage).toBe("provider: provider exploded: boom-42");
   });
 });
