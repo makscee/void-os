@@ -102,9 +102,58 @@ git add "$f"
 
 ---
 
-## Phase 2 — Build (parallel subagents)
+## Phase 1.5 — Helper inventory (gate before Phase 2)
 
-Dispatch all 7 streams below in a single parallel batch via `superpowers:dispatching-parallel-agents`. Each stream is one subagent. Streams are independent at file level after the FIX/fixture isolation.
+Per void-os CLAUDE.md gotcha #1: **no reusable helper module exists.** All sibling specs inline their setup against `state.fakeScriptPath` + Playwright `request`. The plan tasks reference helpers like `readE2EState`, `getVaultPage`, `openChat`, `waitForState`, `collectEvents`, `collectStatesFor`, `openChatAndSendMessage` as shorthand. Before Phase 2 dispatches, an inventory subagent must resolve each one.
+
+### Task 1.5: Inventory helpers used by the plan
+
+**Files:** read-only.
+
+- [ ] **Step 1: Grep for each referenced helper**
+
+```bash
+cd /Users/admin/hub-wt/VOS-107/workspace/void-os
+for fn in readE2EState getVaultPage openChat waitForState collectEvents collectStatesFor openChatAndSendMessage waitForStateNotEqual; do
+  echo "=== $fn ==="
+  grep -rn "function $fn\|const $fn\|export.*$fn" plugin/e2e/ 2>/dev/null || echo "NOT FOUND"
+done
+```
+
+- [ ] **Step 2: Resolve each missing helper to one of:**
+  - **inline-from-sibling:** the pattern exists inline in some spec; subagents writing new specs must copy that pattern, not import a helper
+  - **landed first as a tiny helper commit:** if 3+ new specs use the same pattern AND no sibling has it, write `plugin/e2e/test-utils/<name>.ts` in a single dedicated commit before Phase 2 dispatch (keep tiny, no abstractions, just hoisted code)
+  - **NOT YET POSSIBLE:** if the surface itself isn't implemented (e.g. cost field, permission-deny route), the relevant Phase 2 task is conditional and may end in `test.skip` per its own Step 0
+
+- [ ] **Step 3: Record findings in Work Log**
+
+```bash
+cd /Users/admin/hub && tools/state-write/sw "task(VOS-107): helper inventory" -- bash -c '
+set -e
+cd /Users/admin/hub
+f=$(ls vault/work/tasks/active/VOS-107-*.md | head -1)
+cat >> "$f" <<EOF
+
+### $(date -u +%Y-%m-%d) · phase 1.5 helper inventory
+- helpers found inline (copy pattern): <list>
+- helpers landed as test-util commit: <list + SHA if any>
+- surfaces not yet implemented (test.skip path): <list>
+EOF
+git add "$f"
+'
+```
+
+- [ ] **Step 4: Gate decision**
+
+If a NEW spec depends on a surface that isn't implemented (cost field, denial route, picker test ids), that task takes the `test.skip + follow-up VOS-*` path from its own Step 0 — not a full implementation.
+
+---
+
+## Phase 2 — Build (serial subagents)
+
+Dispatch streams **serially**, not in a single parallel batch. Rationale: per hub feedback `parallel_agents_git_add_hygiene`, multiple subagents committing on the same `task/VOS-107` branch in the same worktree race on the working tree — `git add` from one can sweep another's unstaged edits. The orchestrator runs one stream → waits for its commit → runs the next. Order: FIX (Task 9) first (touches `playwright.config.ts` which other streams may also touch), then 5 NEW (Tasks 10–14), then AUDIT slices (Tasks 2–8) last. Total wall-clock cost from serialization is acceptable for this milestone closer.
+
+Every `git add` invocation must be scoped to the exact spec file (and its dedicated fixture file if any). Never `git add -A`. Never `git add plugin/e2e/fixtures/` as a directory.
 
 ### Task 2: AUDIT — connect.spec.ts
 
@@ -306,18 +355,17 @@ The leading text turn ("thinking…") prevents the ChatList `isEmpty` filter fro
 
 - [ ] **Step 2: Wire the spec to use the new fixture**
 
-Implementation options (pick the one that works first; document the chosen one in a header comment):
+Implementation options (Option A is required default; Option B is the only fallback):
 
-Option A — Playwright project entry:
-Add a new project to `plugin/e2e/playwright.config.ts` for the ask-user spec that launches its own daemon with `VOS_FAKE_SCRIPT_maya` pointing at `fixtures/ask-user.jsonl`.
+**Option A (default) — Playwright project entry with isolated daemon:**
+Add a new Playwright project to `plugin/e2e/playwright.config.ts` for the ask-user spec. That project's globalSetup launches its own daemon process with `VOS_FAKE_SCRIPT_maya` pointing at `fixtures/ask-user.jsonl`. This is the only safe option because companion specs (`chat-roundtrip`, `chat-list-polish`, `ask-agent*`, `cost-meter`) all use `agent_name: "maya"` and would receive the ask-user fixture if it ran against the shared daemon.
 
-Option B — test-scoped daemon fixture:
-Use a `test.beforeAll` hook in the spec that spawns a second daemon worker with the overridden env, points the plugin at that daemon's port, restores in `afterAll`.
+**Option B (fallback, only if A is infeasible) — test-scoped second daemon:**
+Use a `test.beforeAll` hook that spawns a second daemon worker on a free port with the overridden env, points this spec at that daemon's port, tears down in `afterAll`. The shared globalSetup daemon stays untouched.
 
-Option C — fallback: temporary env swap:
-In `beforeAll`, set `process.env.VOS_FAKE_SCRIPT_maya` to the ask-user fixture path and POST `/admin/reload-fake-script` if the daemon exposes one. If it does not, raise and fall through to Option A or B.
-
-**Hard rule:** the spec never edits `maya.jsonl` file contents. Restoration from `git show :path` is not needed because nothing was modified.
+**Hard rules:**
+- The spec never edits `maya.jsonl` file contents.
+- The spec never modifies the env of the shared daemon process. It either uses its own daemon process (A) or its own daemon process (B). Re-pointing the shared daemon's env at runtime is **not** an option — it would silently break every sibling spec that uses the `maya` agent.
 
 - [ ] **Step 3: Spec body**
 
@@ -536,7 +584,7 @@ git commit -m "test(VOS-107): new starter-agents.spec — scoped read/write + al
 **Files:**
 - Create: `plugin/e2e/specs/permission-deny.spec.ts`
 
-- [ ] **Step 1: PREREQUISITE — locate tool-call route + denial shape**
+- [ ] **Step 0: Surface check (gate)**
 
 ```bash
 grep -rn 'tool.*call\|permission\|write.*deny\|forbidden' \
@@ -545,7 +593,32 @@ grep -rn 'tool.*call\|permission\|write.*deny\|forbidden' \
   plugin/daemon/src/permissions/ 2>/dev/null | head -40
 ```
 
-Cite resolved route path + request body schema + denial response shape (status code + body) as a comment block at the top of the spec. **The spec must NOT proceed with fabricated schemas.** If the route does not exist or denial path is not implemented, stop and file a follow-up; do not write a spec that asserts a fabricated contract.
+Determine: does a daemon route exist that performs scoped-write enforcement? Is the denial response shape defined?
+
+**If yes:** proceed to Step 1.
+
+**If no (route absent OR denial logic stubbed):**
+1. File a follow-up backlog task: `/task-new VOS "implement scoped-write deny enforcement at daemon HTTP boundary"`. Record the returned ID, e.g. `VOS-XYZ`.
+2. Write a stub spec:
+   ```ts
+   import { test } from "@playwright/test";
+
+   test.skip(true, "blocked on VOS-XYZ — daemon scoped-write enforcement not yet implemented");
+
+   test("daemon rejects cross-scope write at HTTP boundary", async () => {
+     // placeholder
+   });
+   ```
+3. Commit:
+   ```bash
+   git add plugin/e2e/specs/permission-deny.spec.ts
+   git commit -m "test(VOS-107): permission-deny.spec stubbed pending VOS-XYZ"
+   ```
+4. Phase 3 gate accepts this as covered-via-skip; the follow-up VOS-XYZ goes into the manual UX summary.
+
+- [ ] **Step 1: PREREQUISITE — cite resolved route + denial shape**
+
+Cite resolved route path + request body schema + denial response shape (status code + body) as a comment block at the top of the spec. **The spec must NOT proceed with fabricated schemas.**
 
 - [ ] **Step 2: Write spec**
 
@@ -585,6 +658,34 @@ git commit -m "test(VOS-107): new permission-deny.spec — daemon HTTP boundary 
 **Files:**
 - Create: `plugin/e2e/specs/permission-deny-ui.spec.ts`
 - Possibly: `plugin/e2e/fixtures/<scope>/permission-deny.jsonl` if a fake script needs to attempt the forbidden write
+
+- [ ] **Step 0: Surface check (gate)**
+
+Does the plugin UI render a visible denial when the daemon emits a `tool_denied` (or equivalent) event? Check:
+
+```bash
+grep -rn 'denied\|forbidden\|tool_denied\|permission' plugin/src/ 2>/dev/null | head -20
+```
+
+**If a denial UI exists** (test id, class, or text path is greppable): proceed to Step 1.
+
+**If no UI denial path:**
+1. File a follow-up: `/task-new VOS "render denial in chat turn when daemon rejects scoped write"`. Record ID, e.g. `VOS-XYZ`.
+2. Write a stub spec:
+   ```ts
+   import { test } from "@playwright/test";
+
+   test.skip(true, "blocked on VOS-XYZ — plugin UI does not yet render permission denials");
+
+   test("UI surfaces denial when agent attempts cross-scope write", async () => {
+     // placeholder
+   });
+   ```
+3. Commit:
+   ```bash
+   git add plugin/e2e/specs/permission-deny-ui.spec.ts
+   git commit -m "test(VOS-107): permission-deny-ui.spec stubbed pending VOS-XYZ"
+   ```
 
 - [ ] **Step 1: Determine fake-cc surface for tool calls**
 
@@ -634,7 +735,7 @@ expect(events).toContainEqual(expect.objectContaining({ type: "tool_denied" }));
 
 ```bash
 cd plugin && bun e2e -- specs/permission-deny-ui.spec.ts
-git add plugin/e2e/specs/permission-deny-ui.spec.ts plugin/e2e/fixtures/
+git add plugin/e2e/specs/permission-deny-ui.spec.ts plugin/e2e/fixtures/<exact-fixture-dir>/permission-deny.jsonl
 git commit -m "test(VOS-107): new permission-deny-ui.spec — UI denial surface"
 ```
 
