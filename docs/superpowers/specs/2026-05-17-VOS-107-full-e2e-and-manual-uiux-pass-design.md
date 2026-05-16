@@ -39,7 +39,10 @@ One subagent runs the 7 existing specs as-is:
 
 `ask-user.spec.ts` is **excluded** from baseline (known broken on master per void-os CLAUDE.md).
 
-Gate: baseline must report all-green, or list flake/red with reproduction notes. Phase 2 does not dispatch on red baseline; instead a stabilisation pass runs first.
+Gate (each spec, run with `--retries=2`):
+- **all-green on first attempt** → record SHA, dispatch Phase 2
+- **green on retry (passes 2 of 3 attempts)** → log spec name + flake symptom to `## Risks` section of work log, dispatch Phase 2
+- **red 3 of 3** → stabilisation pass runs first; Phase 2 does not dispatch until the spec is either fixed, deleted with follow-up filed, or `test.skip`'d with link to follow-up
 
 ### Phase 2 — Build (parallel subagents)
 
@@ -48,7 +51,7 @@ Independent streams, dispatched in one parallel batch:
 | Stream | Owner | Scope |
 |---|---|---|
 | AUDIT | 1 agent | Re-read 7 baseline specs; expand thin assertions; commit per-spec |
-| FIX | 1 agent | Fix `ask-user.spec.ts` — overwrite `plugin/e2e/fixtures/ask-agent/maya.jsonl` in `beforeEach`, restore in `afterEach`; emit ≥1 assistant text turn before `vos_ask_user` so chat row renders |
+| FIX | 1 agent | Fix `ask-user.spec.ts` — write a **dedicated** `plugin/e2e/fixtures/ask-user.jsonl` (new file, not a mutation of shared `maya.jsonl`). Point spec at it via `VOS_FAKE_SCRIPT_maya` env override at spec scope (Playwright project or test-scoped fixture that restarts daemon worker with the overridden env). If test-scoped env override is not feasible against the globalSetup-launched daemon, fall back to **serializing** FIX before the four `ask-agent*` AUDIT slices instead of mutating `maya.jsonl`. Emit ≥1 assistant text turn before `vos_ask_user` so chat row passes `isEmpty` filter. **Never** edit `maya.jsonl` from this spec. |
 | NEW-picker | 1 agent | `agent-picker.spec.ts` |
 | NEW-cost | 1 agent | `cost-meter.spec.ts` |
 | NEW-starter | 1 agent | `starter-agents.spec.ts` |
@@ -67,7 +70,7 @@ Conventions every subagent follows:
 
 Orchestrator subagent runs the full plugin/e2e suite (existing + audited + new + fixed). Output:
 - summary table of pass/fail per spec
-- on red: stop phase 4; loop back to phase 2 with surgical fix
+- on red: stop phase 4; loop back to phase 2 with surgical fix. **Max 2 loop iterations.** On 3rd consecutive red for the same spec, file a `VOS-*` follow-up backlog task, mark the spec `test.skip` with a comment linking the follow-up ID, and proceed to Phase 4.
 - on green: record commit SHA of the green run for `## Acceptance` evidence
 
 ### Phase 4 — Manual UI/UX pass
@@ -124,8 +127,10 @@ Operator drives. Subagents do not stub manual notes.
 
 ### `permission-deny.spec.ts` (NEW, daemon HTTP, surface S7)
 
+**Prerequisite (subagent must do BEFORE writing the spec):** `grep -rn 'tool.*call\|permission\|write.*deny' plugin/daemon/src/routes/ plugin/daemon/src/server.ts` to locate the actual tool-call route handler. Cite the resolved route path + request body schema + expected denial response shape as a comment block at the top of the spec. Without this anchor the spec will assert a fabricated contract and false-pass.
+
 - start daemon with agent scoped to `vault/journal/`
-- POST tool-call writing `vault/secrets/foo.md` → denied response (`403` or `{denied:true,reason}`)
+- POST tool-call writing `vault/secrets/foo.md` → denied response (shape per grep result, NOT guessed)
 - POST tool-call writing `vault/journal/foo.md` → allowed
 - matrix: read-only path attempted write → denied
 
@@ -138,10 +143,14 @@ Operator drives. Subagents do not stub manual notes.
 ### `ask-user.spec.ts` (FIX, surface S2)
 
 Root cause: top-level script hard-pinned via `VOS_FAKE_SCRIPT_maya`; picker doesn't re-route. Fix:
-- in `beforeEach`, overwrite `plugin/e2e/fixtures/ask-agent/maya.jsonl` with the ask-user variant
+- create new file `plugin/e2e/fixtures/ask-user.jsonl` (does NOT mutate shared `maya.jsonl`)
+- run this spec against a daemon launched with `VOS_FAKE_SCRIPT_maya` pointed at the new file — implementation options, pick whichever lands first:
+  - Playwright project-level env override (`playwright.config.ts` project entry for ask-user with its own webServer/daemon launch)
+  - test-scoped fixture that tears down and relaunches the daemon worker with the overridden env
+  - if neither feasible, **serialize** the spec to run before any `ask-agent*` spec and have it temporarily swap `VOS_FAKE_SCRIPT_maya` for its run only (still no mutation of `maya.jsonl` file contents)
 - emit ≥1 assistant text turn ("thinking…") before `vos_ask_user` so chat row passes `isEmpty` filter
-- in `afterEach`, restore `maya.jsonl` from `git show :plugin/e2e/fixtures/ask-agent/maya.jsonl` or a stashed copy
 - assert option buttons render; click one → daemon receives answer → `TASK_STATE_INPUT_REQUIRED` clears
+- **Hard rule:** this spec never writes to `plugin/e2e/fixtures/ask-agent/maya.jsonl`. AUDIT stream for `ask-agent*` is safe to run in parallel.
 
 ### Audit pass for 7 existing specs
 
@@ -159,7 +168,7 @@ If a spec is thin, agent expands assertions in a single commit per spec.
 | Playwright suite covers all surfaces; green run committed | Phase 3 green-run SHA in Work Log |
 | Manual UI/UX walkthrough notes appended to Work Log | `VOS-107-manual-uiux-notes.md` finalised + summary appended to task `## Work Log` |
 | Blocker-grade friction filed as separate backlog tasks | Follow-up IDs listed in summary block |
-| No regression in `vos-v1-router` "Done when" criteria | Baseline + final green runs match; manual pass yields no "regression" entries |
+| No regression in `vos-v1-router` "Done when" criteria | Phase 1 baseline SHA + Phase 3 green SHA recorded in Work Log; no surface that passed at baseline SHA fails at Phase 3 SHA |
 
 ## Constraints / non-goals
 
