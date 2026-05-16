@@ -164,6 +164,7 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
   let terminalState: "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" =
     "TASK_STATE_COMPLETED";
   let errorMessage: string | null = null;
+  let outcome: Awaited<ReturnType<typeof drainRun>> | undefined;
 
   try {
     handle = provider.spawn({
@@ -183,19 +184,7 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
     // providers/claude-code/cc-shape.ts.
     // No onSession/onPart callbacks — children spawn fresh and render via
     // messages-repo. No signal — children are not cancellable today.
-    const outcome = await drainRun({ handle });
-    const firstAssistantSeen = outcome.firstAssistantSeen;
-
-    if (firstAssistantSeen && outcome.parts.length > 0) {
-      messages.appendMessage(
-        childTaskId,
-        contextId,
-        null, // child has no run row
-        "ROLE_AGENT",
-        outcome.parts,
-        Date.now(),
-      );
-    }
+    outcome = await drainRun({ handle });
   } catch (e) {
     terminalState = "TASK_STATE_FAILED";
     errorMessage = e instanceof Error ? e.message : String(e);
@@ -206,6 +195,20 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
         error: errorMessage,
       },
     });
+  }
+
+  // Persist message OUTSIDE the try: if appendMessage throws (DB write
+  // error), it surfaces via the outer .catch() at the microtask boundary
+  // as child.dispatch_error, NOT as a wrongly-flipped TASK_STATE_FAILED.
+  if (outcome && outcome.firstAssistantSeen && outcome.parts.length > 0) {
+    messages.appendMessage(
+      childTaskId,
+      contextId,
+      null, // child has no run row
+      "ROLE_AGENT",
+      outcome.parts,
+      Date.now(),
+    );
   }
 
   // VOS-89 review-fix Finding 2: persist errorMessage to tasks.metadata
