@@ -229,18 +229,12 @@ export default async function chat(args: string[], _opts: { prefix?: string } = 
       if (trimmed === "") continue;
       if (trimmed === "exit" || trimmed === "/exit") return 0;
 
-      // Send the message and open the SSE stream.
-      try {
-        await client.chat.send(chatId, trimmed);
-      } catch (e) {
-        if (e instanceof UnreachableError) {
-          stderr.write("daemon not running; try `void-os daemon start`\n");
-          return 3;
-        }
-        stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
-        continue;
-      }
-
+      // Open the SSE stream BEFORE sending. The daemon's `/chat/:id/stream`
+      // handler subscribes to the event bus inside the GET; the orchestrator
+      // (driven by POST /message) emits frames synchronously and finishes
+      // with `run_end` before send() resolves. If we sent first and
+      // subscribed after, frames could fly past an empty bus subscription
+      // and we'd hang on a closed stream. Race fix: GET first, then POST.
       const streamUrl = `${base}/chat/${encodeURIComponent(chatId)}/stream`;
       let res: Response;
       try {
@@ -253,6 +247,21 @@ export default async function chat(args: string[], _opts: { prefix?: string } = 
       }
       if (!res.ok || !res.body) {
         stderr.write(`stream failed: ${res.status}\n`);
+        continue;
+      }
+
+      // Now post the message — bus subscriber is live.
+      try {
+        await client.chat.send(chatId, trimmed);
+      } catch (e) {
+        // Close the just-opened stream so the daemon's subscriber is
+        // released; we won't iterate it.
+        try { await res.body?.cancel(); } catch { /* ignore */ }
+        if (e instanceof UnreachableError) {
+          stderr.write("daemon not running; try `void-os daemon start`\n");
+          return 3;
+        }
+        stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
         continue;
       }
 
