@@ -248,13 +248,15 @@ describe("void-os init --non-interactive on fresh LXC", () => {
     expect(initR.exitCode).toBe(0)
     expect(initR.stdout).toMatch(/seed: void-os init|vault:/)  // formatReport content
 
-    // Daemon health: T0 probe RESOLVES whether `void-os init` auto-starts the daemon.
-    // Implementation picks ONE branch and removes the other — no tolerant `||` here.
-    //   - If init auto-starts: assert via `void-os daemon status` (exitCode 0 + "listening").
-    //   - If init does NOT auto-start: call `void-os daemon start`, require exitCode 0.
-    // The branch below is a PLACEHOLDER until T0 fixes the contract:
+    // Daemon health: T0b RESOLVED — `void-os init` does NOT auto-start the daemon.
+    // Evidence: cli/init.ts phases preflight→configure→build→seed→plugin→report; zero
+    // `daemon` references in cli/init.ts or cli/init/*; cli/init/report.ts "next" steps
+    // only direct the user to open Obsidian. Spec therefore explicitly starts the daemon.
+    const dStart = await lxcExec(h!, "void-os daemon start --vault /root/vault")
+    expect(dStart.exitCode).toBe(0)
     const dR = await lxcExec(h!, "void-os daemon status")
     expect(dR.exitCode).toBe(0)
+    expect(dR.stdout).toMatch(/listening|running/i)
 
     const askR = await lxcExec(
       h!,
@@ -436,7 +438,7 @@ GitHub secrets required on the void-os repo: `VOID_AUTH_USER_ID` (the user-id of
 ## Risks and open questions
 
 1. ~~**void-auth admin API for minting codes** is not verified.~~ **RESOLVED 2026-05-18 (T0a):** endpoint is `POST /v1/admin/users/{userId}/access-codes`, no app-level auth (tailnet/Caddy IP-allowlist trust boundary), no request body, response `{code, expiresAt}`, server-side TTL 3600s. Required precondition: target user has an active claudev grant. See Component 3 for verified script and Component 5 for updated secret list (`VOID_AUTH_USER_ID`, not `VOID_AUTH_ADMIN_TOKEN`).
-2. **`daemon start` after init.** Whether `void-os init` auto-starts the daemon or requires a separate `daemon start` command is unclear from current code. Spec allows either; impl plan T2 verifies and removes the redundant call if init auto-starts.
+2. ~~**`daemon start` after init.** Whether `void-os init` auto-starts the daemon or requires a separate `daemon start` command is unclear from current code.~~ **RESOLVED 2026-05-18 (T0b):** `void-os init` does NOT auto-start the daemon. `cli/init.ts` has six phases (preflight → configure → build → seed → plugin → report) with zero `daemon`/`spawn`-daemon references; `cli/init/report.ts` "next" steps only direct the user to Obsidian. Spec therefore calls `void-os daemon start --vault <path>` explicitly before the `daemon status` assertion. No conditional / tolerant `||` branch retained.
 3. **One-shot access codes** mean every run consumes a code. For local debug loops this is friction. Mitigation: README + offer a `KEEP_LXC=1` mode so debug runs reuse one LXC + one login until manually destroyed.
 4. **`pct push` performance** of a tarball'd 100MB+ working tree may surprise. If rsync-into-LXC exceeds 30s, switch to mounting the host rsync target into the LXC via bind mount during provision.
 5. **Runner provisioning is a homelab change** with operational impact (SOPS secret rotation, new ssh user on tower, sudoers entry). User approved scope inclusion; we ship it but commit homelab changes separately from void-os changes for clean rollback.
