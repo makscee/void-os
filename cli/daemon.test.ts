@@ -1,8 +1,10 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { test, describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { readPidJson, writePidJson } from "./lib/state-dir.ts";
+import { cmdStart, isPidAlive } from "./daemon.ts";
 
 const VOS_ROOT = resolve(__dirname, "..");
 const BIN = join(VOS_ROOT, "bin/void-os");
@@ -159,4 +161,55 @@ test("unknown flag exits 2 with clean stderr (no stacktrace)", () => {
   expect(r.stderr).toContain("unknown flag");
   // No raw Bun/Node stacktrace.
   expect(r.stderr).not.toContain("at ");
+});
+
+// VOS-120 T2: vault-awareness unit tests for cmdStart's early-exit branches.
+// These hit the exported API directly (not via BIN spawn) and use dryRun to
+// verify branch selection without spawning bun.
+describe("cmdStart vault awareness (VOS-120)", () => {
+  it("refuses when an alive daemon serves a different vault", async () => {
+    writePidJson({
+      pid: process.pid,         // alive
+      port: 7777,
+      vault_root: "/vault/A",
+      version: "0.0.0",
+      started_at: new Date().toISOString(),
+    });
+    const result = await cmdStart({ vault: "/vault/B", dryRun: true });
+    expect(result.status).toBe("vault-mismatch");
+    if (result.status === "vault-mismatch") {
+      expect(result.activeVault).toBe("/vault/A");
+      expect(result.pid).toBe(process.pid);
+    }
+  });
+
+  it("no-ops when an alive daemon serves the same vault", async () => {
+    writePidJson({
+      pid: process.pid,
+      port: 7777,
+      vault_root: "/vault/A",
+      version: "0.0.0",
+      started_at: new Date().toISOString(),
+    });
+    const result = await cmdStart({ vault: "/vault/A", dryRun: true });
+    expect(result.status).toBe("already-running");
+  });
+
+  it("treats dead-pid pidfile as stale and proceeds", async () => {
+    writePidJson({
+      pid: 999999,
+      port: 7777,
+      vault_root: "/vault/A",
+      version: "0.0.0",
+      started_at: new Date().toISOString(),
+    });
+    const result = await cmdStart({ vault: "/vault/B", dryRun: true });
+    expect(result.status).toBe("would-spawn");
+    expect(readPidJson()).toBeNull();
+  });
+
+  it("isPidAlive returns true for current process and false for sentinel", () => {
+    expect(isPidAlive(process.pid)).toBe(true);
+    expect(isPidAlive(999999)).toBe(false);
+  });
 });

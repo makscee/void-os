@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"cli-e2e-ask-user"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"thinking…"}]}}
+{"type":"vos_ask_user","question":"your name?"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"nice to meet you ${answer}"}]}}
+{"type":"result","subtype":"success"}

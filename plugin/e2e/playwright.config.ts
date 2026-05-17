@@ -32,7 +32,7 @@ export default defineConfig({
   projects: [
     {
       name: "main",
-      testIgnore: ["**/ask-user.spec.ts", "**/permission-deny-ui.spec.ts"],
+      testIgnore: ["**/ask-user.spec.ts", "**/permission-deny-ui.spec.ts", "**/daemon-autospawn.spec.ts"],
     },
     {
       name: "ask-user",
@@ -41,6 +41,15 @@ export default defineConfig({
     {
       name: "permission-deny-ui",
       testMatch: ["**/permission-deny-ui.spec.ts"],
+    },
+    // VOS-120 T9: daemon-autospawn drives its own initial daemon state per
+    // test (cold-start / pre-spawned / binary-missing / vault-mismatch /
+    // crash+respawn). Its globalSetup launches Obsidian with void-os
+    // DISABLED in community-plugins.json so each test enables the plugin
+    // after seeding the state it wants to assert against.
+    {
+      name: "autospawn",
+      testMatch: ["**/daemon-autospawn.spec.ts"],
     },
   ],
   use: {

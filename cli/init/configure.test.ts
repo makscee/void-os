@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test"
-import { configure } from "./configure"
+import { homedir } from "node:os"
+import { configure, decideFromFlags } from "./configure"
 import { ScriptedPrompter } from "./prompter"
 import type { PreflightReport } from "./preflight"
 
@@ -60,5 +61,69 @@ describe("configure()", () => {
     const d = await configure(baseReport, p)
     expect(d.vaultPath.startsWith("/")).toBe(true)
     expect(d.vaultPath.endsWith("/vault")).toBe(true)
+  })
+})
+
+const niBaseReport: PreflightReport = {
+  os: "linux",
+  claude: { found: true },
+  bun: { found: true },
+  gh: { found: false, authed: false },
+  obsidian: { found: false },
+}
+
+describe("decideFromFlags", () => {
+  it("vault path expansion (~/foo → home)", () => {
+    const d = decideFromFlags(niBaseReport, {
+      nonInteractive: true, vault: "~/foo",
+      skipGh: false, skipObsidian: false,
+    })
+    expect(d.vaultPath).toBe(homedir() + "/foo")
+    expect(d.gh.push).toBe(false)
+    expect(d.cancelled).toBe(false)
+  })
+
+  it("--gh-repo X with gh available → push true", () => {
+    const r = { ...niBaseReport, gh: { found: true, authed: true } }
+    const d = decideFromFlags(r, {
+      nonInteractive: true, vault: "/v", ghRepo: "myrepo",
+      skipGh: false, skipObsidian: false,
+    })
+    expect(d.gh).toEqual({ push: true, repoName: "myrepo" })
+  })
+
+  it("--gh-repo X with gh NOT available → throws FlagsError exit 65", () => {
+    const r = { ...niBaseReport, gh: { found: false, authed: false } }
+    expect(() => decideFromFlags(r, {
+      nonInteractive: true, vault: "/v", ghRepo: "myrepo",
+      skipGh: false, skipObsidian: false,
+    })).toThrow(/gh not available/)
+  })
+
+  it("--skip-obsidian → undefined obsidianVaultName even if obsidian detected", () => {
+    const r = { ...niBaseReport, obsidian: { found: true } }
+    const d = decideFromFlags(r, {
+      nonInteractive: true, vault: "/v", skipObsidian: true,
+      skipGh: false,
+    })
+    expect(d.obsidianVaultName).toBeUndefined()
+  })
+
+  it("obsidian detected + no skip + no override → default \"void\"", () => {
+    const r = { ...niBaseReport, obsidian: { found: true } }
+    const d = decideFromFlags(r, {
+      nonInteractive: true, vault: "/v",
+      skipGh: false, skipObsidian: false,
+    })
+    expect(d.obsidianVaultName).toBe("void")
+  })
+
+  it("--obsidian-vault X overrides default", () => {
+    const r = { ...niBaseReport, obsidian: { found: true } }
+    const d = decideFromFlags(r, {
+      nonInteractive: true, vault: "/v", obsidianVault: "custom",
+      skipGh: false, skipObsidian: false,
+    })
+    expect(d.obsidianVaultName).toBe("custom")
   })
 })

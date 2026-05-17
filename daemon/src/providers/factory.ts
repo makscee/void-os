@@ -58,7 +58,15 @@ export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
     return makeFakeProvider({
       scriptPath,
       perEventDelayMs,
-      daemonBase: env.VOS_DAEMON_BASE,
+      // VOS-118: fake provider's vos_ask_user directive POSTs to /mcp on the
+      // daemon. It requires a base URL — prefer the explicit env override (used
+      // by some legacy tests), fall back to the daemon's own base (which app.ts
+      // computes from VOID_OS_PORT). Without this fallback, top-level
+      // vos_ask_user tests silently throw "requires daemonBase" inside the
+      // provider's generator, the orchestrator sees no further yields, and the
+      // run ends "done" with no ask_user SSE frame — exactly the symptom
+      // VOS-118 T8 hit before the fix.
+      daemonBase: env.VOS_DAEMON_BASE ?? deps.daemonBase,
       // VOS-84: pass tracesDir + agent so the fake writes JSONL traces
       // matching the cc-spawner production wiring.
       tracesDir: deps.tracesDir,

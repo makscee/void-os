@@ -3,7 +3,8 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { detect, enforce, PreflightError, type PreflightReport } from "./init/preflight"
 import { ClackPrompter, type Prompter } from "./init/prompter"
-import { configure } from "./init/configure"
+import { configure, decideFromFlags } from "./init/configure"
+import type { Decisions } from "./init/configure"
 import { runBuild, BuildError } from "./init/build"
 import { seed } from "./init/seed"
 import { installPlugin } from "./init/plugin"
@@ -13,21 +14,49 @@ import { formatReport } from "./init/report"
 export { seed as provision } from "./init/seed"
 export type { SeedOpts as ProvisionOpts, SeedResult as ProvisionResult } from "./init/seed"
 
-interface Flags {
+export interface Flags {
   home?: string
   dryRun: boolean
   force: boolean
   skipBuild: boolean
+  nonInteractive: boolean
+  vault?: string
+  ghRepo?: string
+  skipGh: boolean
+  skipObsidian: boolean
+  obsidianVault?: string
 }
 
-function parseFlags(args: string[]): Flags {
-  const out: Flags = { dryRun: false, force: false, skipBuild: false }
+export class FlagsError extends Error {
+  constructor(msg: string, public exitCode: number) { super(msg) }
+}
+
+export function validateFlags(f: Flags): void {
+  if (f.nonInteractive && !f.vault) {
+    throw new FlagsError("--non-interactive requires --vault <path>", 64)
+  }
+  if (f.ghRepo && f.skipGh) {
+    throw new FlagsError("--gh-repo and --skip-gh are mutually exclusive", 64)
+  }
+}
+
+export function parseFlags(args: string[]): Flags {
+  const out: Flags = {
+    dryRun: false, force: false, skipBuild: false,
+    nonInteractive: false, skipGh: false, skipObsidian: false,
+  }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
     if (a === "--dry-run") out.dryRun = true
     else if (a === "--force") out.force = true
     else if (a === "--skip-build") out.skipBuild = true
     else if (a === "--home") out.home = args[++i]
+    else if (a === "--non-interactive") out.nonInteractive = true
+    else if (a === "--vault") out.vault = args[++i]
+    else if (a === "--gh-repo") out.ghRepo = args[++i]
+    else if (a === "--skip-gh") out.skipGh = true
+    else if (a === "--skip-obsidian") out.skipObsidian = true
+    else if (a === "--obsidian-vault") out.obsidianVault = args[++i]
     else throw new Error(`unknown flag: ${a}`)
   }
   return out
@@ -70,6 +99,16 @@ export interface InitCommandOpts {
  */
 export async function initCommand(opts: InitCommandOpts): Promise<void> {
   const flags = parseFlags(opts.args)
+  try {
+    validateFlags(flags)
+  } catch (e) {
+    if (e instanceof FlagsError) {
+      console.error(e.message)
+      process.exit(e.exitCode)
+      return
+    }
+    throw e
+  }
   const prompter: Prompter = opts.prompter ?? new ClackPrompter()
 
   // 1. PREFLIGHT (skipped when an injected report is supplied)
@@ -78,10 +117,11 @@ export async function initCommand(opts: InitCommandOpts): Promise<void> {
     report = opts.preflight
   } else {
     report = detect()
+    const offerBrewInstallBun = flags.nonInteractive
+      ? () => false
+      : (opts.offerBrewInstallBun ?? defaultBrewPrompt)
     try {
-      enforce(report, {
-        offerBrewInstallBun: opts.offerBrewInstallBun ?? defaultBrewPrompt,
-      })
+      enforce(report, { offerBrewInstallBun })
     } catch (e) {
       if (e instanceof PreflightError) {
         console.error(`preflight: ${e.message}`)
@@ -92,10 +132,25 @@ export async function initCommand(opts: InitCommandOpts): Promise<void> {
   }
 
   // 2. CONFIGURE
-  const decisions = await configure(report, prompter)
-  if (decisions.cancelled) {
-    console.error("cancelled")
-    process.exit(130)
+  let decisions: Decisions
+  if (flags.nonInteractive) {
+    try {
+      decisions = decideFromFlags(report, flags)
+    } catch (e) {
+      if (e instanceof FlagsError) {
+        console.error(e.message)
+        process.exit(e.exitCode)
+        return
+      }
+      throw e
+    }
+  } else {
+    decisions = await configure(report, prompter)
+    if (decisions.cancelled) {
+      console.error("cancelled")
+      process.exit(130)
+      return
+    }
   }
 
   const vaultPath = flags.home

@@ -11,7 +11,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { provision } from "./init"
+import { provision, parseFlags, validateFlags, FlagsError } from "./init"
 
 let tmpRoot: string
 let prefix: string
@@ -106,5 +106,73 @@ describe("provision()", () => {
     await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     const link = join(home, ".claude/skills")
     expect(lstatSync(link).isSymbolicLink()).toBe(true)
+  })
+})
+
+describe("parseFlags non-interactive", () => {
+  it("--non-interactive sets nonInteractive=true", () => {
+    const f = parseFlags(["--non-interactive", "--vault", "/tmp/v"])
+    expect(f.nonInteractive).toBe(true)
+    expect(f.vault).toBe("/tmp/v")
+  })
+
+  it("--gh-repo X parsed", () => {
+    const f = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--gh-repo", "myvault"])
+    expect(f.ghRepo).toBe("myvault")
+    expect(f.skipGh).toBe(false)
+  })
+
+  it("--skip-gh parsed", () => {
+    const f = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--skip-gh"])
+    expect(f.skipGh).toBe(true)
+  })
+
+  it("--skip-obsidian and --obsidian-vault parsed", () => {
+    const f = parseFlags([
+      "--non-interactive", "--vault", "/tmp/v",
+      "--obsidian-vault", "myvault",
+    ])
+    expect(f.obsidianVault).toBe("myvault")
+    expect(f.skipObsidian).toBe(false)
+
+    const g = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--skip-obsidian"])
+    expect(g.skipObsidian).toBe(true)
+  })
+})
+
+describe("validateFlags", () => {
+  it("--non-interactive without --vault throws exit 64", () => {
+    expect(() => validateFlags(parseFlags(["--non-interactive"])))
+      .toThrow(FlagsError)
+    try { validateFlags(parseFlags(["--non-interactive"])) }
+    catch (e) {
+      expect(e).toBeInstanceOf(FlagsError)
+      expect((e as FlagsError).exitCode).toBe(64)
+      expect((e as FlagsError).message).toMatch(/--non-interactive requires --vault/)
+    }
+  })
+
+  it("--gh-repo + --skip-gh mutually exclusive (exit 64)", () => {
+    try {
+      validateFlags(parseFlags([
+        "--non-interactive", "--vault", "/tmp/v",
+        "--gh-repo", "x", "--skip-gh",
+      ]))
+      throw new Error("should have thrown")
+    } catch (e) {
+      expect(e).toBeInstanceOf(FlagsError)
+      expect((e as FlagsError).exitCode).toBe(64)
+      expect((e as FlagsError).message).toMatch(/mutually exclusive/)
+    }
+  })
+
+  it("valid --non-interactive --vault X passes", () => {
+    expect(() => validateFlags(parseFlags([
+      "--non-interactive", "--vault", "/tmp/v",
+    ]))).not.toThrow()
+  })
+
+  it("interactive mode (no --non-interactive) passes without --vault", () => {
+    expect(() => validateFlags(parseFlags([]))).not.toThrow()
   })
 })
