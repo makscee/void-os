@@ -118,15 +118,17 @@ test("usage: missing agent exits 2", async () => {
   expect(err.chunks.join("")).toContain("usage");
 });
 
-test("usage: --help exits 2 and prints usage", async () => {
+test("usage: --help exits 0 and prints usage to stdout", async () => {
+  const out = collectStream();
   const err = collectStream();
   const code = await chat(["--help"], {
     stdin: withStdin([]),
-    stdout: collectStream().stream,
+    stdout: out.stream,
     stderr: err.stream,
   });
-  expect(code).toBe(2);
-  expect(err.chunks.join("")).toContain("usage");
+  expect(code).toBe(0);
+  expect(out.chunks.join("")).toContain("usage");
+  expect(err.chunks.join("")).toBe("");
 });
 
 test("agent unknown returns 4", async () => {

@@ -124,8 +124,8 @@ export default async function chat(args: string[], _opts: { prefix?: string } = 
     return 2;
   }
   if (parsed.help) {
-    stderr.write(USAGE);
-    return 2;
+    stdout.write(USAGE);
+    return 0;
   }
   if (parsed.positional.length !== 1) {
     stderr.write(USAGE);
