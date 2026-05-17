@@ -5,6 +5,12 @@
 export interface VoidOsSettings {
   chatId: string | null;
   daemonUrl?: string;
+  /** User override: explicit absolute path to the void-os CLI binary. */
+  voidOsBinaryPath?: string;
+  /** Cache of a successful auto-resolution so subsequent loads skip the
+   *  login-shell `command -v` probe. Cleared/refreshed transparently when
+   *  the cached path stops being executable. */
+  resolvedBinaryPath?: string;
 }
 
 export const DEFAULT_SETTINGS: VoidOsSettings = {
@@ -16,6 +22,7 @@ export interface SettingsStore {
   get(): VoidOsSettings;
   setChatId(id: string): Promise<void>;
   setDaemonUrl(url: string | undefined): Promise<void>;
+  setResolvedBinaryPath(path: string | undefined): Promise<void>;
 }
 
 export interface SettingsIO {
@@ -34,6 +41,10 @@ export async function makeSettingsStore(io: SettingsIO): Promise<SettingsStore> 
     },
     async setDaemonUrl(url: string | undefined) {
       current = { ...current, daemonUrl: url };
+      await io.saveData(current);
+    },
+    async setResolvedBinaryPath(path: string | undefined) {
+      current = { ...current, resolvedBinaryPath: path };
       await io.saveData(current);
     },
   };
