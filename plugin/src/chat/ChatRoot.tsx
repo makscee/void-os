@@ -25,6 +25,7 @@ import { BashTool } from "./tools/BashTool";
 import { GenericTool } from "./tools/GenericTool";
 import { AskUserTool } from "./tools/AskUserTool";
 import { AskAgentTool } from "./tools/AskAgentTool";
+import { DenialPart } from "./tools/DenialPart";
 import { AskUserContext, type AskUserContextValue } from "./AskUserContext";
 import { ChildTaskContext } from "./ChildTaskContext";
 
@@ -165,6 +166,9 @@ function MessageItem() {
               // Bash registers itself globally via makeAssistantToolUI (rendered
               // once below). Any other tool name falls back to the generic block.
               tools: { Fallback: GenericTool },
+              // VOS-109: synthesised denial DataMessagePart, keyed on
+              // `data.name === "denial"`. See plugin/src/chat/tools/DenialPart.tsx.
+              data: { by_name: { denial: DenialPart } },
             }}
           />
         </div>
