@@ -75,6 +75,19 @@ describe("ensureDaemon", () => {
     })).rejects.toBeInstanceOf(VaultMismatchError);
   });
 
+  it("probes first: attaches without resolving binary when daemon is already up (T9-fix-B)", async () => {
+    // No settings.voidOsBinaryPath, no cache, no well-known path — resolveBinary
+    // would throw BinaryNotFoundError. Probe succeeds, so we must never reach it.
+    const probe = async () => ({ ok: true, vault_root: "/V", version: "0.1", port: 7777 });
+    const result = await ensureDaemon({
+      vaultRoot: "/V",
+      settings: {},
+      probeHealth: probe,
+      spawnCli: async () => { throw new Error("must not spawn"); },
+    });
+    expect(result.port).toBe(7777);
+  });
+
   it("spawns when probe rejects, then attaches after poll succeeds", async () => {
     let probeCalls = 0;
     const probe = async () => {

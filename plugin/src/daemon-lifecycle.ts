@@ -132,11 +132,15 @@ export type DaemonAttachment = {
 };
 
 export async function ensureDaemon(opts: EnsureDaemonOpts): Promise<DaemonAttachment> {
-  const bin = await resolveBinary(opts.settings);
   const intervalMs = opts.pollIntervalMs ?? 250;
   const timeoutMs = opts.pollTimeoutMs ?? 10000;
 
-  // Try existing daemon.
+  // VOS-120 T9-fix-B: probe FIRST. If a daemon is already running and serving
+  // the right vault, attach without ever needing to know where the binary
+  // lives. This is the production-friendly path — Electron's renderer drops
+  // PATH, so a `resolveBinary` call would fail before we ever ask the daemon
+  // whether it's alive. Only when the probe fails do we bother resolving the
+  // binary so we can spawn one. VaultMismatch always propagates immediately.
   try {
     const h = await opts.probeHealth();
     if (h.ok) {
@@ -148,6 +152,7 @@ export async function ensureDaemon(opts: EnsureDaemonOpts): Promise<DaemonAttach
     // fall through to spawn
   }
 
+  const bin = await resolveBinary(opts.settings);
   await opts.spawnCli(bin, ["daemon", "start", "--vault", opts.vaultRoot]);
 
   const deadline = Date.now() + timeoutMs;
