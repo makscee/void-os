@@ -11,16 +11,17 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { provision } from "./init"
+import { provision, parseFlags, validateFlags, FlagsError } from "./init"
 
 let tmpRoot: string
 let prefix: string
 let home: string
 
-// Helper: writes a .void marker file the same shape seed() writes.
+// Helper: writes a .void/marker.json the same shape seed() writes.
 function writeMarker(dir: string) {
+  mkdirSync(join(dir, ".void"), { recursive: true })
   writeFileSync(
-    join(dir, ".void"),
+    join(dir, ".void/marker.json"),
     JSON.stringify({ version: 1, createdAt: new Date().toISOString() }),
   )
 }
@@ -48,13 +49,15 @@ afterEach(() => {
 })
 
 describe("provision()", () => {
-  it("populates an empty target with starter-vault contents + writes .void file marker", async () => {
+  it("populates an empty target with starter-vault contents + writes .void/marker.json", async () => {
     await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
     expect(existsSync(join(home, "agents/tinker/agent.md"))).toBe(true)
-    // VOS-119 Task 8.2: .void is now a JSON FILE marker (was a directory in pre-T6 fixture).
+    // VOS-123: .void is now a DIRECTORY containing marker.json (daemon needs
+    // .void/ as a directory for state.sqlite, tmp/, traces/).
     expect(existsSync(join(home, ".void"))).toBe(true)
-    expect(statSync(join(home, ".void")).isFile()).toBe(true)
+    expect(statSync(join(home, ".void")).isDirectory()).toBe(true)
+    expect(statSync(join(home, ".void/marker.json")).isFile()).toBe(true)
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
   })
 
@@ -73,8 +76,8 @@ describe("provision()", () => {
     await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("user override\n")
     // upgrade is a no-op for templates unless --force
-    expect(existsSync(join(home, ".void"))).toBe(true)
-    expect(statSync(join(home, ".void")).isFile()).toBe(true)
+    expect(existsSync(join(home, ".void/marker.json"))).toBe(true)
+    expect(statSync(join(home, ".void/marker.json")).isFile()).toBe(true)
   })
 
   it("upgrade preserves nested user edits to agents/skills", async () => {
@@ -106,5 +109,73 @@ describe("provision()", () => {
     await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     const link = join(home, ".claude/skills")
     expect(lstatSync(link).isSymbolicLink()).toBe(true)
+  })
+})
+
+describe("parseFlags non-interactive", () => {
+  it("--non-interactive sets nonInteractive=true", () => {
+    const f = parseFlags(["--non-interactive", "--vault", "/tmp/v"])
+    expect(f.nonInteractive).toBe(true)
+    expect(f.vault).toBe("/tmp/v")
+  })
+
+  it("--gh-repo X parsed", () => {
+    const f = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--gh-repo", "myvault"])
+    expect(f.ghRepo).toBe("myvault")
+    expect(f.skipGh).toBe(false)
+  })
+
+  it("--skip-gh parsed", () => {
+    const f = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--skip-gh"])
+    expect(f.skipGh).toBe(true)
+  })
+
+  it("--skip-obsidian and --obsidian-vault parsed", () => {
+    const f = parseFlags([
+      "--non-interactive", "--vault", "/tmp/v",
+      "--obsidian-vault", "myvault",
+    ])
+    expect(f.obsidianVault).toBe("myvault")
+    expect(f.skipObsidian).toBe(false)
+
+    const g = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--skip-obsidian"])
+    expect(g.skipObsidian).toBe(true)
+  })
+})
+
+describe("validateFlags", () => {
+  it("--non-interactive without --vault throws exit 64", () => {
+    expect(() => validateFlags(parseFlags(["--non-interactive"])))
+      .toThrow(FlagsError)
+    try { validateFlags(parseFlags(["--non-interactive"])) }
+    catch (e) {
+      expect(e).toBeInstanceOf(FlagsError)
+      expect((e as FlagsError).exitCode).toBe(64)
+      expect((e as FlagsError).message).toMatch(/--non-interactive requires --vault/)
+    }
+  })
+
+  it("--gh-repo + --skip-gh mutually exclusive (exit 64)", () => {
+    try {
+      validateFlags(parseFlags([
+        "--non-interactive", "--vault", "/tmp/v",
+        "--gh-repo", "x", "--skip-gh",
+      ]))
+      throw new Error("should have thrown")
+    } catch (e) {
+      expect(e).toBeInstanceOf(FlagsError)
+      expect((e as FlagsError).exitCode).toBe(64)
+      expect((e as FlagsError).message).toMatch(/mutually exclusive/)
+    }
+  })
+
+  it("valid --non-interactive --vault X passes", () => {
+    expect(() => validateFlags(parseFlags([
+      "--non-interactive", "--vault", "/tmp/v",
+    ]))).not.toThrow()
+  })
+
+  it("interactive mode (no --non-interactive) passes without --vault", () => {
+    expect(() => validateFlags(parseFlags([]))).not.toThrow()
   })
 })

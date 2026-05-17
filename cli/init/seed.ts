@@ -7,12 +7,14 @@ import {
   writeFileSync,
   renameSync,
   readFileSync,
+  rmSync,
   statSync,
 } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { join, dirname } from "node:path"
 
-const VOID_MARKER = ".void"
+const VOID_MARKER_DIR = ".void"
+const VOID_MARKER_FILE = ".void/marker.json"
 
 export interface SeedOpts {
   home: string
@@ -42,7 +44,25 @@ export async function seed(opts: SeedOpts): Promise<SeedResult> {
     gh: { pushed: false },
   }
 
-  const markerPath = join(home, VOID_MARKER)
+  const markerDirPath = join(home, VOID_MARKER_DIR)
+  const markerPath = join(home, VOID_MARKER_FILE)
+
+  // Migration: legacy `.void` was a FILE marker. Convert to `.void/marker.json`
+  // so daemon (which expects `.void/` as a directory for state.sqlite, tmp/,
+  // traces/) and init agree on the contract.
+  if (
+    !dryRun &&
+    existsSync(markerDirPath) &&
+    statSync(markerDirPath).isFile()
+  ) {
+    const legacyContents = readFileSync(markerDirPath, "utf8")
+    const legacyBackup = join(home, ".void.legacy-marker")
+    renameSync(markerDirPath, legacyBackup)
+    mkdirSync(markerDirPath, { recursive: true })
+    writeFileSync(markerPath, legacyContents)
+    rmSyncSafe(legacyBackup)
+  }
+
   const markerPresent =
     existsSync(markerPath) && statSync(markerPath).isFile()
   const dirEmpty = !existsSync(home) || readdirSync(home).length === 0
@@ -82,8 +102,10 @@ export async function seed(opts: SeedOpts): Promise<SeedResult> {
   if (!dryRun) {
     const needsWrite = result.isFreshSeed || !parseableMarker(markerPath)
     if (needsWrite) {
+      // Ensure `.void/` dir exists before writing marker inside it.
+      mkdirSync(markerDirPath, { recursive: true })
       const marker = { version: 1, createdAt: new Date().toISOString() }
-      const tmp = join(home, `${VOID_MARKER}.tmp`)
+      const tmp = join(home, `${VOID_MARKER_FILE}.tmp`)
       writeFileSync(tmp, JSON.stringify(marker, null, 2))
       renameSync(tmp, markerPath)
       result.copied.push(markerPath)
@@ -121,6 +143,14 @@ export async function seed(opts: SeedOpts): Promise<SeedResult> {
   }
 
   return result
+}
+
+function rmSyncSafe(path: string) {
+  try {
+    rmSync(path, { recursive: true, force: true })
+  } catch {
+    // best-effort cleanup
+  }
 }
 
 function parseableMarker(path: string): boolean {

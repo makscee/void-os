@@ -112,8 +112,9 @@ describe("initCommand() — end-to-end against real fs", () => {
       expect(a.equals(b)).toBe(true)
     }
 
-    // 3. .void marker present, well-formed, has version + timestamp.
-    const markerPath = join(home, ".void")
+    // 3. .void/ is a directory; marker.json present, well-formed.
+    expect(statSync(join(home, ".void")).isDirectory()).toBe(true)
+    const markerPath = join(home, ".void/marker.json")
     expect(statSync(markerPath).isFile()).toBe(true)
     const marker = JSON.parse(readFileSync(markerPath, "utf8"))
     expect(marker.version).toBe(1)
@@ -185,7 +186,7 @@ describe("initCommand() — end-to-end against real fs", () => {
 
     // Capture pre-rerun mtimes for starter files + marker.
     const before: Record<string, number> = {}
-    for (const rel of [...STARTER_FILES, ".void"]) {
+    for (const rel of [...STARTER_FILES, ".void/marker.json"]) {
       before[rel] = statSync(join(home, rel)).mtimeMs
     }
 
@@ -198,7 +199,7 @@ describe("initCommand() — end-to-end against real fs", () => {
     await rerun.promise
 
     // mtime-stable: nothing overwritten.
-    for (const rel of [...STARTER_FILES, ".void"]) {
+    for (const rel of [...STARTER_FILES, ".void/marker.json"]) {
       const after = statSync(join(home, rel)).mtimeMs
       expect(after).toBe(before[rel])
     }
@@ -250,5 +251,55 @@ describe("initCommand() — end-to-end against real fs", () => {
     expect(headAfter.exitCode).toBe(0)
     const shaAfter = new TextDecoder().decode(headAfter.stdout).trim()
     expect(shaAfter).toBe(shaBefore)
+  })
+})
+
+describe("initCommand() --non-interactive", () => {
+  it("runs end-to-end with flag-only config, never prompts", async () => {
+    const prompter = new ScriptedPrompter({ text: [], confirm: [] })
+    const logSpy = spyOn(console, "log").mockImplementation(() => {})
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      await initCommand({
+        args: ["--non-interactive", "--vault", home, "--skip-gh", "--skip-obsidian"],
+        prefix,
+        prompter,
+        preflight: fakePreflight,
+        skipBuild: true,
+      })
+    } finally {
+      logSpy.mockRestore()
+      warnSpy.mockRestore()
+    }
+
+    expect(existsSync(home)).toBe(true)
+    expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
+    expect(existsSync(join(home, ".void/marker.json"))).toBe(true)
+    // No `intro:`/`outro:` log entries since prompter never invoked:
+    expect(prompter.log.length).toBe(0)
+  })
+
+  it("missing --vault under --non-interactive exits 64", async () => {
+    const prompter = new ScriptedPrompter({ text: [], confirm: [] })
+    const exitSpy = spyOn(process, "exit").mockImplementation(((c?: number) => {
+      throw new Error(`exit:${c}`)
+    }) as never)
+    const errSpy = spyOn(console, "error").mockImplementation(() => {})
+
+    try {
+      await initCommand({
+        args: ["--non-interactive"],
+        prefix,
+        prompter,
+        preflight: fakePreflight,
+        skipBuild: true,
+      })
+      throw new Error("should have exited")
+    } catch (e) {
+      expect((e as Error).message).toBe("exit:64")
+    } finally {
+      exitSpy.mockRestore()
+      errSpy.mockRestore()
+    }
   })
 })

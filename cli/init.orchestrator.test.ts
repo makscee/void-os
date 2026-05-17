@@ -81,9 +81,10 @@ describe("initCommand() — phase orchestrator", () => {
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
     expect(existsSync(join(home, "agents/tinker/agent.md"))).toBe(true)
-    // .void marker is a JSON file
-    expect(statSync(join(home, ".void")).isFile()).toBe(true)
-    const marker = JSON.parse(readFileSync(join(home, ".void"), "utf8"))
+    // .void is a directory, marker.json lives inside it
+    expect(statSync(join(home, ".void")).isDirectory()).toBe(true)
+    expect(statSync(join(home, ".void/marker.json")).isFile()).toBe(true)
+    const marker = JSON.parse(readFileSync(join(home, ".void/marker.json"), "utf8"))
     expect(marker.version).toBe(1)
 
     // Report was printed

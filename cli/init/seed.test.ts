@@ -33,13 +33,15 @@ beforeEach(() => {
 afterEach(() => rmSync(tmpRoot, { recursive: true, force: true }))
 
 describe("seed() fresh install", () => {
-  it("creates vault dir, copies tree, writes .void marker, runs git init + first commit", async () => {
+  it("creates vault dir, copies tree, writes .void/marker.json, runs git init + first commit", async () => {
     const r = await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
     expect(existsSync(join(home, "agents/tinker/agent.md"))).toBe(true)
     expect(existsSync(join(home, ".void"))).toBe(true)
-    expect(statSync(join(home, ".void")).isFile()).toBe(true)
-    const marker = JSON.parse(readFileSync(join(home, ".void"), "utf8"))
+    expect(statSync(join(home, ".void")).isDirectory()).toBe(true)
+    expect(existsSync(join(home, ".void/marker.json"))).toBe(true)
+    expect(statSync(join(home, ".void/marker.json")).isFile()).toBe(true)
+    const marker = JSON.parse(readFileSync(join(home, ".void/marker.json"), "utf8"))
     expect(marker.version).toBe(1)
     expect(typeof marker.createdAt).toBe("string")
     expect(marker.vault).toBeUndefined()
@@ -53,8 +55,8 @@ describe("seed() fresh install", () => {
 describe("seed() re-run idempotency", () => {
   it("skips file copy + git init + commit on re-run without --force, leaves marker untouched", async () => {
     await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
-    const markerBefore = readFileSync(join(home, ".void"), "utf8")
-    const markerMtimeBefore = statSync(join(home, ".void")).mtimeMs
+    const markerBefore = readFileSync(join(home, ".void/marker.json"), "utf8")
+    const markerMtimeBefore = statSync(join(home, ".void/marker.json")).mtimeMs
     writeFileSync(join(home, "CLAUDE.md"), "USER EDITED\n")
     writeFileSync(join(home, "scratch.md"), "user note\n")
 
@@ -63,8 +65,8 @@ describe("seed() re-run idempotency", () => {
     const r = await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("USER EDITED\n")
     expect(r.isFreshSeed).toBe(false)
-    expect(readFileSync(join(home, ".void"), "utf8")).toBe(markerBefore)
-    expect(statSync(join(home, ".void")).mtimeMs).toBe(markerMtimeBefore)
+    expect(readFileSync(join(home, ".void/marker.json"), "utf8")).toBe(markerBefore)
+    expect(statSync(join(home, ".void/marker.json")).mtimeMs).toBe(markerMtimeBefore)
 
     const log = spawnSync("git", ["-C", home, "log", "--oneline"], { encoding: "utf8" })
     const commits = log.stdout.trim().split("\n").filter(Boolean)
@@ -73,9 +75,9 @@ describe("seed() re-run idempotency", () => {
 
   it("rewrites marker when existing file is unparseable (corrupted)", async () => {
     await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
-    writeFileSync(join(home, ".void"), "not json garbage")
+    writeFileSync(join(home, ".void/marker.json"), "not json garbage")
     await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
-    const j = JSON.parse(readFileSync(join(home, ".void"), "utf8"))
+    const j = JSON.parse(readFileSync(join(home, ".void/marker.json"), "utf8"))
     expect(j.version).toBe(1)
   })
 
@@ -125,7 +127,7 @@ describe("seed() reuses pre-existing .git instead of re-initializing", () => {
     expect(r.isFreshSeed).toBe(true)
     expect(initCalls).toBe(0) // pre-existing .git -> no re-init
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
-    expect(existsSync(join(home, ".void"))).toBe(true)
+    expect(existsSync(join(home, ".void/marker.json"))).toBe(true)
   })
 })
 
@@ -189,5 +191,30 @@ describe("seed() gh remote safety", () => {
     expect(r.gh.pushed).toBe(false)
     expect(r.gh.warning).toBe("remote-unverifiable")
     expect(calls.some((c) => c[0] === "git" && c.includes("push"))).toBe(false)
+  })
+})
+
+describe("seed() legacy .void FILE marker migration", () => {
+  it("converts a legacy .void file into .void/marker.json directory layout, treated as already-seeded", async () => {
+    mkdirSync(home, { recursive: true })
+    // Pre-seed a legacy file-shaped marker (pre-VOS-123 contract).
+    const legacy = JSON.stringify({
+      version: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })
+    writeFileSync(join(home, ".void"), legacy)
+    // Stash a foreign file to verify isFreshSeed remains false (no clobber).
+    writeFileSync(join(home, "CLAUDE.md"), "USER EDITED\n")
+
+    const r = await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
+
+    expect(statSync(join(home, ".void")).isDirectory()).toBe(true)
+    expect(existsSync(join(home, ".void/marker.json"))).toBe(true)
+    const marker = JSON.parse(readFileSync(join(home, ".void/marker.json"), "utf8"))
+    expect(marker.version).toBe(1)
+    expect(marker.createdAt).toBe("2026-01-01T00:00:00.000Z")
+    // Already-seeded path: did not overwrite user file.
+    expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("USER EDITED\n")
+    expect(r.isFreshSeed).toBe(false)
   })
 })
