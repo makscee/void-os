@@ -60,6 +60,14 @@ export interface ChatListItem {
   last_run_status: string | null;
   cost_usd: number;
   input_required: boolean;
+  // VOS-110: context-window snapshot sourced from the latest `costs` row per
+  // chat (ORDER BY ts DESC, id DESC LIMIT 1). All five are null when the
+  // chat has no costs rows yet.
+  context_tokens: number | null;
+  context_input_tokens: number | null;
+  context_output_tokens: number | null;
+  context_cache_create_tokens: number | null;
+  context_cache_read_tokens: number | null;
 }
 
 /** Result of context creation. Carries the minted open-task id so the
@@ -145,6 +153,9 @@ export function makeChatRepo(db: Database): ChatRepo {
       // TASK_STATE_INPUT_REQUIRED. SQLite returns an integer for the CASE
       // expression — coerce to a JS boolean at the boundary so the HTTP JSON
       // carries `true`/`false` rather than `0`/`1`.
+      // VOS-110: surface the latest costs row per chat for the context-window
+      // meter. Tiebreak on equal `ts` by highest `id` so a same-ts replay
+      // deterministically picks the most-recently-inserted row.
       const rows = db
         .query(
           `SELECT c.id, c.agent_name AS agent, c.title,
@@ -168,12 +179,42 @@ export function makeChatRepo(db: Database): ChatRepo {
                     SELECT 1 FROM tasks
                      WHERE context_id = c.id
                        AND state = 'TASK_STATE_INPUT_REQUIRED'
-                  ) THEN 1 ELSE 0 END AS input_required_int
+                  ) THEN 1 ELSE 0 END AS input_required_int,
+                  latest.input_tokens         AS context_input_tokens,
+                  latest.output_tokens        AS context_output_tokens,
+                  latest.cache_create_tokens  AS context_cache_create_tokens,
+                  latest.cache_read_tokens    AS context_cache_read_tokens,
+                  (latest.input_tokens
+                   + latest.output_tokens
+                   + latest.cache_create_tokens
+                   + latest.cache_read_tokens) AS context_tokens
              FROM contexts c
+        LEFT JOIN costs latest
+               ON latest.id = (
+                    SELECT id FROM costs
+                     WHERE chat_id = c.id
+                     ORDER BY ts DESC, id DESC
+                     LIMIT 1
+                  )
             ORDER BY c.updated_at DESC`,
         )
         .all() as Array<
-          Omit<ChatListItem, "input_required"> & { input_required_int: 0 | 1 }
+          Omit<
+            ChatListItem,
+            | "input_required"
+            | "context_tokens"
+            | "context_input_tokens"
+            | "context_output_tokens"
+            | "context_cache_create_tokens"
+            | "context_cache_read_tokens"
+          > & {
+            input_required_int: 0 | 1;
+            context_tokens: number | null;
+            context_input_tokens: number | null;
+            context_output_tokens: number | null;
+            context_cache_create_tokens: number | null;
+            context_cache_read_tokens: number | null;
+          }
         >;
       return rows.map((r) => ({
         id: r.id,
@@ -184,6 +225,19 @@ export function makeChatRepo(db: Database): ChatRepo {
         last_run_status: r.last_run_status,
         cost_usd: r.cost_usd,
         input_required: r.input_required_int === 1,
+        context_tokens: r.context_tokens == null ? null : Number(r.context_tokens),
+        context_input_tokens:
+          r.context_input_tokens == null ? null : Number(r.context_input_tokens),
+        context_output_tokens:
+          r.context_output_tokens == null ? null : Number(r.context_output_tokens),
+        context_cache_create_tokens:
+          r.context_cache_create_tokens == null
+            ? null
+            : Number(r.context_cache_create_tokens),
+        context_cache_read_tokens:
+          r.context_cache_read_tokens == null
+            ? null
+            : Number(r.context_cache_read_tokens),
       }));
     },
     get(id) {
