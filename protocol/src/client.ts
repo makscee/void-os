@@ -18,6 +18,24 @@ export type VaultFileResp = z.infer<typeof VaultFileResp>;
 export type VaultWriteResp = z.infer<typeof VaultWriteResp>;
 export type VaultListResp = z.infer<typeof VaultListResp>;
 
+// Verified against daemon/src/api/chats.ts POST /chats — returns {id, title, created_at}.
+// Note: response key is `id` (not `chat_id`).
+const ChatCreateResp = z.object({
+  id: z.string(),
+  title: z.string(),
+  created_at: z.number(),
+}).passthrough();
+// Verified against daemon/src/api/chat.ts POST /chat/:id/message — orchestrator returns {run_id, ...}.
+const ChatSendResp = z.object({ run_id: z.string() }).passthrough();
+// Verified against daemon/src/api/answer.ts POST /chat/:id/answer — returns {ok:true}.
+const ChatAnswerResp = z.object({ ok: z.literal(true) }).passthrough();
+// Verified against daemon/src/api/chat.ts POST /chat/:id/cancel — returns {run_id, status:"cancelled"}.
+const ChatCancelResp = z.object({ run_id: z.string(), status: z.string() }).passthrough();
+export type ChatCreateResp = z.infer<typeof ChatCreateResp>;
+export type ChatSendResp = z.infer<typeof ChatSendResp>;
+export type ChatAnswerResp = z.infer<typeof ChatAnswerResp>;
+export type ChatCancelResp = z.infer<typeof ChatCancelResp>;
+
 export class ApiError extends Error {
   readonly name = "ApiError" as const;
   constructor(public readonly code: string, message: string, public readonly status: number) {
@@ -51,7 +69,13 @@ export interface Client {
     write(path: string, content: string): Promise<VaultWriteResp>;
     list(path?: string, opts?: { depth?: number }): Promise<VaultListResp>;
   };
-  chat: { stream(chatId: string): AsyncIterable<unknown> };
+  chat: {
+    create(opts?: { agent?: string }): Promise<ChatCreateResp>;
+    send(chatId: string, text: string): Promise<ChatSendResp>;
+    answer(chatId: string, toolUseId: string, answer: string): Promise<ChatAnswerResp>;
+    cancel(chatId: string): Promise<ChatCancelResp>;
+    stream(chatId: string): AsyncIterable<unknown>;
+  };
 }
 
 export function makeClient(opts: ClientOpts): Client {
@@ -131,6 +155,32 @@ export function makeClient(opts: ClientOpts): Client {
         return call(`/vault/list${qs ? `?${qs}` : ""}`, { method: "GET" }, VaultListResp);
       },
     },
-    chat: { stream: (chatId) => sseFrames(`/chat/${encodeURIComponent(chatId)}/stream`) },
+    chat: {
+      create: (copts) =>
+        call(
+          "/chats",
+          { method: "POST", body: JSON.stringify(copts?.agent ? { agent: copts.agent } : {}) },
+          ChatCreateResp,
+        ),
+      send: (chatId, text) =>
+        call(
+          `/chat/${encodeURIComponent(chatId)}/message`,
+          { method: "POST", body: JSON.stringify({ text }) },
+          ChatSendResp,
+        ),
+      answer: (chatId, toolUseId, answer) =>
+        call(
+          `/chat/${encodeURIComponent(chatId)}/answer`,
+          { method: "POST", body: JSON.stringify({ tool_use_id: toolUseId, answer }) },
+          ChatAnswerResp,
+        ),
+      cancel: (chatId) =>
+        call(
+          `/chat/${encodeURIComponent(chatId)}/cancel`,
+          { method: "POST", body: "{}" },
+          ChatCancelResp,
+        ),
+      stream: (chatId) => sseFrames(`/chat/${encodeURIComponent(chatId)}/stream`),
+    },
   };
 }
