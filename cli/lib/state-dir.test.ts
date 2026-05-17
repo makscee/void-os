@@ -1,8 +1,19 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { test, describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stateDir, tokenPath, pidPath, portPath, logPath, ensureStateDir } from "./state-dir.ts";
+import {
+  stateDir,
+  tokenPath,
+  pidPath,
+  portPath,
+  logPath,
+  ensureStateDir,
+  readPidJson,
+  writePidJson,
+  removePidJson,
+  type DaemonPidJson,
+} from "./state-dir.ts";
 
 let tmp: string;
 let origHome: string | undefined;
@@ -36,4 +47,34 @@ test("ensureStateDir creates dir if missing", () => {
   expect(dir).toBe(join(tmp, ".void-os"));
   // Re-call must be idempotent.
   ensureStateDir();
+});
+
+describe("daemon.json pidfile", () => {
+  it("round-trips a full record", () => {
+    const rec: DaemonPidJson = {
+      pid: 12345,
+      port: 7777,
+      vault_root: "/Users/foo/Vault",
+      version: "0.4.2",
+      started_at: "2026-05-17T09:14:02Z",
+    };
+    writePidJson(rec);
+    expect(readPidJson()).toEqual(rec);
+  });
+
+  it("returns null when file is absent", () => {
+    expect(readPidJson()).toBeNull();
+  });
+
+  it("returns null when file is malformed", () => {
+    ensureStateDir();
+    writeFileSync(join(stateDir(), "daemon.json"), "{not json");
+    expect(readPidJson()).toBeNull();
+  });
+
+  it("removePidJson is idempotent", () => {
+    removePidJson();
+    removePidJson();
+    expect(readPidJson()).toBeNull();
+  });
 });

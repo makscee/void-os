@@ -7,23 +7,45 @@ interface Deps {
   retryMs: number;
   pingMs: number;
   pongTimeoutMs: number;
+  /** Probe /health to distinguish "WS dropped" from "daemon process died".
+   *  Optional: when absent, FSM behaves as pre-VOS-120 (retry forever). */
+  probeHealth?: () => Promise<{ ok: boolean; port: number; vault_root: string; version: string }>;
+  /** Spawn a fresh daemon when probeHealth confirms the process is gone.
+   *  Optional: when absent, FSM skips the auto-respawn step. */
+  respawn?: () => Promise<void>;
+  /** How long the WS must stay in "connected" before the auto-respawn budget
+   *  resets (so a future crash also gets one free recovery). Defaults 5min. */
+  stableResetMs?: number;
   setTimeout?: typeof setTimeout;
   clearTimeout?: typeof clearTimeout;
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
 }
 
-type Phase = "offline" | "connecting" | "connected" | "reconnecting";
+/** Internal phase. "daemon-died" is transient (we're respawning); "manual-restart"
+ *  is sticky until resetAutoRespawn() is called (e.g. Settings → Restart). */
+type Phase =
+  | "offline"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "daemon-died"
+  | "manual-restart";
 
 export class ReconnectFSM {
   private phase: Phase = "offline";
   private retryHandle: any = null;
   private pingHandle: any = null;
   private pongHandle: any = null;
+  private stableHandle: any = null;
+  private autoRespawnUsed = false;
   private setT: typeof setTimeout;
   private clrT: typeof clearTimeout;
   private setI: typeof setInterval;
   private clrI: typeof clearInterval;
+
+  /** Test/inspection accessor — returns current internal phase. */
+  get state(): Phase { return this.phase; }
 
   constructor(private d: Deps) {
     // Native browser timers (setTimeout/clearTimeout/setInterval/clearInterval)
@@ -59,16 +81,77 @@ export class ReconnectFSM {
       case "hello":
         this.transition("connected");
         this.startPing();
+        this.armStableReset();
         return;
       case "frame":
         if ((e.data as any)?.type === "pong") this.clearPong();
         return;
       case "close":
       case "error":
-        this.scheduleRetry();
+        // VOS-120 T7: when the daemon process is gone (not just WS dropped),
+        // attempt ONE auto-respawn before falling back to the normal retry loop.
+        void this.handleDisconnect();
         return;
     }
   }
+
+  /** WS close/error path. Probes /health; on probe-fail we treat the daemon
+   *  as dead and spend the auto-respawn budget. On success (or no probe
+   *  configured) we fall through to the existing retry-loop behaviour. */
+  private async handleDisconnect(): Promise<void> {
+    if (this.phase === "offline" || this.phase === "reconnecting" ||
+        this.phase === "daemon-died" || this.phase === "manual-restart") {
+      return;
+    }
+    if (!this.d.probeHealth) {
+      this.scheduleRetry();
+      return;
+    }
+    let daemonAlive = false;
+    try {
+      const h = await this.d.probeHealth();
+      daemonAlive = !!h?.ok;
+    } catch {
+      daemonAlive = false;
+    }
+    if (daemonAlive) {
+      this.scheduleRetry();
+      return;
+    }
+    if (this.autoRespawnUsed || !this.d.respawn) {
+      this.clearTimers();
+      this.d.client.close();
+      this.transition("manual-restart");
+      return;
+    }
+    this.autoRespawnUsed = true;
+    this.clearTimers();
+    this.d.client.close();
+    this.transition("daemon-died");
+    try {
+      await this.d.respawn();
+      this.transition("connecting");
+      this.d.client.open();
+    } catch {
+      this.transition("manual-restart");
+    }
+  }
+
+  /** Arm a one-shot timer that clears the auto-respawn budget once the WS
+   *  has been continuously connected for stableResetMs. Re-armed on every
+   *  fresh hello — any disconnect cancels it via clearTimers(). */
+  private armStableReset() {
+    if (this.stableHandle) { this.clrT(this.stableHandle); this.stableHandle = null; }
+    const ms = this.d.stableResetMs ?? 5 * 60_000;
+    this.stableHandle = this.setT(() => {
+      if (this.phase === "connected") this.autoRespawnUsed = false;
+      this.stableHandle = null;
+    }, ms);
+  }
+
+  /** Exposed for T8 Settings → Restart wiring: clears the spent budget so a
+   *  user-triggered restart effectively starts a fresh recovery cycle. */
+  resetAutoRespawn(): void { this.autoRespawnUsed = false; }
 
   private startPing() {
     this.pingHandle = this.setI(() => {
@@ -96,6 +179,7 @@ export class ReconnectFSM {
     if (this.pingHandle) { this.clrI(this.pingHandle); this.pingHandle = null; }
     this.clearPong();
     if (this.retryHandle) { this.clrT(this.retryHandle); this.retryHandle = null; }
+    if (this.stableHandle) { this.clrT(this.stableHandle); this.stableHandle = null; }
   }
 
   private transition(p: Phase) {
@@ -103,7 +187,7 @@ export class ReconnectFSM {
     this.phase = p;
     const visible: ConnectionState =
       p === "connected" ? "connected"
-      : p === "offline" ? "offline"
+      : p === "offline" || p === "manual-restart" ? "offline"
       : "reconnecting";
     this.d.onState(visible);
   }
