@@ -111,6 +111,20 @@ guard_path() {
   fi
 }
 
+# --- confirm -------------------------------------------------------------
+confirm_wipe() {
+  if [ "$FLAG_YES" -eq 1 ]; then
+    return 0
+  fi
+  printf "type 'yes' to wipe %s: " "$PATH_CANON"
+  local reply
+  read -r reply || reply=""
+  if [ "$reply" != "yes" ]; then
+    echo "aborted" >&2
+    exit 0
+  fi
+}
+
 # --- main ----------------------------------------------------------------
 main() {
   parse_args "$@"
@@ -121,6 +135,7 @@ main() {
   PATH_CANON="$path_canon"
   HOME_CANON="$home_canon"
   echo "fresh-vault: guard ok — path=$PATH_CANON home=$HOME_CANON yes=$FLAG_YES skip-plugin=$FLAG_SKIP_PLUGIN force-stop=$FLAG_FORCE_STOP"
+  confirm_wipe
 }
 
 main "$@"
