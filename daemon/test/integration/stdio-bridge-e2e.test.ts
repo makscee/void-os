@@ -386,6 +386,227 @@ describe("VOS-112 T8: stdio-bridge subprocess <-> daemon /mcp", () => {
     expect(childRow!.state).toBe("TASK_STATE_COMPLETED");
   }, 15_000);
 
+  test("AC-4: concurrent same-agent dispatches stay disjoint at the handler AND at resolve", async () => {
+    booted = await bootDaemon();
+    const { db, port } = booted;
+
+    // Seed shared agent with TWO disjoint contexts, one WORKING task each.
+    // Both bridges share VOS_AGENT; VOS_TASK_ID + VOS_CONTEXT_ID differ. The
+    // /answer route resolves via openTaskFor(chat_id), which keys off
+    // context_id → distinct contexts ⇒ distinct resolve paths. The handler
+    // must still key its _meta on env-derived task_id per call.
+    const contextA = "C-AC4-A";
+    const contextB = "C-AC4-B";
+    const taskA = "T-AC4-A";
+    const taskB = "T-AC4-B";
+    const now = Math.floor(Date.now() / 1000);
+    db.run(
+      "INSERT INTO agent_cards (agent_name, card_json, source_mtime) VALUES (?, ?, 0)",
+      ["maya", JSON.stringify({ name: "maya" })],
+    );
+    for (const [cid, tid] of [
+      [contextA, taskA],
+      [contextB, taskB],
+    ] as const) {
+      db.run(
+        `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
+           VALUES (?, 'maya', 0, ?, ?)`,
+        [cid, now, now],
+      );
+      db.run(
+        `INSERT INTO tasks (id, context_id, parent_task_id, state,
+                            cost_usd, tokens_in, tokens_out, metadata,
+                            created_at, updated_at)
+           VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 0, 0, 0, '{}', ?, ?)`,
+        [tid, cid, now, now],
+      );
+    }
+
+    function spawnBridge(taskId: string, contextId: string): ChildProcessWithoutNullStreams {
+      return spawn(
+        process.execPath,
+        [BRIDGE],
+        {
+          env: {
+            ...process.env,
+            VOS_DAEMON_BASE: `http://127.0.0.1:${port}`,
+            VOS_AGENT: "maya",
+            VOS_TASK_ID: taskId,
+            VOS_CONTEXT_ID: contextId,
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      ) as ChildProcessWithoutNullStreams;
+    }
+
+    const childA = spawnBridge(taskA, contextA);
+    const childB = spawnBridge(taskB, contextB);
+    // Stash one in the module-level `child` so afterEach kills it; track B
+    // locally and ensure cleanup at end of test (and on failure).
+    child = childA;
+    let stderrA = "";
+    let stderrB = "";
+    childA.stderr.on("data", (c) => { stderrA += c.toString("utf8"); });
+    childB.stderr.on("data", (c) => { stderrB += c.toString("utf8"); });
+
+    try {
+      // 1. Initialize both bridges.
+      writeMsg(childA, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "vos112-t9-A", version: "0.0.0" },
+        },
+      });
+      writeMsg(childB, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "vos112-t9-B", version: "0.0.0" },
+        },
+      });
+      const [initA, initB] = await Promise.all([
+        readReply(childA, 1, 5_000),
+        readReply(childB, 1, 5_000),
+      ]);
+      expect(initA.error).toBeUndefined();
+      expect(initB.error).toBeUndefined();
+
+      // 2. Fire ask_user on both bridges concurrently.
+      const toolUseIdA = "tuid-ac4-A";
+      const toolUseIdB = "tuid-ac4-B";
+      writeMsg(childA, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "ask_user",
+          arguments: { question: "ping A?" },
+          _meta: { _vos_tool_use_id: toolUseIdA },
+        },
+      });
+      writeMsg(childB, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "ask_user",
+          arguments: { question: "ping B?" },
+          _meta: { _vos_tool_use_id: toolUseIdB },
+        },
+      });
+      // Bridge reply promises — created NOW so the bCall promise observes
+      // any (incorrect) early resolve when we answer A.
+      const aCall = readReply(childA, 2, 10_000) as Promise<{
+        result?: { content: Array<{ type: string; text: string }>; isError?: boolean };
+        error?: unknown;
+      }>;
+      const bCall = readReply(childB, 2, 10_000) as Promise<{
+        result?: { content: Array<{ type: string; text: string }>; isError?: boolean };
+        error?: unknown;
+      }>;
+
+      // 3. Poll until BOTH tasks are independently parked with the right
+      //    pending tool_use_id. Proves the handler keyed off env-derived
+      //    task_id per call (not cross-contaminated).
+      const deadline = Date.now() + 5_000;
+      let parkedA: { state: string; pending: string | null } | undefined;
+      let parkedB: { state: string; pending: string | null } | undefined;
+      while (Date.now() < deadline && (!parkedA || !parkedB)) {
+        if (!parkedA) {
+          const rA = db
+            .query(
+              "SELECT state, json_extract(metadata, '$.pending_tool_use_id') AS pending FROM tasks WHERE id = ?",
+            )
+            .get(taskA) as { state: string; pending: string | null } | undefined;
+          if (rA && rA.state === "TASK_STATE_INPUT_REQUIRED" && rA.pending === toolUseIdA) {
+            parkedA = rA;
+          }
+        }
+        if (!parkedB) {
+          const rB = db
+            .query(
+              "SELECT state, json_extract(metadata, '$.pending_tool_use_id') AS pending FROM tasks WHERE id = ?",
+            )
+            .get(taskB) as { state: string; pending: string | null } | undefined;
+          if (rB && rB.state === "TASK_STATE_INPUT_REQUIRED" && rB.pending === toolUseIdB) {
+            parkedB = rB;
+          }
+        }
+        if (!parkedA || !parkedB) await new Promise((r) => setTimeout(r, 20));
+      }
+      if (!parkedA || !parkedB) {
+        const curA = db.query("SELECT state, metadata FROM tasks WHERE id = ?").get(taskA);
+        const curB = db.query("SELECT state, metadata FROM tasks WHERE id = ?").get(taskB);
+        throw new Error(
+          `concurrent park failed; A=${JSON.stringify(curA)} B=${JSON.stringify(curB)}; ` +
+            `stderrA=${stderrA.slice(0, 300)}; stderrB=${stderrB.slice(0, 300)}`,
+        );
+      }
+      // Cross-check: A's pending must NOT equal B's tool_use_id (and vice
+      // versa). This is the "handler sees right id per call" assertion.
+      expect(parkedA.pending).toBe(toolUseIdA);
+      expect(parkedB.pending).toBe(toolUseIdB);
+      expect(parkedA.pending).not.toBe(toolUseIdB);
+      expect(parkedB.pending).not.toBe(toolUseIdA);
+
+      // 4. Resolve ONLY task A. aCall must deliver "answer-A"; bCall must
+      //    remain pending (race vs 200ms timeout).
+      const ansARes = await fetch(
+        `http://127.0.0.1:${port}/chat/${contextA}/answer`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ tool_use_id: toolUseIdA, answer: "answer-A" }),
+        },
+      );
+      expect(ansARes.status).toBe(200);
+
+      const aReply = await aCall;
+      expect(aReply.error).toBeUndefined();
+      expect(aReply.result?.isError).toBeFalsy();
+      expect(aReply.result?.content?.[0]?.text).toBe("answer-A");
+
+      // bCall must NOT resolve. Race it against a 200ms timeout sentinel.
+      const sentinel = new Promise<"pending">((r) => setTimeout(() => r("pending"), 200));
+      const raced = await Promise.race([
+        bCall.then((v) => ({ kind: "resolved" as const, v })),
+        sentinel.then(() => "pending" as const),
+      ]);
+      expect(raced).toBe("pending");
+
+      // 5. Now resolve task B → bCall delivers "answer-B".
+      const ansBRes = await fetch(
+        `http://127.0.0.1:${port}/chat/${contextB}/answer`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ tool_use_id: toolUseIdB, answer: "answer-B" }),
+        },
+      );
+      expect(ansBRes.status).toBe(200);
+
+      const bReply = await bCall;
+      expect(bReply.error).toBeUndefined();
+      expect(bReply.result?.isError).toBeFalsy();
+      expect(bReply.result?.content?.[0]?.text).toBe("answer-B");
+    } finally {
+      // 6. Kill both bridges. childA is also cleaned by afterEach via
+      //    module-level `child`; childB needs explicit cleanup.
+      try {
+        childB.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    }
+  }, 20_000);
+
   test("AC-6: missing required env -> exit 1 with BRIDGE_CONFIG_FAIL on stdout", async () => {
     // Strip the required env so validateBridgeEnv fails.
     const env: Record<string, string> = {};
