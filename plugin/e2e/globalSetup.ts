@@ -205,10 +205,34 @@ export async function setupE2E(opts: SetupE2EOpts = {}) {
     throw new Error(`plugin build failed: exit ${build.status}`);
   }
 
-  // Write resolved data.json.
+  // Write resolved data.json — merge with any existing fields so prior-run
+  // settings (e.g. chatId minted by a previous spec) survive.
+  //
+  // VOS-120 T9-fix-C: also seed voidOsBinaryPath at the worktree's bin/
+  // location. Electron's renderer drops PATH, so the daemon-lifecycle
+  // resolveBinary login-shell probe / well-known dir scan won't find the
+  // binary in this isolated harness. Pinning it via settings.override is
+  // the only deterministic path. The path is resolved from HERE upward so
+  // the harness works from any worktree.
+  const dataJsonPath = path.join(PLUGIN_OUT, "data.json");
+  let existingData: Record<string, unknown> = {};
+  try {
+    existingData = JSON.parse(fs.readFileSync(dataJsonPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    // first run or unreadable — start fresh
+  }
+  const voidOsBinaryPath = path.resolve(PLUGIN_ROOT, "..", "bin", "void-os");
   fs.writeFileSync(
-    path.join(PLUGIN_OUT, "data.json"),
-    JSON.stringify({ daemonUrl: `http://127.0.0.1:${port}` }, null, 2),
+    dataJsonPath,
+    JSON.stringify(
+      {
+        ...existingData,
+        daemonUrl: `http://127.0.0.1:${port}`,
+        voidOsBinaryPath,
+      },
+      null,
+      2,
+    ),
   );
 
   // Spawn daemon.
