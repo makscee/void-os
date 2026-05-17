@@ -89,7 +89,20 @@ export async function forwardToDaemon(
       },
     };
   }
-  return (await res.json()) as JsonRpcMessage;
+  try {
+    return (await res.json()) as JsonRpcMessage;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      jsonrpc: "2.0",
+      id: msg.id,
+      error: {
+        code: -32603,
+        message: "bridge upstream parse failed",
+        data: { kind: "BRIDGE_UPSTREAM_FAIL", parseError: message },
+      },
+    };
+  }
 }
 
 // VOS-112 T8 fix: the MCP SDK's StdioServerTransport exposes `onmessage`
@@ -114,9 +127,22 @@ export async function runBridge(
 ): Promise<void> {
   transport.onmessage = (msg) => {
     void (async () => {
-      const stamped = stampMeta(msg, cfg);
-      const reply = await forwardToDaemon(stamped, cfg, fetchFn);
-      await transport.send(reply);
+      try {
+        const stamped = stampMeta(msg, cfg);
+        const reply = await forwardToDaemon(stamped, cfg, fetchFn);
+        await transport.send(reply);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await transport.send({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: {
+            code: -32603,
+            message: "bridge dispatch failed",
+            data: { kind: "BRIDGE_DISPATCH_FAIL", message },
+          },
+        }).catch(() => { /* transport gone; nothing to do */ });
+      }
     })();
   };
   transport.onclose = () => { /* SDK transport will end the process via main(). */ };
