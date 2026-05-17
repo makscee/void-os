@@ -1,0 +1,21 @@
+{
+  "name": "@voidos/protocol",
+  "version": "0.0.1",
+  "type": "module",
+  "module": "src/index.ts",
+  "main": "src/index.ts",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
