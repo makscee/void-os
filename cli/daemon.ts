@@ -2,8 +2,39 @@ import { spawn } from "node:child_process";
 import { openSync, writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "./lib/args.ts";
-import { ensureStateDir, pidPath, portPath, logPath, tokenPath } from "./lib/state-dir.ts";
+import {
+  ensureStateDir,
+  pidPath,
+  portPath,
+  logPath,
+  tokenPath,
+  readPidJson,
+  writePidJson,
+  removePidJson,
+} from "./lib/state-dir.ts";
 import { formatJson } from "./lib/output.ts";
+import pkg from "../daemon/package.json" with { type: "json" };
+
+const PACKAGE_VERSION: string = (pkg as { version?: string }).version ?? "0.0.0";
+
+// VOS-120 T2: structured result for vault-aware start. CLI translates to
+// stdout/stderr + exit code; tests inspect the structured value directly.
+export type StartOpts = {
+  vault: string;
+  port?: number;
+  prefix?: string;
+  dryRun?: boolean;
+};
+export type StartResult =
+  | { status: "already-running"; pid: number; port: number }
+  | { status: "vault-mismatch"; activeVault: string; pid: number; port: number }
+  | { status: "would-spawn" }
+  | { status: "spawned"; pid: number; port: number; vault: string; version?: string }
+  | { status: "spawn-failed"; reason: string };
+
+export function isPidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
 
 const DAEMON_USAGE = `usage: void-os daemon <subcommand>
 
@@ -24,7 +55,7 @@ export default async function daemon(args: string[], ctx: { prefix: string }): P
     return sub ? 0 : 2;
   }
   switch (sub) {
-    case "start":  return cmdStart(rest, ctx);
+    case "start":  return cmdStartCli(rest, ctx);
     case "stop":   return cmdStop(rest);
     case "status": return cmdStatus(rest);
     case "logs":   return cmdLogs(rest);
@@ -35,65 +66,129 @@ export default async function daemon(args: string[], ctx: { prefix: string }): P
   }
 }
 
-async function cmdStart(args: string[], ctx: { prefix: string }): Promise<number> {
+// CLI-side wrapper: parses flags, calls cmdStart, prints + returns exit code.
+// Kept separate from cmdStart so tests can drive the structured API without
+// touching process.exit / console.
+async function cmdStartCli(args: string[], ctx: { prefix: string }): Promise<number> {
   const parsed = parseArgs(args, { flags: [], values: ["port", "vault"] });
   if (parsed.help) { console.log(DAEMON_USAGE); return 0; }
 
   const port = Number(parsed.values.port ?? process.env.VOID_OS_PORT ?? "7777");
-  const vault = parsed.values.vault ?? process.env.VOID_OS_VAULT_ROOT;
+  const vaultArg = parsed.values.vault ?? process.env.VOID_OS_VAULT_ROOT;
+  const resolvedVault = vaultArg ?? join(process.env.HOME ?? "", "Library/Application Support/void-os/vault");
 
-  ensureStateDir();
-  // Already running?
-  if (existsSync(pidPath())) {
-    const oldPid = parseInt(readFileSync(pidPath(), "utf8"), 10);
-    if (Number.isFinite(oldPid) && isAlive(oldPid)) {
-      const oldPort = existsSync(portPath()) ? readFileSync(portPath(), "utf8").trim() : "?";
-      console.log(`already running (pid=${oldPid} port=${oldPort})`);
+  const result = await cmdStart({ vault: resolvedVault, port, prefix: ctx.prefix });
+  switch (result.status) {
+    case "already-running":
+      console.log(`already running (pid=${result.pid} port=${result.port})`);
       return 0;
+    case "vault-mismatch":
+      console.error(
+        `void-os daemon already serving ${result.activeVault} (pid=${result.pid} port=${result.port}); stop it first`,
+      );
+      return 1;
+    case "spawned":
+      console.log(
+        `void-os daemon ready (pid=${result.pid} port=${result.port} vault=${result.vault} version=${result.version ?? "?"})`,
+      );
+      return 0;
+    case "spawn-failed":
+      console.error(`void-os daemon failed to start (${result.reason})`);
+      printLogTail(20);
+      return 1;
+    case "would-spawn":
+      // Only reachable via dryRun, which the CLI never sets. Defensive no-op.
+      return 0;
+  }
+}
+
+// VOS-120 T2: vault-aware start logic. Exported for unit tests + future plugin
+// callers (e.g. ensureDaemon). Reads daemon.json; if a daemon is alive serving
+// the same vault → no-op; different vault → refuse; dead pid → treat as stale
+// and proceed. dryRun short-circuits before spawn (test-only hook).
+export async function cmdStart(opts: StartOpts): Promise<StartResult> {
+  ensureStateDir();
+
+  const existing = readPidJson();
+  if (existing) {
+    if (isPidAlive(existing.pid)) {
+      if (existing.vault_root === opts.vault) {
+        return { status: "already-running", pid: existing.pid, port: existing.port };
+      }
+      return {
+        status: "vault-mismatch",
+        activeVault: existing.vault_root,
+        pid: existing.pid,
+        port: existing.port,
+      };
+    }
+    removePidJson();
+  }
+  // Legacy compat: also fall back to daemon.pid if daemon.json was missing
+  // (warm install from pre-VOS-120 binary). Same vault-awareness is impossible
+  // here (the legacy file doesn't record vault), so we treat any live legacy
+  // pid as "already-running" without vault check.
+  if (!existing && existsSync(pidPath())) {
+    const oldPid = parseInt(readFileSync(pidPath(), "utf8"), 10);
+    if (Number.isFinite(oldPid) && isPidAlive(oldPid)) {
+      const oldPort = existsSync(portPath())
+        ? Number(readFileSync(portPath(), "utf8").trim()) || 0
+        : 0;
+      return { status: "already-running", pid: oldPid, port: oldPort };
     }
   }
 
-  // Resolve vault, mkdir it before spawn — daemon exits 2 if missing.
-  const resolvedVault = vault ?? join(process.env.HOME ?? "", "Library/Application Support/void-os/vault");
-  mkdirSync(resolvedVault, { recursive: true });
+  if (opts.dryRun) return { status: "would-spawn" };
 
-  // Open log file (append).
+  const port = opts.port ?? Number(process.env.VOID_OS_PORT ?? "7777");
+  const prefix = opts.prefix;
+  if (!prefix) {
+    return { status: "spawn-failed", reason: "missing prefix (no entry path)" };
+  }
+
+  // mkdir vault before spawn — daemon exits 2 if missing.
+  mkdirSync(opts.vault, { recursive: true });
+
   const logFd = openSync(logPath(), "a");
-  const entry = join(ctx.prefix, "daemon/src/index.ts");
+  const entry = join(prefix, "daemon/src/index.ts");
   const child = spawn("bun", ["run", entry], {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     env: {
       ...process.env,
       VOID_OS_PORT: String(port),
-      VOID_OS_VAULT_ROOT: resolvedVault,
+      VOID_OS_VAULT_ROOT: opts.vault,
     },
   });
 
   if (!child.pid) {
-    console.error(`spawn failed`);
-    return 1;
+    return { status: "spawn-failed", reason: "spawn returned no pid" };
   }
+  // Legacy compat writers (kept one release cycle).
   writeFileSync(pidPath(), String(child.pid));
   writeFileSync(portPath(), String(port));
 
   const ready = await raceHealth(child, port, 10000);
   if (ready === "ok") {
-    // Detach now that we know the daemon is healthy — keeps it alive after
-    // this CLI process exits. Deferred until after raceHealth so that
-    // unref() never masks exit-event delivery during the readiness poll.
+    // Detach after raceHealth resolves — unref() during the poll can mask
+    // exit-event delivery.
     child.unref();
     const h = ready_health ?? {};
-    console.log(`void-os daemon ready (pid=${child.pid} port=${port} vault=${resolvedVault} version=${h.version ?? "?"})`);
-    return 0;
+    writePidJson({
+      pid: child.pid,
+      port,
+      vault_root: opts.vault,
+      version: PACKAGE_VERSION,
+      started_at: new Date().toISOString(),
+    });
+    return { status: "spawned", pid: child.pid, port, vault: opts.vault, version: h.version };
   }
-  // Failure path: ensure child dead, clean files, print log tail.
+  // Failure: ensure child dead, clean files.
   try { process.kill(child.pid, "SIGKILL"); } catch {}
   if (existsSync(pidPath())) unlinkSync(pidPath());
   if (existsSync(portPath())) unlinkSync(portPath());
-  console.error(`void-os daemon failed to start (${ready})`);
-  printLogTail(20);
-  return 1;
+  removePidJson();
+  return { status: "spawn-failed", reason: ready };
 }
 
 // Tiny mutable carrier so cmdStart can read the parsed health body.
@@ -127,9 +222,9 @@ function tokenOrEmpty(): string {
 
 function sleep(ms: number): Promise<void> { return new Promise((res) => setTimeout(res, ms)); }
 
-function isAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
+// Local alias retained for readability in stop/status — same impl as the
+// exported isPidAlive (kept to avoid call-site churn in this file).
+const isAlive = isPidAlive;
 
 function printLogTail(n: number): void {
   try {
@@ -192,6 +287,7 @@ async function cmdStop(args: string[]): Promise<number> {
 function cleanupFiles(): void {
   if (existsSync(pidPath())) unlinkSync(pidPath());
   if (existsSync(portPath())) unlinkSync(portPath());
+  removePidJson();
 }
 
 async function cmdStatus(args: string[]): Promise<number> {
