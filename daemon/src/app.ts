@@ -68,12 +68,26 @@ export interface BuildAppDeps {
    * (`daemon/src/index.ts`) must explicitly pass `runBootProbe: true`.
    */
   runBootProbe?: boolean;
+  // VOS-116 T5: shared bearer token + boot timestamp. Optional in deps so
+  // tests can omit them; defaults are applied inside buildApp. Production
+  // entrypoint (daemon/src/index.ts) always passes both.
+  token?: string;
+  bootTime?: number;
 }
 
 export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   const app = new Hono();
+  const token = deps.token ?? "test-token";
+  const bootTime = deps.bootTime ?? Date.now();
   app.get("/", (c) => c.text(`void-os daemon v${VERSION}\n`));
-  mountApi(app, { version: VERSION, db: deps.db, tz: resolveTz(process.env) });
+  mountApi(app, {
+    version: VERSION,
+    db: deps.db,
+    tz: resolveTz(process.env),
+    vaultRoot: deps.vaultRoot,
+    token,
+    bootTime,
+  });
 
   const emit = deps.emit ?? broadcast;
 

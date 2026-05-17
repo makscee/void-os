@@ -11,6 +11,10 @@ import * as fs from "node:fs";
 import { buildApp, VERSION, wsHandler } from "./app.ts";
 import { openDatabase } from "./adapters/sqlite/index.ts";
 import { bootRecovery } from "./boot.ts";
+import { ensureToken } from "./auth/token.ts";
+
+const TOKEN = ensureToken();
+const BOOT_TIME = Date.now();
 import { reconcileOrphans } from "./chat/orchestrator.ts";
 import { scanVaultAgents } from "./agents/scan.ts";
 import { makeAgentRepo } from "./agents/repo.ts";
@@ -91,6 +95,8 @@ const app = await buildApp({
   db,
   vaultRoot,
   runBootProbe: true,
+  token: TOKEN,
+  bootTime: BOOT_TIME,
   // Pin daemonBase to the actual listening port. Without this app.ts falls
   // back to process.env.PORT ?? 17777, which silently inherits a shell PORT
   // var (claudev's proxy, dev tools, etc.) and bakes a wrong URL into every
