@@ -49,7 +49,14 @@ export function mountVault(app: Hono, deps: Deps): void {
   app.get("/vault/list", (c) => {
     const rel = c.req.query("path") ?? "";
     const depthRaw = c.req.query("depth");
-    const depth = depthRaw ? Math.max(1, parseInt(depthRaw, 10) || 1) : Number.POSITIVE_INFINITY;
+    // Default depth = 1 per docs/api.md. Cap at 10 (silently clamp).
+    // Note: the v1 response only ever emits top-level entries regardless of
+    // depth, so this is effectively a forward-compat parameter — but we still
+    // bound it so the contract is honored if recursion is reintroduced.
+    let depth = depthRaw ? (parseInt(depthRaw, 10) || 1) : 1;
+    if (depth < 1) depth = 1;
+    if (depth > 10) depth = 10;
+    void depth; // currently unused; kept for clarity of contract.
 
     let abs: string;
     if (rel === "" || rel === ".") {
@@ -62,25 +69,24 @@ export function mountVault(app: Hono, deps: Deps): void {
 
     if (!fs.existsSync(abs)) return c.json({ error: "E_NOT_FOUND" }, 404);
 
-    const entries: Array<{name: string; type: "file"|"dir"; size: number; mtime: number}> = [];
     const stat = fs.statSync(abs);
     if (!stat.isDirectory()) {
       return c.json({ error: "E_NOT_FOUND" }, 404);
     }
 
-    function walk(dir: string, remaining: number) {
-      for (const name of fs.readdirSync(dir).sort()) {
-        if (name.startsWith(".")) continue;  // excludes .obsidian, .git, dotfiles
-        const child = `${dir}/${name}`;
-        const s = fs.statSync(child);
-        const type: "file"|"dir" = s.isDirectory() ? "dir" : "file";
-        if (dir === abs) {
-          entries.push({ name, type, size: s.size, mtime: Math.floor(s.mtimeMs / 1000) });
-        }
-        if (type === "dir" && remaining > 1) walk(child, remaining - 1);
-      }
+    const ENTRY_CAP = 10000;
+    const entries: Array<{name: string; type: "file"|"dir"; size: number; mtime: number}> = [];
+    const names = fs.readdirSync(abs).sort();
+    if (names.length > ENTRY_CAP) {
+      return c.json({ error: "E_TOO_LARGE" }, 413);
     }
-    walk(abs, depth);
+    for (const name of names) {
+      if (name.startsWith(".")) continue;  // excludes .obsidian, .git, dotfiles
+      const child = `${abs}/${name}`;
+      const s = fs.statSync(child);
+      const type: "file"|"dir" = s.isDirectory() ? "dir" : "file";
+      entries.push({ name, type, size: s.size, mtime: Math.floor(s.mtimeMs / 1000) });
+    }
 
     return c.json({ path: abs, entries });
   });
@@ -101,6 +107,18 @@ export function mountVault(app: Hono, deps: Deps): void {
     }
 
     if (isExcluded(parsed.path)) return c.json({ error: "E_EXCLUDED" }, 403);
+
+    // Defense-in-depth: if the literal target path is itself a symlink whose
+    // realpath escapes the vault, reject before resolveVaultPath gets a chance
+    // to follow it. This gives a clearer error code (E_SYMLINK_ESCAPE) than
+    // the generic E_OUT_OF_SCOPE that resolveVaultPath would emit.
+    const literalAbs = path.resolve(vaultRoot, parsed.path);
+    if (fs.existsSync(literalAbs) && fs.lstatSync(literalAbs).isSymbolicLink()) {
+      const realTarget = fs.realpathSync(literalAbs);
+      if (realTarget !== vaultRoot && !realTarget.startsWith(vaultRoot + path.sep)) {
+        return c.json({ error: "E_SYMLINK_ESCAPE" }, 403);
+      }
+    }
 
     let abs: string;
     try { abs = resolveVaultPath(parsed.path, vaultRoot); }

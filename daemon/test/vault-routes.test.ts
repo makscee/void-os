@@ -204,3 +204,49 @@ test("GET /vault/list — traversal → 403", async () => {
   const res = await ctx.app.request("/vault/list?path=../..", { headers: auth });
   expect(res.status).toBe(403);
 });
+
+test("PUT /vault/file — final-component symlink to outside vault rejected", async () => {
+  // Create a real file outside the vault, then symlink inside vault pointing at it.
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "outside-"));
+  const target = path.join(outside, "target.md");
+  fs.writeFileSync(target, "original");
+  fs.symlinkSync(target, path.join(ctx.vaultRoot, "redirect.md"));
+  try {
+    const res = await ctx.app.request("/vault/file", {
+      method: "PUT",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ path: "redirect.md", content: "pwned" }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json() as any).error).toBe("E_SYMLINK_ESCAPE");
+    // External target must be untouched.
+    expect(fs.readFileSync(target, "utf8")).toBe("original");
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("GET /vault/list — default depth (no query) returns only top-level entries", async () => {
+  fs.writeFileSync(path.join(ctx.vaultRoot, "a.md"), "a");
+  fs.mkdirSync(path.join(ctx.vaultRoot, "sub"));
+  fs.writeFileSync(path.join(ctx.vaultRoot, "sub", "nested.md"), "n");
+  const res = await ctx.app.request("/vault/list", { headers: auth });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as any;
+  const names = (body.entries as any[]).map(e => e.name).sort();
+  // Top-level only — nested.md must NOT appear.
+  expect(names).toEqual(["a.md", "sub"]);
+});
+
+test("GET /vault/list — subdir entries listed as type:dir, children not included", async () => {
+  fs.mkdirSync(path.join(ctx.vaultRoot, "d"));
+  fs.writeFileSync(path.join(ctx.vaultRoot, "d", "inner.md"), "i");
+  const res = await ctx.app.request("/vault/list", { headers: auth });
+  const body = (await res.json()) as any;
+  const names = (body.entries as any[]).map((e: any) => e.name);
+  expect(names).toEqual(["d"]);
+  const d = (body.entries as any[]).find((e: any) => e.name === "d");
+  expect(d.type).toBe("dir");
+  // children of d must not be flattened into the response.
+  expect(names).not.toContain("inner.md");
+});
