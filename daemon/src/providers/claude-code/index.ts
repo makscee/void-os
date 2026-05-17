@@ -12,7 +12,11 @@ import { parseUsageFromAssistantEvent } from "./usage-extract.js";
 import { TraceWriter } from "../../trace/writer";
 import type { AgentDefn, PermissionEngine } from "../../permissions/engine.js";
 import { resolveSystemDeny } from "../../permissions/engine.js";
-import { buildSpawnSettings } from "./spawn-settings.ts";
+import {
+  buildSpawnSettings,
+  ALLOWED_TOOLS,
+  SETTING_SOURCES_ARGS,
+} from "./spawn-settings.ts";
 import { readAgentPersonaBody } from "./persona.ts";
 
 export interface CcSpawnRequest {
@@ -270,6 +274,9 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         "-p", req.prompt,
         "--output-format", "stream-json",
         "--verbose",
+        "--strict-mcp-config",
+        ...SETTING_SOURCES_ARGS,
+        "--tools", ALLOWED_TOOLS.join(","),
         "--settings", settingsPath,
         "--mcp-config", mcpConfigPath,
         ...(persona.body ? ["--append-system-prompt", persona.body] : []),

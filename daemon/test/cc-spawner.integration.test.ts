@@ -260,6 +260,40 @@ describe("CC spawner (fake claudev)", () => {
     }
   });
 
+  test("VOS-111: argv includes --strict-mcp-config, --setting-sources, --tools <allowlist>", async () => {
+    const { dir, db, bus, tracesDir } = setup();
+    const spawner = createCcSpawner({ bus, db, tracesDir, binary: FAKE, ...stubDeps() });
+    let proc: Awaited<ReturnType<typeof spawner.spawn>> | undefined;
+
+    try {
+      proc = await spawner.spawn({
+        prompt: "--scenario happy",
+        agent: "test",
+        cwd: dir,
+      });
+      await proc.wait();
+
+      const traceRow = db.prepare(
+        "SELECT trace_path FROM runs WHERE id=?",
+      ).get(proc!.runId) as { trace_path: string };
+      const { records } = readTrace(traceRow.trace_path);
+      const argvLine = records
+        .map((r) => JSON.stringify(r))
+        .find((s) => s.includes("fake-claudev argv:"));
+      expect(argvLine).toBeDefined();
+
+      expect(argvLine!).toContain("--strict-mcp-config");
+      expect(argvLine!).toContain("--setting-sources");
+      expect(argvLine!).toContain("project");
+      expect(argvLine!).toContain("--tools");
+      expect(argvLine!).toContain("Bash,Edit,MultiEdit,Read,Write");
+      expect(argvLine!).toContain("mcp__void-os__vault_read");
+    } finally {
+      if (proc) { try { await proc.kill(); } catch { /* already dead */ } }
+      teardown(dir, db);
+    }
+  });
+
   // VOS-80: fast-cancel must terminate the subprocess quickly. With the
   // default SIGTERM-5s-SIGKILL path, a CC subprocess that traps SIGTERM
   // can keep streaming for up to 5s — defeating user cancel. The
