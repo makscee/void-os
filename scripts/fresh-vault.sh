@@ -275,6 +275,10 @@ print_next_steps() {
 # --- main ----------------------------------------------------------------
 main() {
   parse_args "$@"
+  command -v python3 >/dev/null 2>&1 || {
+    echo "fresh-vault: python3 required for daemon status parsing — install python3 or run inside a shell where 'python3' is on PATH" >&2
+    exit 2
+  }
   local home_canon path_canon
   home_canon="$(canon_home)"
   path_canon="$(canon_path "$PATH_ARG")"
