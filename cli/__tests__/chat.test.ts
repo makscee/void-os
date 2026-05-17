@@ -289,3 +289,28 @@ test("unknown flag exits 2", async () => {
   expect(code).toBe(2);
   expect(err.chunks.join("")).toContain("unknown flag");
 });
+
+test("missing daemon token surfaces NoTokenError message and exits 3", async () => {
+  // Knock out env-based base/token and re-point HOME so resolveToken()
+  // walks the FS path and throws NoTokenError (no ~/.void-os/token in
+  // the swapped-in HOME).
+  const realHome = process.env.HOME;
+  delete process.env.VOID_OS_TOKEN;
+  delete process.env.VOID_OS_BASE;
+  process.env.HOME = "/tmp/void-os-test-no-token-" + Date.now();
+  try {
+    const err = collectStream();
+    const code = await chat(["stub"], {
+      stdin: withStdin([]),
+      stdout: collectStream().stream,
+      stderr: err.stream,
+    });
+    expect(code).toBe(3);
+    // Must surface the actual NoTokenError message, not the generic
+    // "daemon not running" fallback.
+    expect(err.chunks.join("")).toContain("no daemon token");
+  } finally {
+    if (realHome !== undefined) process.env.HOME = realHome;
+    else delete process.env.HOME;
+  }
+});

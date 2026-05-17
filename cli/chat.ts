@@ -140,7 +140,14 @@ export default async function chat(args: string[], _opts: { prefix?: string } = 
     client = buildClient();
     await client.health();
   } catch (e) {
-    if (e instanceof UnreachableError || e instanceof NoTokenError) {
+    if (e instanceof NoTokenError) {
+      // Surface the actual NoTokenError message (which points to the
+      // missing token + the `void-os daemon start` hint) rather than the
+      // generic "daemon not running" fallback — they're distinct failures.
+      stderr.write(`${e.message}\n`);
+      return 3;
+    }
+    if (e instanceof UnreachableError) {
       stderr.write("daemon not running; try `void-os daemon start`\n");
       return 3;
     }
