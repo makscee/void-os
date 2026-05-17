@@ -169,6 +169,42 @@ describe("buildSpawnSettings", () => {
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
     expect(settings.additionalDirectories).toEqual([]);
   });
+
+  test("AC-5: mcp.json command+args are byte-equal across two consecutive spawns of the same agent (only env differs)", () => {
+    const tmp1 = mkdtempSync(join(tmpdir(), "vos112-cache-1-"));
+    const tmp2 = mkdtempSync(join(tmpdir(), "vos112-cache-2-"));
+    const baseArgs = {
+      agentName: "maya",
+      scopes: { readPaths: [], writePaths: [] },
+      systemDeny: [],
+      vaultRoot: "/vault",
+      daemonBase: "http://127.0.0.1:8729",
+      hookScriptPath: "/hook.ts",
+    };
+    const a = buildSpawnSettings({
+      ...baseArgs,
+      runId:     "R-1",
+      taskId:    "T-1",
+      contextId: "C-1",
+      settingsDir: tmp1,
+    });
+    const b = buildSpawnSettings({
+      ...baseArgs,
+      runId:     "R-2",
+      taskId:    "T-2",
+      contextId: "C-2",
+      settingsDir: tmp2,
+    });
+    const mcpA = JSON.parse(readFileSync(a.mcpConfigPath, "utf8")) as {
+      mcpServers: { "void-os": { command: string; args: string[]; env: Record<string, string> } };
+    };
+    const mcpB = JSON.parse(readFileSync(b.mcpConfigPath, "utf8")) as {
+      mcpServers: { "void-os": { command: string; args: string[]; env: Record<string, string> } };
+    };
+    expect(mcpA.mcpServers["void-os"].command).toBe(mcpB.mcpServers["void-os"].command);
+    expect(mcpA.mcpServers["void-os"].args).toEqual(mcpB.mcpServers["void-os"].args);
+    expect(mcpA.mcpServers["void-os"].env.VOS_TASK_ID).not.toBe(mcpB.mcpServers["void-os"].env.VOS_TASK_ID);
+  });
 });
 
 describe("VOS-111: tool allowlist + name transform", () => {
