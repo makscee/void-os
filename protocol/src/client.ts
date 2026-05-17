@@ -1,0 +1,136 @@
+import { HealthResp } from "./health.ts";
+import { AgentsListResp } from "./agents.ts";
+import { z } from "zod";
+
+// Loose envelopes — daemon owns the source of truth. Tighten if/when needed.
+const VaultFileResp = z.object({ path: z.string(), content: z.string(), sha256: z.string().optional(), size: z.number().optional() }).passthrough();
+// Verified against daemon/src/api/vault.ts PUT /vault/file — returns {path, content, size, mtime}.
+const VaultWriteResp = z.object({ path: z.string(), size: z.number().nonnegative(), mtime: z.number() }).passthrough();
+// Verified against daemon/src/api/vault.ts GET /vault/list — returns {path, entries:[{name,type,size,mtime}]}.
+const VaultListEntry = z.object({
+  name: z.string(),
+  type: z.enum(["file", "dir"]),
+  size: z.number().nonnegative(),
+  mtime: z.number(),
+});
+const VaultListResp = z.object({ path: z.string(), entries: z.array(VaultListEntry) }).passthrough();
+export type VaultFileResp = z.infer<typeof VaultFileResp>;
+export type VaultWriteResp = z.infer<typeof VaultWriteResp>;
+export type VaultListResp = z.infer<typeof VaultListResp>;
+
+export class ApiError extends Error {
+  readonly name = "ApiError" as const;
+  constructor(public readonly code: string, message: string, public readonly status: number) {
+    super(message);
+  }
+}
+export class ServerError extends Error {
+  readonly name = "ServerError" as const;
+  constructor(public readonly status: number, public readonly body: string) {
+    super(`server error ${status}: ${body.slice(0, 200)}`);
+  }
+}
+export class UnreachableError extends Error {
+  readonly name = "UnreachableError" as const;
+  constructor(public readonly cause: unknown) {
+    super(`daemon unreachable: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
+}
+
+export interface ClientOpts {
+  base: string;
+  token: string;
+  fetch?: typeof fetch;
+}
+
+export interface Client {
+  health(): Promise<HealthResp>;
+  agents: { list(): Promise<AgentsListResp> };
+  vault: {
+    read(path: string): Promise<VaultFileResp>;
+    write(path: string, content: string): Promise<VaultWriteResp>;
+    list(path?: string, opts?: { depth?: number }): Promise<VaultListResp>;
+  };
+  chat: { stream(chatId: string): AsyncIterable<unknown> };
+}
+
+export function makeClient(opts: ClientOpts): Client {
+  const f = opts.fetch ?? fetch;
+  const base = opts.base.replace(/\/$/, "");
+
+  async function call<T extends z.ZodTypeAny>(
+    pathname: string,
+    init: RequestInit,
+    schema: T,
+  ): Promise<z.infer<T>> {
+    const url = `${base}${pathname}`;
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${opts.token}`);
+    if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+    let res: Response;
+    try {
+      res = await f(url, { ...init, headers });
+    } catch (e) {
+      throw new UnreachableError(e);
+    }
+    if (res.status >= 500) {
+      throw new ServerError(res.status, await res.text());
+    }
+    if (res.status >= 400) {
+      let body: any = null;
+      try { body = await res.json(); } catch { body = { error: "E_UNKNOWN", message: await res.text() }; }
+      throw new ApiError(String(body.error ?? "E_UNKNOWN"), String(body.message ?? ""), res.status);
+    }
+    return schema.parse(await res.json());
+  }
+
+  async function* sseFrames(pathname: string): AsyncIterable<unknown> {
+    const url = `${base}${pathname}`;
+    const headers = new Headers({ Authorization: `Bearer ${opts.token}` });
+    let res: Response;
+    try {
+      res = await f(url, { headers });
+    } catch (e) {
+      throw new UnreachableError(e);
+    }
+    if (!res.ok || !res.body) {
+      throw new ApiError("E_STREAM", `stream failed (status ${res.status})`, res.status);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
+        if (!dataLine) continue;
+        const json = dataLine.slice(5).trim();
+        if (!json) continue;
+        try { yield JSON.parse(json); } catch { /* skip malformed */ }
+      }
+    }
+  }
+
+  return {
+    health: () => call("/health", { method: "GET" }, HealthResp),
+    agents: { list: () => call("/agents", { method: "GET" }, AgentsListResp) },
+    vault: {
+      read: (path) => call(`/vault/file?path=${encodeURIComponent(path)}`, { method: "GET" }, VaultFileResp),
+      write: (path, content) =>
+        call(`/vault/file?path=${encodeURIComponent(path)}`, { method: "PUT", body: JSON.stringify({ content }) }, VaultWriteResp),
+      list: (path, lopts) => {
+        const params = new URLSearchParams();
+        if (path) params.set("path", path);
+        if (lopts?.depth != null) params.set("depth", String(lopts.depth));
+        const qs = params.toString();
+        return call(`/vault/list${qs ? `?${qs}` : ""}`, { method: "GET" }, VaultListResp);
+      },
+    },
+    chat: { stream: (chatId) => sseFrames(`/chat/${encodeURIComponent(chatId)}/stream`) },
+  };
+}
