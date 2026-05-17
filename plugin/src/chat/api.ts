@@ -43,6 +43,12 @@ export interface ChatSummary {
   cost_usd: number;
   /** True iff any task in this chat is in TASK_STATE_INPUT_REQUIRED. */
   input_required: boolean;
+  /** Latest run's context token usage (sum of input/output/cache splits). null until set. */
+  context_tokens: number | null;
+  context_input_tokens: number | null;
+  context_output_tokens: number | null;
+  context_cache_create_tokens: number | null;
+  context_cache_read_tokens: number | null;
 }
 
 export interface ChatApi {
@@ -151,6 +157,10 @@ function normalizeReplay(raw: unknown): ReplayMessage[] {
   return out;
 }
 
+function asNonNegIntOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : null;
+}
+
 function normalizeChats(raw: unknown): ChatSummary[] {
   if (!Array.isArray(raw)) return [];
   const out: ChatSummary[] = [];
@@ -171,6 +181,11 @@ function normalizeChats(raw: unknown): ChatSummary[] {
           ? o.cost_usd
           : 0,
       input_required: o.input_required === true,
+      context_tokens: asNonNegIntOrNull(o.context_tokens),
+      context_input_tokens: asNonNegIntOrNull(o.context_input_tokens),
+      context_output_tokens: asNonNegIntOrNull(o.context_output_tokens),
+      context_cache_create_tokens: asNonNegIntOrNull(o.context_cache_create_tokens),
+      context_cache_read_tokens: asNonNegIntOrNull(o.context_cache_read_tokens),
     });
   }
   return out;

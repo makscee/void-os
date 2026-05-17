@@ -94,6 +94,8 @@ describe("makeChatApi", () => {
     expect(rows[0]).toEqual({
       id: "c1", agent: "maya", title: null, last_msg: "hi", updated_at: 100, last_run_status: "done",
       cost_usd: 0, input_required: false,
+      context_tokens: null, context_input_tokens: null, context_output_tokens: null,
+      context_cache_create_tokens: null, context_cache_read_tokens: null,
     });
     expect(rows[1].title).toBe("Trip");
     expect(rows[1].last_run_status).toBeNull();
@@ -296,5 +298,50 @@ describe("makeChatApi", () => {
     const rows = await api.listChats();
     expect(rows[0].cost_usd).toBe(0);            // non-number → 0
     expect(rows[0].input_required).toBe(false);  // non-boolean → false
+  });
+
+  test("normalizeChats threads context_tokens + splits, defaults missing to null", async () => {
+    const fakeFetchImpl = async () => new Response(JSON.stringify([
+      {
+        id: "a", agent: "claude-code", title: null, last_msg: null,
+        updated_at: 1, last_run_status: null, cost_usd: 0, input_required: false,
+        context_tokens: 12345, context_input_tokens: 100, context_output_tokens: 50,
+        context_cache_create_tokens: 195, context_cache_read_tokens: 12000,
+      },
+      {
+        id: "b", agent: "claude-code", title: null, last_msg: null,
+        updated_at: 2, last_run_status: null, cost_usd: 0, input_required: false,
+      },
+    ]), { status: 200 });
+    const api = makeChatApi("http://x", fakeFetchImpl as unknown as typeof fetch);
+    const rows = await api.listChats();
+    expect(rows[0].context_tokens).toBe(12345);
+    expect(rows[0].context_input_tokens).toBe(100);
+    expect(rows[0].context_output_tokens).toBe(50);
+    expect(rows[0].context_cache_create_tokens).toBe(195);
+    expect(rows[0].context_cache_read_tokens).toBe(12000);
+    expect(rows[1].context_tokens).toBeNull();
+    expect(rows[1].context_input_tokens).toBeNull();
+    expect(rows[1].context_output_tokens).toBeNull();
+    expect(rows[1].context_cache_create_tokens).toBeNull();
+    expect(rows[1].context_cache_read_tokens).toBeNull();
+  });
+
+  test("normalizeChats coerces non-numeric/negative context_tokens to null and truncates floats", async () => {
+    const fakeFetchImpl = async () => new Response(JSON.stringify([
+      {
+        id: "c", agent: "claude-code", title: null, last_msg: null,
+        updated_at: 1, last_run_status: null, cost_usd: 0, input_required: false,
+        context_tokens: "12345", context_input_tokens: -1, context_output_tokens: 50.9,
+        context_cache_create_tokens: null, context_cache_read_tokens: 0,
+      },
+    ]), { status: 200 });
+    const api = makeChatApi("http://x", fakeFetchImpl as unknown as typeof fetch);
+    const rows = await api.listChats();
+    expect(rows[0].context_tokens).toBeNull();             // string → null
+    expect(rows[0].context_input_tokens).toBeNull();       // negative → null
+    expect(rows[0].context_output_tokens).toBe(50);        // float → trunc
+    expect(rows[0].context_cache_create_tokens).toBeNull();// null → null
+    expect(rows[0].context_cache_read_tokens).toBe(0);     // zero ok
   });
 });
