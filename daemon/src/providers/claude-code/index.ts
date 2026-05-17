@@ -228,7 +228,7 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
           agentName: req.agent,
           scopes,
           systemDeny: expandedDeny,
-          vaultRoot: req.cwd,
+          vaultRoot: deps.engine.vaultRoot,
           daemonBase: deps.daemonBase,
           runId,
           settingsDir: deps.tracesDir,
