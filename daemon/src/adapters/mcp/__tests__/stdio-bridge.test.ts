@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { validateBridgeEnv, stampMeta } from "../stdio-bridge.ts";
+import { validateBridgeEnv, stampMeta, forwardToDaemon } from "../stdio-bridge.ts";
 
 describe("validateBridgeEnv", () => {
   test("returns config when all required vars present", () => {
@@ -97,5 +97,60 @@ describe("stampMeta", () => {
     for (const m of inputs) {
       expect(stampMeta(m, cfg)).toEqual(m);
     }
+  });
+});
+
+describe("forwardToDaemon", () => {
+  const cfg = {
+    daemonBase: "http://127.0.0.1:8729",
+    agent: "maya",
+    taskId: "T-1",
+    contextId: "C-1",
+    runId: "R-1",
+  } as const;
+
+  test("POSTs the stamped envelope to /mcp?agent=<agent> and returns the body", async () => {
+    let captured: { url: string; body: string } | null = null;
+    const stubFetch = async (url: string, init: RequestInit) => {
+      captured = { url, body: init.body as string };
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const out = await forwardToDaemon(
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "x", arguments: {} } },
+      cfg,
+      stubFetch as unknown as typeof fetch,
+    );
+    expect(captured!.url).toBe("http://127.0.0.1:8729/mcp?agent=maya");
+    expect(JSON.parse(captured!.body).method).toBe("tools/call");
+    expect(out).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true } });
+  });
+
+  test("network failure → JSON-RPC -32603 with BRIDGE_UPSTREAM_FAIL", async () => {
+    const stubFetch = async () => {
+      throw new TypeError("connection refused");
+    };
+    const out = await forwardToDaemon(
+      { jsonrpc: "2.0", id: 42, method: "tools/call", params: { name: "x", arguments: {} } },
+      cfg,
+      stubFetch as unknown as typeof fetch,
+    );
+    expect(out.id).toBe(42);
+    expect(out.error?.code).toBe(-32603);
+    expect((out.error?.data as { kind: string }).kind).toBe("BRIDGE_UPSTREAM_FAIL");
+  });
+
+  test("non-2xx HTTP → JSON-RPC -32603 with BRIDGE_UPSTREAM_FAIL", async () => {
+    const stubFetch = async () =>
+      new Response("upstream down", { status: 503 });
+    const out = await forwardToDaemon(
+      { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "x", arguments: {} } },
+      cfg,
+      stubFetch as unknown as typeof fetch,
+    );
+    expect(out.error?.code).toBe(-32603);
+    expect((out.error?.data as { status: number }).status).toBe(503);
   });
 });

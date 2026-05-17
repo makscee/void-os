@@ -48,3 +48,46 @@ export function stampMeta(msg: JsonRpcMessage, cfg: BridgeConfig): JsonRpcMessag
   if (cfg.runId !== null) stamped.run_id = cfg.runId;
   return { ...msg, params: { ...msg.params, _meta: stamped } };
 }
+
+export async function forwardToDaemon(
+  msg: JsonRpcMessage,
+  cfg: BridgeConfig,
+  fetchFn: typeof fetch = fetch,
+): Promise<JsonRpcMessage> {
+  const url = `${cfg.daemonBase}/mcp?agent=${encodeURIComponent(cfg.agent)}`;
+  let res: Response;
+  try {
+    res = await fetchFn(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+      },
+      body: JSON.stringify(msg),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      jsonrpc: "2.0",
+      id: msg.id,
+      error: {
+        code: -32603,
+        message: "bridge upstream fetch failed",
+        data: { kind: "BRIDGE_UPSTREAM_FAIL", message },
+      },
+    };
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    return {
+      jsonrpc: "2.0",
+      id: msg.id,
+      error: {
+        code: -32603,
+        message: `bridge upstream HTTP ${res.status}`,
+        data: { kind: "BRIDGE_UPSTREAM_FAIL", status: res.status, body: body.slice(0, 500) },
+      },
+    };
+  }
+  return (await res.json()) as JsonRpcMessage;
+}
