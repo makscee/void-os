@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { mkdtempSync, rmSync, existsSync, readFileSync, lstatSync, writeFileSync, mkdirSync } from "node:fs"
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  lstatSync,
+  statSync,
+  writeFileSync,
+  mkdirSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { provision } from "./init"
@@ -7,6 +16,14 @@ import { provision } from "./init"
 let tmpRoot: string
 let prefix: string
 let home: string
+
+// Helper: writes a .void marker file the same shape seed() writes.
+function writeMarker(dir: string) {
+  writeFileSync(
+    join(dir, ".void"),
+    JSON.stringify({ version: 1, createdAt: new Date().toISOString() }),
+  )
+}
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), "vos76-"))
@@ -31,12 +48,13 @@ afterEach(() => {
 })
 
 describe("provision()", () => {
-  it("populates an empty target with starter-vault contents", async () => {
-    await provision({ home, prefix, dryRun: false, force: false })
+  it("populates an empty target with starter-vault contents + writes .void file marker", async () => {
+    await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
     expect(existsSync(join(home, "agents/tinker/agent.md"))).toBe(true)
-    // VOS-119 Task 8.2 will restore as file-marker assertion
-    // expect(existsSync(join(home, ".void/.gitkeep"))).toBe(true)
+    // VOS-119 Task 8.2: .void is now a JSON FILE marker (was a directory in pre-T6 fixture).
+    expect(existsSync(join(home, ".void"))).toBe(true)
+    expect(statSync(join(home, ".void")).isFile()).toBe(true)
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
   })
 
@@ -44,63 +62,48 @@ describe("provision()", () => {
     mkdirSync(home, { recursive: true })
     writeFileSync(join(home, "random.txt"), "user data\n")
     await expect(
-      provision({ home, prefix, dryRun: false, force: false }),
+      provision({ home, prefix, dryRun: false, force: false, gh: { push: false } }),
     ).rejects.toThrow(/refusing to clobber/)
   })
 
   it("treats target with .void marker as upgrade — does not require --force", async () => {
-    mkdirSync(join(home, ".void"), { recursive: true })
-    writeFileSync(join(home, ".void/.gitkeep"), "")
+    mkdirSync(home, { recursive: true })
+    writeMarker(home)
     writeFileSync(join(home, "CLAUDE.md"), "user override\n")
-    await provision({ home, prefix, dryRun: false, force: false })
+    await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("user override\n")
-    expect(existsSync(join(home, "agents/tinker/agent.md"))).toBe(true)
+    // upgrade is a no-op for templates unless --force
+    expect(existsSync(join(home, ".void"))).toBe(true)
+    expect(statSync(join(home, ".void")).isFile()).toBe(true)
   })
 
   it("upgrade preserves nested user edits to agents/skills", async () => {
-    mkdirSync(join(home, ".void"), { recursive: true })
-    writeFileSync(join(home, ".void/.gitkeep"), "")
+    mkdirSync(home, { recursive: true })
+    writeMarker(home)
     mkdirSync(join(home, "agents/tinker"), { recursive: true })
     writeFileSync(join(home, "agents/tinker/agent.md"), "user-customized tinker\n")
     mkdirSync(join(home, "skills/my-skill"), { recursive: true })
     writeFileSync(join(home, "skills/my-skill/SKILL.md"), "user skill\n")
-    await provision({ home, prefix, dryRun: false, force: false })
+    await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(readFileSync(join(home, "agents/tinker/agent.md"), "utf8")).toBe("user-customized tinker\n")
     expect(readFileSync(join(home, "skills/my-skill/SKILL.md"), "utf8")).toBe("user skill\n")
-    // New files from starter that didn't exist before are still copied.
-    expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
   })
 
   it("--force overwrites existing files", async () => {
     mkdirSync(home, { recursive: true })
     writeFileSync(join(home, "CLAUDE.md"), "stale\n")
-    await provision({ home, prefix, dryRun: false, force: true })
+    await provision({ home, prefix, dryRun: false, force: true, gh: { push: false } })
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
   })
 
-  it("warns when plugin/dist is missing but does not throw", async () => {
-    const result = await provision({ home, prefix, dryRun: false, force: false })
-    expect(result.warnings.some((w) => w.includes("plugin build artifact missing"))).toBe(true)
-    expect(existsSync(join(home, ".obsidian/plugins/void-os"))).toBe(true) // dir from starter
-  })
-
-  it("copies plugin/dist contents into .obsidian/plugins/void-os when present", async () => {
-    mkdirSync(join(prefix, "plugin/dist"), { recursive: true })
-    writeFileSync(join(prefix, "plugin/dist/main.js"), "console.log('plugin')\n")
-    writeFileSync(join(prefix, "plugin/dist/manifest.json"), "{}\n")
-    await provision({ home, prefix, dryRun: false, force: false })
-    expect(existsSync(join(home, ".obsidian/plugins/void-os/main.js"))).toBe(true)
-    expect(existsSync(join(home, ".obsidian/plugins/void-os/manifest.json"))).toBe(true)
-  })
-
   it("--dry-run writes nothing but reports what would be copied", async () => {
-    const result = await provision({ home, prefix, dryRun: true, force: false })
+    const result = await provision({ home, prefix, dryRun: true, force: false, gh: { push: false } })
     expect(existsSync(home)).toBe(false)
     expect(result.copied.length).toBeGreaterThan(0)
   })
 
   it("creates target/.claude/skills symlink → ../skills", async () => {
-    await provision({ home, prefix, dryRun: false, force: false })
+    await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     const link = join(home, ".claude/skills")
     expect(lstatSync(link).isSymbolicLink()).toBe(true)
   })

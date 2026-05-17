@@ -1,21 +1,15 @@
 import type { PreflightReport } from "./preflight"
 import type { Decisions } from "./configure"
 import type { PluginResult } from "./plugin"
+import type { SeedResult } from "./seed"
 
 /**
- * Minimal shape of the seed-phase result the report consumes.
- * Defined here (vs imported from ./seed) so this module compiles + tests
- * independently of the concurrently-developed seed module. The seed module
- * is expected to export a result type compatible with this shape.
+ * The slice of {@link SeedResult} the report consumes.
+ * Now that seed.ts exists, this is just a structural projection of SeedResult —
+ * kept as a named export so existing tests + future callers can construct
+ * minimal report fixtures without depending on all SeedResult fields.
  */
-export interface SeedResultLike {
-  isFreshSeed: boolean
-  gh: {
-    pushed: boolean
-    remote?: string
-    warning?: string
-  }
-}
+export type SeedResultLike = Pick<SeedResult, "isFreshSeed" | "gh">
 
 export interface ReportInput {
   vaultPath: string
