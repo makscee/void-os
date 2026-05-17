@@ -1,8 +1,13 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildSpawnSettings } from "../spawn-settings";
+import {
+  ALLOWED_MCP_SERVERS,
+  ALLOWED_TOOLS,
+  buildSpawnSettings,
+  mcpToolNameFor,
+} from "../spawn-settings";
 
 const VAULT = "/tmp/vos-106-vault-test";
 
@@ -142,5 +147,43 @@ describe("buildSpawnSettings", () => {
     });
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
     expect(settings.additionalDirectories).toEqual([]);
+  });
+});
+
+describe("VOS-111: tool allowlist + name transform", () => {
+  test("ALLOWED_TOOLS contains the pinned built-ins + void-os MCP tools", () => {
+    expect(ALLOWED_TOOLS).toEqual([
+      "Bash",
+      "Edit",
+      "MultiEdit",
+      "Read",
+      "Write",
+      "Grep",
+      "Glob",
+      "NotebookEdit",
+      "NotebookRead",
+      "TodoWrite",
+      "WebFetch",
+      "WebSearch",
+      "mcp__void-os__vault_read",
+      "mcp__void-os__ask_user",
+      "mcp__void-os__ask_agent",
+    ]);
+  });
+
+  test("ALLOWED_TOOLS is readonly + frozen", () => {
+    expect(Object.isFrozen(ALLOWED_TOOLS)).toBe(true);
+  });
+
+  test("ALLOWED_MCP_SERVERS lists void-os only", () => {
+    expect(ALLOWED_MCP_SERVERS).toEqual(["void-os"]);
+    expect(Object.isFrozen(ALLOWED_MCP_SERVERS)).toBe(true);
+  });
+
+  test("mcpToolNameFor: dotted registered name -> CC-emitted name", () => {
+    expect(mcpToolNameFor("void-os", "vault.read")).toBe("mcp__void-os__vault_read");
+    expect(mcpToolNameFor("void-os", "ask_user")).toBe("mcp__void-os__ask_user");
+    expect(mcpToolNameFor("void-os", "ask_agent")).toBe("mcp__void-os__ask_agent");
+    expect(mcpToolNameFor("void-os", "a.b.c")).toBe("mcp__void-os__a_b_c");
   });
 });

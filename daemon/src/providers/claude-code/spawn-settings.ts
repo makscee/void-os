@@ -6,6 +6,46 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+// VOS-111: agent isolation surface.
+//
+// The spawned CC subprocess must NOT load operator-personal config from
+// ~/.claude/. The three flags in index.ts (--strict-mcp-config,
+// --setting-sources, --tools) carry the constants below.
+//
+// MCP tool names: CC exposes registered MCP tools as
+// `mcp__<server>__<tool>` with `.` rewritten to `_`. The exact form was
+// pinned by VOS-111 T0 — see daemon/test/probes/vos-111-isolation-probe.md.
+
+export function mcpToolNameFor(server: string, tool: string): string {
+  return `mcp__${server}__${tool.replace(/\./g, "_")}`;
+}
+
+export const ALLOWED_TOOLS: readonly string[] = Object.freeze([
+  "Bash",
+  "Edit",
+  "MultiEdit",
+  "Read",
+  "Write",
+  "Grep",
+  "Glob",
+  "NotebookEdit",
+  "NotebookRead",
+  "TodoWrite",
+  "WebFetch",
+  "WebSearch",
+  mcpToolNameFor("void-os", "vault.read"),
+  mcpToolNameFor("void-os", "ask_user"),
+  mcpToolNameFor("void-os", "ask_agent"),
+]);
+
+export const ALLOWED_MCP_SERVERS: readonly string[] = Object.freeze(["void-os"]);
+
+// Pinned by T0 — runbook records SETTING_SOURCES as single comma-string value `project`.
+export const SETTING_SOURCES_ARGS: readonly string[] = Object.freeze([
+  "--setting-sources",
+  "project",
+]);
+
 export interface BuildSpawnSettingsArgs {
   agentName: string;
   scopes: { readPaths: string[]; writePaths: string[] };

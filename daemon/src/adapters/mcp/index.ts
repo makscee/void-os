@@ -21,7 +21,6 @@
 
 import type { Hono } from "hono";
 import type { Database } from "bun:sqlite";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pkg from "../../../package.json" with { type: "json" };
@@ -97,7 +96,7 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
   return defn;
 }
 
-export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Server {
+export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): McpServer {
   const { vaultRoot, db, bus, bridge, engine, callingAgent, emit } = deps;
   const loadAgentDefn =
     deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(db, name));
@@ -137,7 +136,7 @@ export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Ser
     }) as never,
   );
 
-  return mcp.server;
+  return mcp;
 }
 
 export function mountMcp(app: Hono, deps: McpDeps): void {
@@ -161,7 +160,7 @@ export function mountMcp(app: Hono, deps: McpDeps): void {
       return c.json({ error: `UNKNOWN_AGENT: ${agentName}` }, 400);
     }
 
-    const server = buildMcpServer({ ...deps, callingAgent });
+    const mcp = buildMcpServer({ ...deps, callingAgent });
     // Stateless mode: each request gets a fresh server+transport. Setting
     // sessionIdGenerator to undefined disables session tracking; otherwise
     // the SDK requires clients to echo back an mcp-session-id, which can't
@@ -169,7 +168,7 @@ export function mountMcp(app: Hono, deps: McpDeps): void {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });
-    await server.connect(transport);
+    await mcp.server.connect(transport);
 
     // Single source of truth for the request body:
     //  - POST + JSON: parse once and pass as `parsedBody`. The bridge's

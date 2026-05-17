@@ -15,6 +15,7 @@ import { reconcileOrphans } from "./chat/orchestrator.ts";
 import { scanVaultAgents } from "./agents/scan.ts";
 import { makeAgentRepo } from "./agents/repo.ts";
 import { scanAgentCards, upsertAgentCards } from "./agents/cards-scan.ts";
+import { auditVaultProjectSettings } from "./boot/audit-project-settings.ts";
 
 const PORT = Number(process.env.VOID_OS_PORT ?? 7777);
 const HOST = process.env.VOID_OS_HOST ?? "127.0.0.1";
@@ -31,6 +32,10 @@ if (!fs.existsSync(vaultRoot)) {
   console.error("set VOID_OS_VAULT_ROOT or run void-os init");
   process.exit(2);
 }
+
+// VOS-111: warn if <vaultRoot>/.claude/settings.json exists (still loaded
+// by --setting-sources project). Runs once at boot, before any spawn.
+auditVaultProjectSettings(vaultRoot);
 
 const dbPath = process.env.VOID_OS_DB ?? path.join(vaultRoot, ".void", "state.sqlite");
 const db = openDatabase(dbPath);

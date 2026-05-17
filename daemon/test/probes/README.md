@@ -6,6 +6,30 @@ Run them explicitly:
 
     bun test:probes
 
+## vos-111-isolation-probe.ts (VOS-111)
+
+Manual one-shot probe that pins three pre-implementation unknowns for the
+CC-subprocess-isolation work (VOS-111):
+
+- **A** — flag syntax for `--setting-sources`, `--strict-mcp-config`, `--tools`
+  on the pinned `claudev` version (see `daemon/package.json` `voidos`).
+- **B** — exact MCP tool name CC emits for `vault.read` registered on
+  McpServer `void-os` (drives the `mcpToolNameFor` transform in T1).
+- **C** — that `--settings <p>` is still honored when `--setting-sources` is
+  pinned to `project` (i.e. drops `user`-scope settings). Proved via a
+  PreToolUse side-channel hook that appends to `/tmp/probe-hook.log`.
+
+Run:
+```
+bun daemon/test/probes/vos-111-isolation-probe.ts
+```
+
+Outputs go to stdout in three blocks (§B mcp_servers / tools, §C hook log).
+Recorded results live in `vos-111-isolation-probe.md` alongside the driver.
+
+Cost: one short claudev/Claude Code turn per run (pennies on the operator's
+pool token). NOT part of `bun test`.
+
 ## loader-integration.ts (VOS-106)
 
 Six cross-agent routing probes against a fixture vault at
