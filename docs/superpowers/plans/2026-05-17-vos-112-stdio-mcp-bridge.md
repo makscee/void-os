@@ -349,7 +349,16 @@ export async function forwardToDaemon(
   try {
     res = await fetchFn(url, {
       method: "POST",
-      headers: { "content-type": "application/json", "accept": "application/json" },
+      // Accept BOTH application/json and text/event-stream: the daemon's
+      // `StreamableHTTPServerTransport` returns 406 if `accept` does not
+      // include text/event-stream, and only returns a single-envelope JSON
+      // body (rather than SSE) when constructed with enableJsonResponse:true.
+      // T7a flips that flag on the daemon route. With the flag set the
+      // response is a single JSON envelope and the .json() parse below works.
+      headers: {
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+      },
       body: JSON.stringify(msg),
     });
   } catch (err) {
@@ -657,11 +666,18 @@ if (!existsSync(BRIDGE_PATH)) {
   throw new Error(`VOS-112 stdio-bridge.ts not found at ${BRIDGE_PATH}`);
 }
 
-// Absolute bun binary path — survives systemd / launchd / packaged binaries
-// that strip the user shell PATH. process.execPath is the bun running the
-// daemon itself, so the spawned CC subprocess inherits a Bun guaranteed to
-// have the void-os daemon's exact runtime.
-const BUN_PATH = process.execPath;
+// Absolute bun binary path — survives systemd / launchd that strip the user
+// shell PATH. `process.execPath` is the bun running the daemon itself, so a
+// spawned CC subprocess inherits the daemon's exact runtime.
+//
+// Footgun: this assumes the daemon runs from source (ADR-0003) and is never
+// shipped as a single-file `bun build --compile` binary. If it ever is,
+// process.execPath becomes the compiled daemon binary, not `bun`, and passing
+// it a `.ts` source path re-launches the daemon with a stray arg instead of
+// the bridge — production CC tool calls all fail. The VOS_BUN_PATH env
+// override lets a packaged deploy pin the bridge to a real `bun` binary
+// without code changes; default keeps dev-from-source ergonomics.
+const BUN_PATH = process.env.VOS_BUN_PATH ?? process.execPath;
 ```
 
 Extend `BuildSpawnSettingsArgs`:
@@ -896,6 +912,42 @@ git commit -m "test(VOS-112): cc-spawner-loader URL fixture → stdio (T7)"
 
 ---
 
+### Task 7a: Enable single-JSON responses on the daemon `/mcp` route (interop with bridge)
+
+**Files:**
+- Modify: `daemon/src/adapters/mcp/index.ts`
+- Modify: `daemon/src/adapters/mcp/__tests__/` (any HTTP-shape test, if one assumes SSE)
+
+The MCP TypeScript SDK's `StreamableHTTPServerTransport` defaults to SSE responses for JSON-RPC requests. The bridge's `forwardToDaemon` POSTs a single JSON-RPC envelope and parses the response with `.json()`. Without `enableJsonResponse: true`, the route returns `text/event-stream` and the bridge throws on parse — `vos_ask_user` never works in real CC. The fake provider currently works because it ignores the SSE framing (its assertions only check status); flipping the flag is benign for fake.
+
+- [ ] **Step 1: Edit the transport construction**
+
+In `daemon/src/adapters/mcp/index.ts` around line 168:
+
+```ts
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,  // VOS-112: return single JSON envelope so the stdio bridge can parse with .json().
+    });
+```
+
+- [ ] **Step 2: Verify fake provider e2e still green**
+
+Run: `cd workspace/void-os/daemon && bun test src/providers/fake/__tests__/`
+Expected: PASS — the fake provider sends `Accept: application/json, text/event-stream` already (per its existing code path) and tolerates either framing; flipping the flag changes the wire to JSON, which the fake test treats as a body that contains the JSON-RPC envelope.
+
+If a test was hard-coded to read SSE framing, update it to parse JSON directly.
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd workspace/void-os
+git add daemon/src/adapters/mcp/index.ts
+git commit -m "feat(VOS-112): /mcp returns single JSON envelope (T7a)"
+```
+
+---
+
 ### Task 8: Integration — real bridge subprocess vs daemon (AC-1, AC-2, AC-6)
 
 **Files:**
@@ -918,16 +970,20 @@ export interface TestDaemon {
   // the pending row. Subscribes to the bus for `task.state_changed` events
   // where state="TASK_STATE_INPUT_REQUIRED" and matches by taskId, then
   // reads the toolUseId off the latest ask_user_pending row.
+  // VOS-112: helpers below live on TestDaemon (NOT on AskUserBridge, which is
+  // production code and must stay free of test-only methods).
   waitForPending(taskId: string, timeoutMs: number): Promise<{ taskId: string; contextId: string; toolUseId: string }>;
-  // Thin wrapper around AskUserBridge.resolve(); throws if no pending row.
   resolveAnswer(toolUseId: string, answer: string): void;
-  // VOS-112 AC-2: lets a test observe ask_agent dispatch without a real
-  // child run. Replaces the McpDeps.dispatchChildTask spy slot for that
-  // single daemon instance.
-  setDispatchChildTaskSpy(fn: (childTaskId: string, args: { agentName: string; message: string }) => Promise<void>): void;
   close(): Promise<void>;
 }
-export function startTestDaemon(): Promise<TestDaemon>;
+export interface StartTestDaemonOpts {
+  // VOS-112 AC-2: spy injected at construction so mountMcp closes over it.
+  // A post-construction setter would not affect the already-mounted /mcp
+  // route — the route captured `deps` at boot. Per test, instantiate a new
+  // daemon with the spy pre-wired.
+  dispatchChildTask?: (childTaskId: string, args: { agentName: string; message: string; systemMessage?: string }) => Promise<void>;
+}
+export function startTestDaemon(opts?: StartTestDaemonOpts): Promise<TestDaemon>;
 ```
 
 Implementation outline (≈80 LOC): boot an in-memory SQLite, run migrations, construct EventBus + AskUserBridge, mount `/mcp` and `/chat/:id/answer` against a Hono app, `serve()` on port 0, expose the actual port. `waitForPending` listens on the bus + queries `SELECT tool_use_id FROM ask_user_pending WHERE task_id = ? ORDER BY rowid DESC LIMIT 1`. `resolveAnswer` calls `bridge.resolve({taskId: <derived>, toolUseId, answer})`.
@@ -985,53 +1041,57 @@ describe("stdio-bridge ↔ daemon /mcp", () => {
       params: { name: "ask_user", arguments: { question: "ping?" } },
     });
     // Wait until the daemon registers a pending ask, then resolve it.
-    const ask = await daemon.bridge.waitForPending("T-AC1", 2_000);
+    const ask = await daemon.waitForPending("T-AC1", 2_000);
     expect(ask.taskId).toBe("T-AC1");
     expect(ask.contextId).toBe("C-AC1");
-    daemon.bridge.resolveAnswer(ask.toolUseId, "pong");
+    daemon.resolveAnswer(ask.toolUseId, "pong");
     const reply = await callPromise as { result?: { content: { text: string }[] } };
     expect(reply.result?.content[0].text).toBe("pong");
     child.kill("SIGTERM");
   });
 
   test("AC-2: ask_agent receives env-derived task_id", async () => {
-    // Pre-seed agent_cards so the permission gate accepts maya → bob.
-    daemon.db.prepare("INSERT OR REPLACE INTO agent_cards (agent_name, card_json) VALUES (?, ?)")
-      .run("maya", JSON.stringify({ name: "maya", ask_agent_allow: ["bob"] }));
-    daemon.db.prepare("INSERT OR REPLACE INTO agent_cards (agent_name, card_json) VALUES (?, ?)")
-      .run("bob", JSON.stringify({ name: "bob" }));
-
-    // Capture the task_id observed by dispatchChildTask — the daemon-side
-    // proof that _meta arrived correctly. The test daemon must be built with
-    // a `dispatchChildTaskSpy` injected; if it isn't, add the field to the
-    // TestDaemon contract (one extra ~5-LOC change to start-test-daemon.ts).
+    // AC-2 needs the spy wired BEFORE mountMcp captures deps. Construct a
+    // per-test daemon with the spy pre-injected; the previously-started
+    // shared `daemon` (used by AC-1, AC-4) is not reused here.
     const seen: { parentTaskId?: string; agent?: string } = {};
-    daemon.setDispatchChildTaskSpy(async (childId, args) => {
-      const row = daemon.db.prepare("SELECT parent_task_id FROM tasks WHERE id = ?").get(childId) as { parent_task_id: string };
-      seen.parentTaskId = row.parent_task_id;
-      seen.agent = args.agentName;
-    });
-
-    const child = spawn(process.execPath, [BRIDGE], {
-      env: {
-        ...process.env,
-        VOS_DAEMON_BASE: `http://127.0.0.1:${daemon.port}`,
-        VOS_AGENT: "maya",
-        VOS_TASK_ID: "T-AC2",
-        VOS_CONTEXT_ID: "C-AC2",
-        VOS_RUN_ID: "R-AC2",
+    const daemon2 = await startTestDaemon({
+      dispatchChildTask: async (childId, args) => {
+        const row = daemon2.db.prepare("SELECT parent_task_id FROM tasks WHERE id = ?").get(childId) as { parent_task_id: string };
+        seen.parentTaskId = row.parent_task_id;
+        seen.agent = args.agentName;
       },
-      stdio: ["pipe", "pipe", "pipe"],
     });
-    await ping(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } });
-    const reply = await ping(child, {
-      jsonrpc: "2.0", id: 2, method: "tools/call",
-      params: { name: "ask_agent", arguments: { agent: "bob", message: "hi" } },
-    }) as { result?: unknown; error?: unknown };
-    expect(reply.error).toBeUndefined();
-    expect(seen.parentTaskId).toBe("T-AC2");
-    expect(seen.agent).toBe("bob");
-    child.kill("SIGTERM");
+    // Pre-seed agent_cards so the permission gate accepts maya → bob.
+    daemon2.db.prepare("INSERT OR REPLACE INTO agent_cards (agent_name, card_json) VALUES (?, ?)")
+      .run("maya", JSON.stringify({ name: "maya", ask_agent_allow: ["bob"] }));
+    daemon2.db.prepare("INSERT OR REPLACE INTO agent_cards (agent_name, card_json) VALUES (?, ?)")
+      .run("bob", JSON.stringify({ name: "bob" }));
+    try {
+
+      const child = spawn(process.execPath, [BRIDGE], {
+        env: {
+          ...process.env,
+          VOS_DAEMON_BASE: `http://127.0.0.1:${daemon2.port}`,
+          VOS_AGENT: "maya",
+          VOS_TASK_ID: "T-AC2",
+          VOS_CONTEXT_ID: "C-AC2",
+          VOS_RUN_ID: "R-AC2",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      await ping(child, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } });
+      const reply = await ping(child, {
+        jsonrpc: "2.0", id: 2, method: "tools/call",
+        params: { name: "ask_agent", arguments: { agent: "bob", message: "hi" } },
+      }) as { result?: unknown; error?: unknown };
+      expect(reply.error).toBeUndefined();
+      expect(seen.parentTaskId).toBe("T-AC2");
+      expect(seen.agent).toBe("bob");
+      child.kill("SIGTERM");
+    } finally {
+      await daemon2.close();
+    }
   });
 
   test("AC-6: missing required env → exit 1 with BRIDGE_CONFIG_FAIL on stdout", async () => {
@@ -1104,13 +1164,13 @@ test("AC-4: concurrent same-agent dispatches stay disjoint at the handler AND at
   const aCall = ping(a, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "ask_user", arguments: { question: "q-A" } } });
   const bCall = ping(b, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "ask_user", arguments: { question: "q-B" } } });
 
-  const askA = await daemon.bridge.waitForPending("T-A", 2_000);
-  const askB = await daemon.bridge.waitForPending("T-B", 2_000);
+  const askA = await daemon.waitForPending("T-A", 2_000);
+  const askB = await daemon.waitForPending("T-B", 2_000);
   expect(askA.taskId).toBe("T-A");
   expect(askB.taskId).toBe("T-B");
 
   // Resolve A. B must remain pending — wrong-task cross-resolve guard.
-  daemon.bridge.resolveAnswer(askA.toolUseId, "answer-A");
+  daemon.resolveAnswer(askA.toolUseId, "answer-A");
   const replyA = await aCall as { result?: { content: { text: string }[] } };
   expect(replyA.result?.content[0].text).toBe("answer-A");
 
@@ -1122,7 +1182,7 @@ test("AC-4: concurrent same-agent dispatches stay disjoint at the handler AND at
   ]);
   expect(stillPending).toBe("pending");
 
-  daemon.bridge.resolveAnswer(askB.toolUseId, "answer-B");
+  daemon.resolveAnswer(askB.toolUseId, "answer-B");
   const replyB = await bCall as { result?: { content: { text: string }[] } };
   expect(replyB.result?.content[0].text).toBe("answer-B");
 
@@ -1146,55 +1206,74 @@ git commit -m "test(VOS-112): AC-4 concurrent dispatches stay task-scoped (T9)"
 
 ---
 
-### Task 10: Prompt-cache stability (AC-5)
+### Task 10: Prompt-cache stability — structural assertion (AC-5)
 
 **Files:**
-- Modify: `daemon/test/integration/stdio-bridge-e2e.test.ts`
-- Optional: port the VOS-107 turn-2 trace fixture if it exists in another file.
+- Modify: `daemon/src/providers/claude-code/__tests__/spawn-settings.test.ts`
 
-Run a real CC subprocess (claudev-backed) twice in the same task. Inspect the turn-2 `assistant` event's `usage` block; assert `cache_read_input_tokens > 0` and `cache_creation_input_tokens` close to zero.
+The forge pass downgraded AC-5 from a live-API token-usage gate to a pure structural assertion: the only thing the stdio shape can newly bust is the MCP-side cache key, which is fingerprinted off the server's `command` + `args`. If those two fields are byte-equal across two consecutive `buildSpawnSettings` calls for the same agent (differing only by per-run `taskId` / `runId` / `contextId` in `env`), the MCP client cannot tell the second run is a different server — exactly what we need. The empirical Anthropic-side cache check stays as the manual gate in T11. This avoids inventing undefined helpers (`isClaudevAvailable`, `startProductionLikeDaemon`) and the paid-API CI cost.
 
-- [ ] **Step 1: Check for an existing VOS-107 turn-2 fixture**
+- [ ] **Step 1: Write the failing test**
 
-Run: `cd workspace/void-os/daemon && grep -rn "cache_read_input_tokens\|cache_creation_input_tokens" test/ src/`
-Expected: either a VOS-107 helper to reuse, or no hits — write fresh.
-
-- [ ] **Step 2: Add (or port) the test**
+Append to `spawn-settings.test.ts`:
 
 ```ts
-test("AC-5: turn 2 of the same task hits the prompt cache (no creation spike)", async () => {
-  // Skip when CC is not available in this environment — e.g. CI without claudev.
-  if (!await isClaudevAvailable()) {
-    console.warn("AC-5 skipped: claudev not on PATH");
-    return;
-  }
-  // Use the production app (not the bare /mcp app from startTestDaemon) so
-  // the orchestrator wires runs to the real CC provider. Pseudocode:
-  const prod = await startProductionLikeDaemon();
-  const taskId = "T-cache";
-  await prod.dispatch({ agent: "maya", taskId, prompt: "say hi" });   // turn 1
-  const turn2 = await prod.dispatch({ agent: "maya", taskId, prompt: "say hi again" }); // turn 2
-  const usage = turn2.lastAssistantUsage;
-  expect(usage.cache_read_input_tokens ?? 0).toBeGreaterThan(0);
-  expect(usage.cache_creation_input_tokens ?? 0).toBeLessThan(500); // tolerance threshold
-  await prod.close();
+test("AC-5: mcp.json command+args are byte-equal across two consecutive spawns of the same agent (only env differs)", () => {
+  const tmp1 = mkdtempSync(join(tmpdir(), "vos112-cache-1-"));
+  const tmp2 = mkdtempSync(join(tmpdir(), "vos112-cache-2-"));
+  const baseArgs = {
+    agentName: "maya",
+    scopes: { readPaths: [], writePaths: [] },
+    systemDeny: [],
+    vaultRoot: "/vault",
+    daemonBase: "http://127.0.0.1:8729",
+    hookScriptPath: "/hook.ts",
+  };
+  const a = buildSpawnSettings({
+    ...baseArgs,
+    runId:     "R-1",
+    taskId:    "T-1",
+    contextId: "C-1",
+    settingsDir: tmp1,
+  });
+  const b = buildSpawnSettings({
+    ...baseArgs,
+    runId:     "R-2",
+    taskId:    "T-2",
+    contextId: "C-2",
+    settingsDir: tmp2,
+  });
+  const mcpA = JSON.parse(readFileSync(a.mcpConfigPath, "utf8")) as {
+    mcpServers: { "void-os": { command: string; args: string[]; env: Record<string, string> } };
+  };
+  const mcpB = JSON.parse(readFileSync(b.mcpConfigPath, "utf8")) as {
+    mcpServers: { "void-os": { command: string; args: string[]; env: Record<string, string> } };
+  };
+  // Cache-keying fields must be byte-equal — this is what the MCP client
+  // fingerprints. A divergence here would re-bust the Anthropic prompt cache
+  // (same regression class as VOS-107).
+  expect(mcpA.mcpServers["void-os"].command).toBe(mcpB.mcpServers["void-os"].command);
+  expect(mcpA.mcpServers["void-os"].args).toEqual(mcpB.mcpServers["void-os"].args);
+  // Env must differ on at least task_id (proof the cache-stable fields don't
+  // accidentally absorb the per-run values).
+  expect(mcpA.mcpServers["void-os"].env.VOS_TASK_ID).not.toBe(mcpB.mcpServers["void-os"].env.VOS_TASK_ID);
 });
 ```
 
-`startProductionLikeDaemon` differs from `startTestDaemon` only in that it uses the real CC provider (not the fake). If the VOS-107 fixture already exposes such a helper, reuse it verbatim — do not re-implement.
+- [ ] **Step 2: Run test to verify it passes (or fails, depending on impl state)**
 
-- [ ] **Step 3: Run test**
+Run: `cd workspace/void-os/daemon && bun test src/providers/claude-code/__tests__/spawn-settings.test.ts`
+Expected: PASS after T5 (which already produces stable `command`/`args`). If FAIL, it means T5's `BRIDGE_PATH` / `BUN_PATH` resolution accidentally depends on a per-call value — investigate before proceeding.
 
-Run: `cd workspace/void-os/daemon && bun test test/integration/stdio-bridge-e2e.test.ts`
-Expected: AC-5 PASS where claudev is available; cleanly SKIP otherwise. CI must run at least one environment with claudev.
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 cd workspace/void-os
-git add daemon/test/integration/stdio-bridge-e2e.test.ts
-git commit -m "test(VOS-112): AC-5 prompt-cache stability assertion (T10)"
+git add daemon/src/providers/claude-code/__tests__/spawn-settings.test.ts
+git commit -m "test(VOS-112): AC-5 cache-stable mcp.json command+args (T10)"
 ```
+
+The empirical live-CC turn-2 cache check (the original VOS-107-shaped gate) is preserved as the manual VOS-107 UX repro in T11 Step 2.
 
 ---
 
@@ -1208,12 +1287,16 @@ git commit -m "test(VOS-112): AC-5 prompt-cache stability assertion (T10)"
 Run: `cd workspace/void-os/daemon && bun test`
 Expected: PASS, including the fake provider e2e (AC-3).
 
-- [ ] **Step 2: Manual VOS-107 UX repro**
+- [ ] **Step 2: Manual VOS-107 UX repro + empirical cache check**
 
 Boot the void-os Obsidian plugin against a fresh daemon (per the project's local dev runbook), open a chat with the maya agent, send a prompt that triggers `vos_ask_user`. Confirm:
 - the option buttons render in the UI (no raw JSON);
 - selecting an option returns the answer to CC and the turn completes;
 - the daemon log shows `_meta.task_id = <task id>` on the inbound `/mcp` POST.
+
+Then drive a second turn in the SAME task and inspect the turn-2 trace's `assistant.usage` block:
+- `cache_read_input_tokens > 0` AND `cache_creation_input_tokens` near zero — empirical AC-5 gate that the structural T10 assertion is intended to predict.
+- If creation-spike returns, T10's structural assertion missed something (likely an additional MCP-cache-keyed field beyond command+args, e.g. server name or initialize-response shape) — investigate before /done.
 
 This is the manual gate the task acceptance bullet ("Real CC spawn can call `vos_ask_user` and the daemon resolves the correct task_id") expects beyond the automated AC-1.
 
@@ -1233,7 +1316,7 @@ Append a session entry to `vault/work/tasks/active/VOS-112-*.md` via the `sw_run
 | AC-2 ask_agent task_id stamped | T8 (integration) |
 | AC-3 fake provider unchanged | T11 (full suite) |
 | AC-4 concurrent dispatches disjoint + task-scoped resolve | T9 |
-| AC-5 prompt cache stable (automated) | T10 |
+| AC-5 prompt cache stable | T10 (structural: byte-equal command+args), T11 step 2 (empirical: turn-2 usage) |
 | AC-6 bridge fails fast on misconfig | T4 (smoke run), T8 (integration) |
 
 ## Out of scope (deferred — see spec §Out of scope)
