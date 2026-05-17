@@ -103,12 +103,19 @@ export function mountChatTaskStateFanout(
 export interface ChatApiOpts {
   // Optional orchestrator. When omitted, POST /chat/:id/message returns 500.
   orchestrator?: Orchestrator;
+  // VOS-118: optional bus. When provided, POST /chat/:id/message returns
+  // early (with run_id) as soon as run.start fires, instead of awaiting
+  // the full dispatch lifecycle. Without a bus, falls back to the legacy
+  // synchronous wait — preserves behaviour for tests that wire chatApi
+  // without an event bus.
+  bus?: EventBus;
 }
 
 export function chatApi(db: Database, opts: ChatApiOpts = {}): Hono {
   const repo = makeChatRepo(db);
   const replay = makeSessionReplay(db);
   const orchestrator = opts.orchestrator;
+  const bus = opts.bus;
   const app = new Hono();
 
   app.get("/chat/:id", (c) => {
@@ -143,9 +150,86 @@ export function chatApi(db: Database, opts: ChatApiOpts = {}): Hono {
     if (typeof body.text !== "string" || !body.text.trim()) {
       return c.json({ error: "text_required" }, 400);
     }
+    // VOS-118: /message returns AFTER dispatch completes (status: done/error/cancelled).
+    // For runs that pause on ask_user (bridge.open blocks waiting for /answer),
+    // dispatch blocks indefinitely — which blocks the client. The CLI's pattern
+    // of "open SSE stream, then POST /message, then iterate SSE" cannot make
+    // progress past send() in that case, so the ask_user SSE frame is never
+    // consumed. Resolve by racing dispatch against a short "first event"
+    // sentinel: as soon as the orchestrator emits any frame (run.start) the
+    // POST returns with {run_id, status: "running"} — the SSE stream is the
+    // authoritative source of further events. Dispatch continues in the
+    // background; its terminal status reaches clients via the SSE run_end
+    // frame and the persistent runs row.
+    //
+    // Compatibility: legacy callers that consumed the dispatch result
+    // (orchestrator-style {run_id, status: "done"|"error"|"cancelled"})
+    // get {run_id, status: "running"} early instead. The run_id is the same
+    // value (orchestrator mints it in the acquire-lock txn before any awaits,
+    // so it is observable on the bus by the time we race). Callers that
+    // need terminal status now read it from SSE or GET /chat/:id.
+    if (!bus) {
+      // Legacy path (no bus injected) — preserve original synchronous wait.
+      // Used by unit tests that construct chatApi without an event bus.
+      try {
+        const result = await orchestrator.dispatch(id, body.text);
+        return c.json(result);
+      } catch (err: unknown) {
+        const e = err as { status?: number; current_run_id?: string; message?: string };
+        if (e?.status === 409)
+          return c.json({ error: "run_in_progress", current_run_id: e.current_run_id }, 409);
+        if (e?.status === 404) return c.json({ error: "not_found" }, 404);
+        return c.json({ error: String(e?.message ?? err) }, 500);
+      }
+    }
     try {
-      const result = await orchestrator.dispatch(id, body.text);
-      return c.json(result);
+      // Race the dispatch promise against a short timeout: if it finishes
+      // immediately (sync error like 409), keep the existing JSON shape;
+      // otherwise return early. Subscribe to run.start to learn the run_id
+      // before returning — bus.emit is synchronous so the subscriber will
+      // fire inside the same microtask the orchestrator runs.
+      let runId: string | null = null;
+      const unsubscribe = bus.subscribe("run.start", (ev) => {
+        if (ev.chatId !== id && (ev.payload as { chat_id?: string })?.chat_id !== id) return;
+        const rid = (ev.payload as { run_id?: string })?.run_id;
+        if (typeof rid === "string") runId = rid;
+      });
+      const dispatchPromise = orchestrator.dispatch(id, body.text)
+        .catch((err) => ({ __error: err as unknown }));
+      // Wait either for dispatch to finish OR for run.start to land.
+      const settled = await Promise.race([
+        dispatchPromise,
+        new Promise<null>((resolve) => {
+          // Poll runId — set synchronously by the subscriber as soon as
+          // run.start fires. 5ms granularity is plenty given run.start
+          // happens within the same tick as the lock-acquire txn.
+          const t = setInterval(() => {
+            if (runId !== null) { clearInterval(t); resolve(null); }
+          }, 5);
+          // Safety net: don't block forever if neither fires (would only
+          // happen on a stuck event loop or a bus that lost the event).
+          setTimeout(() => { clearInterval(t); resolve(null); }, 2000);
+        }),
+      ]);
+      unsubscribe();
+      if (settled && typeof settled === "object" && "__error" in (settled as object)) {
+        // Dispatch threw synchronously (or before run.start landed).
+        const err = (settled as { __error: unknown }).__error;
+        throw err;
+      }
+      if (settled && typeof settled === "object" && "run_id" in (settled as object)) {
+        // Dispatch completed before/at the same time as run.start fired —
+        // surface the terminal status as before.
+        return c.json(settled);
+      }
+      // Early-return path: dispatch is still running. Background-handle any
+      // error so the unhandled-rejection guard doesn't trip.
+      dispatchPromise.then((r) => {
+        if (r && typeof r === "object" && "__error" in (r as object)) {
+          console.error("[chat:dispatch:background]", (r as { __error: unknown }).__error);
+        }
+      });
+      return c.json({ run_id: runId, status: "running" });
     } catch (err: unknown) {
       const e = err as {
         status?: number;
