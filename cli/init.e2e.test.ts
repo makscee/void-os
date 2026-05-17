@@ -112,8 +112,9 @@ describe("initCommand() — end-to-end against real fs", () => {
       expect(a.equals(b)).toBe(true)
     }
 
-    // 3. .void marker present, well-formed, has version + timestamp.
-    const markerPath = join(home, ".void")
+    // 3. .void/ is a directory; marker.json present, well-formed.
+    expect(statSync(join(home, ".void")).isDirectory()).toBe(true)
+    const markerPath = join(home, ".void/marker.json")
     expect(statSync(markerPath).isFile()).toBe(true)
     const marker = JSON.parse(readFileSync(markerPath, "utf8"))
     expect(marker.version).toBe(1)
@@ -185,7 +186,7 @@ describe("initCommand() — end-to-end against real fs", () => {
 
     // Capture pre-rerun mtimes for starter files + marker.
     const before: Record<string, number> = {}
-    for (const rel of [...STARTER_FILES, ".void"]) {
+    for (const rel of [...STARTER_FILES, ".void/marker.json"]) {
       before[rel] = statSync(join(home, rel)).mtimeMs
     }
 
@@ -198,7 +199,7 @@ describe("initCommand() — end-to-end against real fs", () => {
     await rerun.promise
 
     // mtime-stable: nothing overwritten.
-    for (const rel of [...STARTER_FILES, ".void"]) {
+    for (const rel of [...STARTER_FILES, ".void/marker.json"]) {
       const after = statSync(join(home, rel)).mtimeMs
       expect(after).toBe(before[rel])
     }
@@ -273,7 +274,7 @@ describe("initCommand() --non-interactive", () => {
 
     expect(existsSync(home)).toBe(true)
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
-    expect(existsSync(join(home, ".void"))).toBe(true)
+    expect(existsSync(join(home, ".void/marker.json"))).toBe(true)
     // No `intro:`/`outro:` log entries since prompter never invoked:
     expect(prompter.log.length).toBe(0)
   })

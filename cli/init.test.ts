@@ -17,10 +17,11 @@ let tmpRoot: string
 let prefix: string
 let home: string
 
-// Helper: writes a .void marker file the same shape seed() writes.
+// Helper: writes a .void/marker.json the same shape seed() writes.
 function writeMarker(dir: string) {
+  mkdirSync(join(dir, ".void"), { recursive: true })
   writeFileSync(
-    join(dir, ".void"),
+    join(dir, ".void/marker.json"),
     JSON.stringify({ version: 1, createdAt: new Date().toISOString() }),
   )
 }
@@ -48,13 +49,15 @@ afterEach(() => {
 })
 
 describe("provision()", () => {
-  it("populates an empty target with starter-vault contents + writes .void file marker", async () => {
+  it("populates an empty target with starter-vault contents + writes .void/marker.json", async () => {
     await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
     expect(existsSync(join(home, "agents/tinker/agent.md"))).toBe(true)
-    // VOS-119 Task 8.2: .void is now a JSON FILE marker (was a directory in pre-T6 fixture).
+    // VOS-123: .void is now a DIRECTORY containing marker.json (daemon needs
+    // .void/ as a directory for state.sqlite, tmp/, traces/).
     expect(existsSync(join(home, ".void"))).toBe(true)
-    expect(statSync(join(home, ".void")).isFile()).toBe(true)
+    expect(statSync(join(home, ".void")).isDirectory()).toBe(true)
+    expect(statSync(join(home, ".void/marker.json")).isFile()).toBe(true)
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
   })
 
@@ -73,8 +76,8 @@ describe("provision()", () => {
     await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("user override\n")
     // upgrade is a no-op for templates unless --force
-    expect(existsSync(join(home, ".void"))).toBe(true)
-    expect(statSync(join(home, ".void")).isFile()).toBe(true)
+    expect(existsSync(join(home, ".void/marker.json"))).toBe(true)
+    expect(statSync(join(home, ".void/marker.json")).isFile()).toBe(true)
   })
 
   it("upgrade preserves nested user edits to agents/skills", async () => {
