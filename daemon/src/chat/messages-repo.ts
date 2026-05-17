@@ -178,6 +178,28 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
               ts: r.ts,
               task_id: r.task_id,
             });
+          } else if (data.kind === "denial") {
+            // VOS-109: synthesised denial DataPart unpacked into a "denial"
+            // replay row. Wire-side field names mirror the DataPart payload
+            // (toolCallId / attemptedPath) but converted to snake_case to
+            // match the rest of the replay union (tool_use / tool_result).
+            // The plugin reducer's `replayToMessages` consumes this row
+            // shape and attaches a DenialPart to the nearest preceding
+            // assistant turn.
+            out.push({
+              role: "denial",
+              tool_call_id:
+                (data as { toolCallId?: string }).toolCallId ?? "",
+              reason:
+                ((data as { reason?: string }).reason as "scope_violation") ??
+                "scope_violation",
+              attempted_path:
+                (data as { attemptedPath?: string }).attemptedPath ?? "",
+              agent: (data as { agent?: string }).agent ?? "",
+              message: (data as { message?: string }).message ?? "",
+              ts: r.ts,
+              task_id: r.task_id,
+            });
           }
         }
         flushText();

@@ -77,14 +77,35 @@ const toThreadMessage = (m: ChatMessage): ThreadMessageLike => {
       if (p.kind === "text") {
         return { type: "text" as const, text: p.text };
       }
-      return {
-        type: "tool-call" as const,
-        toolCallId: p.toolCallId,
-        toolName: p.name,
-        args: p.input,
-        result: p.output,
-        isError: p.isError,
-      };
+      if (p.kind === "tool") {
+        return {
+          type: "tool-call" as const,
+          toolCallId: p.toolCallId,
+          toolName: p.name,
+          args: p.input,
+          result: p.output,
+          isError: p.isError,
+        };
+      }
+      if (p.kind === "denial") {
+        // VOS-109: synthesised denial → assistant-ui DataMessagePart routed
+        // via `components.data.by_name.denial` (see ChatRoot + DenialPart.tsx).
+        return {
+          type: "data" as const,
+          name: "denial",
+          data: {
+            toolCallId: p.toolCallId,
+            reason: p.reason,
+            attemptedPath: p.attemptedPath,
+            agent: p.agent,
+            message: p.message,
+          },
+        };
+      }
+      // Exhaustive fallback — keeps the bubble renderable if a future
+      // AssistantPart variant lands without a mapper update.
+      const unknown = p as { message?: string };
+      return { type: "text" as const, text: unknown.message ?? "" };
     }) as ThreadMessageLike["content"];
     if (m.cancelled) {
       (content as Array<{ type: "text"; text: string }>).push({

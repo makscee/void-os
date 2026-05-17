@@ -6,6 +6,7 @@
 import type { FullConfig } from "@playwright/test";
 import sharedTeardown from "./globalTeardown.ts";
 import askUserTeardown from "./globalTeardown-ask-user.ts";
+import permissionDenyUiTeardown from "./globalTeardown-permission-deny-ui.ts";
 
 // Mirror of globalSetup-all selection: parse --project from argv (FullConfig
 // gives the declared list, not the filter).
@@ -22,7 +23,10 @@ function selectedProjects(allNames: string[]): Set<string> {
 
 export default async function globalTeardownAll(config: FullConfig) {
   const selected = selectedProjects(config.projects.map((p) => p.name));
-  // Tear down ask-user first (started last in setup).
+  // Tear down in reverse setup order (last-started first).
+  if (selected.has("permission-deny-ui")) {
+    try { await permissionDenyUiTeardown(); } catch (err) { console.error("[teardown] permission-deny-ui:", err); }
+  }
   if (selected.has("ask-user")) {
     try { await askUserTeardown(); } catch (err) { console.error("[teardown] ask-user:", err); }
   }

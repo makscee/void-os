@@ -163,6 +163,31 @@ function normalizeReplay(raw: unknown): ReplayMessage[] {
       out.push(o as unknown as ReplayMessage);
       continue;
     }
+    if (role === "denial") {
+      // VOS-109: synthesised denial row from messages-repo. Mirror the
+      // daemon-side DataPart{data:{kind:"denial",...}} payload as a flat
+      // ReplayMessage so the reducer's `replayToMessages` attaches a
+      // DenialPart to the nearest preceding assistant turn.
+      const toolCallId = o.tool_call_id;
+      if (typeof toolCallId !== "string") continue;
+      const reasonRaw = typeof o.reason === "string" ? (o.reason as string) : "scope_violation";
+      const reason: "scope_violation" = reasonRaw === "scope_violation" ? "scope_violation" : "scope_violation";
+      const attemptedPath = typeof o.attempted_path === "string" ? (o.attempted_path as string) : "";
+      const agent = typeof o.agent === "string" ? (o.agent as string) : "";
+      const message = typeof o.message === "string" ? (o.message as string) : "";
+      const entry: ReplayMessage = {
+        role: "denial",
+        tool_call_id: toolCallId,
+        reason,
+        attempted_path: attemptedPath,
+        agent,
+        message,
+        ts,
+      };
+      if (taskId !== undefined) (entry as { task_id?: string }).task_id = taskId;
+      out.push(entry);
+      continue;
+    }
   }
   return out;
 }

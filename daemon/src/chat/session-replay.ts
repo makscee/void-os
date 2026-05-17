@@ -46,6 +46,23 @@ export interface ToolResultEntry {
   task_id: string;
 }
 
+/** VOS-109: a synthesised denial block lifted out of an agent-role turn's
+ *  parts[] DataPart{data:{kind:"denial",...}}. Surfaced inline beside the
+ *  offending tool_result so the plugin's replayToMessages can attach a
+ *  DenialPart to the assistant turn. Shape mirrors the daemon DataPart
+ *  payload but uses snake_case wire fields (attempted_path / tool_call_id)
+ *  to stay consistent with the rest of the replay union. */
+export interface DenialEntry {
+  role: "denial";
+  tool_call_id: string;
+  reason: "scope_violation";
+  attempted_path: string;
+  agent: string;
+  message: string;
+  ts?: number;
+  task_id: string;
+}
+
 /** Synthetic entry injected by session-replay.walk for each child task that
  * was started via an ask_agent tool_use on the parent task. Positioned
  * immediately after the parent's matching tool_use entry so the sub-thread
@@ -70,6 +87,7 @@ export type ReplayEntry =
   | TextMessage
   | ToolUseEntry
   | ToolResultEntry
+  | DenialEntry
   | ChildTaskStartedEntry;
 
 export interface SessionReplay {
