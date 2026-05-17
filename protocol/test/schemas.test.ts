@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { HealthResp } from "../src/index.ts";
+import { HealthResp, StreamFrame } from "../src/index.ts";
 
 test("HealthResp parses a complete fixture", () => {
   const fixture = {
@@ -20,4 +20,12 @@ test("HealthResp infers correct type", () => {
   // Compile-time: this is a type test. If HealthResp type drifts, tsc fails.
   const x: HealthResp = { ok: true, version: "v", vault_root: "/v", uptime_s: 0, sessions: 0 };
   expect(x.ok).toBe(true);
+});
+
+test("StreamFrame accepts hello", () => {
+  expect(() => StreamFrame.parse({ event: "hello", data: { chat_id: "c1", version: "0.0.1" } })).not.toThrow();
+});
+
+test("StreamFrame rejects unknown event", () => {
+  expect(() => StreamFrame.parse({ event: "weird", data: {} })).toThrow();
 });

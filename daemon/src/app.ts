@@ -27,7 +27,8 @@ import { agentsApi } from "./api/agents.ts";
 import { chatApi, mountChatTaskStateFanout } from "./api/chat.ts";
 import { mountMcp, defaultLoadAgentDefn } from "./adapters/mcp/index.ts";
 import { mountAnswerRoute } from "./api/answer.ts";
-import { createEventBus } from "./events/index.ts";
+import { createEventBus, type EventBus } from "./events/index.ts";
+import { mountChatStream } from "./api/chat-stream.ts";
 import { createAskUserBridge } from "./chat/ask-user-bridge.ts";
 import { makeProvider } from "./providers/factory.ts";
 import { createPermissionEngine } from "./permissions/engine.ts";
@@ -75,6 +76,10 @@ export interface BuildAppDeps {
   // entrypoint (daemon/src/index.ts) always passes both.
   token?: string;
   bootTime?: number;
+  // VOS-116 T10: optional injected EventBus. Tests use this to assert
+  // subscribe/unsubscribe lifecycle on the SSE route. Production omits
+  // it so buildApp constructs its own bus internally.
+  eventBus?: EventBus;
 }
 
 export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
@@ -109,7 +114,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // VOS-88 T7: bus is shared between orchestrator wiring and the MCP server
   // (ask_user emits task.state_changed / message.appended via this bus).
   // Hoisted out of the orchestrator-only block so mountMcp can receive it.
-  const bus = createEventBus({ db: deps.db });
+  const bus = deps.eventBus ?? createEventBus({ db: deps.db });
   const bridge = createAskUserBridge({ db: deps.db, bus });
 
   // VOS-104 T8b: wire cost ledger subscriber. Without this, `run.end` events
@@ -267,6 +272,11 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // and the HTTP route (which resolves via bridge.resolve) reference the
   // same in-process awaiter map.
   mountAnswerRoute(app, { db: deps.db, bridge, emit });
+
+  // VOS-116 T10: per-chat SSE stream — bearer-auth required, fans out
+  // events from the shared bus filtered to the URL's chat id.
+  app.use("/chat/:id/stream", makeRequireAuth(token));
+  mountChatStream(app, { db: deps.db, bus, version: VERSION });
   return app;
 };
 
