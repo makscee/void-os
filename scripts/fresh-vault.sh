@@ -6,6 +6,18 @@ set -euo pipefail
 PATH_CANON=""
 HOME_CANON=""
 
+# Repo root = parent of scripts/ dir (this file's dir).
+REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd -P )"
+
+# Prefer the repo's own bin/void-os so fresh clones work without a global
+# install. Allow override via VOID_OS_BIN env var.
+VOID_OS_BIN="${VOID_OS_BIN:-$REPO_ROOT/bin/void-os}"
+if [ ! -x "$VOID_OS_BIN" ]; then
+  echo "fresh-vault: void-os binary not executable at $VOID_OS_BIN" >&2
+  echo "fresh-vault: set VOID_OS_BIN, or ensure $REPO_ROOT/bin/void-os is executable" >&2
+  exit 2
+fi
+
 # --- usage ---------------------------------------------------------------
 usage() {
   cat <<'EOF'
@@ -125,6 +137,26 @@ confirm_wipe() {
   fi
 }
 
+# --- plugin pre-build ----------------------------------------------------
+# Run unconditionally before any destructive step so a build failure
+# leaves the vault untouched. A stale dist/ from a prior aborted build
+# would otherwise get symlinked and the "fresh vault" would silently
+# run against old plugin code.
+prebuild_plugin() {
+  if [ "$FLAG_SKIP_PLUGIN" -eq 1 ]; then
+    echo "fresh-vault: --skip-plugin → skipping plugin build"
+    return 0
+  fi
+  if [ ! -d "$REPO_ROOT/plugin" ]; then
+    echo "fresh-vault: plugin/ dir missing at $REPO_ROOT/plugin" >&2
+    exit 2
+  fi
+  echo "fresh-vault: building plugin (bun run build) → $REPO_ROOT/plugin/dist"
+  # build.ts defaults to ~/void/.obsidian/plugins/void-os; override so the
+  # symlink in T8 can point at a repo-local artifact.
+  ( cd "$REPO_ROOT/plugin" && VOID_OS_PLUGIN_OUT="$REPO_ROOT/plugin/dist" bun run build )
+}
+
 # --- main ----------------------------------------------------------------
 main() {
   parse_args "$@"
@@ -134,8 +166,9 @@ main() {
   guard_path "$path_canon" "$home_canon"
   PATH_CANON="$path_canon"
   HOME_CANON="$home_canon"
-  echo "fresh-vault: guard ok — path=$PATH_CANON home=$HOME_CANON yes=$FLAG_YES skip-plugin=$FLAG_SKIP_PLUGIN force-stop=$FLAG_FORCE_STOP"
   confirm_wipe
+  prebuild_plugin
+  echo "fresh-vault: ready to wipe $PATH_CANON (T5–T9 land here)"
 }
 
 main "$@"
