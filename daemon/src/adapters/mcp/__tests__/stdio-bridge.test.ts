@@ -1,5 +1,85 @@
 import { describe, test, expect } from "bun:test";
 import { validateBridgeEnv, stampMeta, forwardToDaemon } from "../stdio-bridge.ts";
+import { runBridge, type BridgeTransport, type JsonRpcMessage } from "../stdio-bridge.ts";
+
+function makeMemTransport(): BridgeTransport & {
+  push(msg: JsonRpcMessage): void;
+  sent: JsonRpcMessage[];
+  close(): void;
+} {
+  let handler: ((m: JsonRpcMessage) => void) | undefined;
+  let closeHandler: (() => void) | undefined;
+  const sent: JsonRpcMessage[] = [];
+  return {
+    onmessage(h) { handler = h; },
+    onclose(h)   { closeHandler = h; },
+    async send(m) { sent.push(m); },
+    async start() { /* noop */ },
+    async close() { closeHandler?.(); },
+    push(m)   { handler?.(m); },
+    sent,
+    close()   { closeHandler?.(); },
+  };
+}
+
+describe("runBridge", () => {
+  const cfg = {
+    daemonBase: "http://127.0.0.1:8729",
+    agent: "maya",
+    taskId: "T-1",
+    contextId: "C-1",
+    runId: "R-1",
+  } as const;
+
+  test("tools/call: stamps _meta then forwards; response returned via send()", async () => {
+    const t = makeMemTransport();
+    let captured: JsonRpcMessage | null = null;
+    const stubFetch = async (_url: string, init: RequestInit) => {
+      captured = JSON.parse(init.body as string) as JsonRpcMessage;
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "ok" }] } }),
+        { status: 200 },
+      );
+    };
+    await runBridge(t, cfg, stubFetch as unknown as typeof fetch);
+    t.push({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "ask_user", arguments: { question: "q" } } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect((captured!.params!._meta as { task_id: string }).task_id).toBe("T-1");
+    expect(t.sent).toHaveLength(1);
+    expect((t.sent[0].result as { content: { text: string }[] }).content[0].text).toBe("ok");
+  });
+
+  test("embedded newlines in tool result round-trip byte-for-byte (forge fix #2)", async () => {
+    const t = makeMemTransport();
+    const payload = "line-1\nline-2\nline-3 with \"quotes\" and a \\backslash";
+    const stubFetch = async () =>
+      new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 9, result: { content: [{ type: "text", text: payload }] } }),
+        { status: 200 },
+      );
+    await runBridge(t, cfg, stubFetch as unknown as typeof fetch);
+    t.push({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "vault.read", arguments: { path: "x" } } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect((t.sent[0].result as { content: { text: string }[] }).content[0].text).toBe(payload);
+  });
+
+  test("non-tools/call passthrough (initialize)", async () => {
+    const t = makeMemTransport();
+    let capturedUrl = "";
+    const stubFetch = async (url: string) => {
+      capturedUrl = url;
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-03-26" } }),
+        { status: 200 },
+      );
+    };
+    await runBridge(t, cfg, stubFetch as unknown as typeof fetch);
+    t.push({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "x" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(capturedUrl).toBe("http://127.0.0.1:8729/mcp?agent=maya");
+    expect((t.sent[0].result as { protocolVersion: string }).protocolVersion).toBe("2025-03-26");
+  });
+});
 
 describe("validateBridgeEnv", () => {
   test("returns config when all required vars present", () => {

@@ -91,3 +91,49 @@ export async function forwardToDaemon(
   }
   return (await res.json()) as JsonRpcMessage;
 }
+
+export interface BridgeTransport {
+  start(): Promise<void>;
+  close(): Promise<void>;
+  send(msg: JsonRpcMessage): Promise<void>;
+  onmessage(handler: (msg: JsonRpcMessage) => void): void;
+  onclose(handler: () => void): void;
+}
+
+export async function runBridge(
+  transport: BridgeTransport,
+  cfg: BridgeConfig,
+  fetchFn: typeof fetch = fetch,
+): Promise<void> {
+  transport.onmessage((msg) => {
+    void (async () => {
+      const stamped = stampMeta(msg, cfg);
+      const reply = await forwardToDaemon(stamped, cfg, fetchFn);
+      await transport.send(reply);
+    })();
+  });
+  transport.onclose(() => { /* SDK transport will end the process via main(). */ });
+  await transport.start();
+}
+
+async function main(): Promise<void> {
+  let cfg: BridgeConfig;
+  try {
+    cfg = validateBridgeEnv(process.env);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stdout.write(JSON.stringify({
+      jsonrpc: "2.0", id: null,
+      error: { code: -32603, message, data: { kind: "BRIDGE_CONFIG_FAIL" } },
+    }) + "\n");
+    process.exit(1);
+  }
+  const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
+  const transport = new StdioServerTransport() as unknown as BridgeTransport;
+  process.stdin.on("close", () => process.exit(0));
+  await runBridge(transport, cfg);
+}
+
+if (import.meta.main) {
+  void main();
+}
