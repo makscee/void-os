@@ -4,11 +4,11 @@
 # Endpoint (verified against workspace/void-auth/src/routes/admin.ts T0a probe 2026-05-18):
 #   POST /v1/admin/users/{userId}/access-codes
 #
-# Auth: NONE at app level. void-auth/CLAUDE.md "Don't" section + admin.ts header
-# comments make this explicit: "No app-level auth in v1 — the compose network /
-# tailnet is the trust boundary." Reverse-proxy (Caddy on mcow) restricts
-# /v1/admin/* to operator IPs. The runner LXC must reach void-auth either over
-# tailnet (auth.makscee.ru via tailscale) or via the internal compose hostname.
+# Auth: NONE at app level. Trust boundary = tailnet membership. As of
+# 2026-05-18, Caddy serves /v1/admin/* ONLY on the mcow tailnet listener
+# (http://100.101.0.9:8446); public auth.makscee.ru returns 403 for admin
+# paths. Caller must reach this script on the tailnet (operator mac, runner
+# LXC with tailscale up, etc.).
 #
 # Request body: empty. The endpoint takes no JSON body — userId is in the path,
 # TTL is server-side fixed at 3600s, and there is no purpose/label field.
@@ -28,13 +28,13 @@
 #   POST /v1/admin/users/{userId}/grants/claudev      (issue grant)
 #
 # Env:
-#   VOID_AUTH_URL      (default: https://auth.makscee.ru)
+#   VOID_AUTH_URL      (default: http://100.101.0.9:8446 — mcow tailnet admin)
 #   VOID_AUTH_USER_ID  (required — operator user id with active claudev grant)
 #
 # Output: the minted code (XXXX-XXXX) on stdout, single line.
 set -eu
 
-: "${VOID_AUTH_URL:=https://auth.makscee.ru}"
+: "${VOID_AUTH_URL:=http://100.101.0.9:8446}"
 : "${VOID_AUTH_USER_ID:?required — user id of the operator account that owns the e2e code; must have an active claudev grant}"
 
 resp=$(curl -fsSL -X POST \
