@@ -108,7 +108,7 @@ Every code task: write test → run failing → implement → run passing → co
 
 ---
 
-## Task 1: protocol/ package scaffold + smoke test
+### Task 1: protocol/ package scaffold + smoke test
 
 **Goal:** Stand up `protocol/` as a Bun workspace package and prove daemon can import from it. If this fails, fall back to tsconfig path-alias (see § 4 of spec).
 
@@ -311,7 +311,7 @@ cd workspace/void-os && git add protocol/ daemon/test/protocol-smoke.test.ts dae
 
 ---
 
-## Task 2: EventBus.listenerCount()
+### Task 2: EventBus.listenerCount()
 
 **Goal:** Expose total listener count across all subscribed types so the SSE leak test in Task 10 can assert post-disconnect baseline.
 
@@ -402,7 +402,7 @@ cd workspace/void-os && git add daemon/src/events/index.ts daemon/test/events-li
 
 ---
 
-## Task 3: Token issuance (`auth/token.ts`)
+### Task 3: Token issuance (`auth/token.ts`)
 
 **Goal:** On daemon boot, ensure `~/.void-os/token` exists (mode 0600), generate if missing, return its contents.
 
@@ -505,7 +505,7 @@ cd workspace/void-os && git add daemon/src/auth/token.ts daemon/test/auth-token.
 
 ---
 
-## Task 4: Auth middleware (`auth/middleware.ts`)
+### Task 4: Auth middleware (`auth/middleware.ts`)
 
 **Goal:** Hono middleware that enforces bearer token (header or `?token=`) + Origin allowlist on routes it wraps.
 
@@ -640,7 +640,7 @@ cd workspace/void-os && git add daemon/src/auth/middleware.ts daemon/test/auth-m
 
 ---
 
-## Task 5: `/health` extension + wire auth + bootTime
+### Task 5: `/health` extension + wire auth + bootTime
 
 **Goal:** `/health` returns `{ok, version, vault_root, uptime_s, sessions}` and now requires auth. `buildApp` accepts a token + bootTime; `daemon/src/index.ts` plumbs them through.
 
@@ -827,7 +827,7 @@ If you had to edit other test files, include them in the same commit.
 
 ---
 
-## Task 6: Vault `exclude.ts` helper
+### Task 6: Vault `exclude.ts` helper
 
 **Goal:** Single source of truth for "is this path excluded" (`.obsidian/`, `.git/`, dotfiles). Used by all three vault routes.
 
@@ -914,7 +914,7 @@ cd workspace/void-os && git add daemon/src/vault/exclude.ts daemon/test/vault-ex
 
 ---
 
-## Task 7: `GET /vault/file`
+### Task 7: `GET /vault/file`
 
 **Goal:** Read a UTF-8 file under vaultRoot with scope guard + exclusion + binary detection. 200 / 404 / 403 / 415.
 
@@ -1150,7 +1150,7 @@ cd workspace/void-os && git add daemon/src/api/vault.ts daemon/src/app.ts daemon
 
 ---
 
-## Task 8: `PUT /vault/file`
+### Task 8: `PUT /vault/file`
 
 **Goal:** Write with all the hardening from Forge #4 — 10 MB cap, atomic tmp+rename, realpath checks on parent + target, exclusion list.
 
@@ -1345,7 +1345,7 @@ cd workspace/void-os && git add daemon/src/api/vault.ts daemon/test/vault-routes
 
 ---
 
-## Task 9: `GET /vault/list`
+### Task 9: `GET /vault/list`
 
 **Goal:** Recursive listing under vaultRoot with depth limit, exclusions, sorted entries.
 
@@ -1476,7 +1476,7 @@ cd workspace/void-os && git add daemon/src/api/vault.ts daemon/test/vault-routes
 
 ---
 
-## Task 10: `GET /chat/:id/stream` — per-chat SSE
+### Task 10: `GET /chat/:id/stream` — per-chat SSE
 
 **Goal:** SSE stream scoped to one chat. First frame `hello`. Closes on any `run_end` matching the chat. Asserts no listener leak on disconnect.
 
@@ -1813,7 +1813,7 @@ cd workspace/void-os && git add daemon/src/api/chat-stream.ts daemon/src/app.ts 
 
 ---
 
-## Task 11: `docs/api.md`
+### Task 11: `docs/api.md`
 
 **Goal:** Single source-of-truth endpoint reference, with auth section + every route documented.
 
@@ -2081,7 +2081,7 @@ cd workspace/void-os && git add docs/api.md && git commit -m "docs(VOS-116): doc
 
 ---
 
-## Task 12: Regression sweep + integration smoke
+### Task 12: Regression sweep + integration smoke
 
 **Goal:** Confirm the milestone shipped no regressions across the existing route/test suites. Run everything green before requesting code review.
 
