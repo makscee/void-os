@@ -12,7 +12,7 @@
 
 ---
 
-## Task 0: T0 manual probe — pre-implementation gate
+### Task 0: T0 manual probe — pre-implementation gate
 
 **Purpose:** Pin three unknowns before any production code lands. The probe is committed (so it's repeatable across CC versions and operators). T1+ cannot begin until all three sub-assertions pass.
 
@@ -208,7 +208,7 @@ git commit -m "test(VOS-111): T0 manual isolation probe + runbook outputs"
 
 ---
 
-## Task 1: ALLOWED_TOOLS, ALLOWED_MCP_SERVERS, name transform — pure module
+### Task 1: ALLOWED_TOOLS, ALLOWED_MCP_SERVERS, name transform — pure module
 
 **Files:**
 - Modify: `daemon/src/providers/claude-code/spawn-settings.ts`
@@ -333,7 +333,7 @@ git commit -m "feat(VOS-111): ALLOWED_TOOLS + ALLOWED_MCP_SERVERS + mcpToolNameF
 
 ---
 
-## Task 2: Wire isolation flags into spawner argv
+### Task 2: Wire isolation flags into spawner argv
 
 **Files:**
 - Modify: `daemon/src/providers/claude-code/index.ts` (the `args` array ~L269)
@@ -441,7 +441,7 @@ git commit -m "feat(VOS-111): wire --strict-mcp-config + --setting-sources + --t
 
 ---
 
-## Task 3: Forward-drift guard test
+### Task 3: Forward-drift guard test
 
 **Purpose:** prevent the regression where someone registers a new void-os MCP tool but forgets to add it to `ALLOWED_TOOLS`. Test enumerates the live MCP server's registered tools, applies the transform, asserts each is in `ALLOWED_TOOLS`.
 
@@ -557,7 +557,7 @@ git commit -m "test(VOS-111): forward-drift guard for MCP tool allowlist"
 
 ---
 
-## Task 4: Smoke test — real-claudev subset assertions
+### Task 4: Smoke test — real-claudev subset assertions
 
 **Files:**
 - Modify: `daemon/test/smoke.test.ts`
@@ -670,7 +670,7 @@ git commit -m "test(VOS-111): smoke subset-asserts mcp_servers + tools against a
 
 ---
 
-## Task 5: Vault project-settings audit log
+### Task 5: Vault project-settings audit log
 
 **Purpose:** spec §5 risk #1. `--setting-sources project` still loads `<vault>/.claude/settings.json` if such a file exists. Log a warning at daemon boot when one is present so operators know what's being loaded; do not block.
 
@@ -786,7 +786,7 @@ git commit -m "feat(VOS-111): boot-time audit log for vault .claude/settings.jso
 
 ---
 
-## Task 6: VOS-107 e2e scan + minor adjustments
+### Task 6: VOS-107 e2e scan + minor adjustments
 
 **Purpose:** acceptance bullet 5. Scan VOS-107 e2e specs (and the manual-e2e doc) for assertions that relied on the pre-fix leaky tool/MCP listing.
 
@@ -827,7 +827,7 @@ If step 1 returned no actionable hits, skip the commit and note in the task work
 
 ---
 
-## Task 7: Final manual verify + tick task acceptance
+### Task 7: Final manual verify + tick task acceptance
 
 **Files:**
 - Read: trace from a real spawn
