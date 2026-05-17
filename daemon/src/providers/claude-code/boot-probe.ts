@@ -1,8 +1,10 @@
 // VOS-106 T7: daemon boot-time deny-probe. Sends a known out-of-scope
 // Edit payload to the PreToolUse hook script with a deliberately
-// restrictive scope env. Expects continue=false. If the hook returns
-// continue=true, the entire scope-enforcement design is broken —
-// daemon refuses to start.
+// restrictive scope env. Expects the hook to DENY — i.e. either the
+// modern shape {continue: true, decision: "block", reason: ...} or the
+// legacy hard-stop {continue: false}. If the hook returns a plain
+// {continue: true} (no block decision), scope enforcement is fail-open
+// and the daemon refuses to start.
 
 export interface BootProbeArgs {
   hookScriptPath: string;
@@ -40,16 +42,17 @@ export async function runBootDenyProbe(args: BootProbeArgs): Promise<BootProbeRe
   const out = await new Response(proc.stdout as ReadableStream<Uint8Array>).text();
   await proc.exited;
 
-  let parsed: { continue?: boolean };
+  let parsed: { continue?: boolean; decision?: "block" };
   try {
     parsed = JSON.parse(out.trim());
   } catch {
     return { ok: false, reason: `hook produced non-JSON stdout: ${out.slice(0, 200)}` };
   }
-  if (parsed.continue === true) {
+  const denied = parsed.continue === false || parsed.decision === "block";
+  if (!denied) {
     return {
       ok: false,
-      reason: "boot deny-probe failed: hook returned continue=true for out-of-scope Edit (fail-open). Refusing to start daemon.",
+      reason: "boot deny-probe failed: hook returned plain continue=true for out-of-scope Edit (fail-open). Refusing to start daemon.",
     };
   }
   return { ok: true };
