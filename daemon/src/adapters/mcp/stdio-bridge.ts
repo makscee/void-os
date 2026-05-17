@@ -92,12 +92,19 @@ export async function forwardToDaemon(
   return (await res.json()) as JsonRpcMessage;
 }
 
+// VOS-112 T8 fix: the MCP SDK's StdioServerTransport exposes `onmessage`
+// and `onclose` as ASSIGNABLE PROPERTIES (its processReadBuffer calls
+// `this.onmessage?.call(this, message)`), not as setter methods. The earlier
+// shape here treated them as methods, which compiled clean only because
+// main() cast `StdioServerTransport` via `as unknown as BridgeTransport`,
+// and then crashed at runtime with "transport.onmessage is not a function"
+// the moment a real subprocess booted. Match the SDK's actual contract.
 export interface BridgeTransport {
   start(): Promise<void>;
   close(): Promise<void>;
   send(msg: JsonRpcMessage): Promise<void>;
-  onmessage(handler: (msg: JsonRpcMessage) => void): void;
-  onclose(handler: () => void): void;
+  onmessage?: (msg: JsonRpcMessage) => void;
+  onclose?: () => void;
 }
 
 export async function runBridge(
@@ -105,14 +112,14 @@ export async function runBridge(
   cfg: BridgeConfig,
   fetchFn: typeof fetch = fetch,
 ): Promise<void> {
-  transport.onmessage((msg) => {
+  transport.onmessage = (msg) => {
     void (async () => {
       const stamped = stampMeta(msg, cfg);
       const reply = await forwardToDaemon(stamped, cfg, fetchFn);
       await transport.send(reply);
     })();
-  });
-  transport.onclose(() => { /* SDK transport will end the process via main(). */ });
+  };
+  transport.onclose = () => { /* SDK transport will end the process via main(). */ };
   await transport.start();
 }
 

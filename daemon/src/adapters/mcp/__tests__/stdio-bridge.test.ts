@@ -2,24 +2,25 @@ import { describe, test, expect } from "bun:test";
 import { validateBridgeEnv, stampMeta, forwardToDaemon } from "../stdio-bridge.ts";
 import { runBridge, type BridgeTransport, type JsonRpcMessage } from "../stdio-bridge.ts";
 
-function makeMemTransport(): BridgeTransport & {
+type MemTransport = BridgeTransport & {
   push(msg: JsonRpcMessage): void;
   sent: JsonRpcMessage[];
   close(): void;
-} {
-  let handler: ((m: JsonRpcMessage) => void) | undefined;
-  let closeHandler: (() => void) | undefined;
+};
+
+function makeMemTransport(): MemTransport {
+  // VOS-112 T8 fix: onmessage / onclose are assignable properties (matches
+  // the MCP SDK's StdioServerTransport contract), not setter methods.
   const sent: JsonRpcMessage[] = [];
-  return {
-    onmessage(h) { handler = h; },
-    onclose(h)   { closeHandler = h; },
-    async send(m) { sent.push(m); },
+  const t: MemTransport = {
+    async send(m: JsonRpcMessage) { sent.push(m); },
     async start() { /* noop */ },
-    async close() { closeHandler?.(); },
-    push(m)   { handler?.(m); },
+    async close() { t.onclose?.(); },
+    push(m: JsonRpcMessage) { t.onmessage?.(m); },
     sent,
-    close()   { closeHandler?.(); },
+    close() { t.onclose?.(); },
   };
+  return t;
 }
 
 describe("runBridge", () => {
