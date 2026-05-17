@@ -242,7 +242,22 @@ describe("VOS-112 T8: stdio-bridge subprocess <-> daemon /mcp", () => {
     expect(parked.state).toBe("TASK_STATE_INPUT_REQUIRED");
     expect(parked.pending).toBe(toolUseId);
 
-    // 3. Resolve via the daemon's /answer route (production path).
+    // 3. Attach the reply listener BEFORE POSTing /answer — see AC-4 for the
+    //    same pattern. The bridge writes the tool reply to stdout the moment
+    //    the daemon resolves the open() Promise, which can happen on the same
+    //    event-loop tick as the fetch() promise resolving. If we only attach
+    //    the listener AFTER `await fetch(...)`, the underlying pipe's buffered
+    //    data can arrive between fetch resolution and listener attach, get
+    //    dropped (no listener = stream paused, but Node's stream resume after
+    //    re-attach isn't always synchronous on macOS), and the test flakes
+    //    at the 5s timeout with `buf=`. Empirically AC-1 alone flaked ~4/10
+    //    on this race; AC-4 was already correct.
+    const replyP = readReply(child, 2, 10_000) as Promise<{
+      result?: { content: Array<{ type: string; text: string }>; isError?: boolean };
+      error?: unknown;
+    }>;
+
+    // 4. Resolve via the daemon's /answer route (production path).
     const ansRes = await fetch(
       `http://127.0.0.1:${port}/chat/${contextId}/answer`,
       {
@@ -253,11 +268,8 @@ describe("VOS-112 T8: stdio-bridge subprocess <-> daemon /mcp", () => {
     );
     expect(ansRes.status).toBe(200);
 
-    // 4. Bridge should now deliver the tool reply.
-    const reply = (await readReply(child, 2, 5_000)) as {
-      result?: { content: Array<{ type: string; text: string }>; isError?: boolean };
-      error?: unknown;
-    };
+    // 5. Bridge should now deliver the tool reply.
+    const reply = await replyP;
     expect(reply.error).toBeUndefined();
     expect(reply.result?.isError).toBeFalsy();
     expect(reply.result?.content?.[0]?.text).toBe("pong");
