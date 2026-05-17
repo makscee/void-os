@@ -105,8 +105,6 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   app.use("/vault/*", makeRequireAuth(token));
   mountVault(app, { vaultRoot: deps.vaultRoot });
 
-  const emit = deps.emit ?? broadcast;
-
   // Wire orchestrator + titler. Tests can inject both to skip SDK/key/cc
   // construction entirely. Production path: real bus → real claude-code
   // Provider (createCcSpawner + makeCcSpawnerIter + makeClaudeCodeProvider)
@@ -120,6 +118,23 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // (ask_user emits task.state_changed / message.appended via this bus).
   // Hoisted out of the orchestrator-only block so mountMcp can receive it.
   const bus = deps.eventBus ?? createEventBus({ db: deps.db });
+
+  // VOS-118: the orchestrator's `emit(type, payload)` shim historically only
+  // fanned out to WebSocket clients via broadcast(). The SSE /chat/:id/stream
+  // route subscribes to the in-process bus, so chat.token / chat.tool_use /
+  // chat.tool_result frames never reached SSE consumers (the CLI). Tee the
+  // emit into the bus as well — the WS path is preserved (plugin reducer
+  // tests etc. still see chat.* frames), and the bus path lights up the SSE
+  // subscriber. Tests that inject `deps.emit` get the same tee so SSE
+  // assertions stay consistent across wiring paths.
+  const baseEmit = deps.emit ?? broadcast;
+  const emit: (type: string, payload: Record<string, unknown>) => void = (
+    type,
+    payload,
+  ) => {
+    baseEmit(type, payload);
+    bus.emit({ type, payload });
+  };
   const bridge = createAskUserBridge({ db: deps.db, bus });
 
   // VOS-104 T8b: wire cost ledger subscriber. Without this, `run.end` events
@@ -246,7 +261,11 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // `chatApi` owns per-chat routes (GET /chat/:id, /messages, POST /message).
   app.route("/", chatsApi(deps.db));
   app.route("/", agentsApi(deps.db));
-  app.route("/", chatApi(deps.db, { orchestrator }));
+  // VOS-118: pass the shared bus so POST /chat/:id/message can return early
+  // (with {run_id, status:"running"}) instead of blocking until dispatch
+  // finishes — required for ask_user flows where dispatch parks indefinitely
+  // waiting for /answer.
+  app.route("/", chatApi(deps.db, { orchestrator, bus }));
   // VOS-89 T15.5: real production dispatcher for ask_agent children. Per-
   // agent Provider memoisation lives inside the dispatcher; cwd +
   // tracesDir mirror the orchestrator wiring above so child runs share

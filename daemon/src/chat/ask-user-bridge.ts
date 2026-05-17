@@ -240,6 +240,27 @@ export function createAskUserBridge(deps: CreateAskUserBridgeDeps): AskUserBridg
       emitStateChanged(args.contextId, args.taskId, "TASK_STATE_INPUT_REQUIRED");
       if (messageId !== null) emitMessageAppended(args.contextId, args.taskId, messageId);
 
+      // VOS-118: surface the pending question to SSE subscribers (CLI chat
+      // REPL). The CLI's stream-render Frame for ask_user expects
+      // {tool_use_id, prompt, run_id?}; chat-stream.ts translates this bus
+      // event into that frame shape. Routed on the same bus that carries
+      // task.state_changed so SSE listeners can rely on a single source of
+      // truth. chatId on the envelope is set to contextId so chat-stream's
+      // per-chat filter matches; payload also carries chat_id for the
+      // broadcast() consumer pattern.
+      bus.emit({
+        type: "chat.ask_user",
+        chatId: args.contextId,
+        runId: args.runId ?? undefined,
+        payload: {
+          chat_id: args.contextId,
+          run_id: args.runId,
+          tool_use_id: args.toolUseId,
+          question: args.question,
+          options: args.options ?? null,
+        },
+      });
+
       const awaiter: Awaiter = {
         resolveFn,
         timer: null,
