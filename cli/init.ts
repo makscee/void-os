@@ -26,6 +26,19 @@ export interface Flags {
   obsidianVault?: string
 }
 
+export class FlagsError extends Error {
+  constructor(msg: string, public exitCode: number) { super(msg) }
+}
+
+export function validateFlags(f: Flags): void {
+  if (f.nonInteractive && !f.vault) {
+    throw new FlagsError("--non-interactive requires --vault <path>", 64)
+  }
+  if (f.ghRepo && f.skipGh) {
+    throw new FlagsError("--gh-repo and --skip-gh are mutually exclusive", 64)
+  }
+}
+
 export function parseFlags(args: string[]): Flags {
   const out: Flags = {
     dryRun: false, force: false, skipBuild: false,
