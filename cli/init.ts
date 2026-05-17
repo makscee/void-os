@@ -13,21 +13,36 @@ import { formatReport } from "./init/report"
 export { seed as provision } from "./init/seed"
 export type { SeedOpts as ProvisionOpts, SeedResult as ProvisionResult } from "./init/seed"
 
-interface Flags {
+export interface Flags {
   home?: string
   dryRun: boolean
   force: boolean
   skipBuild: boolean
+  nonInteractive: boolean
+  vault?: string
+  ghRepo?: string
+  skipGh: boolean
+  skipObsidian: boolean
+  obsidianVault?: string
 }
 
-function parseFlags(args: string[]): Flags {
-  const out: Flags = { dryRun: false, force: false, skipBuild: false }
+export function parseFlags(args: string[]): Flags {
+  const out: Flags = {
+    dryRun: false, force: false, skipBuild: false,
+    nonInteractive: false, skipGh: false, skipObsidian: false,
+  }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
     if (a === "--dry-run") out.dryRun = true
     else if (a === "--force") out.force = true
     else if (a === "--skip-build") out.skipBuild = true
     else if (a === "--home") out.home = args[++i]
+    else if (a === "--non-interactive") out.nonInteractive = true
+    else if (a === "--vault") out.vault = args[++i]
+    else if (a === "--gh-repo") out.ghRepo = args[++i]
+    else if (a === "--skip-gh") out.skipGh = true
+    else if (a === "--skip-obsidian") out.skipObsidian = true
+    else if (a === "--obsidian-vault") out.obsidianVault = args[++i]
     else throw new Error(`unknown flag: ${a}`)
   }
   return out

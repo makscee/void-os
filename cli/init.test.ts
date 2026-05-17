@@ -11,7 +11,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { provision } from "./init"
+import { provision, parseFlags } from "./init"
 
 let tmpRoot: string
 let prefix: string
@@ -106,5 +106,36 @@ describe("provision()", () => {
     await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     const link = join(home, ".claude/skills")
     expect(lstatSync(link).isSymbolicLink()).toBe(true)
+  })
+})
+
+describe("parseFlags non-interactive", () => {
+  it("--non-interactive sets nonInteractive=true", () => {
+    const f = parseFlags(["--non-interactive", "--vault", "/tmp/v"])
+    expect(f.nonInteractive).toBe(true)
+    expect(f.vault).toBe("/tmp/v")
+  })
+
+  it("--gh-repo X parsed", () => {
+    const f = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--gh-repo", "myvault"])
+    expect(f.ghRepo).toBe("myvault")
+    expect(f.skipGh).toBe(false)
+  })
+
+  it("--skip-gh parsed", () => {
+    const f = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--skip-gh"])
+    expect(f.skipGh).toBe(true)
+  })
+
+  it("--skip-obsidian and --obsidian-vault parsed", () => {
+    const f = parseFlags([
+      "--non-interactive", "--vault", "/tmp/v",
+      "--obsidian-vault", "myvault",
+    ])
+    expect(f.obsidianVault).toBe("myvault")
+    expect(f.skipObsidian).toBe(false)
+
+    const g = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--skip-obsidian"])
+    expect(g.skipObsidian).toBe(true)
   })
 })
