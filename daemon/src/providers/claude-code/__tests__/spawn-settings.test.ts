@@ -35,6 +35,9 @@ describe("buildSpawnSettings", () => {
       /bun .*\/abs\/pre-tool-use\.ts$/,
     );
     expect(settings.additionalDirectories).toEqual(["/Users/x/.config/something"]);
+    // VOS-107 review followup: AskUserQuestion is denied so agents fall back to
+    // the daemon's ask_user path instead of CC's built-in tool.
+    expect(settings.permissions).toEqual({ deny: ["AskUserQuestion"] });
   });
 
   it("writes mcp.json pointing at /mcp?agent=<n> (stable URL across runs)", () => {
