@@ -31,7 +31,7 @@ if (!fs.existsSync(vaultRoot)) {
   process.exit(2);
 }
 
-const dbPath = process.env.VOID_OS_DB ?? path.join(path.dirname(vaultRoot), "state.sqlite");
+const dbPath = process.env.VOID_OS_DB ?? path.join(vaultRoot, ".void", "state.sqlite");
 const db = openDatabase(dbPath);
 
 // VOS-79 T10: sweep orphan running/pending runs left by a previous crash.
