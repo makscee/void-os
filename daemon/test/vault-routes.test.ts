@@ -160,3 +160,47 @@ test("PUT /vault/file — write is atomic (no .tmp leaks on success)", async () 
   const siblings = fs.readdirSync(ctx.vaultRoot);
   expect(siblings.some(n => n.startsWith("atomic.md.tmp-"))).toBe(false);
 });
+
+test("GET /vault/list — shallow root", async () => {
+  fs.writeFileSync(path.join(ctx.vaultRoot, "a.md"), "a");
+  fs.writeFileSync(path.join(ctx.vaultRoot, "b.md"), "b");
+  fs.mkdirSync(path.join(ctx.vaultRoot, "sub"));
+  fs.writeFileSync(path.join(ctx.vaultRoot, "sub", "c.md"), "c");
+  const res = await ctx.app.request("/vault/list?depth=1", { headers: auth });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as any;
+  expect(body.path).toBe(ctx.vaultRoot);
+  const names = (body.entries as any[]).map(e => e.name).sort();
+  expect(names).toEqual(["a.md", "b.md", "sub"]);
+  const sub = (body.entries as any[]).find(e => e.name === "sub");
+  expect(sub.type).toBe("dir");
+});
+
+test("GET /vault/list — deep includes nested entries", async () => {
+  fs.mkdirSync(path.join(ctx.vaultRoot, "x"));
+  fs.writeFileSync(path.join(ctx.vaultRoot, "x", "y.md"), "y");
+  const res = await ctx.app.request("/vault/list?path=x", { headers: auth });
+  const body = (await res.json()) as any;
+  expect(body.entries.map((e: any) => e.name)).toEqual(["y.md"]);
+});
+
+test("GET /vault/list — excludes .obsidian + dotfiles", async () => {
+  fs.mkdirSync(path.join(ctx.vaultRoot, ".obsidian"));
+  fs.writeFileSync(path.join(ctx.vaultRoot, ".obsidian", "x"), "");
+  fs.writeFileSync(path.join(ctx.vaultRoot, ".env"), "");
+  fs.writeFileSync(path.join(ctx.vaultRoot, "visible.md"), "");
+  const res = await ctx.app.request("/vault/list?depth=1", { headers: auth });
+  const body = (await res.json()) as any;
+  const names = (body.entries as any[]).map(e => e.name);
+  expect(names).toEqual(["visible.md"]);
+});
+
+test("GET /vault/list — missing path → 404", async () => {
+  const res = await ctx.app.request("/vault/list?path=nope", { headers: auth });
+  expect(res.status).toBe(404);
+});
+
+test("GET /vault/list — traversal → 403", async () => {
+  const res = await ctx.app.request("/vault/list?path=../..", { headers: auth });
+  expect(res.status).toBe(403);
+});

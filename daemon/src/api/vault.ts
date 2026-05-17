@@ -46,6 +46,45 @@ export function mountVault(app: Hono, deps: Deps): void {
     });
   });
 
+  app.get("/vault/list", (c) => {
+    const rel = c.req.query("path") ?? "";
+    const depthRaw = c.req.query("depth");
+    const depth = depthRaw ? Math.max(1, parseInt(depthRaw, 10) || 1) : Number.POSITIVE_INFINITY;
+
+    let abs: string;
+    if (rel === "" || rel === ".") {
+      abs = vaultRoot;
+    } else {
+      if (isExcluded(rel)) return c.json({ error: "E_EXCLUDED" }, 403);
+      try { abs = resolveVaultPath(rel, vaultRoot); }
+      catch (e) { const m = mapResolveError(e); return c.json({ error: m.error }, m.status); }
+    }
+
+    if (!fs.existsSync(abs)) return c.json({ error: "E_NOT_FOUND" }, 404);
+
+    const entries: Array<{name: string; type: "file"|"dir"; size: number; mtime: number}> = [];
+    const stat = fs.statSync(abs);
+    if (!stat.isDirectory()) {
+      return c.json({ error: "E_NOT_FOUND" }, 404);
+    }
+
+    function walk(dir: string, remaining: number) {
+      for (const name of fs.readdirSync(dir).sort()) {
+        if (name.startsWith(".")) continue;  // excludes .obsidian, .git, dotfiles
+        const child = `${dir}/${name}`;
+        const s = fs.statSync(child);
+        const type: "file"|"dir" = s.isDirectory() ? "dir" : "file";
+        if (dir === abs) {
+          entries.push({ name, type, size: s.size, mtime: Math.floor(s.mtimeMs / 1000) });
+        }
+        if (type === "dir" && remaining > 1) walk(child, remaining - 1);
+      }
+    }
+    walk(abs, depth);
+
+    return c.json({ path: abs, entries });
+  });
+
   app.put("/vault/file", async (c) => {
     // Hard cap before reading body to avoid OOM on hostile content.
     const lenHeader = c.req.header("content-length");
