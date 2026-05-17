@@ -85,7 +85,7 @@ Obsidian detection: macOS = `/Applications/Obsidian.app` exists. Linux = `which 
 - `spawnSync('bun', ['install'], { cwd: prefix + '/plugin', stdio: 'inherit' })` — plugin deps.
 - `spawnSync('bun', ['run', 'build'], { cwd: prefix + '/plugin', stdio: 'inherit' })` — produces `plugin/dist/main.js`.
 
-Skip-build heuristic: if `plugin/dist/main.js` mtime newer than newest mtime under `plugin/src/`, skip the plugin build. Always run `bun install` (cheap when up-to-date).
+Skip-build heuristic: if `plugin/dist/main.js` mtime newer than newest mtime under `plugin/src/` **and** newer than `plugin/package.json` and `plugin/bun.lockb`, skip the plugin build. Dep bumps therefore invalidate the cached dist. Always run `bun install` (cheap when up-to-date).
 
 `--skip-build` flag bypasses all build steps for dev iter.
 
@@ -93,26 +93,33 @@ Non-zero exit from any spawn → abort `code 3`.
 
 ### Seed
 
-Order matters — git init before file writes so commit captures full tree.
+Order matters — git init before file writes (when seeding fresh) so the seed commit captures the full tree, and **never** touch git on a re-run where the user may have made unrelated edits.
+
+`isFreshSeed = !marker_existed_at_start_of_run` is computed in the pre-check and gates git init + first commit downstream.
 
 1. **Pre-check.** Read `<vault>/.void` if present.
-   - Present + `--force` not set → skip file copies, continue to git/gh steps.
-   - Absent + dir non-empty + no `--force` → existing refuse-clobber error (already in `provision()`).
+   - Set `isFreshSeed = !markerPresent`.
+   - `markerPresent` + `--force` not set → skip file copies, **skip git init + first commit entirely** (do not sweep user's WIP into a "seed" commit), continue to plugin-install step.
+   - `markerPresent` + `--force` set → re-seed files but **still skip git init** (repo already exists or user chose not to init); do NOT auto-commit user's working tree.
+   - Marker absent + dir non-empty + no `--force` → existing refuse-clobber error (already in `provision()`).
 2. **Create vault dir** (`mkdirSync({ recursive: true })`).
-3. **`git init`** if `<vault>/.git/` absent.
+3. **`git init`** if `isFreshSeed` AND `<vault>/.git/` absent. Skip on any re-run.
 4. **Copy tree** `<prefix>/starter-vault/` → `<vault>/` via existing `copyTree()`. Existing `--force` semantics preserved.
 5. **Claude skills symlink** via existing `ensureClaudeSkillsSymlink()`.
 6. **Write `.void` marker** atomically (write to `.void.tmp` + `rename`):
 
    ```json
-   { "version": 1, "createdAt": "<ISO>", "vault": "<abs path>" }
+   { "version": 1, "createdAt": "<ISO>" }
    ```
 
-7. **First commit** if no commits yet: `git add -A && git commit -m "seed: void-os init"`.
+7. **First commit** only if `isFreshSeed` AND no commits exist yet: `git add -A && git commit -m "seed: void-os init"`. Re-runs never auto-commit.
 8. **GH push** if confirmed:
-   - `gh repo create <name> --private --source <vault> --push`
-   - Fallback if repo already exists: `git remote add origin git@github.com:<user>/<name>.git || git remote set-url origin ...` then `git push -u origin main`.
-   - Failure → soft warn, leave local repo, continue.
+   - `gh repo create <name> --private --source <vault> --push`.
+   - **Existing-remote safety:** if `git remote get-url origin` returns a URL, compare to the target.
+     - Same URL → continue, `git push -u origin main`.
+     - Different URL → **abort the gh step** with a soft warning printing both URLs side-by-side. Never auto-rewrite `origin`.
+   - No `origin` set + `gh repo create` reports repo already exists upstream → `git remote add origin <url>` then `git push -u origin main`.
+   - Any failure → soft warn, leave local repo, continue.
 
 ### Plugin install
 
@@ -149,9 +156,10 @@ Variants:
 interface VoidMarker {
   version: 1
   createdAt: string   // ISO 8601 UTC
-  vault: string       // absolute path
 }
 ```
+
+No `vault` path field — the marker's location IS the vault root. Storing an absolute path inside it would lie the moment the user renames the directory and tempt future code to trust a stale value.
 
 Atomic write contract: write to `<vault>/.void.tmp`, `renameSync` to `.void`. Re-run is allowed to overwrite (idempotent).
 
@@ -218,7 +226,17 @@ GH push failure does NOT abort — soft warn only.
 - **Smoke gate first.** Run existing `init.test.ts` against tmp dirs before adding new cases. Confirms test harness still works after `provision()` refactor into `seed.ts`.
 - **Unit:**
   - `preflight()` — stub `which` via mocked `spawnSync`; assert returned report shape.
-  - `configure()` — feed scripted answers via clack's test helpers (or wrap behind an injected `Prompter` interface for testability).
+  - `configure()` — wrapped behind an injected `Prompter` interface (mandated; `@clack/prompts` ships no public test API). Contract:
+    ```ts
+    interface Prompter {
+      intro(msg: string): void
+      outro(msg: string): void
+      text(opts: { message: string; defaultValue?: string; validate?: (v: string) => string | void }): Promise<string>
+      confirm(opts: { message: string; initialValue?: boolean }): Promise<boolean>
+      cancel(msg?: string): never
+    }
+    ```
+    Production `Prompter` wraps `@clack/prompts`. Tests inject a `ScriptedPrompter` that returns queued answers.
   - `seed()` — tmp `prefix` + tmp `home`; assert files copied, `.void` written, `.git/` created.
   - Idempotency — run `seed()` twice; second run should not overwrite without `--force`; `.void` mtime unchanged.
 - **Integration:**
