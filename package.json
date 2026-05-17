@@ -3,5 +3,8 @@
   "private": true,
   "type": "module",
   "bin": { "void-os": "./bin/void-os" },
-  "workspaces": ["daemon", "plugin", "protocol"]
+  "workspaces": ["daemon", "plugin", "protocol"],
+  "dependencies": {
+    "@voidos/protocol": "workspace:*"
+  }
 }
