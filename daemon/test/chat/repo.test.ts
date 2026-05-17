@@ -217,3 +217,37 @@ test("list returns input_required=true when any task in chat is INPUT_REQUIRED",
   const rows2 = repo.list();
   expect(rows2.find((r) => r.id === c.id)!.input_required).toBe(false);
 });
+
+test("list returns context_tokens + splits from latest costs row per chat (tiebreak by id desc)", () => {
+  const db = freshDb();
+  const repo = makeChatRepo(db);
+  const a = repo.create({ agent: "maya" });
+  const b = repo.create({ agent: "maya" });
+  // Match the schema/style used by the cost_usd test above: include provider+model,
+  // and add the token-split columns relevant to this test.
+  const insert = db.prepare(
+    `INSERT INTO costs
+       (run_id, chat_id, agent, provider, ts, cost_usd, model,
+        input_tokens, output_tokens, cache_create_tokens, cache_read_tokens)
+     VALUES (?, ?, 'maya', 'claude-code', ?, ?, 'sonnet', ?, ?, ?, ?)`,
+  );
+  // Earlier ts — should be ignored.
+  insert.run("r1", a.id, 100, 0.01, 10, 1, 0, 0);
+  // Latest ts, lower id of the tie pair — should be ignored by tiebreak.
+  insert.run("r2", a.id, 200, 0.10, 500, 50, 100, 2000);
+  // Latest ts, higher id — wins.
+  insert.run("r3", a.id, 200, 0.20, 999, 9, 9, 9);
+  const rows = repo.list();
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  expect(byId[a.id].context_input_tokens).toBe(999);
+  expect(byId[a.id].context_output_tokens).toBe(9);
+  expect(byId[a.id].context_cache_create_tokens).toBe(9);
+  expect(byId[a.id].context_cache_read_tokens).toBe(9);
+  expect(byId[a.id].context_tokens).toBe(999 + 9 + 9 + 9);
+  // chat b has no costs rows — all 5 fields null.
+  expect(byId[b.id].context_tokens).toBeNull();
+  expect(byId[b.id].context_input_tokens).toBeNull();
+  expect(byId[b.id].context_output_tokens).toBeNull();
+  expect(byId[b.id].context_cache_create_tokens).toBeNull();
+  expect(byId[b.id].context_cache_read_tokens).toBeNull();
+});

@@ -12,23 +12,16 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * VOS-107 T11 — cost meter (surface S5).
+ * VOS-110 — Chat list shows context tokens; CostMeter shows daily 4-token
+ * split fetched from /cost/today.
  *
- * Asserts the cost pipeline end-to-end via the `main` Playwright project's
- * shared daemon:
- *   1. After a fake run completes with a usage-bearing assistant event,
- *      the chat's lifetime SUM(costs.cost_usd) (surfaced via GET /chats →
- *      `cost_usd`) is > 0.
- *   2. After a SECOND run on the same chat, the lifetime sum strictly
- *      increases (per-run / per-task cost increment).
- *   3. The sidebar CostMeter widget (`data-testid="cost-meter"`) renders.
- *
- * Per-day reset (`VOS_FAKE_NOW` clock injection) is NOT supported by the
- * daemon. The CostMeter component (plugin/src/chat/CostMeter.tsx) is also
- * still a static placeholder ($0.00 / $5.00 daily) — VOS-81 will swap in
- * live daily totals. Until then this spec only asserts the widget mounts
- * and is observable in the sidebar; we do NOT cross-check its text against
- * GET /cost/today. Stretch acceptance only per plan.
+ * Asserts:
+ *   1. /chats payload exposes `context_tokens` (latest-turn sum) > 0 after
+ *      a run lands a costs row.
+ *   2. /cost/today total strictly increases between runs (proves a new
+ *      costs row landed, not just that the chat-level field updated).
+ *   3. CostMeter rendered text matches `<n>k? in / <n>k? out / <n>k? cc /
+ *      <n>k? cr` once at least one run has landed today.
  *
  * Provider wiring reality (mirrors chat-list-polish.spec.ts §"Provider
  * wiring reality"): the top-level orchestrator is constructed once with
@@ -42,9 +35,10 @@ import { fileURLToPath } from "node:url";
  * API shapes (per T9 findings, see ask-user.spec.ts header):
  *   POST /chats          {agent: "maya"}      (NOT agent_name)
  *   POST /chat/:id/message {text: "..."}     (NOT content)
- *   GET  /chats          → [{id, cost_usd, ...}]
- *
- * Field is `cost_usd`, not `cost` (plugin/src/chat/api.ts:43).
+ *   GET  /chats          → [{id, context_tokens, ...}]
+ *   GET  /cost/today     → { total: { input_tokens, output_tokens,
+ *                                     cache_create_tokens,
+ *                                     cache_read_tokens } }
  */
 
 interface E2EState {
@@ -119,19 +113,34 @@ async function sendMessageViaApi(
   expect([200, 201, 202]).toContain(res.status());
 }
 
-async function getChatCostUsd(
+async function getChatContextTokens(
   api: APIRequestContext,
   chatId: string,
 ): Promise<number> {
   const res = await api.get("/chats");
   expect(res.status()).toBe(200);
-  const rows = (await res.json()) as Array<{ id: string; cost_usd?: number }>;
+  const rows = (await res.json()) as Array<{ id: string; context_tokens?: number | null }>;
   const row = rows.find((r) => r.id === chatId);
   expect(row, `chat ${chatId} missing from GET /chats`).toBeTruthy();
-  return row?.cost_usd ?? 0;
+  return typeof row?.context_tokens === "number" ? row.context_tokens : 0;
 }
 
-test.describe("VOS-107 T11 cost meter", () => {
+async function getCostTodayTotalTokens(api: APIRequestContext): Promise<number> {
+  const res = await api.get("/cost/today");
+  expect(res.status()).toBe(200);
+  const json = (await res.json()) as { total?: Record<string, unknown> };
+  const t = json?.total ?? {};
+  const n = (v: unknown): number =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+  return (
+    n(t.input_tokens) +
+    n(t.output_tokens) +
+    n(t.cache_create_tokens) +
+    n(t.cache_read_tokens)
+  );
+}
+
+test.describe("VOS-110 token meter", () => {
   test.setTimeout(180_000);
 
   // Snapshot maya's pinned fake-script so the per-test mutation restores
@@ -144,7 +153,7 @@ test.describe("VOS-107 T11 cost meter", () => {
     writeFileSync(MAYA_SCRIPT, originalMaya);
   });
 
-  test("cost meter increments per task and the sidebar widget renders", async () => {
+  test("context_tokens populates per chat and /cost/today total grows across runs; meter renders 4-token split", async () => {
     const state = loadState();
 
     // Plant a usage-bearing assistant event on maya's pinned path.
@@ -178,36 +187,64 @@ test.describe("VOS-107 T11 cost meter", () => {
       const chatId = await mintChatViaApi(api, "maya");
 
       // ── Run 1 ─────────────────────────────────────────────────────
+      // Snapshot /cost/today total BEFORE the first run so the cumulative
+      // assertion proves a new costs row landed (not just that some
+      // earlier run already pushed the total above zero).
+      const totalBefore1 = await getCostTodayTotalTokens(api);
       await sendMessageViaApi(api, chatId, "one");
-      // Poll: bus → cost subscriber → INSERT into costs is synchronous on
-      // run.end, but the chats-list SUM read may briefly see 0 if the
-      // POST returns before the WS broadcast settles. A tight poll covers
-      // the gap without flaking.
+
+      // Per-chat: latest-turn context size > 0 (proves T2/T3 daemon-side
+      // LEFT JOIN exposes the costs row's token sum).
       await expect.poll(
-        async () => await getChatCostUsd(api, chatId),
+        async () => await getChatContextTokens(api, chatId),
         { timeout: 15_000, intervals: [100, 250, 500] },
       ).toBeGreaterThan(0);
-      const cost1 = await getChatCostUsd(api, chatId);
-      expect(cost1).toBeGreaterThan(0);
+
+      // Cumulative: /cost/today total strictly grew (proves the costs row
+      // was inserted today, not pre-existing).
+      await expect.poll(
+        async () => await getCostTodayTotalTokens(api),
+        { timeout: 15_000, intervals: [100, 250, 500] },
+      ).toBeGreaterThan(totalBefore1);
+
+      const ctx1 = await getChatContextTokens(api, chatId);
+      const totalAfter1 = await getCostTodayTotalTokens(api);
+      expect(ctx1).toBeGreaterThan(0);
+      expect(totalAfter1).toBeGreaterThan(totalBefore1);
 
       // ── Run 2 ─────────────────────────────────────────────────────
+      // Per-turn context (ctx2) is per-latest-row, not cumulative — it
+      // may equal ctx1 since the planted fixture is identical. The strict
+      // monotonicity claim belongs to /cost/today, not to context_tokens.
       await sendMessageViaApi(api, chatId, "two");
       await expect.poll(
-        async () => await getChatCostUsd(api, chatId),
+        async () => await getCostTodayTotalTokens(api),
         { timeout: 15_000, intervals: [100, 250, 500] },
-      ).toBeGreaterThan(cost1);
-      const cost2 = await getChatCostUsd(api, chatId);
-      expect(cost2).toBeGreaterThan(cost1);
+      ).toBeGreaterThan(totalAfter1);
 
-      // ── Per-day surface ───────────────────────────────────────────
-      // The CostMeter sidebar widget (plugin/src/chat/CostMeter.tsx) is a
-      // VOS-80 placeholder — text is hard-coded "$0.00 / $5.00 daily" until
-      // VOS-81 wires it to GET /cost/today. We assert the widget mounts
-      // and is observable; do NOT cross-check the digits against the
-      // ledger (would tightly couple this spec to placeholder text).
+      const ctx2 = await getChatContextTokens(api, chatId);
+      expect(ctx2).toBeGreaterThan(0);
+
+      // ── Meter shape ───────────────────────────────────────────────
+      // After at least one run landed today, the CostMeter widget must
+      // render the 4-token split `<n>k? in / <n>k? out / <n>k? cc /
+      // <n>k? cr`. Gating on the digit-bearing regex prevents the spec
+      // flaking on the cold-start loading text `— in / — out / — cc /
+      // — cr`, which does NOT contain a digit before `in`.
       const meter = page.getByTestId("cost-meter");
       await expect(meter).toBeVisible({ timeout: 10_000 });
-      await expect(meter).toContainText(/\d/);
+      await expect.poll(
+        async () => {
+          const text = await meter.innerText();
+          return (
+            /\d+(\.\d+)?k? in/.test(text) &&
+            /out/.test(text) &&
+            /cc/.test(text) &&
+            /cr/.test(text)
+          );
+        },
+        { timeout: 15_000, intervals: [100, 250, 500] },
+      ).toBe(true);
     } finally {
       await api.dispose();
       await browser.close();

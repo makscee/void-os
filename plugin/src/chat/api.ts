@@ -43,6 +43,12 @@ export interface ChatSummary {
   cost_usd: number;
   /** True iff any task in this chat is in TASK_STATE_INPUT_REQUIRED. */
   input_required: boolean;
+  /** Latest run's context token usage (sum of input/output/cache splits). null until set. */
+  context_tokens: number | null;
+  context_input_tokens: number | null;
+  context_output_tokens: number | null;
+  context_cache_create_tokens: number | null;
+  context_cache_read_tokens: number | null;
 }
 
 export interface ChatApi {
@@ -66,6 +72,16 @@ export interface ChatApi {
   >;
   listChats(): Promise<ChatSummary[]>;
   getMessages(chatId: string): Promise<ReplayMessage[]>;
+  /** GET /cost/today. Returns the 4-token-split daily total with non-neg integer
+   *  coercion per field (else 0). VOS-110 T5 — backs the live CostMeter widget. */
+  getCostToday(): Promise<{
+    total: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_create_tokens: number;
+      cache_read_tokens: number;
+    };
+  }>;
 }
 
 export async function jsonOrThrow(res: Response): Promise<unknown> {
@@ -151,6 +167,10 @@ function normalizeReplay(raw: unknown): ReplayMessage[] {
   return out;
 }
 
+function asNonNegIntOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : null;
+}
+
 function normalizeChats(raw: unknown): ChatSummary[] {
   if (!Array.isArray(raw)) return [];
   const out: ChatSummary[] = [];
@@ -171,6 +191,11 @@ function normalizeChats(raw: unknown): ChatSummary[] {
           ? o.cost_usd
           : 0,
       input_required: o.input_required === true,
+      context_tokens: asNonNegIntOrNull(o.context_tokens),
+      context_input_tokens: asNonNegIntOrNull(o.context_input_tokens),
+      context_output_tokens: asNonNegIntOrNull(o.context_output_tokens),
+      context_cache_create_tokens: asNonNegIntOrNull(o.context_cache_create_tokens),
+      context_cache_read_tokens: asNonNegIntOrNull(o.context_cache_read_tokens),
     });
   }
   return out;
@@ -249,6 +274,24 @@ export function makeChatApi(
       );
       const body = await jsonOrThrow(res);
       return normalizeReplay(body);
+    },
+    async getCostToday() {
+      const res = await fetchImpl(`${base}/cost/today`, { method: "GET" });
+      const body = await jsonOrThrow(res);
+      const t =
+        body && typeof body === "object" && "total" in body && body.total && typeof body.total === "object"
+          ? (body.total as Record<string, unknown>)
+          : {};
+      const num = (v: unknown): number =>
+        typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : 0;
+      return {
+        total: {
+          input_tokens: num(t.input_tokens),
+          output_tokens: num(t.output_tokens),
+          cache_create_tokens: num(t.cache_create_tokens),
+          cache_read_tokens: num(t.cache_read_tokens),
+        },
+      };
     },
   };
 }

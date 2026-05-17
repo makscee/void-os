@@ -21,7 +21,7 @@
 
 import * as React from "react";
 import type { ChatApi, ChatSummary } from "./api";
-import { formatUsd } from "./format-usd";
+import { formatTokens } from "./format-tokens";
 
 export interface ChatListProps {
   api: ChatApi;
@@ -174,10 +174,15 @@ export function ChatList(props: ChatListProps) {
                 </span>
               </span>
               <span
-                data-testid="cost-cell"
+                data-testid="context-cell"
+                title={
+                  c.context_tokens == null
+                    ? ""
+                    : `${formatTokens(c.context_input_tokens)} in / ${formatTokens(c.context_output_tokens)} out / ${formatTokens(c.context_cache_create_tokens)} cc / ${formatTokens(c.context_cache_read_tokens)} cr`
+                }
                 className="vos:inline-block vos:min-w-[3.5rem] vos:text-right vos:text-[11px] vos:text-[var(--text-muted)] vos:tabular-nums vos:shrink-0"
               >
-                {formatUsd(c.cost_usd)}
+                {formatTokens(c.context_tokens)}
               </span>
               <span
                 aria-hidden
