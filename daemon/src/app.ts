@@ -19,6 +19,8 @@ import { existsSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import pkg from "../package.json" with { type: "json" };
 import { mountApi } from "./api/index.ts";
+import { mountVault } from "./api/vault.ts";
+import { makeRequireAuth } from "./auth/middleware.ts";
 import { resolveTz } from "./cost/tz.ts";
 import { chatsApi } from "./api/chats.ts";
 import { agentsApi } from "./api/agents.ts";
@@ -88,6 +90,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     token,
     bootTime,
   });
+
+  // VOS-116 T7: vault routes — bearer-auth required on every /vault/*.
+  app.use("/vault/*", makeRequireAuth(token));
+  mountVault(app, { vaultRoot: deps.vaultRoot });
 
   const emit = deps.emit ?? broadcast;
 
