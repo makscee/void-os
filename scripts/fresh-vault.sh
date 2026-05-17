@@ -282,6 +282,14 @@ main() {
   local home_canon path_canon
   home_canon="$(canon_home)"
   path_canon="$(canon_path "$PATH_ARG")"
+  if [ -L "$PATH_ARG" ]; then
+    # Resolve through symlink target so guards apply to the *real* location.
+    local resolved
+    resolved=$( cd "$(dirname "$PATH_ARG")" && cd "$(readlink "$PATH_ARG")" 2>/dev/null && pwd -P ) || resolved=""
+    if [ -n "$resolved" ]; then
+      guard_path "$resolved" "$home_canon"
+    fi
+  fi
   guard_path "$path_canon" "$home_canon"
   PATH_CANON="$path_canon"
   HOME_CANON="$home_canon"
