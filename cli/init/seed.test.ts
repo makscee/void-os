@@ -102,7 +102,7 @@ describe("seed() refuse clobber", () => {
   })
 })
 
-describe("seed() existing foreign .git", () => {
+describe("seed() reuses pre-existing .git instead of re-initializing", () => {
   it("does not re-run git init when .git already exists in target", async () => {
     let initCalls = 0
     const fakeSpawn: any = (cmd: string, args: string[], opts: any) => {
@@ -160,5 +160,34 @@ describe("seed() gh remote safety", () => {
     expect(
       calls.some((c) => c[0] === "gh" && c[1] === "repo" && c[2] === "create"),
     ).toBe(false)
+  })
+
+  it("skips gh push when origin exists but target repo cannot be verified via gh repo view", async () => {
+    const calls: string[][] = []
+    const fakeSpawn: any = (cmd: string, args: string[], opts: any) => {
+      calls.push([cmd, ...args])
+      if (cmd === "git" && args.includes("remote") && args.includes("get-url")) {
+        return { status: 0, stdout: "git@github.com:other/repo.git\n", stderr: "" } as any
+      }
+      if (cmd === "gh" && args[0] === "repo" && args[1] === "view") {
+        return { status: 1, stdout: "", stderr: "not found" } as any
+      }
+      if (cmd === "git" && args.includes("push")) {
+        return { status: 0, stdout: "", stderr: "" } as any
+      }
+      return spawnSync(cmd, args, opts)
+    }
+
+    const r = await seed({
+      home,
+      prefix,
+      dryRun: false,
+      force: false,
+      gh: { push: true, repoName: "me/vault" },
+      spawnSync: fakeSpawn,
+    })
+    expect(r.gh.pushed).toBe(false)
+    expect(r.gh.warning).toBe("remote-unverifiable")
+    expect(calls.some((c) => c[0] === "git" && c.includes("push"))).toBe(false)
   })
 })

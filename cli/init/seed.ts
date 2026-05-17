@@ -216,6 +216,13 @@ function runGhPush(
       result.gh.warning = "remote-mismatch"
       return
     }
+    if (!targetUrl) {
+      result.warnings.push(
+        `gh push skipped: origin already set to ${have} but target repo ${repoName} could not be verified via gh repo view. Resolve manually.`,
+      )
+      result.gh.warning = "remote-unverifiable"
+      return
+    }
     const push = spawn(
       "git",
       ["-C", home, "push", "-u", "origin", "main"],

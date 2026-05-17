@@ -17,7 +17,7 @@ commands:
 flags:
   init --home <path>    override target vault dir
   init --dry-run        print actions without writing
-  init --force          overwrite existing files
+  init --force          re-copy starter files into already-seeded vault, or overwrite a non-void dir
   init --skip-build     skip bun install + plugin build (dev iter)
 `)
   process.exit(cmd ? 0 : 1)
