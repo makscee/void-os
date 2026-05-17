@@ -26,7 +26,7 @@ import { formatUsd } from "./format-usd";
 export interface ChatListProps {
   api: ChatApi;
   activeChatId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, agent: string) => void;
   onNewChat: () => void | Promise<void>;
   /** Bumping this triggers a re-fetch of /chats. */
   refreshKey?: number;
@@ -142,7 +142,7 @@ export function ChatList(props: ChatListProps) {
             <button
               key={c.id}
               type="button"
-              onClick={() => onSelect(c.id)}
+              onClick={() => onSelect(c.id, c.agent)}
               data-testid="chat-row"
               data-chat-id={c.id}
               data-active={active ? "true" : "false"}
