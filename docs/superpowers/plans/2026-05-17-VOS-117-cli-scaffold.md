@@ -267,14 +267,14 @@ test("vault.write() sends JSON body", async () => {
       method = req.method;
       ct = req.headers.get("content-type");
       body = await req.json();
-      return new Response(JSON.stringify({ ok: true, path: "p", bytes_written: 5 }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ path: "p", size: 5, mtime: 0 }), { status: 200, headers: { "content-type": "application/json" } });
     }),
   });
   const r = await client.vault.write("notes.md", "hello");
   expect(method).toBe("PUT");
   expect(ct).toContain("application/json");
   expect(body).toEqual({ content: "hello" });
-  expect(r.bytes_written).toBe(5);
+  expect(r.size).toBe(5);
 });
 
 test("4xx throws ApiError with code + status", async () => {
@@ -330,8 +330,16 @@ import { z } from "zod";
 
 // Loose envelopes — daemon owns the source of truth. Tighten if/when needed.
 const VaultFileResp = z.object({ path: z.string(), content: z.string(), sha256: z.string().optional(), size: z.number().optional() }).passthrough();
-const VaultWriteResp = z.object({ ok: z.literal(true), path: z.string(), bytes_written: z.number().nonnegative() }).passthrough();
-const VaultListResp = z.object({ entries: z.array(z.any()) }).passthrough();
+// Verified against daemon/src/api/vault.ts PUT /vault/file — returns {path, content, size, mtime}.
+const VaultWriteResp = z.object({ path: z.string(), size: z.number().nonnegative(), mtime: z.number() }).passthrough();
+// Verified against daemon/src/api/vault.ts GET /vault/list — returns {path, entries:[{name,type,size,mtime}]}.
+const VaultListEntry = z.object({
+  name: z.string(),
+  type: z.enum(["file", "dir"]),
+  size: z.number().nonnegative(),
+  mtime: z.number(),
+});
+const VaultListResp = z.object({ path: z.string(), entries: z.array(VaultListEntry) }).passthrough();
 export type VaultFileResp = z.infer<typeof VaultFileResp>;
 export type VaultWriteResp = z.infer<typeof VaultWriteResp>;
 export type VaultListResp = z.infer<typeof VaultListResp>;
@@ -367,7 +375,7 @@ export interface Client {
   vault: {
     read(path: string): Promise<VaultFileResp>;
     write(path: string, content: string): Promise<VaultWriteResp>;
-    list(glob?: string, opts?: { depth?: number }): Promise<VaultListResp>;
+    list(path?: string, opts?: { depth?: number }): Promise<VaultListResp>;
   };
   chat: { stream(chatId: string): AsyncIterable<unknown> };
 }
@@ -441,9 +449,9 @@ export function makeClient(opts: ClientOpts): Client {
       read: (path) => call(`/vault/file?path=${encodeURIComponent(path)}`, { method: "GET" }, VaultFileResp),
       write: (path, content) =>
         call(`/vault/file?path=${encodeURIComponent(path)}`, { method: "PUT", body: JSON.stringify({ content }) }, VaultWriteResp),
-      list: (glob, lopts) => {
+      list: (path, lopts) => {
         const params = new URLSearchParams();
-        if (glob) params.set("glob", glob);
+        if (path) params.set("path", path);
         if (lopts?.depth != null) params.set("depth", String(lopts.depth));
         const qs = params.toString();
         return call(`/vault/list${qs ? `?${qs}` : ""}`, { method: "GET" }, VaultListResp);
@@ -1127,7 +1135,13 @@ test("start with port already in use exits 1 quickly (child-exit race)", async (
   const t0 = Date.now();
   const r = spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 15000 });
   const elapsed = Date.now() - t0;
-  // Restore so afterEach can clean up.
+  // The failed second start cleans up its own pid file on the child-exit path,
+  // but be defensive: if anything was written, kill that PID before restoring
+  // the stashed pid file — otherwise afterEach would SIGKILL the wrong process.
+  if (existsSync(pidFile)) {
+    try { process.kill(parseInt(readFileSync(pidFile, "utf8"), 10), "SIGKILL"); } catch {}
+    rmSync(pidFile, { force: true });
+  }
   Bun.spawnSync(["mv", stashed, pidFile]);
   expect(r.status).not.toBe(0);
   // Should bail early (< 5 s), not wait the full 10 s poll timeout.
@@ -1166,8 +1180,9 @@ subcommands:
 
 export default async function daemon(args: string[], ctx: { prefix: string }): Promise<number> {
   // args[0] is "daemon" (full argv from new dispatcher).
-  const sub = args[1];
-  const rest = args.slice(2);
+  // Dispatcher passes argv.slice(1) to handler (e.g. ["start", "--port", "8080"] for `void-os daemon start --port 8080`).
+  const sub = args[0];
+  const rest = args.slice(1);
   if (!sub || sub === "--help" || sub === "-h") {
     console.log(DAEMON_USAGE);
     return sub ? 0 : 2;
@@ -1696,8 +1711,9 @@ subcommands:
 `;
 
 export default async function agents(args: string[]): Promise<number> {
-  const sub = args[1];
-  const rest = args.slice(2);
+  // Dispatcher passes argv.slice(1) to handler (e.g. ["start", "--port", "8080"] for `void-os daemon start --port 8080`).
+  const sub = args[0];
+  const rest = args.slice(1);
   if (!sub || sub === "--help" || sub === "-h") {
     console.log(USAGE);
     return sub ? 0 : 2;
@@ -1829,12 +1845,13 @@ const USAGE = `usage: void-os vault <subcommand>
 subcommands:
   read <path> [--json]
   write <path> {--content STR | --from-file LOCAL | --stdin}
-  list [<glob>] [--depth N] [--json]
+  list [<path>] [--depth N] [--json]
 `;
 
 export default async function vault(args: string[]): Promise<number> {
-  const sub = args[1];
-  const rest = args.slice(2);
+  // Dispatcher passes argv.slice(1) to handler (e.g. ["start", "--port", "8080"] for `void-os daemon start --port 8080`).
+  const sub = args[0];
+  const rest = args.slice(1);
   if (!sub || sub === "--help" || sub === "-h") {
     console.log(USAGE);
     return sub ? 0 : 2;
@@ -1974,7 +1991,7 @@ async function cmdWrite(args: string[]): Promise<number> {
     const client = buildClient();
     const r = await client.vault.write(path, body);
     if (parsed.flags.json) console.log(formatJson(r));
-    else console.log(`wrote ${path} (${r.bytes_written} bytes)`);
+    else console.log(`wrote ${path} (${r.size} bytes)`);
     return 0;
   } catch (e) {
     return handleError(e);
@@ -2041,18 +2058,13 @@ cd workspace/void-os && bun test cli/vault.test.ts
 async function cmdList(args: string[]): Promise<number> {
   const parsed = parseArgs(args, { flags: ["json"], values: ["depth"] });
   if (parsed.help) { console.log(USAGE); return 0; }
-  const glob = parsed.positional[0];
+  const subpath = parsed.positional[0];
   const depth = parsed.values.depth != null ? parseInt(parsed.values.depth, 10) : undefined;
   try {
     const client = buildClient();
-    const r = await client.vault.list(glob, depth != null ? { depth } : undefined);
+    const r = await client.vault.list(subpath, depth != null ? { depth } : undefined);
     if (parsed.flags.json) console.log(formatJson(r));
-    else {
-      for (const e of r.entries) {
-        const p = typeof e === "string" ? e : (e as any).path ?? (e as any).name ?? String(e);
-        console.log(p);
-      }
-    }
+    else for (const e of r.entries) console.log(e.type === "dir" ? `${e.name}/` : e.name);
     return 0;
   } catch (e) {
     return handleError(e);
@@ -2194,8 +2206,9 @@ subcommands:
 `;
 
 export default async function plugin(args: string[], ctx: { prefix: string }): Promise<number> {
-  const sub = args[1];
-  const rest = args.slice(2);
+  // Dispatcher passes argv.slice(1) to handler (e.g. ["start", "--port", "8080"] for `void-os daemon start --port 8080`).
+  const sub = args[0];
+  const rest = args.slice(1);
   if (!sub || sub === "--help" || sub === "-h") {
     console.log(USAGE);
     return sub ? 0 : 2;
