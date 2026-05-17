@@ -19,6 +19,7 @@ type RawCcEvent = LegacyProviderEvent;
 export interface CcIter {
   spawn(args: {
     chat_id: string;
+    task_id: string;          // VOS-112
     resume: string | null;
     prompt: string;
   }): AsyncIterable<RawCcEvent>;
@@ -54,6 +55,7 @@ export function makeClaudeCodeProvider(
         // favor of the required `contextId` (chat-shaped runs set
         // contextId = chatId at the orchestrator seam).
         chat_id: req.contextId,
+        task_id: req.taskId,
         resume: req.resumeFrom ?? null,
         prompt: req.prompt,
       });

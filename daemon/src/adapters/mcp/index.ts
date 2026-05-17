@@ -192,6 +192,7 @@ export function mountMcp(app: Hono, deps: McpDeps): void {
     // work when every request lands on a brand-new transport instance.
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
+      enableJsonResponse: true,  // VOS-112: return single JSON envelope so the stdio bridge can parse with .json().
     });
     await mcp.server.connect(transport);
 

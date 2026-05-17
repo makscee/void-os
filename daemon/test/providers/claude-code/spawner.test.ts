@@ -84,7 +84,7 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     });
     const spawner = makeCcSpawnerIter({ cc, bus, agent: "maya", cwd: "/tmp" });
     const events: Array<{ type: string }> = [];
-    for await (const evt of spawner.spawn({ chat_id: "c1", resume: null, prompt: "yo" })) {
+    for await (const evt of spawner.spawn({ chat_id: "c1", task_id: "t1", resume: null, prompt: "yo" })) {
       events.push(evt as { type: string });
     }
     expect(events.map((e) => e.type)).toEqual(["system", "assistant", "tool_use"]);
@@ -109,7 +109,7 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     });
     const spawner = makeCcSpawnerIter({ cc, bus, agent: "maya", cwd: "/tmp" });
     const events: Array<{ content?: string }> = [];
-    for await (const evt of spawner.spawn({ chat_id: "c1", resume: null, prompt: "x" })) {
+    for await (const evt of spawner.spawn({ chat_id: "c1", task_id: "t1", resume: null, prompt: "x" })) {
       events.push(evt as { content?: string });
     }
     expect(events).toHaveLength(1);
@@ -130,7 +130,7 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     const events: Array<{ content?: string }> = [];
     let caught: Error | null = null;
     try {
-      for await (const evt of spawner.spawn({ chat_id: "c1", resume: null, prompt: "x" })) {
+      for await (const evt of spawner.spawn({ chat_id: "c1", task_id: "t1", resume: null, prompt: "x" })) {
         events.push(evt as { content?: string });
       }
     } catch (err) {
@@ -148,7 +148,7 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     });
     const spawner = makeCcSpawnerIter({ cc, bus, agent: "scribe", cwd: "/work" });
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    for await (const _ of spawner.spawn({ chat_id: "c42", resume: "sid-prev", prompt: "go" })) {
+    for await (const _ of spawner.spawn({ chat_id: "c42", task_id: "t42", resume: "sid-prev", prompt: "go" })) {
       /* drain */
     }
     expect(lastReq.value).not.toBeNull();
@@ -167,7 +167,7 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     });
     const spawner = makeCcSpawnerIter({ cc, bus, agent: "maya", cwd: "/tmp" });
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    for await (const _ of spawner.spawn({ chat_id: "c1", resume: null, prompt: "x" })) {
+    for await (const _ of spawner.spawn({ chat_id: "c1", task_id: "t1", resume: null, prompt: "x" })) {
       /* drain */
     }
     // Post-iteration emits must not throw / not affect anything observable.
@@ -215,7 +215,7 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     const spawner = makeCcSpawnerIter({ cc, bus, agent: "maya", cwd: "/tmp" });
 
     // Start iterating; need at least one yield so activeProcs is populated.
-    const iter = spawner.spawn({ chat_id: "c1", resume: null, prompt: "go" });
+    const iter = spawner.spawn({ chat_id: "c1", task_id: "t1", resume: null, prompt: "go" });
     const it = iter[Symbol.asyncIterator]();
     const first = await it.next();
     expect(first.done).toBe(false);

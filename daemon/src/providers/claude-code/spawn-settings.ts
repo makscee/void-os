@@ -3,8 +3,24 @@
 // the two paths CC needs (--settings, --mcp-config) plus the env vars
 // the PreToolUse hook script consumes.
 
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+
+// VOS-112: stdio bridge entrypoint shipped with the daemon. The daemon runs
+// from source (ADR-0003), so this path is the source file itself. Resolved
+// once at module init; an existsSync assertion makes a misconfigured tree
+// fail at daemon boot rather than at first CC spawn.
+const BRIDGE_PATH = resolve(
+  import.meta.dir, "..", "..", "adapters", "mcp", "stdio-bridge.ts",
+);
+if (!existsSync(BRIDGE_PATH)) {
+  throw new Error(`VOS-112 stdio-bridge.ts not found at ${BRIDGE_PATH}`);
+}
+
+// Absolute bun binary path — survives systemd / launchd that strip the user
+// shell PATH. `process.execPath` is the bun running the daemon itself, so a
+// spawned CC subprocess inherits the daemon's exact runtime.
+const BUN_PATH = process.env.VOS_BUN_PATH ?? process.execPath;
 
 // VOS-111: agent isolation surface.
 //
@@ -53,6 +69,9 @@ export interface BuildSpawnSettingsArgs {
   vaultRoot: string;
   daemonBase: string;
   runId: string;
+  // VOS-112: per-spawn runtime ids consumed by stdio bridge via env.
+  taskId: string;
+  contextId: string;
   settingsDir: string;
   hookScriptPath: string;
 }
@@ -95,16 +114,22 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
     },
   };
 
-  // MCP URL: only ?agent= is read by the daemon. Including &run=<runId>
-  // (different per dispatch) caused CC's MCP client to treat each turn as
-  // a fresh server, re-fetching tool definitions and busting the Anthropic
-  // prompt cache — ~22k cache_create tokens per turn (~$0.42/turn on Opus).
-  // Keep the URL stable across runs; runId is already in the trace/db.
+  // VOS-112: stdio MCP transport. Per-spawn env carries runtime ids that
+  // the daemon-side handlers read off `extra._meta` (ADR-0002). Stable
+  // command+args across runs keeps CC's prompt-cache hot; only env varies.
   const mcp = {
     mcpServers: {
       "void-os": {
-        type: "http",
-        url: `${args.daemonBase}/mcp?agent=${encodeURIComponent(args.agentName)}`,
+        type: "stdio",
+        command: BUN_PATH,
+        args: [BRIDGE_PATH],
+        env: {
+          VOS_DAEMON_BASE: args.daemonBase,
+          VOS_AGENT:       args.agentName,
+          VOS_TASK_ID:     args.taskId,
+          VOS_CONTEXT_ID:  args.contextId,
+          ...(args.runId ? { VOS_RUN_ID: args.runId } : {}),
+        },
       },
     },
   };

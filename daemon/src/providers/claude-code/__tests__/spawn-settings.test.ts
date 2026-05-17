@@ -28,6 +28,8 @@ describe("buildSpawnSettings", () => {
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:17777",
       runId: "run-abc",
+      taskId: "T-test",
+      contextId: "C-test",
       settingsDir: dir,
       hookScriptPath: "/abs/pre-tool-use.ts",
     });
@@ -45,23 +47,34 @@ describe("buildSpawnSettings", () => {
     expect(settings.permissions).toEqual({ deny: ["AskUserQuestion"] });
   });
 
-  it("writes mcp.json pointing at /mcp?agent=<n> (stable URL across runs)", () => {
-    const dir = freshDir();
-    const { mcpConfigPath } = buildSpawnSettings({
-      agentName: "journaler",
-      scopes: { readPaths: [`${VAULT}/journal/**`], writePaths: [`${VAULT}/journal/**`] },
+  test("mcp.json now uses stdio transport with env-stamped runtime ids", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "vos112-"));
+    const built = buildSpawnSettings({
+      agentName: "maya",
+      scopes: { readPaths: [], writePaths: [] },
       systemDeny: [],
-      vaultRoot: VAULT,
-      daemonBase: "http://127.0.0.1:17777",
-      runId: "run-xyz",
-      settingsDir: dir,
-      hookScriptPath: "/abs/hook.ts",
+      vaultRoot: "/vault",
+      daemonBase: "http://127.0.0.1:8729",
+      runId: "R-1",
+      taskId: "T-1",
+      contextId: "C-1",
+      settingsDir: tmp,
+      hookScriptPath: "/hook.ts",
     });
-    const mcp = JSON.parse(readFileSync(mcpConfigPath, "utf8"));
-    expect(mcp.mcpServers["void-os"]).toEqual({
-      type: "http",
-      url: "http://127.0.0.1:17777/mcp?agent=journaler",
-    });
+    const mcp = JSON.parse(readFileSync(built.mcpConfigPath, "utf8")) as {
+      mcpServers: { "void-os": { type: string; command: string; args: string[]; env: Record<string, string> } };
+    };
+    const entry = mcp.mcpServers["void-os"];
+    expect(entry.type).toBe("stdio");
+    expect(entry.command).toBe(process.execPath);
+    expect(entry.args).toHaveLength(1);
+    expect(entry.args[0]).toMatch(/stdio-bridge\.ts$/);
+    expect(entry.env.VOS_DAEMON_BASE).toBe("http://127.0.0.1:8729");
+    expect(entry.env.VOS_AGENT).toBe("maya");
+    expect(entry.env.VOS_TASK_ID).toBe("T-1");
+    expect(entry.env.VOS_CONTEXT_ID).toBe("C-1");
+    expect(entry.env.VOS_RUN_ID).toBe("R-1");
+    expect((entry as Record<string, unknown>).url).toBeUndefined();
   });
 
   it("env exports JSON-encoded scope arrays", () => {
@@ -72,6 +85,8 @@ describe("buildSpawnSettings", () => {
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:17777",
       runId: "r",
+      taskId: "T-test",
+      contextId: "C-test",
       settingsDir: freshDir(),
       hookScriptPath: "/h",
     });
@@ -96,6 +111,8 @@ describe("buildSpawnSettings", () => {
         vaultRoot: VAULT,
         daemonBase: "http://127.0.0.1:17777",
         runId: "r",
+        taskId: "T-test",
+        contextId: "C-test",
         settingsDir: freshDir(),
         hookScriptPath: "/h",
       });
@@ -119,6 +136,8 @@ describe("buildSpawnSettings", () => {
         vaultRoot: VAULT,
         daemonBase: "http://127.0.0.1:17777",
         runId: "r",
+        taskId: "T-test",
+        contextId: "C-test",
         settingsDir: freshDir(),
         hookScriptPath: "/h",
       });
@@ -142,11 +161,49 @@ describe("buildSpawnSettings", () => {
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:17777",
       runId: "r",
+      taskId: "T-test",
+      contextId: "C-test",
       settingsDir: dir,
       hookScriptPath: "/h",
     });
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
     expect(settings.additionalDirectories).toEqual([]);
+  });
+
+  test("AC-5: mcp.json command+args are byte-equal across two consecutive spawns of the same agent (only env differs)", () => {
+    const tmp1 = mkdtempSync(join(tmpdir(), "vos112-cache-1-"));
+    const tmp2 = mkdtempSync(join(tmpdir(), "vos112-cache-2-"));
+    const baseArgs = {
+      agentName: "maya",
+      scopes: { readPaths: [], writePaths: [] },
+      systemDeny: [],
+      vaultRoot: "/vault",
+      daemonBase: "http://127.0.0.1:8729",
+      hookScriptPath: "/hook.ts",
+    };
+    const a = buildSpawnSettings({
+      ...baseArgs,
+      runId:     "R-1",
+      taskId:    "T-1",
+      contextId: "C-1",
+      settingsDir: tmp1,
+    });
+    const b = buildSpawnSettings({
+      ...baseArgs,
+      runId:     "R-2",
+      taskId:    "T-2",
+      contextId: "C-2",
+      settingsDir: tmp2,
+    });
+    const mcpA = JSON.parse(readFileSync(a.mcpConfigPath, "utf8")) as {
+      mcpServers: { "void-os": { command: string; args: string[]; env: Record<string, string> } };
+    };
+    const mcpB = JSON.parse(readFileSync(b.mcpConfigPath, "utf8")) as {
+      mcpServers: { "void-os": { command: string; args: string[]; env: Record<string, string> } };
+    };
+    expect(mcpA.mcpServers["void-os"].command).toBe(mcpB.mcpServers["void-os"].command);
+    expect(mcpA.mcpServers["void-os"].args).toEqual(mcpB.mcpServers["void-os"].args);
+    expect(mcpA.mcpServers["void-os"].env.VOS_TASK_ID).not.toBe(mcpB.mcpServers["void-os"].env.VOS_TASK_ID);
   });
 });
 
