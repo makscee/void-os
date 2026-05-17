@@ -30,12 +30,16 @@ describe("ChatView mount", () => {
     containerEl.appendChild(leafEl);
 
     // Re-mock obsidian via a path alias before importing view.ts.
+    // moment stub preserves the registry key so downstream test files that
+    // need moment (e.g. format-relative-time.test.ts) are not broken when
+    // the full suite runs in a single Bun process (require() caches objects).
     const obsidianMock = {
       ItemView: class {
         containerEl: HTMLElement = containerEl;
         constructor(_leaf: unknown) {}
       },
       WorkspaceLeaf: class {},
+      moment: (_ts: number) => ({ fromNow: () => "" }),
     };
     const { mock } = await import("bun:test");
     mock.module("obsidian", () => obsidianMock);
