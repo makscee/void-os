@@ -85,7 +85,7 @@ export async function provisionLxc(
     ssh?: SshRunner
   } = {},
 ): Promise<LxcHandle> {
-  const template = opts.template ?? "debian-12-standard"
+  const template = opts.template ?? "debian-12-standard_12.12-1_amd64"
   const range = opts.ctidRange ?? [9100, 9199]
   const towerHost = opts.towerHost ?? process.env.TOWER_HOST ?? "tower"
   const ssh = opts.ssh ?? defaultSshRunner
@@ -95,6 +95,7 @@ export async function provisionLxc(
   // Pick + create under flock to serialize concurrent callers.
   const pickAndCreate = `
 flock ${LOCK} -c '
+  set -e
   list=$(${PCT} list)
   ctid=$(echo "$list" | awk "NR>1 && \\$1 >= ${range[0]} && \\$1 <= ${range[1]} {print \\$1}" | sort -n | tail -1)
   if [ -z "$ctid" ]; then ctid=${range[0]}; else ctid=$((ctid + 1)); fi
