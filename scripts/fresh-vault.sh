@@ -237,6 +237,27 @@ run_init() {
   "$VOID_OS_BIN" init --non-interactive --vault "$PATH_CANON" --skip-gh
 }
 
+# --- plugin symlink -----------------------------------------------------
+link_plugin() {
+  if [ "$FLAG_SKIP_PLUGIN" -eq 1 ]; then
+    echo "fresh-vault: --skip-plugin → skipping plugin symlink"
+    return 0
+  fi
+  local dist="$REPO_ROOT/plugin/dist"
+  local target="$PATH_CANON/.obsidian/plugins/void-os"
+  if [ ! -d "$dist" ]; then
+    echo "fresh-vault: plugin/dist missing — pre-build failed silently?" >&2
+    exit 1
+  fi
+  mkdir -p "$PATH_CANON/.obsidian/plugins"
+  # `void-os init` already copies the plugin into .obsidian/plugins/void-os/
+  # as a dir; without removing it, `ln -sfn` would create $target/dist (a
+  # symlink *inside* the dir) instead of replacing it. Force-replace.
+  rm -rf -- "$target"
+  ln -sfn "$dist" "$target"
+  echo "fresh-vault: symlinked plugin: $target → $dist"
+}
+
 # --- main ----------------------------------------------------------------
 main() {
   parse_args "$@"
@@ -251,7 +272,8 @@ main() {
   daemon_guard_and_stop
   wipe_path
   run_init
-  echo "fresh-vault: ready to wipe $PATH_CANON (T8–T9 land here)"
+  link_plugin
+  echo "fresh-vault: ready to wipe $PATH_CANON (T9 lands here)"
 }
 
 main "$@"
