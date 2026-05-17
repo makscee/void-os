@@ -2,6 +2,7 @@ import { homedir } from "node:os"
 import { join, isAbsolute } from "node:path"
 import type { Prompter } from "./prompter"
 import type { PreflightReport } from "./preflight"
+import { FlagsError } from "../init"
 
 export interface GhDecision {
   push: boolean
@@ -72,4 +73,42 @@ export async function configure(report: PreflightReport, prompter: Prompter): Pr
     obsidianVaultName,
     cancelled: !proceed,
   }
+}
+
+export interface NonInteractiveFlags {
+  nonInteractive: boolean
+  vault?: string
+  ghRepo?: string
+  skipGh: boolean
+  skipObsidian: boolean
+  obsidianVault?: string
+}
+
+export function decideFromFlags(
+  report: PreflightReport,
+  flags: NonInteractiveFlags,
+): Decisions {
+  if (!flags.vault) {
+    throw new FlagsError("--non-interactive requires --vault <path>", 64)
+  }
+  const vaultPath = expandHome(flags.vault)
+
+  let gh: GhDecision = { push: false }
+  if (flags.ghRepo) {
+    if (!report.gh.found || !report.gh.authed) {
+      throw new FlagsError(
+        "gh not available (not installed or not authed); remove --gh-repo or fix gh first",
+        65,
+      )
+    }
+    gh = { push: true, repoName: flags.ghRepo }
+  }
+
+  let obsidianVaultName: string | undefined
+  if (!flags.skipObsidian) {
+    obsidianVaultName = flags.obsidianVault
+      ?? (report.obsidian.found ? "void" : undefined)
+  }
+
+  return { vaultPath, gh, obsidianVaultName, cancelled: false }
 }
