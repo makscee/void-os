@@ -24,6 +24,10 @@ export interface CcSpawnRequest {
   agent: string;
   cwd: string;
   chatId?: string;
+  // VOS-112: per-spawn runtime ids forwarded into mcp.json env so the stdio
+  // bridge can stamp `_meta.task_id` on every `tools/call` POST to /mcp.
+  taskId: string;
+  contextId: string;
   kind?: "chat" | "skill" | "worker";
   resumeFrom?: string;
   outputTimeoutMs?: number;
@@ -231,6 +235,8 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
           vaultRoot: req.cwd,
           daemonBase: deps.daemonBase,
           runId,
+          taskId:    req.taskId,
+          contextId: req.contextId,
           settingsDir: deps.tracesDir,
           hookScriptPath: deps.hookScriptPath,
         });

@@ -167,6 +167,8 @@ exit 0
     vaultRoot: daemon.vaultRoot,
     daemonBase: daemon.base,
     runId: "probe-run",
+    taskId: "probe-task",
+    contextId: "probe-ctx",
     settingsDir,
     hookScriptPath: hookScript, // placeholder; we rewrite the command below
   });

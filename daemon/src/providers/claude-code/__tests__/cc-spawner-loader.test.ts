@@ -72,6 +72,8 @@ describe("cc-spawner loader integration", () => {
       agent: "journaler",
       cwd: vaultRoot,
       chatId: "chat-1",
+      taskId: "task-1",
+      contextId: "chat-1",
       kind: "chat",
     });
 

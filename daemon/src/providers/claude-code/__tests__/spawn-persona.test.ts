@@ -184,6 +184,8 @@ describe("cc-spawner persona injection", () => {
       agent: "maya",
       cwd: vaultRoot,
       chatId: "c1",
+      taskId: "t1",
+      contextId: "c1",
       kind: "chat",
     });
 
@@ -226,6 +228,8 @@ describe("cc-spawner persona injection", () => {
       agent: "ghost",
       cwd: vaultRoot,
       chatId: "c1",
+      taskId: "t1",
+      contextId: "c1",
       kind: "chat",
     });
 

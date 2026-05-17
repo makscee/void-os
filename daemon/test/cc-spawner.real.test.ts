@@ -24,6 +24,8 @@ describe("CC spawner (real claudev)", () => {
         prompt: "Reply with exactly OK and nothing else.",
         agent: "test",
         cwd: dir,
+        taskId: "t-real",
+        contextId: "c-real",
       });
       const sid = await proc.sessionId();
       expect(sid.length).toBeGreaterThan(0);

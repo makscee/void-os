@@ -76,6 +76,8 @@ describe("CC spawner (fake claudev)", () => {
         prompt: "--scenario happy",
         agent: "test",
         cwd: dir,
+        taskId: "t-happy",
+        contextId: "c-happy",
       });
 
       const sessionId = await proc.sessionId();
@@ -124,6 +126,8 @@ describe("CC spawner (fake claudev)", () => {
         prompt: "--scenario tool-call",
         agent: "test",
         cwd: dir,
+        taskId: "t-tool",
+        contextId: "c-tool",
       });
       const result = await proc.wait();
       expect(result.exitCode).toBe(0);
@@ -166,6 +170,8 @@ describe("CC spawner (fake claudev)", () => {
         prompt: "--scenario silent",
         agent: "test",
         cwd: dir,
+        taskId: "t-silent",
+        contextId: "c-silent",
         outputTimeoutMs: 500,
       });
       const result = await proc.wait();
@@ -196,6 +202,8 @@ describe("CC spawner (fake claudev)", () => {
         prompt: "--scenario crash",
         agent: "test",
         cwd: dir,
+        taskId: "t-crash",
+        contextId: "c-crash",
       });
       const result = await proc.wait();
       expect(result.exitCode).not.toBe(0);
@@ -229,6 +237,8 @@ describe("CC spawner (fake claudev)", () => {
         prompt: "--scenario happy",
         agent: "test",
         cwd: dir,
+        taskId: "t-resume-1",
+        contextId: "c-resume",
       });
       const sid = await first.sessionId();
       await first.wait();
@@ -237,6 +247,8 @@ describe("CC spawner (fake claudev)", () => {
         prompt: "--scenario resume",
         agent: "test",
         cwd: dir,
+        taskId: "t-resume-2",
+        contextId: "c-resume",
         resumeFrom: sid,
       });
       const sid2 = await second.sessionId();
@@ -270,6 +282,8 @@ describe("CC spawner (fake claudev)", () => {
         prompt: "--scenario happy",
         agent: "test",
         cwd: dir,
+        taskId: "t-argv",
+        contextId: "c-argv",
       });
       await proc.wait();
 
@@ -310,6 +324,8 @@ describe("CC spawner (fake claudev)", () => {
         prompt: "--scenario silent",
         agent: "test",
         cwd: dir,
+        taskId: "t-fastcancel",
+        contextId: "c-fastcancel",
       });
       await proc.sessionId(); // ensure spawn fully wired
 
