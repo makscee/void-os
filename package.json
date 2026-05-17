@@ -2,5 +2,6 @@
   "name": "void-os",
   "private": true,
   "type": "module",
+  "bin": { "void-os": "./bin/void-os" },
   "workspaces": ["daemon", "plugin", "protocol"]
 }
