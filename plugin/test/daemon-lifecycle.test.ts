@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveBinary, BinaryNotFoundError } from "./daemon-lifecycle";
+import { resolveBinary, BinaryNotFoundError } from "../src/daemon-lifecycle";
 
 let dir: string;
 beforeEach(() => {
