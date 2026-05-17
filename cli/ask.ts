@@ -31,48 +31,19 @@ import {
   resolveToken,
 } from "./lib/client.ts";
 import { UnreachableError } from "@voidos/protocol";
+import { parseSseFrames } from "./lib/sse-parse.ts";
 import { createRenderer, type Frame } from "./lib/stream-render.ts";
 
-/**
- * Parse SSE frames directly off a Response body, yielding {event, data}.
- * Mirrors the daemon's wire shape (event: <name>\ndata: <json>\n\n) — we
- * preserve `event` so the renderer can route ask_user / run_end correctly.
+/*
+ * SSE parsing lives in `./lib/sse-parse.ts` (shared with cli/chat.ts).
  *
- * The protocol client's `client.chat.stream` is lazy (fetches on first
- * iteration), which races the orchestrator: by the time the GET reaches
- * the daemon and the bus subscriber is wired up, send() may already have
- * driven the orchestrator to `run_end`. We avoid that race by opening
- * the stream with `fetch()` ourselves BEFORE posting the message — the
- * daemon's `/chat/:id/stream` handler subscribes synchronously on entry.
+ * Why we open the stream ourselves (not via `client.chat.stream`):
+ *   the protocol client's helper is lazy (fetches on first iteration),
+ *   which races the orchestrator — by the time the GET lands, send()
+ *   may already have driven the orchestrator to `run_end`. We open the
+ *   stream with `fetch()` BEFORE posting the message so the daemon's
+ *   `/chat/:id/stream` handler subscribes to the bus synchronously.
  */
-async function* parseSseFrames(res: Response): AsyncIterable<Frame> {
-  if (!res.body) return;
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      let ev: string | undefined;
-      let data: string | undefined;
-      for (const line of block.split("\n")) {
-        if (line.startsWith("event:")) ev = line.slice(6).trim();
-        else if (line.startsWith("data:")) data = line.slice(5).trim();
-      }
-      if (!ev || !data) continue;
-      try {
-        yield { event: ev, data: JSON.parse(data) } as Frame;
-      } catch {
-        // skip malformed JSON
-      }
-    }
-  }
-}
 
 const USAGE = `usage: void-os ask <agent> "message" [--stream] [--verbose]
 
