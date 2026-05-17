@@ -45,6 +45,7 @@ Exported from `daemon/src/providers/claude-code/spawn-settings.ts` as `ALLOWED_T
 ```
 Bash
 Edit
+MultiEdit
 Read
 Write
 Grep
@@ -58,6 +59,8 @@ mcp__void-os__vault_read
 mcp__void-os__ask_user
 mcp__void-os__ask_agent
 ```
+
+`MultiEdit` is included to match the existing PreToolUse hook matcher in `spawn-settings.ts` (`"Read|Glob|Grep|Bash|Edit|Write|MultiEdit"`). Allowlist and matcher must agree — if the matcher gates `MultiEdit` calls, the tool must be available to call.
 
 **Excluded** built-ins (must not appear in the agent's tool listing): `Task`, `EnterPlanMode`, `ExitPlanMode`, `ScheduleWakeup`, `CronCreate`, `CronDelete`, `CronList`, `RemoteTrigger`, `PushNotification`, `Monitor`, `Skill`, `ToolSearch`.
 
@@ -76,19 +79,27 @@ The MCP tool names use CC's MCP naming convention (`mcp__<server>__<tool>` with 
 | `daemon/src/providers/claude-code/index.ts` | Extend `args` (≈line 269) with `--strict-mcp-config`, `--setting-sources`, `project`, `--tools`, `ALLOWED_TOOLS.join(",")`. |
 | `daemon/src/providers/claude-code/__tests__/spawn-settings.test.ts` | Pin `ALLOWED_TOOLS` contents (snapshot). |
 | `daemon/test/cc-spawner.integration.test.ts` | New case: argv contains the three new flags + the joined allowlist. fake-claudev echoes argv. |
-| `daemon/test/smoke.test.ts` | Opt-in real-claudev smoke: parse first `system` event, assert `mcp_servers === ["void-os"]` and `tools ⊆ ALLOWED_TOOLS`. |
+| `daemon/test/smoke.test.ts` | Opt-in real-claudev smoke: parse first `system` event, assert `mcp_servers ⊆ ALLOWED_MCP_SERVERS` (initially `["void-os"]`, exported next to `ALLOWED_TOOLS`) and `tools ⊆ ALLOWED_TOOLS`. Subset semantics so a legitimate vault-authored additional MCP server doesn't flake CI. |
 | `daemon/test/probes/isolation-probe.ts` | New, committed manual probe. Spawns one real CC with the new flags against a no-op vault, prints `mcp_servers` + `tools`. Documented in `daemon/test/probes/README.md`. |
 
 claudev is untouched. No env changes.
 
 ## Test strategy
 
-1. **T0 probe** (manual, runs once before pinning the allowlist). `daemon/test/probes/isolation-probe.ts` spawns real CC with the new flags + a minimal `--mcp-config` pointing at the void-os daemon. Captures the first `system` event and prints `mcp_servers`, `tools`. Operator runs the probe, confirms exact MCP tool name form, pastes results into the spec / plan, then the `ALLOWED_TOOLS` constant is finalized.
+1. **T0 probe** (manual, runs once before pinning the allowlist and before T1 starts). `daemon/test/probes/isolation-probe.ts` and a probe runbook in `daemon/test/probes/README.md` cover three assertions; **all three must pass before T1 begins**:
+
+   1. **Flag-syntax validation.** Run `claudev claude --help` against the pinned CC version (`daemon/package.json` `voidos.claudevVersion`) and grep for `strict-mcp-config`, `setting-sources`, `tools`. Record the *exact* accepted syntax for `--setting-sources` (comma-list `user,project,local`? repeated `--setting-sources project --setting-sources local`? single value?) into the spec under "T0 outputs" before any argv-composition code is written. If any flag is missing on the pinned CC version, **stop and bump or re-pin the version** — do not improvise.
+
+   2. **MCP tool name form.** Spawn real CC with `--strict-mcp-config --setting-sources <pinned-form> --tools '*' --mcp-config <minimal.json pointing at void-os daemon>`, capture the first `system` event, print `mcp_servers` + `tools`. Record the exact MCP tool name CC emits for `vault.read` etc. — `mcp__void-os__vault_read` vs `mcp__void-os__vault.read` vs other. Pin the transform in the spec and in the spawner code.
+
+   3. **Hook-still-fires assertion.** This is the most load-bearing assumption in the design — that `--settings <p>` is honored independently of `--setting-sources`. The probe spawns CC with `--strict-mcp-config --setting-sources <pinned-form> --settings <ours.json carrying the PreToolUse hook>` and issues a deliberately-triggering tool call (e.g. a `Read` on a path outside the agent's read scope). The probe asserts the PreToolUse hook fired (visible in the trace as a `PreToolUse` event or a denial). If the hook does not fire, the design is wrong — `--settings` and `--setting-sources` are coupled, and the per-run settings file would be dropped — meaning scope enforcement would vanish. **Stop T1 and rework the design.**
+
+   Operator runs the probe end-to-end, pastes outputs into the spec / plan, then the `ALLOWED_TOOLS` and `ALLOWED_MCP_SERVERS` constants are finalized.
 2. **Unit:** `spawn-settings.test.ts` pins `ALLOWED_TOOLS` contents. Failing this test means a contributor added/removed a tool without spec review.
 3. **Integration (fake-claudev):** assert argv contains the three flags and the joined allowlist string. fake-claudev does not implement MCP discovery, so this test verifies wiring only — not runtime effect.
-4. **Smoke (real-claudev, `SMOKE=1`):** parse the system event's `mcp_servers` and `tools` arrays. Assert `mcp_servers === ["void-os"]` and `tools.every(t => ALLOWED_TOOLS.includes(t))`. Acceptance bullets 3 + 4 of the task.
+4. **Smoke (real-claudev, `SMOKE=1`):** parse the system event's `mcp_servers` and `tools` arrays. Assert `mcp_servers.every(s => ALLOWED_MCP_SERVERS.includes(s))` and `tools.every(t => ALLOWED_TOOLS.includes(t))`. Subset semantics — operator-personal entries are excluded but a future legit vault-authored MCP server doesn't flake the assertion. Acceptance bullets 3 + 4 of the task.
 5. **VOS-107 e2e scan:** check `daemon/test/manual-e2e.md` and any VOS-107-related spec for assertions that relied on leaky behavior. None expected, but acceptance bullet 5 requires the scan.
-6. **Forward-drift guard:** unit test in `adapters/mcp/__tests__/registered-tools.test.ts` that enumerates registered MCP tools and fails if any registered tool is missing from `ALLOWED_TOOLS`. Prevents the case where someone adds a new vault MCP tool but forgets to expose it to agents.
+6. **Forward-drift guard:** unit test in `adapters/mcp/__tests__/registered-tools.test.ts` that enumerates registered MCP tools and fails if any registered tool, **after applying the CC name transform**, is missing from `ALLOWED_TOOLS`. The transform: a tool registered as `<server>.<tool>` on McpServer `void-os` is exposed to CC as `mcp__void-os__<tool with "." → "_">` — e.g. `vault.read` → `mcp__void-os__vault_read`. The exact transform is pinned by T0; the test imports the same transform function the spawner uses for argv construction, so the two cannot drift. Prevents the case where someone adds a new vault MCP tool but forgets to expose it to agents.
 
 ## Risks + decisions
 
