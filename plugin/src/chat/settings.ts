@@ -23,6 +23,7 @@ export interface SettingsStore {
   setChatId(id: string): Promise<void>;
   setDaemonUrl(url: string | undefined): Promise<void>;
   setResolvedBinaryPath(path: string | undefined): Promise<void>;
+  setVoidOsBinaryPath(path: string | undefined): Promise<void>;
 }
 
 export interface SettingsIO {
@@ -45,6 +46,12 @@ export async function makeSettingsStore(io: SettingsIO): Promise<SettingsStore> 
     },
     async setResolvedBinaryPath(path: string | undefined) {
       current = { ...current, resolvedBinaryPath: path };
+      await io.saveData(current);
+    },
+    async setVoidOsBinaryPath(path: string | undefined) {
+      // Changing the override invalidates any cached auto-resolution so the
+      // next ensureDaemon call re-runs resolveBinary against the new value.
+      current = { ...current, voidOsBinaryPath: path, resolvedBinaryPath: undefined };
       await io.saveData(current);
     },
   };

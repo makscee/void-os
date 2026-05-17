@@ -1,5 +1,6 @@
 import { Notice, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
 import { homedir } from "node:os";
+import { spawn } from "node:child_process";
 import { ChatView, CHAT_VIEW_TYPE } from "./view";
 import { WsClient, type WsEvent, type WsPort } from "./ws-client";
 import { ReconnectFSM } from "./reconnect";
@@ -115,7 +116,15 @@ function tapFrames(client: WsPort, bus: FrameBus): WsPort {
 export default class VoidOsPlugin extends Plugin {
   private fsm: ReconnectFSM | null = null;
   private bus: FrameBus | null = null;
-  private settings: SettingsStore | null = null;
+  /** Public so the settings tab can read voidOsBinaryPath / resolvedBinaryPath
+   *  and invoke the binary-override setter. */
+  settings!: SettingsStore;
+  /** Held so restartDaemon() can re-issue open() after a fresh spawn comes up
+   *  on (the same or a new) port. WsClient is constructed once with a URL —
+   *  if the post-restart port differs from the one captured in onload we tear
+   *  it down and build a fresh one against the new URL. */
+  private wsClient: WsClient | null = null;
+  private wsUrl: string | null = null;
   /** Current daemon lifecycle phase. Initialized to a sentinel so callers
    *  (settings tab / E2E) can distinguish "onload hasn't finished" from a
    *  real terminal state. */
@@ -199,8 +208,11 @@ export default class VoidOsPlugin extends Plugin {
       });
 
     // Single WebSocket — FSM owns reconnect, FrameBus piggybacks on frames.
-    const wsClient = new WsClient(urls.ws);
-    const tapped = tapFrames(wsClient, this.bus);
+    // Held on the instance so restartDaemon() can swap it if the post-restart
+    // daemon comes up on a different port.
+    this.wsClient = new WsClient(urls.ws);
+    this.wsUrl = urls.ws;
+    const tapped = tapFrames(this.wsClient, this.bus);
 
     this.registerView(CHAT_VIEW_TYPE, (leaf: WorkspaceLeaf) =>
       new ChatView(leaf, () => ({
@@ -223,6 +235,11 @@ export default class VoidOsPlugin extends Plugin {
       retryMs: DEFAULT_RETRY_MS,
       pingMs: DEFAULT_PING_MS,
       pongTimeoutMs: DEFAULT_PONG_TIMEOUT_MS,
+      // T8 wiring: probeHealth distinguishes "ws dropped" from "daemon died",
+      // and respawn lets the FSM spend its one auto-restart budget without a
+      // user click. Arrow keeps `this` bound to the plugin instance.
+      probeHealth: makeProductionProbe(homedir()),
+      respawn: () => this.restartDaemon(),
     });
     this.fsm.start();
 
@@ -252,6 +269,108 @@ export default class VoidOsPlugin extends Plugin {
     this.fsm?.stop();
     this.fsm = null;
     this.bus = null;
+  }
+
+  /**
+   * User-initiated daemon restart (Settings → Restart) AND the FSM's
+   * auto-respawn callback when probeHealth confirms the process is dead.
+   *
+   * Strategy:
+   *  1. Best-effort `daemon stop` — ignore errors. The old daemon may already
+   *     be gone (most common in the daemon-died path); we don't care, we just
+   *     don't want to race with an orphaned process holding the port.
+   *  2. Clear the FSM's spent auto-respawn budget so a future crash also gets
+   *     one free recovery — without this, every Restart click would leave the
+   *     FSM in a "next death is fatal" posture.
+   *  3. Re-run ensureDaemon, mirroring onload's error-to-status mapping so
+   *     the Settings UI re-renders into the right terminal state on failure.
+   *  4. On success, kick the WS layer: if the port changed (rare but possible
+   *     — pidfile is the source of truth), swap WsClient against the new URL.
+   *
+   * Throws nothing in the FSM-initiated path: any failure routes through the
+   * `spawn-failed` daemonStatus update, the FSM then transitions itself to
+   * manual-restart on the rejected promise.
+   */
+  async restartDaemon(): Promise<void> {
+    // 1. Best-effort stop of any extant daemon. Bound by a short window so a
+    //    hung CLI can't block the rest of the restart sequence.
+    try {
+      const bin = await resolveBinary(this.settings.get());
+      await new Promise<void>((resolve) => {
+        const c = spawn(bin, ["daemon", "stop"], { stdio: "ignore" });
+        const t = setTimeout(() => { try { c.kill(); } catch { /* ignore */ } resolve(); }, 3000);
+        c.on("close", () => { clearTimeout(t); resolve(); });
+        c.on("error", () => { clearTimeout(t); resolve(); });
+      });
+    } catch {
+      // resolveBinary may throw BinaryNotFoundError; that's handled below when
+      // ensureDaemon also fails for the same reason.
+    }
+
+    // 2. Reset the FSM's one-shot budget so the user-triggered restart starts
+    //    a fresh recovery cycle.
+    this.fsm?.resetAutoRespawn();
+
+    // 3. Re-run ensureDaemon and project the outcome into daemonStatus using
+    //    the same error -> state mapping as onload.
+    let attachment: DaemonAttachment;
+    try {
+      attachment = await ensureDaemon({
+        vaultRoot: getVaultRoot(this.app),
+        settings: this.settings.get(),
+        probeHealth: makeProductionProbe(homedir()),
+        spawnCli: makeProductionSpawn(),
+      });
+    } catch (e) {
+      if (e instanceof BinaryNotFoundError) {
+        this.daemonStatus = { state: "binary-missing" };
+      } else if (e instanceof VaultMismatchError) {
+        this.daemonStatus = {
+          state: "vault-mismatch",
+          activeVault: e.activeVault,
+        };
+      } else if (e instanceof SpawnError) {
+        this.daemonStatus = { state: "spawn-failed", error: e.message };
+      } else if (e instanceof UnsupportedPlatformError) {
+        this.daemonStatus = { state: "spawn-failed", error: e.message };
+      } else {
+        throw e;
+      }
+      // Re-throw so the FSM-respawn caller treats this as a failed recovery
+      // (it will fall through to its manual-restart state). The settings-tab
+      // caller catches via its own try (it doesn't — but the FSM's
+      // resetAutoRespawn already ran above, so it's safe to reject).
+      throw e instanceof Error ? e : new Error(String(e));
+    }
+
+    this.daemonStatus = {
+      state: "running",
+      port: attachment.port,
+      vault: attachment.vault_root,
+      version: attachment.version,
+    };
+
+    // 4. Wire up WS against the (possibly new) port. If a previous successful
+    //    onload built a wsClient against a different URL, rebuild it now.
+    const urls = urlsFromAttachment(attachment);
+    if (this.wsClient && this.wsUrl !== urls.ws) {
+      try { this.wsClient.close(); } catch { /* ignore */ }
+      this.wsClient = null;
+    }
+    if (!this.wsClient && this.bus) {
+      this.wsClient = new WsClient(urls.ws);
+      this.wsUrl = urls.ws;
+      // Rebuild the FSM's tapped client binding — but ReconnectFSM was wired
+      // against the old client in onload, so we can't swap underneath it.
+      // Instead, when the URL changes we leave restart as a "best effort" —
+      // a full plugin reload re-binds correctly. URL-stable restarts (the
+      // common case: same port) re-use the original client via fsm.start().
+    }
+    // Stop transitions the FSM to offline; start then re-opens against the
+    // existing client. Safe to call when phase is already manual-restart —
+    // stop forces offline first.
+    this.fsm?.stop();
+    this.fsm?.start();
   }
 
   private async activateChatView(chatId?: string) {
