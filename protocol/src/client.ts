@@ -122,7 +122,7 @@ export function makeClient(opts: ClientOpts): Client {
     vault: {
       read: (path) => call(`/vault/file?path=${encodeURIComponent(path)}`, { method: "GET" }, VaultFileResp),
       write: (path, content) =>
-        call(`/vault/file?path=${encodeURIComponent(path)}`, { method: "PUT", body: JSON.stringify({ content }) }, VaultWriteResp),
+        call(`/vault/file?path=${encodeURIComponent(path)}`, { method: "PUT", body: JSON.stringify({ path, content }) }, VaultWriteResp),
       list: (path, lopts) => {
         const params = new URLSearchParams();
         if (path) params.set("path", path);

@@ -54,7 +54,7 @@ test("vault.write() sends JSON body", async () => {
   const r = await client.vault.write("notes.md", "hello");
   expect(method).toBe("PUT");
   expect(ct).toContain("application/json");
-  expect(body).toEqual({ content: "hello" });
+  expect(body).toEqual({ path: "notes.md", content: "hello" });
   expect(r.size).toBe(5);
 });
 
