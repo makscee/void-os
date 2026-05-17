@@ -379,14 +379,15 @@ export function ChatRoot(props: ChatRootProps) {
   }, []);
 
   const onPickAgent = React.useCallback(async (name: string) => {
+    let prev: string | null = null;
+    setActiveAgent((current) => { prev = current; return name; });
     try {
-      setActiveAgent(name);
       const created = await props.api.createChat(name);
       setActiveChatId(created.id);
       await props.onChatIdMinted?.(created.id);
       bumpRefresh();
     } catch (e) {
-      setActiveAgent(null);
+      setActiveAgent(prev);
       showToast(`Could not create chat: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [props.api, props.onChatIdMinted, bumpRefresh, showToast]);

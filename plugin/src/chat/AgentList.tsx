@@ -58,9 +58,10 @@ export function AgentList(props: AgentListProps) {
     <aside
       className="vos:flex vos:flex-col vos:shrink-0 vos:max-h-[40%] vos:w-full vos:border-b vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-secondary)]"
       data-testid="agent-list"
+      aria-labelledby="vos-agents-heading"
     >
       <div className="vos:flex vos:items-center vos:px-[var(--size-4-3)] vos:h-9 vos:border-b vos:border-[var(--background-modifier-border)]">
-        <span className="vos:text-[11px] vos:uppercase vos:tracking-wider vos:text-[var(--text-muted)] vos:font-normal vos:leading-none">
+        <span id="vos-agents-heading" className="vos:text-[11px] vos:uppercase vos:tracking-wider vos:text-[var(--text-muted)] vos:font-normal vos:leading-none">
           Agents
         </span>
       </div>
