@@ -1,24 +1,27 @@
-# starter-vault — seed content for `$VOID_OS_VAULT_ROOT`
+# vault
 
-This directory ships with `void-os` and contains the minimal set of files needed for the daemon to boot a usable vault:
+Seeded by `void-os init`. This directory is your void-os vault — the user-owned knowledge folder that the void-os daemon reads from and writes to on your behalf.
 
-- `CLAUDE.md` — shared context every spawned CC subprocess inherits.
-- `agents/maya/`, `agents/journaler/`, `agents/task-tracker/` — three starter agents.
+At seed, three files exist:
 
-## One-time seed
+- `CLAUDE.md` — schema + agent system primer. Read this before editing anything by hand.
+- `agents/tinker/agent.md` — the only starter agent. Talk to Tinker to create more.
+- `log.md` — append-only timeline of agent activity. Starts empty.
 
-Point `$VOID_OS_VAULT_ROOT` at the folder you want to use as a vault, then copy this directory's contents into it:
+Everything else (journal, tasks, milestones, wiki pages, additional agents) grows on demand through conversation with Tinker.
+
+## First chat
 
 ```sh
-cp -rn starter-vault/. "$VOID_OS_VAULT_ROOT"/
+void-os ask tinker "hello"
 ```
 
-`-n` (no-clobber) preserves any files you already have. **Do not** drop the `-n` — plain `cp -r` overwrites file-by-file and can silently destroy hand-tuned agents.
+Or open this folder as an Obsidian vault and use the void-os plugin's chat pane.
 
-Equivalent: `rsync -a --ignore-existing starter-vault/ "$VOID_OS_VAULT_ROOT"/`.
+## Git
 
-After seeding, restart the daemon. The plugin's "new chat" picker will list `maya`, `journaler`, `task-tracker`.
+This vault is a git repo. `void-os init` made the first `seed: void-os init` commit. If you opted into GitHub during install, it also created and pushed a private remote. Commit regularly — your vault is your operating record.
 
-## Customizing
+## Editing by hand
 
-Edit any agent's `agent.md` in-place inside your vault — changes take effect on the next message in any chat using that agent (no restart). See `vault/projects/void-os/CONTEXT.md` for the full schema.
+Anything Obsidian-editable is yours to change. Agent edits hot-reload on the next message — no restart needed. See `CLAUDE.md` for write-scope rules so you know which paths each agent owns.

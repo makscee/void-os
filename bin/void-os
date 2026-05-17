@@ -8,11 +8,17 @@ const COMMANDS = ["init", "daemon", "agents", "vault", "plugin"];
 const TOP_USAGE = `usage: void-os <command> [args]
 
 commands:
-  init      provision a vault from starter-vault
+  init      provision a vault from starter-vault (default ~/vault)
   daemon    daemon lifecycle: start | stop | status | logs
   agents    introspect agents: list
   vault     vault ops: read | write | list
   plugin    Obsidian plugin: install | status
+
+init flags:
+  --home <path>    override target vault dir
+  --dry-run        print actions without writing
+  --force          re-copy starter files into already-seeded vault, or overwrite a non-void dir
+  --skip-build     skip bun install + plugin build (dev iter)
 
 global flags:
   --help, -h    show usage for a command

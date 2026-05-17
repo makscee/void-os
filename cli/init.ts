@@ -1,144 +1,153 @@
-import {
-  existsSync,
-  readdirSync,
-  mkdirSync,
-  copyFileSync,
-  statSync,
-  symlinkSync,
-  cpSync,
-} from "node:fs"
-import { join, dirname } from "node:path"
+import { readSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
+import { detect, enforce, PreflightError, type PreflightReport } from "./init/preflight"
+import { ClackPrompter, type Prompter } from "./init/prompter"
+import { configure } from "./init/configure"
+import { runBuild, BuildError } from "./init/build"
+import { seed } from "./init/seed"
+import { installPlugin } from "./init/plugin"
+import { formatReport } from "./init/report"
 
-export interface ProvisionOpts {
-  home: string
-  prefix: string
-  dryRun: boolean
-  force: boolean
-}
+// Re-export for backwards compatibility with existing tests + external callers.
+export { seed as provision } from "./init/seed"
+export type { SeedOpts as ProvisionOpts, SeedResult as ProvisionResult } from "./init/seed"
 
-export interface ProvisionResult {
-  copied: string[]
-  skipped: string[]
-  warnings: string[]
-}
-
-const VOID_MARKER = ".void"
-
-export async function provision(opts: ProvisionOpts): Promise<ProvisionResult> {
-  const { home, prefix, dryRun, force } = opts
-  const result: ProvisionResult = { copied: [], skipped: [], warnings: [] }
-
-  const isUpgrade = existsSync(join(home, VOID_MARKER))
-  const isEmpty = !existsSync(home) || readdirSync(home).length === 0
-  if (existsSync(home) && !isEmpty && !isUpgrade && !force) {
-    throw new Error(
-      `refusing to clobber non-void dir at ${home}; use --force to override`,
-    )
-  }
-
-  if (!existsSync(home) && !dryRun) mkdirSync(home, { recursive: true })
-
-  const starter = join(prefix, "starter-vault")
-  copyTree(starter, home, { dryRun, force, isUpgrade }, result)
-
-  ensureClaudeSkillsSymlink(home, { dryRun }, result)
-
-  copyPluginDist(prefix, home, { dryRun }, result)
-
-  return result
-}
-
-function copyTree(
-  src: string,
-  dst: string,
-  opts: { dryRun: boolean; force: boolean; isUpgrade: boolean },
-  result: ProvisionResult,
-) {
-  for (const entry of readdirSync(src, { withFileTypes: true })) {
-    const s = join(src, entry.name)
-    const d = join(dst, entry.name)
-    if (entry.isDirectory()) {
-      if (!existsSync(d) && !opts.dryRun) mkdirSync(d, { recursive: true })
-      copyTree(s, d, opts, result)
-    } else {
-      const exists = existsSync(d)
-      if (exists && !opts.force) {
-        result.skipped.push(d)
-        continue
-      }
-      if (!opts.dryRun) {
-        mkdirSync(dirname(d), { recursive: true })
-        copyFileSync(s, d)
-      }
-      result.copied.push(d)
-    }
-  }
-}
-
-function ensureClaudeSkillsSymlink(
-  home: string,
-  opts: { dryRun: boolean },
-  result: ProvisionResult,
-) {
-  const claudeDir = join(home, ".claude")
-  const link = join(claudeDir, "skills")
-  if (existsSync(link)) {
-    result.skipped.push(link)
-    return
-  }
-  if (!opts.dryRun) {
-    mkdirSync(claudeDir, { recursive: true })
-    symlinkSync("../skills", link, "dir")
-  }
-  result.copied.push(link)
-}
-
-function copyPluginDist(
-  prefix: string,
-  home: string,
-  opts: { dryRun: boolean },
-  result: ProvisionResult,
-) {
-  const src = join(prefix, "plugin/dist")
-  const dst = join(home, ".obsidian/plugins/void-os")
-  if (!existsSync(src)) {
-    result.warnings.push(
-      `plugin build artifact missing at ${src}; vault will open in Obsidian without the void-os plugin`,
-    )
-    return
-  }
-  if (!opts.dryRun) cpSync(src, dst, { recursive: true, force: true })
-  result.copied.push(dst)
-}
-
-export default async function cli(args: string[], ctx: { prefix: string }) {
-  const flags = parseFlags(args)
-  const home = flags.home ?? process.env.VOID_HOME ?? join(process.env.HOME!, "void")
-  const result = await provision({
-    home,
-    prefix: ctx.prefix,
-    dryRun: flags.dryRun,
-    force: flags.force,
-  })
-  for (const w of result.warnings) console.warn(`warning: ${w}`)
-  console.log(`vault ready at ${home}`)
-  console.log(`next:`)
-  console.log(`  brew services start void-os`)
-  console.log(`  open ${home}`)
-}
-
-function parseFlags(args: string[]): {
+interface Flags {
   home?: string
   dryRun: boolean
   force: boolean
-} {
-  const out = { home: undefined as string | undefined, dryRun: false, force: false }
+  skipBuild: boolean
+}
+
+function parseFlags(args: string[]): Flags {
+  const out: Flags = { dryRun: false, force: false, skipBuild: false }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
     if (a === "--dry-run") out.dryRun = true
     else if (a === "--force") out.force = true
+    else if (a === "--skip-build") out.skipBuild = true
     else if (a === "--home") out.home = args[++i]
     else throw new Error(`unknown flag: ${a}`)
   }
   return out
+}
+
+function expandHome(p: string): string {
+  if (p === "~") return homedir()
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2))
+  return p
+}
+
+function defaultBrewPrompt(): boolean {
+  process.stderr.write("bun is required. Run `brew install bun`? [y/N] ")
+  const buf = Buffer.alloc(8)
+  try {
+    const n = readSync(0, buf, 0, 8, null)
+    return /^y/i.test(buf.slice(0, n).toString().trim())
+  } catch {
+    return false
+  }
+}
+
+export interface InitCommandOpts {
+  args: string[]
+  prefix: string
+  /** Override the Prompter implementation (testing). */
+  prompter?: Prompter
+  /** Override the brew-install-bun confirmation (testing). */
+  offerBrewInstallBun?: () => boolean
+  /** Inject a fake preflight report (testing); skips real detect()/enforce(). */
+  preflight?: PreflightReport
+  /** Skip the build phase entirely (testing convenience; equivalent to --skip-build). */
+  skipBuild?: boolean
+}
+
+/**
+ * Phase orchestrator. Wires preflight → configure → build → seed → plugin → report.
+ *
+ * Returns nothing on success; throws (or calls process.exit) on hard failure.
+ */
+export async function initCommand(opts: InitCommandOpts): Promise<void> {
+  const flags = parseFlags(opts.args)
+  const prompter: Prompter = opts.prompter ?? new ClackPrompter()
+
+  // 1. PREFLIGHT (skipped when an injected report is supplied)
+  let report: PreflightReport
+  if (opts.preflight) {
+    report = opts.preflight
+  } else {
+    report = detect()
+    try {
+      enforce(report, {
+        offerBrewInstallBun: opts.offerBrewInstallBun ?? defaultBrewPrompt,
+      })
+    } catch (e) {
+      if (e instanceof PreflightError) {
+        console.error(`preflight: ${e.message}`)
+        process.exit(e.exitCode)
+      }
+      throw e
+    }
+  }
+
+  // 2. CONFIGURE
+  const decisions = await configure(report, prompter)
+  if (decisions.cancelled) {
+    console.error("cancelled")
+    process.exit(130)
+  }
+
+  const vaultPath = flags.home
+    ? expandHome(flags.home)
+    : decisions.vaultPath
+
+  // 3. BUILD
+  try {
+    runBuild({ prefix: opts.prefix, skipBuild: flags.skipBuild || !!opts.skipBuild })
+  } catch (e) {
+    if (e instanceof BuildError) {
+      console.error(`build: ${e.message}`)
+      process.exit(e.exitCode)
+    }
+    throw e
+  }
+
+  // 4. SEED
+  let seedResult
+  try {
+    seedResult = await seed({
+      home: vaultPath,
+      prefix: opts.prefix,
+      dryRun: flags.dryRun,
+      force: flags.force,
+      gh: decisions.gh,
+    })
+  } catch (e) {
+    console.error(`seed: ${(e as Error).message}`)
+    process.exit(4)
+    return
+  }
+
+  // 5. PLUGIN
+  const pluginResult = installPlugin({
+    prefix: opts.prefix,
+    home: vaultPath,
+    dryRun: flags.dryRun,
+  })
+
+  // 6. REPORT
+  for (const w of seedResult.warnings) console.warn(`warning: ${w}`)
+  for (const w of pluginResult.warnings) console.warn(`warning: ${w}`)
+  console.log(formatReport({
+    vaultPath,
+    preflight: report,
+    decisions,
+    seed: seedResult,
+    plugin: pluginResult,
+  }))
+}
+
+export default async function cli(args: string[], ctx: { prefix: string }) {
+  await initCommand({ args, prefix: ctx.prefix })
 }
