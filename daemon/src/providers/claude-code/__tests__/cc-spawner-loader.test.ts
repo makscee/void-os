@@ -83,9 +83,18 @@ describe("cc-spawner loader integration", () => {
     expect(existsSync(settingsPath)).toBe(true);
     expect(existsSync(mcpPath)).toBe(true);
 
-    const mcp = JSON.parse(readFileSync(mcpPath, "utf8"));
-    expect(mcp.mcpServers["void-os"].url).toContain("agent=journaler");
-    // URL is stable across runs — runId no longer in query (was busting prompt cache).
-    expect(mcp.mcpServers["void-os"].url).not.toContain("run=");
+    const mcp = JSON.parse(readFileSync(mcpPath, "utf8")) as {
+      mcpServers: {
+        "void-os": {
+          type: string;
+          command: string;
+          args: string[];
+          env: Record<string, string>;
+        };
+      };
+    };
+    // VOS-112: stdio bridge — agent identity flows via env, not URL query.
+    expect(mcp.mcpServers["void-os"].type).toBe("stdio");
+    expect(mcp.mcpServers["void-os"].env.VOS_AGENT).toBe("journaler");
   });
 });
