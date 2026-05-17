@@ -11,6 +11,7 @@
 import type { FullConfig } from "@playwright/test";
 import sharedSetup from "./globalSetup.ts";
 import askUserSetup from "./globalSetup-ask-user.ts";
+import autospawnSetup from "./globalSetup-autospawn.ts";
 
 // Playwright's FullConfig.projects is the full declared list, NOT filtered
 // by --project. Parse argv directly. Empty filter = run all.
@@ -29,4 +30,5 @@ export default async function globalSetupAll(config: FullConfig) {
   const selected = selectedProjects(config.projects.map((p) => p.name));
   if (selected.has("main")) await sharedSetup();
   if (selected.has("ask-user")) await askUserSetup();
+  if (selected.has("autospawn")) await autospawnSetup();
 }
