@@ -1,7 +1,12 @@
-import { statSync, constants, accessSync, readFileSync } from "node:fs";
-import { join, resolve as pathResolve } from "node:path";
-import { homedir } from "node:os";
-import { spawn } from "node:child_process";
+// VOS-120 T9-fix-A: route every node built-in through the lazy-require shim.
+// Static `import "node:*"` is stripped by Bun's browser-target bundler — the
+// Obsidian renderer would then crash on `homedir()` / `spawn()` undefined.
+import { nodeFs, nodePath, nodeOs, nodeCp } from "./node-runtime";
+const { statSync, constants, accessSync, readFileSync } = nodeFs;
+const { join } = nodePath;
+const pathResolve = nodePath.resolve;
+const { homedir } = nodeOs;
+const { spawn } = nodeCp;
 
 export class BinaryNotFoundError extends Error {
   constructor() {

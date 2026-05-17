@@ -1,4 +1,5 @@
-import { resolve as pathResolve } from "node:path";
+// VOS-120 T9-fix-A: use lazy-require shim instead of `node:path`.
+import { nodePath } from "./node-runtime";
 import { FileSystemAdapter, type App } from "obsidian";
 import { UnsupportedPlatformError } from "./daemon-lifecycle";
 
@@ -18,5 +19,5 @@ export function getVaultRoot(app: App): string {
       "void-os requires Obsidian desktop (FileSystemAdapter)",
     );
   }
-  return pathResolve(adapter.getBasePath());
+  return nodePath.resolve(adapter.getBasePath());
 }

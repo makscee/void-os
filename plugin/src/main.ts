@@ -1,6 +1,9 @@
 import { Notice, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
-import { homedir } from "node:os";
-import { spawn } from "node:child_process";
+// VOS-120 T9-fix-A: lazy-require node built-ins (browser-target bundler
+// strips static `import "node:os" / "node:child_process"`).
+import { nodeOs, nodeCp } from "./node-runtime";
+const { homedir } = nodeOs;
+const { spawn } = nodeCp;
 import { ChatView, CHAT_VIEW_TYPE } from "./view";
 import { WsClient, type WsEvent, type WsPort } from "./ws-client";
 import { ReconnectFSM } from "./reconnect";
