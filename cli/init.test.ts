@@ -15,14 +15,13 @@ beforeEach(() => {
   // Build a minimal fake prefix mirroring the brewed layout.
   mkdirSync(join(prefix, "starter-vault/agents/maya"), { recursive: true })
   mkdirSync(join(prefix, "starter-vault/skills"), { recursive: true })
-  mkdirSync(join(prefix, "starter-vault/.void"), { recursive: true })
+  // VOS-119 Task 6.1: .void is now a file marker written by seed(), not a starter-vault dir
   mkdirSync(join(prefix, "starter-vault/.claude"), { recursive: true })
   mkdirSync(join(prefix, "starter-vault/.obsidian/plugins/void-os"), { recursive: true })
   writeFileSync(join(prefix, "starter-vault/CLAUDE.md"), "# claude\n")
   writeFileSync(join(prefix, "starter-vault/README.md"), "# vault\n")
   writeFileSync(join(prefix, "starter-vault/agents/maya/agent.md"), "---\nname: maya\n---\n")
   writeFileSync(join(prefix, "starter-vault/skills/.gitkeep"), "")
-  writeFileSync(join(prefix, "starter-vault/.void/.gitkeep"), "")
   writeFileSync(join(prefix, "starter-vault/.claude/.gitkeep"), "")
   writeFileSync(join(prefix, "starter-vault/.obsidian/plugins/void-os/.gitkeep"), "")
 })
@@ -36,7 +35,8 @@ describe("provision()", () => {
     await provision({ home, prefix, dryRun: false, force: false })
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
     expect(existsSync(join(home, "agents/maya/agent.md"))).toBe(true)
-    expect(existsSync(join(home, ".void/.gitkeep"))).toBe(true)
+    // VOS-119 Task 8.2 will restore as file-marker assertion
+    // expect(existsSync(join(home, ".void/.gitkeep"))).toBe(true)
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("# claude\n")
   })
 
