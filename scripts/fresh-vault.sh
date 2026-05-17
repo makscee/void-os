@@ -258,6 +258,20 @@ link_plugin() {
   echo "fresh-vault: symlinked plugin: $target → $dist"
 }
 
+# --- daemon start + hint ------------------------------------------------
+start_daemon() {
+  echo "fresh-vault: starting daemon on $PATH_CANON"
+  "$VOID_OS_BIN" daemon start --vault "$PATH_CANON"
+}
+
+print_next_steps() {
+  if [ "$FLAG_SKIP_PLUGIN" -eq 1 ]; then
+    echo "next: daemon up on $PATH_CANON; plugin link skipped (--skip-plugin)"
+  else
+    echo "next: open Obsidian on $PATH_CANON, enable void-os plugin"
+  fi
+}
+
 # --- main ----------------------------------------------------------------
 main() {
   parse_args "$@"
@@ -273,7 +287,8 @@ main() {
   wipe_path
   run_init
   link_plugin
-  echo "fresh-vault: ready to wipe $PATH_CANON (T9 lands here)"
+  start_daemon
+  print_next_steps
 }
 
 main "$@"
