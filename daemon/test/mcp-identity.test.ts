@@ -9,6 +9,7 @@ import { mountMcp } from "../src/adapters/mcp";
 import { createEventBus } from "../src/events";
 import { createAskUserBridge } from "../src/chat/ask-user-bridge";
 import { createPermissionEngine } from "../src/permissions/engine";
+import { createVaultWriter } from "../src/vault/writer";
 
 const MIGRATIONS = join(import.meta.dir, "..", "src", "adapters", "sqlite", "migrations");
 
@@ -52,8 +53,9 @@ describe("mountMcp identity from URL query", () => {
     const bus = createEventBus({ db });
     const bridge = createAskUserBridge({ db, bus });
     const engine = createPermissionEngine({ vaultRoot: root, homeRoot: "/tmp/home" });
+    const writer = createVaultWriter({ vaultRoot: root, db });
     const app = new Hono();
-    mountMcp(app, { vaultRoot: root, db, bus, bridge, engine });
+    mountMcp(app, { vaultRoot: root, db, bus, bridge, engine, writer });
     const res = await callVaultRead(app, "journaler", "journal/x.md");
     expect(res.status).toBe(200);
   });
@@ -63,8 +65,9 @@ describe("mountMcp identity from URL query", () => {
     const bus = createEventBus({ db });
     const bridge = createAskUserBridge({ db, bus });
     const engine = createPermissionEngine({ vaultRoot: root, homeRoot: "/tmp/home" });
+    const writer = createVaultWriter({ vaultRoot: root, db });
     const app = new Hono();
-    mountMcp(app, { vaultRoot: root, db, bus, bridge, engine });
+    mountMcp(app, { vaultRoot: root, db, bus, bridge, engine, writer });
     const res = await callVaultRead(app, "journaler", "work/x.md");
     const txt = await res.text();
     expect(txt).toMatch(/SCOPE_DENIED/);

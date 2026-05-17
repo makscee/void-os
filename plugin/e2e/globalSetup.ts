@@ -104,7 +104,15 @@ export interface SetupE2EOpts {
 export async function setupE2E(opts: SetupE2EOpts = {}) {
   const stateEnvVar = opts.stateEnvVar ?? "VOS_E2E_STATE";
   const tmpdirPrefix = `void-os-e2e-${opts.tmpDirSuffix ?? ""}`;
-  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), tmpdirPrefix));
+  // VOS-108: realpath the tmpdir up-front so the daemon's MCP path-policy
+  // gate (resolveVaultPath does realpathSync internally) matches the
+  // VOID_OS_VAULT_ROOT it was handed. On macOS, /var/folders/... is a
+  // symlink into /private/var/folders/..., so an un-resolved root mismatches
+  // the realpath'd child and the gate throws PATH_ESCAPES_VAULT_ROOT
+  // BEFORE the scope gate ever runs. Sibling specs that only hit HTTP
+  // routes don't notice; permission-deny.spec.ts (which drives MCP
+  // directly) does. Mirrors permission-deny-mcp.test.ts line 54-56.
+  const tmpdir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), tmpdirPrefix)));
   const daemonVault = path.join(tmpdir, "vault");
   const dbPath = path.join(tmpdir, "state.sqlite");
   const obsidianUserDataDir = path.join(tmpdir, "obsidian-user-data");
@@ -260,7 +268,25 @@ export async function setupE2E(opts: SetupE2EOpts = {}) {
       const stmt = seedDb.prepare(
         "INSERT OR IGNORE INTO agent_cards (agent_name, card_json, source_mtime) VALUES (?, ?, 0)",
       );
-      stmt.run("maya", JSON.stringify({ name: "maya" }));
+      // VOS-108: maya is intentionally write-deny globally for the
+      // permission-deny spec — do NOT extend maya for write-path tests;
+      // add a new agent_card instead.
+      // Maya's card declares an empty write_scope so the MCP scope-gate
+      // denies vault.* writes (permission-deny.spec.ts asserts
+      // SCOPE_DENIED). read_scope stays permissive so unrelated read
+      // paths still work for the other specs. Without explicit scopes the
+      // engine defaults write to read, which allows writes and breaks the
+      // deny assertion. Daemon's boot-time scanAgentCards already inserted
+      // a maya row from the fixture frontmatter (which lacks scopes), so
+      // use INSERT OR REPLACE for maya specifically to overwrite it.
+      const mayaStmt = seedDb.prepare(
+        "INSERT OR REPLACE INTO agent_cards (agent_name, card_json, source_mtime) VALUES (?, ?, 0)",
+      );
+      mayaStmt.run("maya", JSON.stringify({
+        name: "maya",
+        read_scope: ["vault/**"],
+        write_scope: [],
+      }));
       stmt.run("journaler", JSON.stringify({ name: "journaler" }));
       // VOS-91 T19: seed deep for the nested spec's depth-2 chain.
       stmt.run("deep", JSON.stringify({ name: "deep" }));

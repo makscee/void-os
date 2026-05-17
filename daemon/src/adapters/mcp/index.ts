@@ -26,9 +26,17 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pkg from "../../../package.json" with { type: "json" };
 import type { EventBus } from "../../events/index.ts";
 import type { AgentDefn, PermissionEngine } from "../../permissions/engine.ts";
+import type { VaultWriter } from "../../vault/writer.ts";
 import type { AskUserBridge } from "../../chat/ask-user-bridge.ts";
 import { honoBridge } from "./hono-bridge.ts";
 import { vaultReadDef, makeVaultRead } from "./tools/vault-read.ts";
+import { vaultCreateDef, makeVaultCreate } from "./tools/vault-create.ts";
+import { vaultAppendDef, makeVaultAppend } from "./tools/vault-append.ts";
+import { vaultReplaceSectionDef, makeVaultReplaceSection } from "./tools/vault-replace-section.ts";
+import { vaultSetPropertyDef, makeVaultSetProperty } from "./tools/vault-set-property.ts";
+import { vaultPatchDef, makeVaultPatch } from "./tools/vault-patch.ts";
+import { vaultDeleteDef, makeVaultDelete } from "./tools/vault-delete.ts";
+import { vaultMoveDef, makeVaultMove } from "./tools/vault-move.ts";
 import { askUserDef, makeAskUser } from "./tools/ask-user.ts";
 import { askAgentDef, makeAskAgent } from "./tools/ask-agent.ts";
 
@@ -66,6 +74,12 @@ export interface McpDeps {
   // agent identity is resolved per-request from the `?agent=<name>` URL
   // query in mountMcp, then threaded into buildMcpServer.
   engine: PermissionEngine;
+  /**
+   * VOS-108: shared VaultWriter singleton for vault.create/append/replace_section/
+   * set_property/patch/delete/move. Built once in app.ts (mutex + atomic-write state
+   * is per-instance, so all tools MUST share one instance).
+   */
+  writer: VaultWriter;
 }
 
 /**
@@ -97,7 +111,7 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
 }
 
 export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): McpServer {
-  const { vaultRoot, db, bus, bridge, engine, callingAgent, emit } = deps;
+  const { vaultRoot, db, bus, bridge, engine, callingAgent, emit, writer } = deps;
   const loadAgentDefn =
     deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(db, name));
   const dispatchChildTask =
@@ -118,6 +132,17 @@ export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Mcp
     vaultReadDef,
     makeVaultRead({ vaultRoot, db, engine, agent: callingAgent }) as never,
   );
+
+  const writeDeps = { vaultRoot, db, engine, writer, agent: callingAgent };
+
+  mcp.registerTool("vault.create",          vaultCreateDef,         makeVaultCreate(writeDeps) as never);
+  mcp.registerTool("vault.append",          vaultAppendDef,         makeVaultAppend(writeDeps) as never);
+  mcp.registerTool("vault.replace_section", vaultReplaceSectionDef, makeVaultReplaceSection(writeDeps) as never);
+  mcp.registerTool("vault.set_property",    vaultSetPropertyDef,    makeVaultSetProperty(writeDeps) as never);
+  mcp.registerTool("vault.patch",           vaultPatchDef,          makeVaultPatch(writeDeps) as never);
+  mcp.registerTool("vault.delete",          vaultDeleteDef,         makeVaultDelete(writeDeps) as never);
+  mcp.registerTool("vault.move",            vaultMoveDef,           makeVaultMove(writeDeps) as never);
+
   mcp.registerTool(
     "ask_user",
     askUserDef,

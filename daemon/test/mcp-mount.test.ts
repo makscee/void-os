@@ -10,6 +10,7 @@ import { mountMcp } from "../src/adapters/mcp/index.ts";
 import { createEventBus } from "../src/events/index.ts";
 import { createAskUserBridge } from "../src/chat/ask-user-bridge.ts";
 import { createPermissionEngine, type AgentDefn } from "../src/permissions/engine.ts";
+import { createVaultWriter } from "../src/vault/writer.ts";
 
 // Mirrors daemon/src/adapters/sqlite/migrations/0001_init.sql
 const SCHEMA = `
@@ -36,7 +37,8 @@ async function startApp(): Promise<Ctx> {
   // AgentDefn without needing an agent_cards row. The scope ["vault/**"]
   // resolves against vaultRoot via the engine — permissive for these tests.
   const loadAgentDefn = (_name: string): AgentDefn => ({ name: "test", read_scope: ["vault/**"] });
-  mountMcp(app, { vaultRoot: fs.realpathSync(vaultRoot), db, bus, bridge, engine, loadAgentDefn });
+  const writer = createVaultWriter({ vaultRoot: fs.realpathSync(vaultRoot), db });
+  mountMcp(app, { vaultRoot: fs.realpathSync(vaultRoot), db, bus, bridge, engine, writer, loadAgentDefn });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   return { vaultRoot, db, app, server: { stop: () => server.stop(true), port: server.port as number } };
 }
@@ -53,7 +55,20 @@ describe("mountMcp /mcp", () => {
     const { tools } = await client.listTools();
     // VOS-88 T7: ask_user joins vault.read on the tools list.
     // VOS-89 T10: ask_agent registered alongside.
-    expect(tools.map((t) => t.name).sort()).toEqual(["ask_agent", "ask_user", "vault.read"]);
+    // VOS-108 T10: 7 vault.* write tools (create/append/replace_section/
+    // set_property/patch/delete/move) registered alongside vault.read.
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      "ask_agent",
+      "ask_user",
+      "vault.append",
+      "vault.create",
+      "vault.delete",
+      "vault.move",
+      "vault.patch",
+      "vault.read",
+      "vault.replace_section",
+      "vault.set_property",
+    ]);
     await client.close();
     ctx.server.stop();
   });
