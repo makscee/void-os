@@ -10,6 +10,7 @@ import { mountMcp } from "../src/adapters/mcp/index.ts";
 import { createEventBus } from "../src/events/index.ts";
 import { createAskUserBridge } from "../src/chat/ask-user-bridge.ts";
 import { createPermissionEngine, type AgentDefn } from "../src/permissions/engine.ts";
+import { createVaultWriter } from "../src/vault/writer.ts";
 
 // Mirrors daemon/src/adapters/sqlite/migrations/0001_init.sql
 const SCHEMA = `
@@ -36,7 +37,8 @@ async function startApp(): Promise<Ctx> {
   // AgentDefn without needing an agent_cards row. The scope ["vault/**"]
   // resolves against vaultRoot via the engine — permissive for these tests.
   const loadAgentDefn = (_name: string): AgentDefn => ({ name: "test", read_scope: ["vault/**"] });
-  mountMcp(app, { vaultRoot: fs.realpathSync(vaultRoot), db, bus, bridge, engine, loadAgentDefn });
+  const writer = createVaultWriter({ vaultRoot: fs.realpathSync(vaultRoot), db });
+  mountMcp(app, { vaultRoot: fs.realpathSync(vaultRoot), db, bus, bridge, engine, writer, loadAgentDefn });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   return { vaultRoot, db, app, server: { stop: () => server.stop(true), port: server.port as number } };
 }

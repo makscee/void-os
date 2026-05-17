@@ -29,6 +29,7 @@ import { createEventBus } from "./events/index.ts";
 import { createAskUserBridge } from "./chat/ask-user-bridge.ts";
 import { makeProvider } from "./providers/factory.ts";
 import { createPermissionEngine } from "./permissions/engine.ts";
+import { createVaultWriter } from "./vault/writer.ts";
 import { runBootDenyProbe } from "./providers/claude-code/boot-probe.ts";
 import { makeChatRepo } from "./chat/repo.ts";
 import { makeSessionReplay } from "./chat/session-replay.ts";
@@ -135,6 +136,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // when tests inject a stub orchestrator.
   const homeRoot = process.env.HOME ?? "";
   const engine = createPermissionEngine({ vaultRoot: deps.vaultRoot, homeRoot });
+  // VOS-108: singleton VaultWriter shared by all vault.* write MCP tools. The
+  // writer owns a process-local mutex and a tmpDir for atomic staging; all
+  // tool factories MUST share one instance so concurrent ops serialize.
+  const writer = createVaultWriter({ vaultRoot: deps.vaultRoot, db: deps.db });
   // Caller should always pass daemonBase (index.ts does). Fallback uses
   // VOID_OS_PORT not PORT — the latter clashes with claudev / dev tools.
   const daemonBase =
@@ -241,6 +246,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     // read_scope. mountMcp resolves the calling-agent identity from
     // ?agent=<name> and pairs it with this engine inside buildMcpServer.
     engine,
+    writer,
   });
   // VOS-100: user-facing answer route. Shares the SAME `bridge` instance
   // with mountMcp so the MCP tool handler (which awaits via bridge.open)

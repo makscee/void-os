@@ -14,6 +14,7 @@ import { runMigrationsFromDir } from "../../src/adapters/sqlite/migrations";
 import { createEventBus } from "../../src/events/index.ts";
 import { createAskUserBridge } from "../../src/chat/ask-user-bridge";
 import { createPermissionEngine } from "../../src/permissions/engine";
+import { createVaultWriter } from "../../src/vault/writer";
 import { mountMcp, defaultLoadAgentDefn } from "../../src/adapters/mcp";
 import { mountAnswerRoute } from "../../src/api/answer";
 import { chatsApi } from "../../src/api/chats";
@@ -105,7 +106,8 @@ async function bootProbeDaemon(): Promise<{ app: Hono; vaultRoot: string; close:
 
   app.route("/", chatsApi(db));
   app.route("/", chatApi(db, { orchestrator: routedOrch }));
-  mountMcp(app, { vaultRoot, db, bus, bridge, engine });
+  const writer = createVaultWriter({ vaultRoot, db });
+  mountMcp(app, { vaultRoot, db, bus, bridge, engine, writer });
   mountAnswerRoute(app, { db, bridge });
 
   return {

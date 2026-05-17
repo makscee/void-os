@@ -39,6 +39,9 @@ import { mountAnswerRoute } from "../../src/api/answer.ts";
 import { createAskUserBridge } from "../../src/chat/ask-user-bridge.ts";
 import { createEventBus } from "../../src/events/index.ts";
 import { createPermissionEngine } from "../../src/permissions/engine.ts";
+import { createVaultWriter } from "../../src/vault/writer.ts";
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const MIGRATIONS = join(import.meta.dir, "../../src/adapters/sqlite/migrations");
 
@@ -80,12 +83,17 @@ async function startApp(): Promise<Ctx> {
   // VOS-106 T7.5: mountMcp now requires a PermissionEngine for vault.read's
   // per-agent scope gate. ask_user doesn't hit the engine but the dep is
   // structurally required; build a permissive engine rooted at /tmp.
+  // VOS-108: VaultWriter does realpathSync + mkdirSync on vaultRoot, so we
+  // need a real directory. ask_user doesn't write to it, but the dep is
+  // structurally required.
+  const vaultRoot = realpathSync(mkdtempSync(join(tmpdir(), "vos-108-ask-user-")));
   const engine = createPermissionEngine({
-    vaultRoot: "/tmp/__not_used__",
+    vaultRoot,
     homeRoot: "/tmp/home",
   });
+  const writer = createVaultWriter({ vaultRoot, db });
   const app = new Hono();
-  mountMcp(app, { vaultRoot: "/tmp/__not_used__", db, bus, bridge, engine });
+  mountMcp(app, { vaultRoot, db, bus, bridge, engine, writer });
   mountAnswerRoute(app, { db, bridge });
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   return { db, server: { stop: () => server.stop(true), port: server.port as number } };

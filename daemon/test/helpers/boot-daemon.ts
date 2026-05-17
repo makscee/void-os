@@ -40,6 +40,7 @@ import { makeDispatchChildTask } from "../../src/chat/dispatch-child.ts";
 import { chatsApi } from "../../src/api/chats.ts";
 import { chatApi } from "../../src/api/chat.ts";
 import { createPermissionEngine, type AgentDefn } from "../../src/permissions/engine.ts";
+import { createVaultWriter } from "../../src/vault/writer.ts";
 
 const MIGRATIONS_DIR = join(
   import.meta.dir,
@@ -224,6 +225,7 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
   // the test's vaultRoot with a /tmp/home anchor — vault.read is not the
   // tool under test here, but the dep is structurally required.
   const engine = createPermissionEngine({ vaultRoot, homeRoot: "/tmp/home" });
+  const writer = createVaultWriter({ vaultRoot, db });
   mountMcp(app, {
     vaultRoot,
     db,
@@ -232,6 +234,7 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
     dispatchChildTask,
     loadAgentDefn,
     engine,
+    writer,
   });
   mountAnswerRoute(app, { db, bridge });
 

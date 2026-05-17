@@ -9,12 +9,14 @@
 
 import { describe, test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEventBus } from "../../../src/events/index.ts";
 import { buildMcpServer } from "../../../src/adapters/mcp/index.ts";
 import { createAskUserBridge } from "../../../src/chat/ask-user-bridge.ts";
+import { createPermissionEngine } from "../../../src/permissions/engine.ts";
+import { createVaultWriter } from "../../../src/vault/writer.ts";
 import { askAgentDef } from "../../../src/adapters/mcp/tools/ask-agent.ts";
 import { askUserDef } from "../../../src/adapters/mcp/tools/ask-user.ts";
 import { vaultReadDef } from "../../../src/adapters/mcp/tools/vault-read.ts";
@@ -35,11 +37,21 @@ describe("MCP tool registration (VOS-97)", () => {
   });
 
   test("buildMcpServer constructs a Server (smoke)", () => {
-    const vaultRoot = mkdtempSync(join(tmpdir(), "vault-"));
+    const vaultRoot = realpathSync(mkdtempSync(join(tmpdir(), "vault-")));
     const db = new Database(":memory:");
     const bus = createEventBus();
     const bridge = createAskUserBridge({ db, bus });
-    const server = buildMcpServer({ vaultRoot, db, bus, bridge });
+    const engine = createPermissionEngine({ vaultRoot, homeRoot: "/tmp/home" });
+    const writer = createVaultWriter({ vaultRoot, db });
+    const server = buildMcpServer({
+      vaultRoot,
+      db,
+      bus,
+      bridge,
+      engine,
+      writer,
+      callingAgent: { name: "test" },
+    });
     expect(server).toBeDefined();
     // The low-level Server exposes setRequestHandler/close; smoke-check one.
     expect(typeof (server as { close?: unknown }).close).toBe("function");

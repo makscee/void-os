@@ -27,6 +27,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pkg from "../../../package.json" with { type: "json" };
 import type { EventBus } from "../../events/index.ts";
 import type { AgentDefn, PermissionEngine } from "../../permissions/engine.ts";
+import type { VaultWriter } from "../../vault/writer.ts";
 import type { AskUserBridge } from "../../chat/ask-user-bridge.ts";
 import { honoBridge } from "./hono-bridge.ts";
 import { vaultReadDef, makeVaultRead } from "./tools/vault-read.ts";
@@ -67,6 +68,12 @@ export interface McpDeps {
   // agent identity is resolved per-request from the `?agent=<name>` URL
   // query in mountMcp, then threaded into buildMcpServer.
   engine: PermissionEngine;
+  /**
+   * VOS-108: shared VaultWriter singleton for vault.create/append/replace_section/
+   * set_property/patch/delete/move. Built once in app.ts (mutex + atomic-write state
+   * is per-instance, so all tools MUST share one instance).
+   */
+  writer: VaultWriter;
 }
 
 /**
@@ -98,7 +105,7 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
 }
 
 export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Server {
-  const { vaultRoot, db, bus, bridge, engine, callingAgent, emit } = deps;
+  const { vaultRoot, db, bus, bridge, engine, callingAgent, emit, writer } = deps;
   const loadAgentDefn =
     deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(db, name));
   const dispatchChildTask =
