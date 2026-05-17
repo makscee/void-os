@@ -63,6 +63,7 @@ describe("ChatRoot tool UI (S4)", () => {
         },
         { role: "assistant", content: "done" },
       ],
+      getCostToday: async () => ({ total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }),
     };
 
     const host = (globalThis as any).document.createElement("div");
@@ -104,6 +105,7 @@ describe("ChatRoot tool UI (S4)", () => {
       cancel: async () => ({ run_id: "r1", status: "cancelled" }),
       listChats: async () => [],
       getMessages: async () => [],
+      getCostToday: async () => ({ total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }),
     };
 
     const host = (globalThis as any).document.createElement("div");
@@ -162,6 +164,7 @@ describe("ChatRoot tool UI (S4)", () => {
       cancel: async () => ({ run_id: "r1", status: "cancelled" }),
       listChats: async () => [],
       getMessages: async () => [],
+      getCostToday: async () => ({ total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }),
     };
 
     const host = (globalThis as any).document.createElement("div");

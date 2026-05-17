@@ -29,9 +29,6 @@ export function CostMeter(props: CostMeterProps): React.ReactElement {
   const [errored, setErrored] = React.useState(false);
 
   React.useEffect(() => {
-    // Guard for test harnesses that pass a partial ChatApi stub without
-    // getCostToday — stay in the loading state rather than throwing.
-    if (typeof api?.getCostToday !== "function") return;
     let cancelled = false;
     setErrored(false);
     api.getCostToday()
