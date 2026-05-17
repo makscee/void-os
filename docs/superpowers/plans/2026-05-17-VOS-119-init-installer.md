@@ -627,7 +627,7 @@ beforeEach(() => {
   mkdirSync(join(prefix, "plugin/src"), { recursive: true })
   mkdirSync(join(prefix, "plugin/dist"), { recursive: true })
   writeFileSync(join(prefix, "plugin/package.json"), "{}")
-  writeFileSync(join(prefix, "plugin/bun.lockb"), "")
+  writeFileSync(join(prefix, "plugin/bun.lock"), "")
   writeFileSync(join(prefix, "plugin/src/main.ts"), "x")
 })
 
@@ -646,7 +646,7 @@ describe("needsPluginBuild()", () => {
   it("returns false when dist newer than src + package.json + lockfile", () => {
     setMtime(join(prefix, "plugin/src/main.ts"), -100)
     setMtime(join(prefix, "plugin/package.json"), -100)
-    setMtime(join(prefix, "plugin/bun.lockb"), -100)
+    setMtime(join(prefix, "plugin/bun.lock"), -100)
     writeFileSync(join(prefix, "plugin/dist/main.js"), "built")
     setMtime(join(prefix, "plugin/dist/main.js"), 0)
     expect(needsPluginBuild(prefix)).toBe(false)
@@ -656,7 +656,7 @@ describe("needsPluginBuild()", () => {
     writeFileSync(join(prefix, "plugin/dist/main.js"), "built")
     setMtime(join(prefix, "plugin/dist/main.js"), -100)
     setMtime(join(prefix, "plugin/src/main.ts"), -200)
-    setMtime(join(prefix, "plugin/bun.lockb"), -200)
+    setMtime(join(prefix, "plugin/bun.lock"), -200)
     setMtime(join(prefix, "plugin/package.json"), 0)
     expect(needsPluginBuild(prefix)).toBe(true)
   })
@@ -695,7 +695,7 @@ export function needsPluginBuild(prefix: string): boolean {
   const distMtime = statSync(dist).mtimeMs
   const checkPaths = [
     join(prefix, "plugin/package.json"),
-    join(prefix, "plugin/bun.lockb"),
+    join(prefix, "plugin/bun.lock"),
   ]
   const srcDir = join(prefix, "plugin/src")
   if (existsSync(srcDir)) {
@@ -764,7 +764,7 @@ This task is the biggest. It moves the existing `provision()` logic out of `init
 - Create: `cli/init/seed.test.ts`
 - Modify: `cli/init.test.ts` (fixture: drop `.void` dir, expect file)
 
-- [ ] **Step 6.1: Update the legacy `cli/init.test.ts` fixture**
+- [ ] **Step 6.1: Update the legacy `cli/init.test.ts` fixture (fixture only — do not touch assertions)**
 
 In `cli/init.test.ts`, **remove** these lines from `beforeEach()`:
 
@@ -776,12 +776,14 @@ writeFileSync(join(prefix, "starter-vault/.void/.gitkeep"), "")
 
 Reason: `.void` becomes a file marker written by `seed()`, not a directory copied from `starter-vault/`.
 
-Also update any assertion that reads `existsSync(join(home, ".void/.gitkeep"))` to expect `existsSync(join(home, ".void"))` (file).
+**Do NOT yet update assertions** like `existsSync(join(home, ".void/.gitkeep"))` — those flip from directory-existence to file-existence only after `seed()` (Task 8) replaces the old `provision()` that never wrote the marker. Premature assertion rewrite at this step would fail under the still-unchanged `provision()`.
+
+Concretely: tests that *only* read `existsSync(join(home, ".void/.gitkeep"))` will now fail (because the fixture no longer creates the path), so **comment them out** with a `// VOS-119 Task 8.2 will restore as file-marker assertion` note. Leave every other assertion intact.
 
 - [ ] **Step 6.2: Run legacy tests to confirm they still pass**
 
 Run: `cd workspace/void-os && bun test cli/init.test.ts`
-Expected: tests pass against the existing `provision()` (which doesn't write the marker yet). Fixture-only change.
+Expected: tests pass against the existing `provision()` (which doesn't write the marker yet). Only fixture lines + the `.void/.gitkeep` assertion are changed in this step.
 
 - [ ] **Step 6.3: Write the failing test for new seed module**
 
@@ -832,18 +834,34 @@ describe("seed() — fresh install", () => {
 })
 
 describe("seed() — re-run idempotency", () => {
-  it("skips file copy + git init + commit on re-run without --force", async () => {
+  it("skips file copy + git init + commit on re-run without --force, leaves marker untouched", async () => {
     await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
+    const markerBefore = readFileSync(join(home, ".void"), "utf8")
+    const markerMtimeBefore = statSync(join(home, ".void")).mtimeMs
     writeFileSync(join(home, "CLAUDE.md"), "USER EDITED\n")
     writeFileSync(join(home, "scratch.md"), "user note\n")
+
+    // small sleep so a re-write would visibly change mtime
+    await new Promise(r => setTimeout(r, 50))
 
     const r = await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
     expect(readFileSync(join(home, "CLAUDE.md"), "utf8")).toBe("USER EDITED\n")
     expect(r.isFreshSeed).toBe(false)
+    // marker must NOT be rewritten when healthy — keeps vault working tree clean
+    expect(readFileSync(join(home, ".void"), "utf8")).toBe(markerBefore)
+    expect(statSync(join(home, ".void")).mtimeMs).toBe(markerMtimeBefore)
 
     const log = spawnSync("git", ["-C", home, "log", "--oneline"], { encoding: "utf8" })
     const commits = log.stdout.trim().split("\n").filter(Boolean)
     expect(commits.length).toBe(1) // no second auto-commit
+  })
+
+  it("rewrites marker when existing file is unparseable (corrupted)", async () => {
+    await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
+    writeFileSync(join(home, ".void"), "not json garbage")
+    await seed({ home, prefix, dryRun: false, force: false, gh: { push: false } })
+    const j = JSON.parse(readFileSync(join(home, ".void"), "utf8"))
+    expect(j.version).toBe(1)
   })
 
   it("with --force, overwrites seed files but still skips git init + commit", async () => {
@@ -942,13 +960,21 @@ export async function seed(opts: SeedOpts): Promise<SeedResult> {
   // 3. Skills symlink
   ensureClaudeSkillsSymlink(home, { dryRun }, result)
 
-  // 4. Marker write (always — re-run refreshes timestamp safely)
+  // 4. Marker write — only on fresh seed OR if existing marker is unparseable.
+  //    Re-runs over a healthy marker leave it untouched so the vault working
+  //    tree stays clean.
   if (!dryRun) {
-    const marker = { version: 1, createdAt: new Date().toISOString() }
-    const tmp = join(home, `${VOID_MARKER}.tmp`)
-    writeFileSync(tmp, JSON.stringify(marker, null, 2))
-    renameSync(tmp, join(home, VOID_MARKER))
-    result.copied.push(join(home, VOID_MARKER))
+    const markerPath = join(home, VOID_MARKER)
+    const needsWrite = result.isFreshSeed || !parseableMarker(markerPath)
+    if (needsWrite) {
+      const marker = { version: 1, createdAt: new Date().toISOString() }
+      const tmp = join(home, `${VOID_MARKER}.tmp`)
+      writeFileSync(tmp, JSON.stringify(marker, null, 2))
+      renameSync(tmp, markerPath)
+      result.copied.push(markerPath)
+    } else {
+      result.skipped.push(markerPath)
+    }
   }
 
   // 5. First commit — only on fresh seed
@@ -964,6 +990,16 @@ export async function seed(opts: SeedOpts): Promise<SeedResult> {
   }
 
   return result
+}
+
+function parseableMarker(path: string): boolean {
+  if (!existsSync(path)) return false
+  try {
+    const j = JSON.parse(readFileSync(path, "utf8"))
+    return typeof j === "object" && j !== null && j.version === 1 && typeof j.createdAt === "string"
+  } catch {
+    return false
+  }
 }
 
 function copyTree(
@@ -1387,7 +1423,7 @@ export default async function cli(args: string[], ctx: { prefix: string }) {
 }
 ```
 
-- [ ] **Step 8.2: Update `cli/init.test.ts` import**
+- [ ] **Step 8.2: Update `cli/init.test.ts` import, call shape, and marker assertions**
 
 Change line 6 of `cli/init.test.ts`:
 
@@ -1397,26 +1433,65 @@ import { provision } from "./init"
 
 This still works because `init.ts` re-exports `seed as provision`. The legacy tests continue to call `provision()` and assert against its returned shape — verify they still pass.
 
-The fixture should already have been adjusted in Task 6.1. Add the `gh: { push: false }` field to the existing `provision()` calls if the test compiler complains (the new shape is required):
+The fixture should already have been adjusted in Task 6.1. Add the `gh: { push: false }` field to every existing `provision()` call (the new shape is required):
 
 ```ts
 await provision({ home, prefix, dryRun: false, force: false, gh: { push: false } })
 ```
 
-Update every call site in `cli/init.test.ts` accordingly.
+**Now restore + flip the marker assertions** (deferred from Task 6.1):
 
-Also delete or update tests that asserted on `.void/.gitkeep` (now a file).
+- Re-enable the assertions that were commented out in Task 6.1.
+- Rewrite them from directory-existence to file-existence:
 
-- [ ] **Step 8.3: Run the full test suite**
+```ts
+// BEFORE (commented out by Task 6.1):
+// expect(existsSync(join(home, ".void/.gitkeep"))).toBe(true)
+
+// AFTER (Task 8.2):
+import { statSync } from "node:fs"
+expect(existsSync(join(home, ".void"))).toBe(true)
+expect(statSync(join(home, ".void")).isFile()).toBe(true)
+```
+
+Also update any legacy assertion still referencing `agents/maya/agent.md` — change to `agents/tinker/agent.md` (this is also enforced by Task 10.2).
+
+- [ ] **Step 8.3: Refresh `bin/void-os` help text and flag list**
+
+`bin/void-os` already wires `process.env.VOID_OS_PREFIX ?? resolve(here, "..")` into `ctx.prefix` and invokes `mod.default(rest, { prefix })` — **do not change that plumbing**. Update only the human-facing help block to match the new defaults and flags.
+
+Replace the existing help text in `bin/void-os` (around line 10-22) with:
+
+```js
+if (!cmd || cmd === "--help" || cmd === "-h") {
+  console.log(`usage: void-os <command> [args]
+
+commands:
+  init      seed a void-os vault (default ~/vault)
+  daemon    run the void-os daemon
+
+flags:
+  init --home <path>    override target vault dir
+  init --dry-run        print actions without writing
+  init --force          overwrite existing files
+  init --skip-build     skip bun install + plugin build (dev iter)
+`)
+  process.exit(cmd ? 0 : 1)
+}
+```
+
+Manual verify: `bin/void-os --help` prints the new defaults + `--skip-build` line.
+
+- [ ] **Step 8.4: Run the full test suite**
 
 Run: `cd workspace/void-os && bun test cli/`
 Expected: all tests PASS (preflight, prompter, configure, build, seed, plugin, init).
 
-- [ ] **Step 8.4: Commit**
+- [ ] **Step 8.5: Commit**
 
 ```bash
 cd workspace/void-os
-git add cli/init.ts cli/init.test.ts
+git add cli/init.ts cli/init.test.ts bin/void-os
 git commit -m "feat(VOS-119): rewrite cli/init.ts as phase orchestrator"
 ```
 
@@ -1819,45 +1894,43 @@ Use `sw_run` (from the orchestrator) to append manual-smoke results to the task 
 ## Task 13: Update task file acceptance bullets
 
 **Files:**
-- Modify: `vault/work/tasks/active/VOS-119-void-os-init-installer.md` (via `sw_run`)
+- Modify: `vault/work/tasks/active/VOS-119-void-os-init-installer.md` (canonical hub master, via the `Edit` tool — do not use a heredoc-Python sw_run)
 
-- [ ] **Step 13.1: Replace acceptance section**
+The previous draft of this task used `sw_run` + a Python heredoc with a regex that required a trailing `## ` header after `## Acceptance`. If the task ever has Acceptance as the final section, that regex silently no-ops while the commit message claims success — false signal. Replace the whole approach with a direct `Edit` tool call from the orchestrator, then a single `sw_run` to stage + commit.
 
-Run, from the orchestrator:
+- [ ] **Step 13.1: Use the `Edit` tool to replace the Acceptance block**
+
+From the orchestrator session (not a subagent), invoke `Edit` against `/Users/admin/hub/vault/work/tasks/active/VOS-119-void-os-init-installer.md` with the verbatim current Acceptance section as `old_string` and this as `new_string`:
+
+```markdown
+## Acceptance
+
+- [ ] `void-os init` runs interactively via `@clack/prompts`: vault location (default `~/vault`), GH repo name (if gh authed), Obsidian vault name (if Obsidian found).
+- [ ] Preflight detects + reports os, claude CLI, bun, gh auth, Obsidian. Hard-fails on missing claude or bun (with `brew install bun` offer on Mac).
+- [ ] Build step: `bun install` at root + `bun install && bun run build` inside `plugin/`. Skips plugin build if dist is current (incl. `plugin/package.json` + `plugin/bun.lock` in mtime check).
+- [ ] Seed: creates vault dir, copies `starter-vault/` (CLAUDE.md + `agents/tinker/agent.md` + empty `log.md` + README), writes `.void` JSON marker, `git init` + first commit (only on fresh seed), optional `gh repo create --private --push`.
+- [ ] Plugin install: copies `plugin/dist/` to `<vault>/.obsidian/plugins/void-os/`. Prints enable steps if Obsidian detected.
+- [ ] Final report: "ready" message with Obsidian enable hint + note that CLI `void-os ask tinker "hello"` lands with VOS-118.
+- [ ] Re-running on an already-initialized vault is safe (detects `.void` file marker, skips seed unless `--force`, never auto-commits user WIP, never rewrites a healthy marker).
+- [ ] Seed templates live in `starter-vault/` and are version-controlled.
+- [ ] `starter-vault/CLAUDE.md` encodes wiki schema + agent system primer per migration spec.
+- [ ] Existing `maya`, `journaler`, `task-tracker` seed agents removed; replaced with single `tinker` agent.
+- [ ] gh push never auto-rewrites an existing `origin`; aborts with warn if mismatched.
+```
+
+Verify: re-read the file; confirm the new bullets are present and the surrounding sections (`## Plan`, `## Subtasks`) are intact.
+
+- [ ] **Step 13.2: Commit the task-file change via `sw_run`**
 
 ```bash
 tools/state-write/sw "task(VOS-119): acceptance bullets revised per spec" -- bash -c '
-set -e
-cd /Users/admin/hub
-f=$(ls vault/work/tasks/active/VOS-119-*.md | head -1)
-python3 - <<PY
-import pathlib, re
-p = pathlib.Path("$f" if False else "'"$f"'")
-text = p.read_text()
-new_accept = """## Acceptance
-
-- [ ] \`void-os init\` runs interactively via \`@clack/prompts\`: vault location (default \`~/vault\`), GH repo name (if gh authed), Obsidian vault name (if Obsidian found).
-- [ ] Preflight detects + reports os, claude CLI, bun, gh auth, Obsidian. Hard-fails on missing claude or bun (with \`brew install bun\` offer on Mac).
-- [ ] Build step: \`bun install\` at root + \`bun install && bun run build\` inside \`plugin/\`. Skips plugin build if dist is current (incl. plugin/package.json + bun.lockb in mtime check).
-- [ ] Seed: creates vault dir, copies \`starter-vault/\` (CLAUDE.md + \`agents/tinker/agent.md\` + empty \`log.md\` + README), writes \`.void\` JSON marker, \`git init\` + first commit (only on fresh seed), optional \`gh repo create --private --push\`.
-- [ ] Plugin install: copies \`plugin/dist/\` to \`<vault>/.obsidian/plugins/void-os/\`. Prints enable steps if Obsidian detected.
-- [ ] Final report: 'ready' message with Obsidian enable hint + note that CLI \`void-os ask tinker "hello"\` lands with VOS-118.
-- [ ] Re-running on an already-initialized vault is safe (detects \`.void\` file marker, skips seed unless \`--force\`, never auto-commits user WIP).
-- [ ] Seed templates live in \`starter-vault/\` and are version-controlled.
-- [ ] \`starter-vault/CLAUDE.md\` encodes wiki schema + agent system primer per migration spec.
-- [ ] Existing \`maya\`, \`journaler\`, \`task-tracker\` seed agents removed; replaced with single \`tinker\` agent.
-- [ ] gh push never auto-rewrites an existing \`origin\`; aborts with warn if mismatched.
-"""
-text = re.sub(r"## Acceptance\n.*?(?=\n## )", new_accept + "\n", text, count=1, flags=re.S)
-p.write_text(text)
-PY
-git add "$f"
+  set -e
+  cd /Users/admin/hub
+  git add vault/work/tasks/active/VOS-119-void-os-init-installer.md
 '
 ```
 
-(The orchestrator can also write this block inline by reading the file and using Edit; the `sw_run` form is shown above for parity with `/work` conventions.)
-
-- [ ] **Step 13.2: No commit needed (sw_run committed already)**
+The `Edit` already changed the file on disk; `sw_run` stages + commits it to canonical master. No Python regex involved.
 
 ---
 

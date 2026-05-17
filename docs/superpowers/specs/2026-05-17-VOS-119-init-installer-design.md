@@ -85,7 +85,7 @@ Obsidian detection: macOS = `/Applications/Obsidian.app` exists. Linux = `which 
 - `spawnSync('bun', ['install'], { cwd: prefix + '/plugin', stdio: 'inherit' })` — plugin deps.
 - `spawnSync('bun', ['run', 'build'], { cwd: prefix + '/plugin', stdio: 'inherit' })` — produces `plugin/dist/main.js`.
 
-Skip-build heuristic: if `plugin/dist/main.js` mtime newer than newest mtime under `plugin/src/` **and** newer than `plugin/package.json` and `plugin/bun.lockb`, skip the plugin build. Dep bumps therefore invalidate the cached dist. Always run `bun install` (cheap when up-to-date).
+Skip-build heuristic: if `plugin/dist/main.js` mtime newer than newest mtime under `plugin/src/` **and** newer than `plugin/package.json` and `plugin/bun.lock`, skip the plugin build. Dep bumps therefore invalidate the cached dist. Always run `bun install` (cheap when up-to-date).
 
 `--skip-build` flag bypasses all build steps for dev iter.
 
