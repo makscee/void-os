@@ -6,6 +6,7 @@
 // exec, pragma, transaction). Logged in T3 report as a deviation.
 
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { runMigrationsFromDir } from "./migrations.js";
@@ -20,6 +21,7 @@ export interface OpenDatabaseOptions {
 }
 
 export const openDatabase = (path: string, opts: OpenDatabaseOptions = {}): Database => {
+  mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");

@@ -1,5 +1,7 @@
 import { test, expect, chromium, type Page, type Browser } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { waitForTaskRow, waitForTaskState, type TaskRow } from "../test-utils/wait-for-state.ts";
 
 /**
  * Chat round-trip smoke. Drives the plugin from a connected state through
@@ -20,6 +22,7 @@ interface E2EState {
   vaultPath: string;
   obsidianUserDataDir: string;
   fakeScriptPath: string;
+  dbPath: string;
 }
 
 async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
@@ -100,6 +103,44 @@ test("chat round-trip: user sends a message, fake provider replies", async () =>
     // so we scope the assertion to the rendered markdown paragraph.
     await expect(chatRoot.getByRole("paragraph").filter({ hasText: "hello from fake" }))
       .toBeVisible({ timeout: 20_000 });
+
+    // VOS-107 T3 audit: lock the task state-machine sequence at the DB
+    // boundary. The UI assertion above is necessary but not sufficient —
+    // it would still pass if the orchestrator wrote tokens but failed to
+    // settle the run to COMPLETED. Pin the contract: a root task exists
+    // for the chat we just minted, and it terminates in COMPLETED.
+    //
+    // Note: collectStatesFor / "states.contains('WORKING')" from the plan
+    // requires capturing the transition live. The daemon writes
+    // monotonically and quickly past WORKING; observing it post-hoc is
+    // racy. Asserting terminal COMPLETED is the durable contract.
+    const dbR = new DatabaseSync(state.dbPath, { readOnly: true });
+    let parentTaskId: string;
+    let contextId: string;
+    try {
+      const row = dbR
+        .prepare(
+          "SELECT id, context_id FROM tasks WHERE parent_task_id IS NULL " +
+          "ORDER BY created_at DESC LIMIT 1",
+        )
+        .get() as { id: string; context_id: string };
+      parentTaskId = row.id;
+      contextId = row.context_id;
+    } finally { dbR.close(); }
+
+    const parent = await waitForTaskRow({
+      dbPath: state.dbPath,
+      contextId,
+      predicate: (r: TaskRow) => r.id === parentTaskId,
+      timeoutMs: 5_000,
+    });
+    expect(parent.id).toBe(parentTaskId);
+    await waitForTaskState({
+      dbPath: state.dbPath,
+      taskId: parent.id,
+      expected: "TASK_STATE_COMPLETED",
+      timeoutMs: 20_000,
+    });
   } finally {
     await browser.close();
   }

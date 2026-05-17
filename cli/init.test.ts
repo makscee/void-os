@@ -13,18 +13,18 @@ beforeEach(() => {
   prefix = join(tmpRoot, "prefix")
   home = join(tmpRoot, "home")
   // Build a minimal fake prefix mirroring the brewed layout.
-  mkdirSync(join(prefix, "vault-starter/agents/maya"), { recursive: true })
-  mkdirSync(join(prefix, "vault-starter/skills"), { recursive: true })
-  mkdirSync(join(prefix, "vault-starter/.void"), { recursive: true })
-  mkdirSync(join(prefix, "vault-starter/.claude"), { recursive: true })
-  mkdirSync(join(prefix, "vault-starter/.obsidian/plugins/void-os"), { recursive: true })
-  writeFileSync(join(prefix, "vault-starter/CLAUDE.md"), "# claude\n")
-  writeFileSync(join(prefix, "vault-starter/README.md"), "# vault\n")
-  writeFileSync(join(prefix, "vault-starter/agents/maya/agent.md"), "---\nname: maya\n---\n")
-  writeFileSync(join(prefix, "vault-starter/skills/.gitkeep"), "")
-  writeFileSync(join(prefix, "vault-starter/.void/.gitkeep"), "")
-  writeFileSync(join(prefix, "vault-starter/.claude/.gitkeep"), "")
-  writeFileSync(join(prefix, "vault-starter/.obsidian/plugins/void-os/.gitkeep"), "")
+  mkdirSync(join(prefix, "starter-vault/agents/maya"), { recursive: true })
+  mkdirSync(join(prefix, "starter-vault/skills"), { recursive: true })
+  mkdirSync(join(prefix, "starter-vault/.void"), { recursive: true })
+  mkdirSync(join(prefix, "starter-vault/.claude"), { recursive: true })
+  mkdirSync(join(prefix, "starter-vault/.obsidian/plugins/void-os"), { recursive: true })
+  writeFileSync(join(prefix, "starter-vault/CLAUDE.md"), "# claude\n")
+  writeFileSync(join(prefix, "starter-vault/README.md"), "# vault\n")
+  writeFileSync(join(prefix, "starter-vault/agents/maya/agent.md"), "---\nname: maya\n---\n")
+  writeFileSync(join(prefix, "starter-vault/skills/.gitkeep"), "")
+  writeFileSync(join(prefix, "starter-vault/.void/.gitkeep"), "")
+  writeFileSync(join(prefix, "starter-vault/.claude/.gitkeep"), "")
+  writeFileSync(join(prefix, "starter-vault/.obsidian/plugins/void-os/.gitkeep"), "")
 })
 
 afterEach(() => {
@@ -32,7 +32,7 @@ afterEach(() => {
 })
 
 describe("provision()", () => {
-  it("populates an empty target with vault-starter contents", async () => {
+  it("populates an empty target with starter-vault contents", async () => {
     await provision({ home, prefix, dryRun: false, force: false })
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
     expect(existsSync(join(home, "agents/maya/agent.md"))).toBe(true)

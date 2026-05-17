@@ -35,9 +35,12 @@ describe("buildSpawnSettings", () => {
       /bun .*\/abs\/pre-tool-use\.ts$/,
     );
     expect(settings.additionalDirectories).toEqual(["/Users/x/.config/something"]);
+    // VOS-107 review followup: AskUserQuestion is denied so agents fall back to
+    // the daemon's ask_user path instead of CC's built-in tool.
+    expect(settings.permissions).toEqual({ deny: ["AskUserQuestion"] });
   });
 
-  it("writes mcp.json pointing at /mcp?agent=<n>&run=<id>", () => {
+  it("writes mcp.json pointing at /mcp?agent=<n> (stable URL across runs)", () => {
     const dir = freshDir();
     const { mcpConfigPath } = buildSpawnSettings({
       agentName: "journaler",
@@ -52,7 +55,7 @@ describe("buildSpawnSettings", () => {
     const mcp = JSON.parse(readFileSync(mcpConfigPath, "utf8"));
     expect(mcp.mcpServers["void-os"]).toEqual({
       type: "http",
-      url: "http://127.0.0.1:17777/mcp?agent=journaler&run=run-xyz",
+      url: "http://127.0.0.1:17777/mcp?agent=journaler",
     });
   });
 

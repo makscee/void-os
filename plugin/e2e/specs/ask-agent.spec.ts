@@ -133,7 +133,9 @@ async function callAskAgentOverMcp(args: {
 }): Promise<unknown> {
   const client = new Client({ name: "vos89-t16-spec", version: "0.0.0" });
   const transport = new StreamableHTTPClientTransport(
-    new URL(`http://127.0.0.1:${args.port}/mcp`),
+    // VOS-106 T8: /mcp requires ?agent=<name> for calling-agent identity.
+    // The caller here is maya (parent dispatching ask_agent to a child).
+    new URL(`http://127.0.0.1:${args.port}/mcp?agent=maya`),
   );
   await client.connect(transport);
   try {
@@ -241,10 +243,46 @@ test("ask_agent end-to-end: maya -> journaler via real MCP + plugin UI", async (
     await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
     await sendBtn.click();
 
+    // VOS-107 T5 audit: spec header comment (line 25) lists "parent reached
+    // WAITING_ON_AGENT during the gap" as one of the five contract assertions
+    // but the existing test bodies only checked the terminal COMPLETED state.
+    // Sample the parent's state column while the MCP bridge is in flight and
+    // record every distinct state seen; assert WAITING_ON_AGENT was observed.
+    //
+    // The sampler runs until either askAgentResult resolves (MCP roundtrip
+    // returns) or until we see TASK_STATE_COMPLETED — whichever first. Tight
+    // 25ms cadence catches the WAITING_ON_AGENT window which closes the
+    // moment journaler terminates and resumeParentOnChildTerminal flips the
+    // parent back to WORKING.
+    const observedStates = new Set<string>();
+    const sampler = (async () => {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const db = new DatabaseSync(state.dbPath, { readOnly: true });
+        try {
+          const row = db
+            .prepare(
+              "SELECT id, state FROM tasks WHERE parent_task_id IS NULL ORDER BY created_at DESC LIMIT 1",
+            )
+            .get() as { id: string; state: string } | undefined;
+          if (row?.state) {
+            observedStates.add(row.state);
+            if (row.state === "TASK_STATE_COMPLETED") return;
+          }
+        } finally { db.close(); }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    })();
+
     // Wait for the bridge to observe + complete the MCP roundtrip.
     const askResult = (await askAgentResult) as {
       content: Array<{ type: string; text: string }>;
     };
+    await sampler;
+    expect(
+      observedStates.has("TASK_STATE_WAITING_ON_AGENT"),
+      `parent task must transit WAITING_ON_AGENT; observed: ${[...observedStates].join(",")}`,
+    ).toBe(true);
     expect(askResult.content[0]!.type).toBe("text");
     // VOS-91 T18: journaler fixture updated to "final-answer-A"; toContain
     // remains true and also works with the original single-char fixture.

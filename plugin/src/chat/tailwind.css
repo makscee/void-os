@@ -4,6 +4,19 @@
 @source "/Users/admin/void-os-wt/VOS-80/plugin/src/chat/**/*.{ts,tsx}";
 
 @layer components {
+  /* Obsidian's ItemView default is user-select:none. Re-enable inside chat
+     so users can copy assistant text. Buttons stay non-selectable. */
+  .void-os-chat-root,
+  .void-os-chat-root * {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .void-os-chat-root button,
+  .void-os-chat-root [role="button"] {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
   .vos-dots {
     display: inline-flex;
     gap: 4px;

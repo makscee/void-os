@@ -145,9 +145,11 @@ export function mountMcp(app: Hono, deps: McpDeps): void {
     deps.loadAgentDefn ?? ((name: string) => defaultLoadAgentDefn(deps.db, name));
   app.all("/mcp", async (c) => {
     // VOS-106: calling-agent identity travels in the URL query. The
-    // spawner emits `?agent=<name>&run=<runId>` per spawn-settings T5;
-    // we resolve the AgentDefn here and pass it into buildMcpServer so
-    // tools (currently vault.read) can apply per-agent scope gates.
+    // spawner emits `?agent=<name>` per spawn-settings (the URL is kept
+    // stable across runs so CC's MCP client doesn't re-fetch tool defs
+    // every turn and bust the Anthropic prompt cache). We resolve the
+    // AgentDefn here and pass it into buildMcpServer so tools (currently
+    // vault.read) can apply per-agent scope gates.
     const agentName = c.req.query("agent");
     if (!agentName) {
       return c.json({ error: "MISSING_AGENT_QUERY: /mcp requires ?agent=<name>" }, 400);

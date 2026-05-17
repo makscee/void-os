@@ -38,7 +38,7 @@ export async function provision(opts: ProvisionOpts): Promise<ProvisionResult> {
 
   if (!existsSync(home) && !dryRun) mkdirSync(home, { recursive: true })
 
-  const starter = join(prefix, "vault-starter")
+  const starter = join(prefix, "starter-vault")
   copyTree(starter, home, { dryRun, force, isUpgrade }, result)
 
   ensureClaudeSkillsSymlink(home, { dryRun }, result)

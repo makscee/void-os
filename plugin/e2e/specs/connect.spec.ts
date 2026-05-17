@@ -1,4 +1,4 @@
-import { test, expect, chromium } from "@playwright/test";
+import { test, expect, chromium, request } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { DEFAULT_PING_MS } from "../../src/config.ts";
 
@@ -46,6 +46,26 @@ test("plugin boots and reaches connected state, sustained across one heartbeat",
     await expect(pill).toHaveText("void-os: connected", { timeout: 20_000 });
     await vaultPage.waitForTimeout(DEFAULT_PING_MS + 2_000);
     await expect(pill).toHaveText("void-os: connected");
+
+    // VOS-107 T2 audit: the connected pill proves *some* daemon is up, but
+    // not that it is the one globalSetup launched on state.port. Probe the
+    // daemon's HTTP origin directly from the Playwright context (not the
+    // renderer — Obsidian's app:// origin would CORS-block a window.fetch)
+    // to lock the wiring contract end-to-end.
+    //
+    // AUDIT note: the plan called for a `daemon-url` testid assertion; no
+    // such surface exists in the product (plugin/src/settings-tab.ts renders
+    // the field via Obsidian's Setting helper which has no test hook). We
+    // assert the wiring via a side-channel HTTP probe instead of inventing
+    // a product-side testid.
+    const daemonOrigin = `http://127.0.0.1:${state.port}`;
+    const api = await request.newContext();
+    try {
+      const probe = await api.get(`${daemonOrigin}/agents`);
+      expect(probe.status()).toBe(200);
+    } finally {
+      await api.dispose();
+    }
   } finally {
     await browser.close();
   }

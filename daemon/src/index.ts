@@ -14,6 +14,7 @@ import { bootRecovery } from "./boot.ts";
 import { reconcileOrphans } from "./chat/orchestrator.ts";
 import { scanVaultAgents } from "./agents/scan.ts";
 import { makeAgentRepo } from "./agents/repo.ts";
+import { scanAgentCards, upsertAgentCards } from "./agents/cards-scan.ts";
 
 const PORT = Number(process.env.VOID_OS_PORT ?? 7777);
 const HOST = process.env.VOID_OS_HOST ?? "127.0.0.1";
@@ -31,7 +32,7 @@ if (!fs.existsSync(vaultRoot)) {
   process.exit(2);
 }
 
-const dbPath = process.env.VOID_OS_DB ?? path.join(path.dirname(vaultRoot), "state.sqlite");
+const dbPath = process.env.VOID_OS_DB ?? path.join(vaultRoot, ".void", "state.sqlite");
 const db = openDatabase(dbPath);
 
 // VOS-79 T10: sweep orphan running/pending runs left by a previous crash.
@@ -57,6 +58,17 @@ try {
   console.warn(`  agents: scan failed: ${e instanceof Error ? e.message : e} — continuing with existing rows`);
 }
 
+// VOS-106 follow-up: seed agent_cards from the same scan. The provider +
+// permission engine resolve AgentDefn via defaultLoadAgentDefn which reads
+// agent_cards.card_json; nothing else populates it in production.
+try {
+  const cards = scanAgentCards(vaultRoot);
+  upsertAgentCards(db, cards);
+  console.log(`  agent_cards: ${cards.length} from ${vaultRoot}/agents/`);
+} catch (e) {
+  console.warn(`  agent_cards: scan failed: ${e instanceof Error ? e.message : e} — dispatches will fail with 'unknown agent'`);
+}
+
 // VOS-90 T1: in fake-provider mode, the provider issues MCP `ask_user`
 // calls back to this daemon over loopback. The provider factory reads
 // `VOS_DAEMON_BASE` to learn the daemon's own URL. PORT/HOST are known
@@ -70,7 +82,17 @@ if (process.env.VOS_PROVIDER === "fake" && !process.env.VOS_DAEMON_BASE) {
 // Tests inherit the default (off); only this prod-shaped `bun run` path
 // pays the spawn cost. If the probe fails, buildApp throws and the
 // daemon never binds the port — by design.
-const app = await buildApp({ db, vaultRoot, runBootProbe: true });
+const app = await buildApp({
+  db,
+  vaultRoot,
+  runBootProbe: true,
+  // Pin daemonBase to the actual listening port. Without this app.ts falls
+  // back to process.env.PORT ?? 17777, which silently inherits a shell PORT
+  // var (claudev's proxy, dev tools, etc.) and bakes a wrong URL into every
+  // spawn's mcp.json — CC then hits ConnectionRefused and marks void-os
+  // MCP "failed", which means agents lose vos_ask_user / vault tools.
+  daemonBase: `http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${PORT}`,
+});
 
 const server = Bun.serve({
   hostname: HOST,
