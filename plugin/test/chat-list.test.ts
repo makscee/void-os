@@ -1,8 +1,17 @@
 // Component test for ChatList — render with a stub ChatApi, assert items
 // land in the DOM, click triggers onSelect, "+ New" triggers onNewChat.
 
-import { describe, test, expect, beforeAll } from "bun:test";
+import { describe, test, expect, beforeAll, mock } from "bun:test";
 import { Window } from "happy-dom";
+
+// Mock obsidian before any ChatList import that transitively pulls formatRelativeTime.
+// Include ItemView/WorkspaceLeaf stubs so chat-view.test.ts (which re-mocks) is unaffected
+// when tests run in the same Bun process and the registry is shared.
+mock.module("obsidian", () => ({
+  moment: (_ts: number) => ({ fromNow: (_strip?: boolean) => "5 minutes" }),
+  ItemView: class { containerEl: any = null; constructor(_leaf: unknown) {} },
+  WorkspaceLeaf: class {},
+}));
 
 import type { ChatApi, ChatSummary } from "../src/chat/api";
 
@@ -67,9 +76,10 @@ describe("ChatList", () => {
     expect(host.textContent).toContain("first chat preview");
     expect(host.textContent).toContain("Has Title");
     // Status badges are rendered with data-status attribute.
+    // resolveStatus maps last_run_status:"done" → "idle" (no input_required).
     const statuses = Array.from(host.querySelectorAll("[data-status]"))
       .map((el: any) => el.getAttribute("data-status"));
-    expect(statuses).toContain("done");
+    expect(statuses).toContain("idle");
     expect(statuses).toContain("running");
 
     root.unmount();
@@ -245,44 +255,46 @@ describe("ChatList", () => {
     root.unmount();
   });
 
-  test("renders input-required dot when chat.input_required is true", async () => {
+  test("renders unified status dot with data-status precedence", async () => {
     const React = await import("react");
     const { createRoot } = await import("react-dom/client");
-    const act = (React as any).act;
+    const { act } = await import("react");
     const { ChatList } = await import("../src/chat/ChatList");
 
-    const api = stubApi([
-      { id: "c1", agent: "maya", title: "needs input", last_msg: null, updated_at: 2, last_run_status: "done", cost_usd: 0, input_required: true },
-      { id: "c2", agent: "maya", title: "calm",        last_msg: null, updated_at: 1, last_run_status: "done", cost_usd: 0, input_required: false },
-    ]);
+    const chats: ChatSummary[] = [
+      // input_required wins even if last_run_status="running".
+      { id: "c1", agent: "maya", title: "needs input", last_msg: null, updated_at: 2, last_run_status: "running", cost_usd: 0, input_required: true,
+        context_input_tokens: 0, context_output_tokens: 0, context_cache_create_tokens: 0, context_cache_read_tokens: 0, context_tokens: 0 },
+      // plain idle row.
+      { id: "c2", agent: "maya", title: "calm", last_msg: null, updated_at: 1, last_run_status: "done", cost_usd: 0, input_required: false,
+        context_input_tokens: 0, context_output_tokens: 0, context_cache_create_tokens: 0, context_cache_read_tokens: 0, context_tokens: 0 },
+      // error wins over no input_required.
+      { id: "c3", agent: "maya", title: "broken", last_msg: null, updated_at: 0, last_run_status: "error", cost_usd: 0, input_required: false,
+        context_input_tokens: 0, context_output_tokens: 0, context_cache_create_tokens: 0, context_cache_read_tokens: 0, context_tokens: 0 },
+    ];
 
     const host = (globalThis as any).document.createElement("div");
     (globalThis as any).document.body.appendChild(host);
     const root = createRoot(host);
     await act(async () => {
-      root.render(
-        React.createElement(ChatList, {
-          api, activeChatId: null, onSelect: (_id: string, _agent: string) => {}, onNewChat: () => {},
-        }),
-      );
+      root.render(React.createElement(ChatList, {
+        api: stubApi(chats), activeChatId: null, onSelect: (_id: string, _agent: string) => {}, onNewChat: () => {}, refreshKey: 1,
+      }));
     });
     await flush(act);
 
-    const rowC1 = host.querySelector(`[data-testid='chat-row'][data-chat-id='c1']`);
-    const rowC2 = host.querySelector(`[data-testid='chat-row'][data-chat-id='c2']`);
-    const dotC1 = rowC1!.querySelector("[data-testid='input-required-dot']") as any;
-    const dotC2 = rowC2!.querySelector("[data-testid='input-required-dot']") as any;
-    // c1 shows the dot: element present, NOT marked invisible.
-    expect(dotC1).toBeTruthy();
-    expect(dotC1.className).not.toContain("vos:invisible");
-    // c2 preserves alignment via vos:invisible slot — element exists but is invisible.
-    expect(dotC2).toBeTruthy();
-    expect(dotC2.className).toContain("vos:invisible");
+    const statusOf = (id: string) => (host.querySelector(
+      `[data-testid='chat-row'][data-chat-id='${id}'] [data-testid='chat-row-status']`,
+    ) as HTMLElement).dataset.status;
+
+    expect(statusOf("c1")).toBe("input_required");
+    expect(statusOf("c2")).toBe("idle");
+    expect(statusOf("c3")).toBe("error");
 
     root.unmount();
   });
 
-  test("renders context cell with formatted tokens + tooltip per row", async () => {
+  test("renders context cell with formatted tokens per row", async () => {
     const React = await import("react");
     const { createRoot } = await import("react-dom/client");
     const act = (React as any).act;
@@ -316,9 +328,38 @@ describe("ChatList", () => {
     expect(cell("c2")?.textContent).toBe("420");
     expect(cell("c3")?.textContent).toBe("—");
 
-    expect(cell("c1")?.getAttribute("title")).toBe("1k in / 2k out / 3k cc / 6.3k cr");
-    expect(cell("c2")?.getAttribute("title")).toBe("100 in / 200 out / 50 cc / 70 cr");
-    expect(cell("c3")?.getAttribute("title")).toBe("");
+    const cellC1 = cell("c1");
+    expect(cellC1!.hasAttribute("title")).toBe(false);
+
+    root.unmount();
+  });
+
+  test("renders agent badge and relative timestamp per row", async () => {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { act } = await import("react");
+    const { ChatList } = await import("../src/chat/ChatList");
+
+    const chats: ChatSummary[] = [
+      { id: "c1", agent: "deep", title: "research thread", last_msg: null, updated_at: Date.now() - 300_000, last_run_status: "done", cost_usd: 0, input_required: false,
+        context_input_tokens: 0, context_output_tokens: 0, context_cache_create_tokens: 0, context_cache_read_tokens: 0, context_tokens: 0 },
+    ];
+
+    const host = (globalThis as any).document.createElement("div");
+    (globalThis as any).document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(React.createElement(ChatList, {
+        api: stubApi(chats), activeChatId: null, onSelect: (_id: string, _agent: string) => {}, onNewChat: () => {}, refreshKey: 1,
+      }));
+    });
+    await flush(act);
+
+    const row = host.querySelector(`[data-testid='chat-row'][data-chat-id='c1']`);
+    const badge = row!.querySelector("[data-testid='chat-row-agent']") as HTMLElement;
+    const time  = row!.querySelector("[data-testid='chat-row-time']") as HTMLElement;
+    expect(badge.textContent).toBe("deep");
+    expect(time.textContent).toBe("5 minutes"); // from mocked moment
 
     root.unmount();
   });

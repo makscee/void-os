@@ -7,10 +7,10 @@
 //     a truncated `last_msg`.
 //   - Truly empty chats (no title, no last_msg, never run) are filtered out
 //     so a stale "+ New" click doesn't pollute the rail.
-//   - Run-status: a tiny chip on the right edge, only when last_run_status
-//     is interesting (running / error). `done` is the boring default and
-//     gets no marker. The status span is always rendered (with data-status)
-//     so tests can introspect it.
+//   - Status: a single dot (StatusDot) per row folds input_required
+//     and last_run_status into one indicator with precedence
+//     input_required > error > running > cancelled > idle. Replaces
+//     the VOS-104 input-required-dot + trailing chip pair.
 //   - Refresh: parent passes a `refreshKey` that changes whenever a new
 //     chat is minted or a run finishes; we re-fetch on changes. Simpler
 //     than wiring the bus through here.
@@ -22,6 +22,9 @@
 import * as React from "react";
 import type { ChatApi, ChatSummary } from "./api";
 import { formatTokens } from "./format-tokens";
+import { StatusDot } from "./StatusDot";
+import { AgentBadge } from "./AgentBadge";
+import { formatRelativeTime } from "./util/format-relative-time";
 
 export interface ChatListProps {
   api: ChatApi;
@@ -55,14 +58,6 @@ function isEmpty(s: ChatSummary): boolean {
   return !t && !m;
 }
 
-/** Color for the run-status chip. Returns null for statuses we don't show. */
-function chipColor(status: string | null): string | null {
-  switch (status) {
-    case "running": return "var(--interactive-accent)";
-    case "error":   return "var(--text-error, #e35a5a)";
-    default:        return null; // done / cancelled / null → no chip
-  }
-}
 
 export function ChatList(props: ChatListProps) {
   const { api, activeChatId, onSelect, onNewChat, refreshKey } = props;
@@ -101,6 +96,14 @@ export function ChatList(props: ChatListProps) {
     return () => { cancelled = true; clearInterval(id); };
   }, [api, anyRunning]);
 
+  // VOS-114: keep relative timestamps honest. One setState/min while
+  // mounted — cheap. Independent of the running-row poller.
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const visible = chats.filter((c) => !isEmpty(c));
 
   return (
@@ -137,7 +140,6 @@ export function ChatList(props: ChatListProps) {
         )}
         {!loading && visible.map((c) => {
           const active = c.id === activeChatId;
-          const chip = chipColor(c.last_run_status);
           return (
             <button
               key={c.id}
@@ -147,52 +149,48 @@ export function ChatList(props: ChatListProps) {
               data-chat-id={c.id}
               data-active={active ? "true" : "false"}
               className={
-                "vos:w-full vos:text-left vos:pl-[10px] vos:pr-[var(--size-4-2)] vos:py-[var(--size-4-2)] vos:min-h-[34px] vos:flex vos:items-center vos:gap-[var(--size-4-2)] vos:rounded-[var(--radius-s)] vos:border-l-2 " +
+                "vos:w-full vos:text-left vos:pl-[10px] vos:pr-[var(--size-4-2)] vos:py-[var(--size-4-2)] vos:min-h-[44px] vos:flex vos:flex-col vos:gap-[2px] vos:rounded-[var(--radius-s)] vos:border-l-2 " +
                 (active
                   ? "vos:border-[var(--interactive-accent)] vos:bg-[var(--background-modifier-active-hover)]"
                   : "vos:border-transparent hover:vos:bg-[var(--background-modifier-hover)]")
               }
             >
-              <span
-                aria-hidden={!c.input_required}
-                aria-label={c.input_required ? "input required" : undefined}
-                data-testid="input-required-dot"
-                className={
-                  "vos:inline-block vos:w-1.5 vos:h-1.5 vos:rounded-full vos:shrink-0 " +
-                  (c.input_required ? "" : "vos:invisible")
-                }
-                style={{ backgroundColor: c.input_required ? "var(--text-warning, #d8a657)" : "transparent" }}
-              />
-              <span className="vos:flex-1 vos:min-w-0">
+              {/* Row 1: status dot + title (title takes full remaining width). */}
+              <span className="vos:flex vos:items-center vos:gap-[var(--size-4-2)] vos:w-full vos:min-w-0">
+                <StatusDot
+                  input_required={c.input_required}
+                  last_run_status={c.last_run_status}
+                />
                 <span
+                  data-testid="chat-row-title"
                   className={
-                    "vos:block vos:text-[13px] vos:leading-[1.4] vos:truncate " +
+                    "vos:flex-1 vos:min-w-0 vos:block vos:text-[13px] vos:leading-[1.4] vos:truncate " +
                     (active ? "vos:text-[var(--text-normal)]" : "vos:text-[var(--text-muted)]")
                   }
                 >
                   {preview(c)}
                 </span>
               </span>
-              <span
-                data-testid="context-cell"
-                title={
-                  c.context_tokens == null
-                    ? ""
-                    : `${formatTokens(c.context_input_tokens)} in / ${formatTokens(c.context_output_tokens)} out / ${formatTokens(c.context_cache_create_tokens)} cc / ${formatTokens(c.context_cache_read_tokens)} cr`
-                }
-                className="vos:inline-block vos:min-w-[3.5rem] vos:text-right vos:text-[11px] vos:text-[var(--text-muted)] vos:tabular-nums vos:shrink-0"
-              >
-                {formatTokens(c.context_tokens)}
+
+              {/* Row 2: agent badge + relative time on the left, tokens on the right.
+                  pl-[14px] aligns under the title (dot ~6px + gap ~8px). */}
+              <span className="vos:flex vos:items-center vos:justify-between vos:w-full vos:pl-[14px]">
+                <span className="vos:flex vos:items-center vos:gap-[6px] vos:min-w-0">
+                  <AgentBadge agent={c.agent} />
+                  <span
+                    data-testid="chat-row-time"
+                    className="vos:text-[11px] vos:text-[var(--text-muted)] vos:truncate"
+                  >
+                    {formatRelativeTime(c.updated_at)}
+                  </span>
+                </span>
+                <span
+                  data-testid="context-cell"
+                  className="vos:inline-block vos:min-w-[3.5rem] vos:text-right vos:text-[11px] vos:text-[var(--text-muted)] vos:tabular-nums vos:shrink-0"
+                >
+                  {formatTokens(c.context_tokens)}
+                </span>
               </span>
-              <span
-                aria-hidden
-                data-status={c.last_run_status ?? "none"}
-                className={
-                  "vos:inline-block vos:w-1.5 vos:h-1.5 vos:rounded-full vos:shrink-0 " +
-                  (c.last_run_status === "running" ? "vos-run-dot" : "")
-                }
-                style={{ backgroundColor: chip ?? "transparent" }}
-              />
             </button>
           );
         })}

@@ -12,14 +12,17 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * VOS-104 T8 — chat list polish e2e.
+ * VOS-114 T6 — chat list polish e2e (migrated from VOS-104 T8).
  *
  * Two scenarios:
- *   1. Amber dot ("input-required-dot") on a ChatList row appears while an
- *      ask_user prompt is open and clears (visibility: hidden — T6 keeps
- *      the slot via `vos:invisible`, does not remove the node) on answer.
- *   2. Cost cell ("cost-cell") reflects the daemon's cost ledger after a
- *      run completes (cross-checked against GET /cost/today).
+ *   1. Unified status dot (`chat-row-status` + `data-status`) replaces the
+ *      old `input-required-dot` + trailing chip. Status transitions to
+ *      "input_required" while an ask_user prompt is open and exits that
+ *      state on answer.
+ *   2. Row now surfaces `chat-row-agent` and `chat-row-time` on row 2.
+ *      `context-cell` (tokens) replaces the old `cost-cell` and no longer
+ *      carries a `title=` tooltip. Cross-check against GET /cost/today
+ *      is kept — daemon ledger pipeline is healthy.
  *
  * Provider wiring reality (daemon/src/app.ts):
  *   The top-level orchestrator is constructed once with `agent: "maya"`,
@@ -131,12 +134,7 @@ function fireMessageViaApi(
     .catch(() => undefined);
 }
 
-function formatExpectedUsd(n: number): string {
-  if (n < 0.005) return "$0.00";
-  return "$" + n.toFixed(2);
-}
-
-test.describe("VOS-104 chat list polish", () => {
+test.describe("VOS-114 chat list polish", () => {
   test.setTimeout(120_000);
 
   // Snapshot maya's pinned fake-script so each test can restore the
@@ -149,7 +147,7 @@ test.describe("VOS-104 chat list polish", () => {
     writeFileSync(MAYA_SCRIPT, originalMaya);
   });
 
-  test("amber dot appears on ask_user open and clears on answer", async () => {
+  test("status dot transitions to input_required on ask_user and clears on answer", async () => {
     const state = loadState();
 
     // Plant a vos_ask_user-driven fixture on maya's pinned path. We emit
@@ -198,24 +196,19 @@ test.describe("VOS-104 chat list polish", () => {
 
       const row = p.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
       await expect(row).toBeVisible({ timeout: 30_000 });
-      const dot = row.locator(`[data-testid='input-required-dot']`);
+      const dot = row.locator(`[data-testid='chat-row-status']`);
 
-      // Wait for the dot to become visible. T1+T2 set input_required
-      // once the chat.task row flips to TASK_STATE_INPUT_REQUIRED; T7
-      // refreshes ChatList on chat.task.state_changed.
+      // Wait for the unified status dot to reach input_required. T1+T2 set
+      // data-status once the chat.task row flips to TASK_STATE_INPUT_REQUIRED;
+      // T7 refreshes ChatList on chat.task.state_changed.
       await expect.poll(
-        async () => dot.evaluate((el) => getComputedStyle(el).visibility),
+        async () => dot.evaluate((el) => (el as HTMLElement).dataset.status ?? ""),
         { timeout: 30_000, intervals: [200, 500, 1000] },
-      ).toBe("visible");
-      const bg = await dot.evaluate(
-        (el) => getComputedStyle(el).backgroundColor,
-      );
-      expect(bg).not.toBe("rgba(0, 0, 0, 0)");
-      expect(bg).not.toBe("transparent");
+      ).toBe("input_required");
 
       // Resolve the prompt via direct POST. The in-thread banner-clear
       // path is already covered by ask-user.spec — here we only assert
-      // the sidebar dot clears.
+      // the sidebar status clears.
       const msgsRes = await api.get(`/chat/${chatId}/messages`);
       const messages = (await msgsRes.json()) as Array<{
         role: string;
@@ -231,11 +224,11 @@ test.describe("VOS-104 chat list polish", () => {
       });
       expect(ansRes.status()).toBe(200);
 
-      // Dot becomes invisible (T6 keeps the slot via `vos:invisible`).
+      // Status exits input_required — may briefly be "running" then settle to "idle".
       await expect.poll(
-        async () => dot.evaluate((el) => getComputedStyle(el).visibility),
-        { timeout: 15_000, intervals: [200, 500, 1000] },
-      ).toBe("hidden");
+        async () => dot.evaluate((el) => (el as HTMLElement).dataset.status ?? ""),
+        { timeout: 30_000, intervals: [200, 500, 1000] },
+      ).not.toBe("input_required");
 
       // Drain the fire-and-forget message POST so afterEach() restoring the
       // pinned maya script doesn't race with an in-flight orchestrator run.
@@ -245,7 +238,7 @@ test.describe("VOS-104 chat list polish", () => {
     }
   });
 
-  test("cost cell reflects ledger after a run completes", async () => {
+  test("row exposes agent badge, relative time, and tokens after a run completes", async () => {
     const state = loadState();
 
     // Plant a usage-bearing assistant event on maya's pinned path so the
@@ -279,25 +272,40 @@ test.describe("VOS-104 chat list polish", () => {
 
       const row = p.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
       await expect(row).toBeVisible({ timeout: 30_000 });
-      const cell = row.locator(`[data-testid='cost-cell']`);
+      const tokensCell = row.locator(`[data-testid='context-cell']`);
 
-      // Poll the cell until it stops reading $0.00 — gated by run.end →
-      // cost write → bus refresh round-trip + POLL_MS ceiling.
+      // Poll until context-cell shows a non-empty token count — gated by
+      // run.end → cost write → bus refresh round-trip + POLL_MS ceiling.
       await expect.poll(
-        async () => (await cell.textContent()) ?? "",
+        async () => (await tokensCell.textContent()) ?? "",
         { timeout: 30_000, intervals: [200, 500, 1000] },
-      ).not.toBe("$0.00");
+      ).toMatch(/\d/);
 
-      const ui = (await cell.textContent()) ?? "";
-      expect(ui).toMatch(/^\$\d+\.\d{2}$/);
+      const ui = (await tokensCell.textContent()) ?? "";
+      expect(ui).toBeTruthy();
 
-      // Cross-check against daemon truth.
+      // VOS-114: tooltip dropped — title attribute must be absent.
+      const titleAttr = await tokensCell.getAttribute("title");
+      expect(titleAttr).toBeNull();
+
+      // Agent badge — all top-level chats are minted with agent: "maya".
+      const badge = row.locator(`[data-testid='chat-row-agent']`);
+      await expect(badge).toHaveText("maya");
+
+      // Relative time — should mention a time unit after run completes.
+      const timeEl = row.locator(`[data-testid='chat-row-time']`);
+      await expect.poll(
+        async () => (await timeEl.textContent()) ?? "",
+        { timeout: 10_000 },
+      ).toMatch(/(seconds|minute|hour|day)/);
+
+      // Cross-check against daemon truth (ledger pipeline healthy).
       const costRes = await api.get("/cost/today");
       const json = (await costRes.json()) as {
         by_chat: Array<{ chat_id: string; usd: number }>;
       };
       const usd = json.by_chat.find((c) => c.chat_id === chatId)?.usd ?? 0;
-      expect(ui).toBe(formatExpectedUsd(usd));
+      expect(usd).toBeGreaterThan(0);
     } finally {
       await api.dispose();
     }

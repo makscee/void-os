@@ -6,7 +6,7 @@
   "scripts": {
     "build": "bun run build.ts",
     "dev": "bun run build.ts --watch",
-    "test": "bun test",
+    "test": "bun test --isolate",
     "e2e": "bunx playwright test --config e2e/playwright.config.ts"
   },
   "devDependencies": {
