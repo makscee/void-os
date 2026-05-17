@@ -14,6 +14,7 @@ import { bootRecovery } from "./boot.ts";
 import { reconcileOrphans } from "./chat/orchestrator.ts";
 import { scanVaultAgents } from "./agents/scan.ts";
 import { makeAgentRepo } from "./agents/repo.ts";
+import { scanAgentCards, upsertAgentCards } from "./agents/cards-scan.ts";
 
 const PORT = Number(process.env.VOID_OS_PORT ?? 7777);
 const HOST = process.env.VOID_OS_HOST ?? "127.0.0.1";
@@ -55,6 +56,17 @@ try {
   console.log(`  agents: ${agentRows.length} from ${vaultRoot}/agents/`);
 } catch (e) {
   console.warn(`  agents: scan failed: ${e instanceof Error ? e.message : e} — continuing with existing rows`);
+}
+
+// VOS-106 follow-up: seed agent_cards from the same scan. The provider +
+// permission engine resolve AgentDefn via defaultLoadAgentDefn which reads
+// agent_cards.card_json; nothing else populates it in production.
+try {
+  const cards = scanAgentCards(vaultRoot);
+  upsertAgentCards(db, cards);
+  console.log(`  agent_cards: ${cards.length} from ${vaultRoot}/agents/`);
+} catch (e) {
+  console.warn(`  agent_cards: scan failed: ${e instanceof Error ? e.message : e} — dispatches will fail with 'unknown agent'`);
 }
 
 // VOS-90 T1: in fake-provider mode, the provider issues MCP `ask_user`
