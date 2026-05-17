@@ -64,7 +64,7 @@ One CC spawn produces one bridge subprocess that lives for the life of that CC r
 The bridge is a stateless proxy. On startup:
 
 1. Read env: `VOS_DAEMON_BASE` (required), `VOS_AGENT` (required), `VOS_TASK_ID` (required), `VOS_CONTEXT_ID` (optional, defaults to `VOS_TASK_ID`), `VOS_RUN_ID` (optional, may be empty). Missing required vars → write a JSON-RPC `error` envelope to stdout and exit 1 (fail-fast; surfaces as CC `mcp_servers[void-os].status="failed"`).
-2. Loop over stdin JSON-RPC frames (line-delimited per MCP stdio spec).
+2. Frame stdin/stdout using **the official `@modelcontextprotocol/sdk` stdio transport on both legs** — never hand-roll newline splitting. Concretely: the bridge constructs a `StdioServerTransport` (stdin/stdout from the parent CC subprocess) and a corresponding client-side transport that POSTs each parsed JSON-RPC envelope upstream. The SDK transport handles buffering, partial reads, embedded newlines inside string payloads, and the JSON-RPC envelope boundary. Hand-rolled `split('\n')` corrupts any tool result that contains literal newlines (every `vault.read` of a multi-line file, every multi-line `ask_user` answer, every multi-line agent reply via `ask_agent`) and the failure is opaque ("MCP tool call failed" with no stack). Out-of-spec.
 3. For each request:
    - `initialize`, `notifications/*`, `ping`, `tools/list`, `resources/*`, `prompts/*` → forward verbatim. No `_meta` injection. Pass through response.
    - `tools/call` → before forwarding, set
@@ -98,7 +98,7 @@ After:
 const mcp = {
   mcpServers: { "void-os": {
     type: "stdio",
-    command: "bun",
+    command: BUN_PATH,            // process.execPath — survives systemd / launchd
     args: [BRIDGE_PATH],          // absolute, resolved once at daemon boot
     env: {
       VOS_DAEMON_BASE: daemonBase,
@@ -118,14 +118,22 @@ const mcp = {
 `stdio-bridge.ts` lives in the daemon source tree, so it ships with the daemon by construction (per ADR-0003 the daemon runs from source). One-time resolution at the top of `providers/claude-code/index.ts`:
 
 ```ts
-import { fileURLToPath } from "node:url";
-import { resolve, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
-// Sibling of mcp/index.ts — adapters/mcp/stdio-bridge.ts.
+// From daemon/src/providers/claude-code/index.ts → daemon/src/adapters/mcp/stdio-bridge.ts.
+// `import.meta.dir` is the Bun shorthand for the directory of this module.
 const BRIDGE_PATH = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../adapters/mcp/stdio-bridge.ts",
+  import.meta.dir, "..", "..", "adapters", "mcp", "stdio-bridge.ts",
 );
+if (!existsSync(BRIDGE_PATH)) {
+  throw new Error(`stdio-bridge.ts not found at ${BRIDGE_PATH}`);
+}
+
+// Absolute Bun binary path — survives PATH-less launchers (systemd, launchd,
+// packaged binaries). String "bun" fails under any process supervisor that
+// doesn't carry the user shell PATH.
+const BUN_PATH = process.execPath;
 ```
 
 Hot-reload friendly: any code change in the daemon picks up on next spawn (the bridge is a fresh `bun` process each time).
@@ -151,13 +159,13 @@ Hot-reload friendly: any code change in the daemon picks up on next spawn (the b
 1. **AC-1 — Production CC reaches `ask_user` with correct `task_id`.** A real CC subprocess spawned by the daemon calls `mcp__void-os__ask_user`. The daemon's handler receives `extra._meta.task_id` equal to the orchestrator's `taskId` for that run. No `ASK_USER_MISSING_TASK_ID` error. Verified by: integration test (`stdio-bridge-e2e.test.ts`) + a one-shot manual repro of the VOS-107 UX path.
 2. **AC-2 — `vos_ask_agent` works on the same path.** Same integration test repeats the assertion for `ask_agent` (it reads `_meta.task_id` at `tools/ask-agent.ts:257`). Handler receives stamped `task_id`.
 3. **AC-3 — Fake provider e2e unchanged.** The full e2e suite (`bun test`) passes. Fake provider keeps POSTing `/mcp` directly with `_meta` set in the request body.
-4. **AC-4 — Concurrent dispatches don't cross-pollute.** Two simultaneous CC spawns of the same agent against two different tasks must yield two separate `_meta.task_id` values at the handler. Verified by an integration test that spawns two bridges with different env and asserts the handler sees the correct id per call.
-5. **AC-5 — Prompt cache stable.** A second turn of the same task uses the same `mcp.json` shape (stable `command`+`args`); the bridge `env` does change but does not enter the MCP-side cache key. Verified by trace inspection: no `cache_create_tokens > 0` spike on turn 2. (Manual / Anthropic-side; lighter gate than VOS-107's automated one but worth a checkpoint.)
+4. **AC-4 — Concurrent dispatches don't cross-pollute.** Two simultaneous CC spawns of the same agent against two different tasks must yield two separate `_meta.task_id` values at the handler **and** task-scoped downstream behavior. Integration test: (a) spawn two bridges with different env, assert each handler call sees the correct `task_id`; (b) park an `ask_user` against task A, fire a /chat/:id/answer resolve for task A, assert task B's separately-parked `ask_user` is **not** unblocked — i.e. the resolution path keys on `task_id` (or `_vos_tool_use_id`), not on `agent`. Catches a wrong-task answer-delivery bug where two concurrent maya runs in different chats would cross-resolve.
+5. **AC-5 — Prompt cache stable (automated, inherits VOS-107's gate).** Port VOS-107's automated turn-2 cache assertion to the stdio shape, do **not** relax it. Concretely: an integration test runs two turns of the same task through a real CC spawn against the daemon and asserts, on the turn-2 `assistant` event's `usage` block, that `cache_read_input_tokens > 0` **and** `cache_creation_input_tokens` is at-or-near zero (same threshold VOS-107 used). If the existing VOS-107 fixture is HTTP-shape-specific, port it; the regression class (silent cache-buster, full input-token cost every turn) is exactly what VOS-107 was filed to prevent.
 6. **AC-6 — Bridge fails fast on misconfig.** Missing required env yields a JSON-RPC error envelope and exit code 1, surfaced to CC as `mcp_servers[void-os].status="failed"` in `system.init`. Verified by unit test.
 
 ## Testing strategy
 
-- **Unit (bridge)** — `daemon/src/adapters/mcp/__tests__/stdio-bridge.test.ts`. Drive the bridge module in-process with a mock stdin/stdout pair and a stub `fetch`. Cover: env stamping on `tools/call`, passthrough on `initialize` / `tools/list`, `_meta` override of model-supplied fields, missing-env error, network-error mapping to `-32603`.
+- **Unit (bridge)** — `daemon/src/adapters/mcp/__tests__/stdio-bridge.test.ts`. Drive the bridge module in-process with a mock stdin/stdout pair (the SDK transport accepts an injectable `Readable`/`Writable`) and a stub `fetch`. Cover: env stamping on `tools/call`, passthrough on `initialize` / `tools/list`, `_meta` override of model-supplied fields, missing-env error, network-error mapping to `-32603`, **and a payload-integrity case — a `tools/call` response whose `content[0].text` contains literal `\n` characters round-trips through the bridge byte-for-byte (catches any regression to hand-rolled newline splitting).**
 - **Unit (spawn-settings)** — extend `spawn-settings.test.ts`. Assert the new mcp.json shape (stdio entry, env contents, bridge path absolute). Replace the URL-shape assertion.
 - **Integration** — `daemon/test/integration/stdio-bridge-e2e.test.ts`. Boot the daemon, spawn a real `bun stdio-bridge.ts` subprocess with controlled env, do an `initialize` then `tools/call ask_user`, assert the daemon handler receives the env-derived `task_id`. Concurrent variant: two bridges, two task ids, asserts the handler sees each correctly.
 - **e2e (existing)** — full `bun test` must stay green. VOS-107's manual-UX scenario is the acceptance-gate.
@@ -168,7 +176,6 @@ Hot-reload friendly: any code change in the daemon picks up on next spawn (the b
 |---|---|---|
 | CC stdio MCP entry rejected under `--strict-mcp-config` | low | The MCP-stdio shape is the default in every public CC MCP guide and is what `--strict-mcp-config` is built around. If it does reject, fall back to URL `?task=<id>` (option A) — keep the option in our back pocket; spec change would be a 20-LOC patch. |
 | Bridge subprocess leak (CC exits but bridge lingers) | low | CC's stdio MCP lifecycle ties the bridge to CC's own stdin/stdout pipes — when CC exits, the pipes close and the bridge gets EOF, exits cleanly. Bridge also adds a `stdin.on('close', () => process.exit(0))` guard. |
-| `bun` not on the CC subprocess `PATH` | very low | Daemon already runs under bun; spawned CC inherits its `PATH`. If a deployment ever decouples them, use the absolute bun binary path resolved at daemon boot (`process.execPath`) in `command` instead of the string `"bun"`. |
 | HTTP route trusts `_meta` from bridge but bridge is untrusted child of CC subprocess (user-process-level boundary) | nil | Bridge runs under the same uid as the daemon-orchestrated spawn; `_meta` stamping happens **inside the bridge** from env the daemon set. The CC subprocess never touches the bridge's env after spawn. No new trust boundary crossed. |
 
 ## Out of scope
