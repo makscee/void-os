@@ -82,7 +82,17 @@ if (process.env.VOS_PROVIDER === "fake" && !process.env.VOS_DAEMON_BASE) {
 // Tests inherit the default (off); only this prod-shaped `bun run` path
 // pays the spawn cost. If the probe fails, buildApp throws and the
 // daemon never binds the port — by design.
-const app = await buildApp({ db, vaultRoot, runBootProbe: true });
+const app = await buildApp({
+  db,
+  vaultRoot,
+  runBootProbe: true,
+  // Pin daemonBase to the actual listening port. Without this app.ts falls
+  // back to process.env.PORT ?? 17777, which silently inherits a shell PORT
+  // var (claudev's proxy, dev tools, etc.) and bakes a wrong URL into every
+  // spawn's mcp.json — CC then hits ConnectionRefused and marks void-os
+  // MCP "failed", which means agents lose vos_ask_user / vault tools.
+  daemonBase: `http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${PORT}`,
+});
 
 const server = Bun.serve({
   hostname: HOST,

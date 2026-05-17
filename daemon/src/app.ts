@@ -135,8 +135,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // when tests inject a stub orchestrator.
   const homeRoot = process.env.HOME ?? "";
   const engine = createPermissionEngine({ vaultRoot: deps.vaultRoot, homeRoot });
+  // Caller should always pass daemonBase (index.ts does). Fallback uses
+  // VOID_OS_PORT not PORT — the latter clashes with claudev / dev tools.
   const daemonBase =
-    deps.daemonBase ?? `http://127.0.0.1:${process.env.PORT ?? "17777"}`;
+    deps.daemonBase ?? `http://127.0.0.1:${process.env.VOID_OS_PORT ?? "7777"}`;
   const hookScriptPath = path.join(
     import.meta.dir,
     "providers",
