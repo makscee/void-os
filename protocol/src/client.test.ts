@@ -33,6 +33,24 @@ test("chat.create posts to /chats with agent and returns {id, title, created_at}
   expect(body).toEqual({ agent: "tinker" });
 });
 
+test("chat.create accepts null title (daemon stub titler returns null)", async () => {
+  // VOS-118 T8 regression: daemon `POST /chats` returns title:null when stub
+  // titler is active (every fake-provider E2E run). Schema must tolerate it.
+  const client = makeClient({
+    base: "http://x",
+    token: "tok",
+    fetch: fakeFetch(async () =>
+      new Response(
+        JSON.stringify({ id: "c_null", title: null, created_at: 1700000000000 }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    ),
+  });
+  const r = await client.chat.create({ agent: "tinker" });
+  expect(r.id).toBe("c_null");
+  expect(r.title).toBeNull();
+});
+
 test("chat.create with no agent posts empty body (daemon defaults to maya)", async () => {
   let body: any = null;
   const client = makeClient({

@@ -20,9 +20,11 @@ export type VaultListResp = z.infer<typeof VaultListResp>;
 
 // Verified against daemon/src/api/chats.ts POST /chats — returns {id, title, created_at}.
 // Note: response key is `id` (not `chat_id`).
+// `title` is nullable: daemon stub titler (used in fake-provider E2E) returns
+// null until the real titler fills it in. See daemon/src/chat/repo.ts ChatRow.
 const ChatCreateResp = z.object({
   id: z.string(),
-  title: z.string(),
+  title: z.string().nullable(),
   created_at: z.number(),
 }).passthrough();
 // Verified against daemon/src/api/chat.ts POST /chat/:id/message — orchestrator returns {run_id, ...}.
