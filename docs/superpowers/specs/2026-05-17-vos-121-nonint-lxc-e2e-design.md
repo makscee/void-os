@@ -312,18 +312,44 @@ POSIX shell, executable. Inputs from env:
 
 ```sh
 #!/bin/sh
+# Mint a one-shot claudev access code for VOS-121 LXC E2E via void-auth admin API.
+#
+# Endpoint (verified against workspace/void-auth/src/routes/admin.ts T0a probe):
+#   POST /v1/admin/users/{userId}/access-codes
+#
+# Auth: NONE at app level. void-auth/CLAUDE.md "Don't" section + admin.ts header
+# comments make this explicit: "No app-level auth in v1 — the compose network /
+# tailnet is the trust boundary." Reverse-proxy (Caddy on mcow) restricts
+# /v1/admin/* to operator IPs. The runner LXC must reach void-auth either over
+# tailnet (auth.makscee.ru via tailscale) or via the internal compose hostname.
+#
+# Request body: empty. The endpoint takes no JSON body — userId is in the path,
+# TTL is server-side fixed at 3600s, and there is no purpose/label field.
+#
+# Response 201: { "code": "XXXX-XXXX", "expiresAt": <unix-seconds> }
+#   - code format: 8 chars from alphabet ABCDEFGHJKLMNPQRSTUVWXYZ23456789,
+#     formatted as 4-dash-4 (excludes I/O/0/1).
+#   - TTL: hardcoded server-side at 3600s.
+#
+# Preconditions on userId: must exist AND have an active (non-revoked) claudev
+# grant, else void-auth returns 400 "no active grant". One-time setup per
+# operator user: POST /v1/admin/users/{userId}/grants/claudev.
 set -eu
 : "${VOID_AUTH_URL:=https://auth.makscee.ru}"
-: "${VOID_AUTH_ADMIN_TOKEN:?required}"
-resp=$(curl -fsSL -X POST "$VOID_AUTH_URL/v1/admin/access-codes" \
-  -H "authorization: Bearer $VOID_AUTH_ADMIN_TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"purpose":"vos-e2e","ttl_seconds":600}')
+: "${VOID_AUTH_USER_ID:?required — user id of the operator account that owns the e2e code; must have an active claudev grant}"
+resp=$(curl -fsSL -X POST "$VOID_AUTH_URL/v1/admin/users/$VOID_AUTH_USER_ID/access-codes" \
+  -H "content-type: application/json")
 code=$(printf '%s' "$resp" | python3 -c 'import sys,json; print(json.load(sys.stdin)["code"])')
 printf '%s\n' "$code"
 ```
 
-**Spec note:** the exact admin endpoint shape (`POST /v1/admin/access-codes`, response field `code`) must be verified against the current void-auth API during implementation. The impl plan's T0 includes a void-auth API probe and the script is finalized after that probe.
+**Spec note (verified T0a 2026-05-18):** endpoint shape confirmed against `workspace/void-auth/src/routes/admin.ts` lines 720-764 + `src/services/access-codes.ts`. No `VOID_AUTH_ADMIN_TOKEN` exists in void-auth — Phase 1 explicitly omits app-level admin auth (see void-auth/CLAUDE.md "Don't" + admin.ts header). Operator authentication is delegated to Caddy IP-allowlist + tailnet membership. The GH Actions runner LXC must therefore be on the tailnet (it already is, per Component 4 — Tailscale up with ephemeral authkey).
+
+**Implications for Component 5 (CI workflow):**
+- Drop `VOID_AUTH_ADMIN_TOKEN` from GitHub secrets list.
+- Add `VOID_AUTH_USER_ID` as a GitHub secret (the user-id of the e2e operator account in void-auth).
+- The runner must be on tailnet (it is — see Component 4) so it can reach `auth.makscee.ru` past Caddy's operator-IP allowlist; otherwise expose an internal hostname.
+- Pre-flight ops (one-shot, not in workflow): create operator user via `POST /v1/admin/users` and grant claudev via `POST /v1/admin/users/{userId}/grants/claudev`. Document in `tools/mint-claudev-code.sh` README block.
 
 ## Component 4 — Self-hosted runner provisioning (Ansible)
 
@@ -335,7 +361,7 @@ workspace/homelab/ansible/
     tasks/main.yml             # create LXC, install runner, register, enable service
     templates/runner.service.j2
     defaults/main.yml
-    vars/main.sops.yml         # SOPS-encrypted: github_runner_token, ts_authkey, void_auth_admin_token
+    vars/main.sops.yml         # SOPS-encrypted: github_runner_token, ts_authkey (no void_auth_admin_token — admin API is unauthed, gated by tailnet+Caddy)
   playbooks/gh-runner-vos.yml  # plays the role on tower (Proxmox host)
   inventory/homelab.yml        # add gh-runner-vos LXC (CTID 198, hostname gh-runner-vos)
 ```
@@ -392,7 +418,7 @@ jobs:
         run: ~/.bun/bin/bun install
       - name: Mint claudev access code
         env:
-          VOID_AUTH_ADMIN_TOKEN: ${{ secrets.VOID_AUTH_ADMIN_TOKEN }}
+          VOID_AUTH_USER_ID: ${{ secrets.VOID_AUTH_USER_ID }}
         run: |
           CODE=$(./tools/mint-claudev-code.sh)
           echo "::add-mask::$CODE"
@@ -403,13 +429,13 @@ jobs:
         run: ~/.bun/bin/bun test e2e/lxc/init-non-interactive.spec.ts --timeout 300000
 ```
 
-GitHub secrets required on the void-os repo: `VOID_AUTH_ADMIN_TOKEN`.
+GitHub secrets required on the void-os repo: `VOID_AUTH_USER_ID` (the user-id of the operator account in void-auth whose claudev grant is used to mint per-run access codes).
 
 `concurrency` prevents two PRs from racing on the same CTID range; serial queue is fine because runtime is <5min.
 
 ## Risks and open questions
 
-1. **void-auth admin API for minting codes** is not verified. If the endpoint doesn't exist or has a different shape, `tools/mint-claudev-code.sh` and the workflow's mint step are wrong. **Mitigation:** impl plan T0 is a void-auth API probe; script + workflow finalized post-probe. If the API is missing, scope a `VAU-N` task to add it before VOS-121 ships.
+1. ~~**void-auth admin API for minting codes** is not verified.~~ **RESOLVED 2026-05-18 (T0a):** endpoint is `POST /v1/admin/users/{userId}/access-codes`, no app-level auth (tailnet/Caddy IP-allowlist trust boundary), no request body, response `{code, expiresAt}`, server-side TTL 3600s. Required precondition: target user has an active claudev grant. See Component 3 for verified script and Component 5 for updated secret list (`VOID_AUTH_USER_ID`, not `VOID_AUTH_ADMIN_TOKEN`).
 2. **`daemon start` after init.** Whether `void-os init` auto-starts the daemon or requires a separate `daemon start` command is unclear from current code. Spec allows either; impl plan T2 verifies and removes the redundant call if init auto-starts.
 3. **One-shot access codes** mean every run consumes a code. For local debug loops this is friction. Mitigation: README + offer a `KEEP_LXC=1` mode so debug runs reuse one LXC + one login until manually destroyed.
 4. **`pct push` performance** of a tarball'd 100MB+ working tree may surprise. If rsync-into-LXC exceeds 30s, switch to mounting the host rsync target into the LXC via bind mount during provision.
