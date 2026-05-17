@@ -19,13 +19,16 @@ import { existsSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import pkg from "../package.json" with { type: "json" };
 import { mountApi } from "./api/index.ts";
+import { mountVault } from "./api/vault.ts";
+import { makeRequireAuth } from "./auth/middleware.ts";
 import { resolveTz } from "./cost/tz.ts";
 import { chatsApi } from "./api/chats.ts";
 import { agentsApi } from "./api/agents.ts";
 import { chatApi, mountChatTaskStateFanout } from "./api/chat.ts";
 import { mountMcp, defaultLoadAgentDefn } from "./adapters/mcp/index.ts";
 import { mountAnswerRoute } from "./api/answer.ts";
-import { createEventBus } from "./events/index.ts";
+import { createEventBus, type EventBus } from "./events/index.ts";
+import { mountChatStream } from "./api/chat-stream.ts";
 import { createAskUserBridge } from "./chat/ask-user-bridge.ts";
 import { makeProvider } from "./providers/factory.ts";
 import { createPermissionEngine } from "./permissions/engine.ts";
@@ -68,12 +71,34 @@ export interface BuildAppDeps {
    * (`daemon/src/index.ts`) must explicitly pass `runBootProbe: true`.
    */
   runBootProbe?: boolean;
+  // VOS-116 T5: shared bearer token + boot timestamp. Optional in deps so
+  // tests can omit them; defaults are applied inside buildApp. Production
+  // entrypoint (daemon/src/index.ts) always passes both.
+  token?: string;
+  bootTime?: number;
+  // VOS-116 T10: optional injected EventBus. Tests use this to assert
+  // subscribe/unsubscribe lifecycle on the SSE route. Production omits
+  // it so buildApp constructs its own bus internally.
+  eventBus?: EventBus;
 }
 
 export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   const app = new Hono();
+  const token = deps.token ?? "test-token";
+  const bootTime = deps.bootTime ?? Date.now();
   app.get("/", (c) => c.text(`void-os daemon v${VERSION}\n`));
-  mountApi(app, { version: VERSION, db: deps.db, tz: resolveTz(process.env) });
+  mountApi(app, {
+    version: VERSION,
+    db: deps.db,
+    tz: resolveTz(process.env),
+    vaultRoot: deps.vaultRoot,
+    token,
+    bootTime,
+  });
+
+  // VOS-116 T7: vault routes — bearer-auth required on every /vault/*.
+  app.use("/vault/*", makeRequireAuth(token));
+  mountVault(app, { vaultRoot: deps.vaultRoot });
 
   const emit = deps.emit ?? broadcast;
 
@@ -89,7 +114,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // VOS-88 T7: bus is shared between orchestrator wiring and the MCP server
   // (ask_user emits task.state_changed / message.appended via this bus).
   // Hoisted out of the orchestrator-only block so mountMcp can receive it.
-  const bus = createEventBus({ db: deps.db });
+  const bus = deps.eventBus ?? createEventBus({ db: deps.db });
   const bridge = createAskUserBridge({ db: deps.db, bus });
 
   // VOS-104 T8b: wire cost ledger subscriber. Without this, `run.end` events
@@ -247,6 +272,11 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // and the HTTP route (which resolves via bridge.resolve) reference the
   // same in-process awaiter map.
   mountAnswerRoute(app, { db: deps.db, bridge, emit });
+
+  // VOS-116 T10: per-chat SSE stream — bearer-auth required, fans out
+  // events from the shared bus filtered to the URL's chat id.
+  app.use("/chat/:id/stream", makeRequireAuth(token));
+  mountChatStream(app, { db: deps.db, bus, version: VERSION });
   return app;
 };
 

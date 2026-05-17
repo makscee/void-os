@@ -46,6 +46,7 @@ export interface RunEndEvent extends DaemonEvent {
 export interface EventBus {
   emit(event: DaemonEvent): void;
   subscribe(type: string, handler: (event: DaemonEvent) => void): () => void;
+  listenerCount(): number;
 }
 
 interface Deps {
@@ -77,6 +78,11 @@ export const createEventBus = (deps: Deps = {}): EventBus => {
       if (!set) { set = new Set(); subs.set(type, set); }
       set.add(handler);
       return () => { set!.delete(handler); };
+    },
+    listenerCount() {
+      let n = 0;
+      for (const set of subs.values()) n += set.size;
+      return n;
     },
   };
 };

@@ -1,0 +1,6 @@
+{
+  "name": "void-os",
+  "private": true,
+  "type": "module",
+  "workspaces": ["daemon", "plugin", "protocol"]
+}

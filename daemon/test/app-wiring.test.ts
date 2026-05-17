@@ -22,12 +22,30 @@ CREATE TABLE agent_cards (
 INSERT INTO agent_cards (agent_name, card_json) VALUES ('test', '{"name":"test"}');
 `;
 
+// VOS-116 T5: shared bootstrap helper. Tests opting into auth pass `token`;
+// the default ("test-token") matches buildApp's own default so legacy tests
+// that don't set a token still authenticate via Bearer test-token.
+async function bootstrap(opts: { token?: string } = {}) {
+  const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-"));
+  const db = new Database(":memory:");
+  db.exec(SCHEMA);
+  const app = await buildApp({
+    db,
+    vaultRoot,
+    token: opts.token ?? "test-token",
+    bootTime: Date.now(),
+  });
+  return { app, db, vaultRoot };
+}
+
 describe("buildApp wires /mcp alongside /health", () => {
   test("GET /health still works", async () => {
-    const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-"));
-    const db = new Database(":memory:"); db.exec(SCHEMA);
-    const app = await buildApp({ db, vaultRoot });
-    const res = await app.fetch(new Request("http://x/health"));
+    const { app } = await bootstrap();
+    const res = await app.fetch(
+      new Request("http://x/health", {
+        headers: { Authorization: "Bearer test-token" },
+      }),
+    );
     expect(res.status).toBe(200);
     const body = await res.json() as { ok: boolean };
     expect(body.ok).toBe(true);
@@ -53,5 +71,37 @@ describe("buildApp wires /mcp alongside /health", () => {
     expect(res.status).toBeLessThan(400);
     const text = await res.text();
     expect(text).toContain("\"jsonrpc\"");
+  });
+
+  test("GET /health requires auth — missing token → 401", async () => {
+    const { app } = await bootstrap({ token: "secret" });
+    const res = await app.fetch(new Request("http://x/health"));
+    expect(res.status).toBe(401);
+  });
+
+  test("GET /health with valid token returns extended shape", async () => {
+    const { app, vaultRoot } = await bootstrap({ token: "secret" });
+    const res = await app.fetch(
+      new Request("http://x/health", {
+        headers: { Authorization: "Bearer secret" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(typeof body.version).toBe("string");
+    expect(body.vault_root).toBe(vaultRoot);
+    expect(typeof body.uptime_s).toBe("number");
+    expect(Number.isInteger(body.uptime_s)).toBe(true);
+  });
+
+  test("GET /health rejects browser Origin", async () => {
+    const { app } = await bootstrap({ token: "secret" });
+    const res = await app.fetch(
+      new Request("http://x/health?token=secret", {
+        headers: { Origin: "https://x" },
+      }),
+    );
+    expect(res.status).toBe(403);
   });
 });
