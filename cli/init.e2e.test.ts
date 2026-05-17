@@ -252,3 +252,53 @@ describe("initCommand() — end-to-end against real fs", () => {
     expect(shaAfter).toBe(shaBefore)
   })
 })
+
+describe("initCommand() --non-interactive", () => {
+  it("runs end-to-end with flag-only config, never prompts", async () => {
+    const prompter = new ScriptedPrompter({ text: [], confirm: [] })
+    const logSpy = spyOn(console, "log").mockImplementation(() => {})
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      await initCommand({
+        args: ["--non-interactive", "--vault", home, "--skip-gh", "--skip-obsidian"],
+        prefix,
+        prompter,
+        preflight: fakePreflight,
+        skipBuild: true,
+      })
+    } finally {
+      logSpy.mockRestore()
+      warnSpy.mockRestore()
+    }
+
+    expect(existsSync(home)).toBe(true)
+    expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
+    expect(existsSync(join(home, ".void"))).toBe(true)
+    // No `intro:`/`outro:` log entries since prompter never invoked:
+    expect(prompter.log.length).toBe(0)
+  })
+
+  it("missing --vault under --non-interactive exits 64", async () => {
+    const prompter = new ScriptedPrompter({ text: [], confirm: [] })
+    const exitSpy = spyOn(process, "exit").mockImplementation(((c?: number) => {
+      throw new Error(`exit:${c}`)
+    }) as never)
+    const errSpy = spyOn(console, "error").mockImplementation(() => {})
+
+    try {
+      await initCommand({
+        args: ["--non-interactive"],
+        prefix,
+        prompter,
+        preflight: fakePreflight,
+        skipBuild: true,
+      })
+      throw new Error("should have exited")
+    } catch (e) {
+      expect((e as Error).message).toBe("exit:64")
+    } finally {
+      exitSpy.mockRestore()
+      errSpy.mockRestore()
+    }
+  })
+})

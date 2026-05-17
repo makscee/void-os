@@ -3,7 +3,8 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { detect, enforce, PreflightError, type PreflightReport } from "./init/preflight"
 import { ClackPrompter, type Prompter } from "./init/prompter"
-import { configure } from "./init/configure"
+import { configure, decideFromFlags } from "./init/configure"
+import type { Decisions } from "./init/configure"
 import { runBuild, BuildError } from "./init/build"
 import { seed } from "./init/seed"
 import { installPlugin } from "./init/plugin"
@@ -98,6 +99,16 @@ export interface InitCommandOpts {
  */
 export async function initCommand(opts: InitCommandOpts): Promise<void> {
   const flags = parseFlags(opts.args)
+  try {
+    validateFlags(flags)
+  } catch (e) {
+    if (e instanceof FlagsError) {
+      console.error(e.message)
+      process.exit(e.exitCode)
+      return
+    }
+    throw e
+  }
   const prompter: Prompter = opts.prompter ?? new ClackPrompter()
 
   // 1. PREFLIGHT (skipped when an injected report is supplied)
@@ -106,10 +117,11 @@ export async function initCommand(opts: InitCommandOpts): Promise<void> {
     report = opts.preflight
   } else {
     report = detect()
+    const offerBrewInstallBun = flags.nonInteractive
+      ? () => false
+      : (opts.offerBrewInstallBun ?? defaultBrewPrompt)
     try {
-      enforce(report, {
-        offerBrewInstallBun: opts.offerBrewInstallBun ?? defaultBrewPrompt,
-      })
+      enforce(report, { offerBrewInstallBun })
     } catch (e) {
       if (e instanceof PreflightError) {
         console.error(`preflight: ${e.message}`)
@@ -120,10 +132,25 @@ export async function initCommand(opts: InitCommandOpts): Promise<void> {
   }
 
   // 2. CONFIGURE
-  const decisions = await configure(report, prompter)
-  if (decisions.cancelled) {
-    console.error("cancelled")
-    process.exit(130)
+  let decisions: Decisions
+  if (flags.nonInteractive) {
+    try {
+      decisions = decideFromFlags(report, flags)
+    } catch (e) {
+      if (e instanceof FlagsError) {
+        console.error(e.message)
+        process.exit(e.exitCode)
+        return
+      }
+      throw e
+    }
+  } else {
+    decisions = await configure(report, prompter)
+    if (decisions.cancelled) {
+      console.error("cancelled")
+      process.exit(130)
+      return
+    }
   }
 
   const vaultPath = flags.home
