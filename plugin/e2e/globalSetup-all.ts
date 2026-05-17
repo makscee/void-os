@@ -5,8 +5,10 @@
  */
 import sharedSetup from "./globalSetup.ts";
 import askUserSetup from "./globalSetup-ask-user.ts";
+import permissionDenyUiSetup from "./globalSetup-permission-deny-ui.ts";
 
 export default async function globalSetupAll() {
   await sharedSetup();
   await askUserSetup();
+  await permissionDenyUiSetup();
 }

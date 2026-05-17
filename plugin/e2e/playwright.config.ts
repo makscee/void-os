@@ -32,11 +32,15 @@ export default defineConfig({
   projects: [
     {
       name: "main",
-      testIgnore: ["**/ask-user.spec.ts"],
+      testIgnore: ["**/ask-user.spec.ts", "**/permission-deny-ui.spec.ts"],
     },
     {
       name: "ask-user",
       testMatch: ["**/ask-user.spec.ts"],
+    },
+    {
+      name: "permission-deny-ui",
+      testMatch: ["**/permission-deny-ui.spec.ts"],
     },
   ],
   use: {

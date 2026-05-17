@@ -5,9 +5,11 @@
  */
 import sharedTeardown from "./globalTeardown.ts";
 import askUserTeardown from "./globalTeardown-ask-user.ts";
+import permissionDenyUiTeardown from "./globalTeardown-permission-deny-ui.ts";
 
 export default async function globalTeardownAll() {
-  // Tear down the ask-user daemon first since it was started last.
+  // Tear down in reverse setup order (last-started first).
+  try { await permissionDenyUiTeardown(); } catch (err) { console.error("[teardown] permission-deny-ui:", err); }
   try { await askUserTeardown(); } catch (err) { console.error("[teardown] ask-user:", err); }
   try { await sharedTeardown(); } catch (err) { console.error("[teardown] shared:", err); }
 }
