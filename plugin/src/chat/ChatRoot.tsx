@@ -397,7 +397,7 @@ export function ChatRoot(props: ChatRootProps) {
             onNewChat={onNewChat}
             refreshKey={refreshKey}
           />
-          <CostMeter />
+          <CostMeter api={props.api} />
         </div>
         <div className="vos:flex vos:flex-col vos:flex-1 vos:min-w-0 vos:min-h-0 vos:h-full">
           <ThreadPrimitive.Root className="vos:contents">

@@ -72,6 +72,16 @@ export interface ChatApi {
   >;
   listChats(): Promise<ChatSummary[]>;
   getMessages(chatId: string): Promise<ReplayMessage[]>;
+  /** GET /cost/today. Returns the 4-token-split daily total with non-neg integer
+   *  coercion per field (else 0). VOS-110 T5 — backs the live CostMeter widget. */
+  getCostToday(): Promise<{
+    total: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_create_tokens: number;
+      cache_read_tokens: number;
+    };
+  }>;
 }
 
 export async function jsonOrThrow(res: Response): Promise<unknown> {
@@ -264,6 +274,24 @@ export function makeChatApi(
       );
       const body = await jsonOrThrow(res);
       return normalizeReplay(body);
+    },
+    async getCostToday() {
+      const res = await fetchImpl(`${base}/cost/today`, { method: "GET" });
+      const body = await jsonOrThrow(res);
+      const t =
+        body && typeof body === "object" && "total" in body && body.total && typeof body.total === "object"
+          ? (body.total as Record<string, unknown>)
+          : {};
+      const num = (v: unknown): number =>
+        typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : 0;
+      return {
+        total: {
+          input_tokens: num(t.input_tokens),
+          output_tokens: num(t.output_tokens),
+          cache_create_tokens: num(t.cache_create_tokens),
+          cache_read_tokens: num(t.cache_read_tokens),
+        },
+      };
     },
   };
 }
