@@ -169,7 +169,7 @@ Implementation notes:
 
 - All ops shell out to `ssh root@<towerHost>` and run `pct` there.
 - `lxcExec` uses `pct exec <ctid> -- bash -lc '<cmd>'`; `cmd` is base64-encoded into a heredoc-free single argv to avoid quoting hell. Stdout/stderr captured separately via `2>&1` redirection in a wrapper script.
-- `provisionLxc` picks first free CTID: `pct list | awk 'NR>1 {print $1}'` → intersect with reserved range → first free. Race-safe enough because tower is single-operator; in CI the runner is a single instance.
+- `provisionLxc` picks first free CTID with **tower-side `flock`** to serialize pick+create across any concurrent caller (local debug racing CI workflow_dispatch, two PRs queued, etc.). Implementation: `ssh root@tower 'flock /var/lock/vos-e2e-ctid -c "<pick + pct create>"'`. The pick logic itself remains `pct list | awk 'NR>1 {print $1}'` → intersect with reserved range → first free. Lock held only during pick+create (~1s), not for the test lifetime. README warns operators that the CI `concurrency.group: lxc-e2e` only serializes CI runs — concurrent local runs are protected by the flock, not the CI knob.
 - Env passing: `pct exec --env KEY=VAL` is NOT supported on older pct; we instead `printf 'export X=Y\n' | pct push` then source. Spec assumes only `CLAUDEV_ACCESS_CODE` needs in-container env, handled via stdin pipe to `claudev login` directly (no env needed).
 
 ### `lib/rsync.ts` API
@@ -189,7 +189,10 @@ Implementation: rsync from operator host → tower (`ssh root@tower`) into a sta
 export async function installBaseDeps(h: LxcHandle): Promise<void>
 // apt-get update + apt-get install -y curl git unzip ca-certificates
 // curl -fsSL https://bun.sh/install | bash; export PATH ~/.bun/bin
-// curl -fsSL https://auth.makscee.ru/claudev/install.sh | sh
+// Pinned claudev: read `e2e/lxc/.claudev-version` (single line: a git tag or commit SHA);
+//   git clone --depth 1 --branch <pinned> https://github.com/makscee/claudev /root/claudev
+//   cd /root/claudev && ./install.sh   (runs the local install script, no curl|sh of remote)
+// .claudev-version is a reviewable file; bumps go through PR.
 
 export async function loginClaudev(h: LxcHandle, accessCode: string): Promise<void>
 // echo "$accessCode" | claudev login
@@ -245,24 +248,25 @@ describe("void-os init --non-interactive on fresh LXC", () => {
     expect(initR.exitCode).toBe(0)
     expect(initR.stdout).toMatch(/seed: void-os init|vault:/)  // formatReport content
 
-    // Start daemon if init didn't (verified in T2 of impl plan):
-    const dR = await lxcExec(h!, "void-os daemon start", { allowFailure: true })
-    if (dR.exitCode !== 0) {
-      // If daemon is already running (auto-started by init), tolerate.
-      expect(dR.stderr).toMatch(/already running|listening/)
-    }
+    // Daemon health: T0 probe RESOLVES whether `void-os init` auto-starts the daemon.
+    // Implementation picks ONE branch and removes the other — no tolerant `||` here.
+    //   - If init auto-starts: assert via `void-os daemon status` (exitCode 0 + "listening").
+    //   - If init does NOT auto-start: call `void-os daemon start`, require exitCode 0.
+    // The branch below is a PLACEHOLDER until T0 fixes the contract:
+    const dR = await lxcExec(h!, "void-os daemon status")
+    expect(dR.exitCode).toBe(0)
 
     const askR = await lxcExec(
       h!,
       `void-os ask tinker "create a file called test.md with content hello"`,
-      { timeoutMs: 60_000 },
+      { timeoutMs: 180_000 },  // Anthropic p99 tool-use round-trips can exceed 60s
     )
     expect(askR.exitCode).toBe(0)
 
     const filer = await lxcExec(h!, "cat /root/vault/test.md")
     expect(filer.exitCode).toBe(0)
     expect(filer.stdout).toContain("hello")
-  }, 120_000)
+  }, 240_000)
 })
 ```
 
@@ -297,7 +301,7 @@ exec bun test e2e/lxc/init-non-interactive.spec.ts --timeout 300000
 | bun install + bun link | 40s |
 | init --non-interactive | 10s |
 | daemon start (if needed) | 3s |
-| ask tinker (real LLM round-trip) | 30-60s |
+| ask tinker (real LLM round-trip) | 30-60s typical, 180s p99 ceiling |
 | cat assertion | 1s |
 | dumpAndDestroy | 10s |
 | **Total** | **~200s, within 5-min cap** |
@@ -346,7 +350,7 @@ workspace/homelab/ansible/
    - Download GH Actions runner tarball, unpack to `/home/runner/actions-runner`.
    - Configure runner: `./config.sh --url https://github.com/makscee/void-os --token <secret> --labels lxc-tower --unattended`.
    - Install systemd unit, enable + start.
-3. On tower (host): create unprivileged `runner` user, add ssh authorized_keys entry from the LXC's generated keypair, add sudoers line `runner ALL=(ALL) NOPASSWD: /usr/sbin/pct *`.
+3. On tower (host): create unprivileged `runner` user, add ssh authorized_keys entry from the LXC's generated keypair. Install `/usr/local/sbin/vos-pct` wrapper that validates `CTID ∈ [9100, 9199]` (or, for the runner-LXC bootstrap, CTID 198) before exec'ing `/usr/sbin/pct`. Sudoers grants exactly `runner ALL=(ALL) NOPASSWD: /usr/local/sbin/vos-pct` — **NOT** the raw `pct` binary. All `lxc.ts` helpers call `vos-pct` instead of `pct` over ssh. Wrapper rejects any CTID outside the allowlist with exit code 2 + stderr message; rejection is logged to `journalctl` for audit.
 4. Document the bootstrap: `workspace/homelab/ansible/roles/gh-runner-vos/README.md` with one-line invocation, secret rotation, runner re-registration.
 
 ### Why this is in scope
@@ -410,7 +414,7 @@ GitHub secrets required on the void-os repo: `VOID_AUTH_ADMIN_TOKEN`.
 3. **One-shot access codes** mean every run consumes a code. For local debug loops this is friction. Mitigation: README + offer a `KEEP_LXC=1` mode so debug runs reuse one LXC + one login until manually destroyed.
 4. **`pct push` performance** of a tarball'd 100MB+ working tree may surprise. If rsync-into-LXC exceeds 30s, switch to mounting the host rsync target into the LXC via bind mount during provision.
 5. **Runner provisioning is a homelab change** with operational impact (SOPS secret rotation, new ssh user on tower, sudoers entry). User approved scope inclusion; we ship it but commit homelab changes separately from void-os changes for clean rollback.
-6. **No claudev-released binary path used in test.** `auth.makscee.ru/claudev/install.sh` fetches the current pinned release. If a broken release is published, the LXC test breaks even though void-os code is fine. Acceptable for now; revisit if it bites.
+6. **claudev pin.** Test installs claudev from a pinned git ref recorded in `e2e/lxc/.claudev-version`. Bumps go through PR review. If the pin falls behind, manual bump task; no auto-update.
 
 ## Non-goals (explicit)
 
@@ -432,8 +436,9 @@ Roughly: probe → flag wiring → helpers → spec → CI workflow → runner p
 - [ ] `e2e/lxc/run.sh`
 - [ ] `e2e/lxc/README.md`
 - [ ] `tools/mint-claudev-code.sh`
+- [ ] `e2e/lxc/.claudev-version` (pinned git ref)
 - [ ] `.github/workflows/lxc-e2e.yml`
-- [ ] `workspace/homelab/ansible/roles/gh-runner-vos/` (role + secrets + README)
+- [ ] `workspace/homelab/ansible/roles/gh-runner-vos/` (role + `vos-pct` wrapper + secrets + README)
 - [ ] `workspace/homelab/ansible/playbooks/gh-runner-vos.yml`
 - [ ] Runner registered against `makscee/void-os`, label `lxc-tower`, online
 - [ ] One green LXC E2E run logged in task Work Log (manual or workflow_dispatch)
