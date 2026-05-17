@@ -157,6 +157,70 @@ prebuild_plugin() {
   ( cd "$REPO_ROOT/plugin" && VOID_OS_PLUGIN_OUT="$REPO_ROOT/plugin/dist" bun run build )
 }
 
+# --- daemon guard + stop ------------------------------------------------
+# Probe void-os daemon status --json; if a daemon is serving a vault
+# other than $PATH_CANON, refuse unless --force-stop. Treats CLI errors
+# (subcommand missing, schema mismatch) as "no daemon" — destructive
+# behaviour stays gated by --force-stop.
+daemon_guard_and_stop() {
+  local status_json running vault_root status_rc
+  # Capture combined output and exit code. `daemon status` exits 0 for both
+  # stopped and running-healthy; non-zero means a real error (corrupt
+  # pid file, /health 500, schema mismatch). Don't silently treat that
+  # as "no daemon" — a stale-state daemon would otherwise survive the
+  # script and write into the freshly-inited vault.
+  status_json="$("$VOID_OS_BIN" daemon status --json 2>&1)" && status_rc=0 || status_rc=$?
+  if [ "$status_rc" -ne 0 ]; then
+    if [ "$FLAG_FORCE_STOP" -eq 1 ]; then
+      echo "fresh-vault: WARNING — daemon status failed (rc=$status_rc); --force-stop set, proceeding" >&2
+      echo "$status_json" >&2
+      "$VOID_OS_BIN" daemon stop 2>/dev/null || true
+      return 0
+    fi
+    echo "fresh-vault: daemon status failed (rc=$status_rc) — pass --force-stop to override" >&2
+    echo "$status_json" >&2
+    exit 2
+  fi
+  running="$(printf '%s' "$status_json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print("1" if d.get("running") else "0")
+except Exception:
+    print("0")
+')"
+  if [ "$running" != "1" ]; then
+    echo "fresh-vault: daemon not running"
+    return 0
+  fi
+  vault_root="$(printf '%s' "$status_json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d.get("vault_root") or "")
+except Exception:
+    print("")
+')"
+  # Canonicalize daemon's vault_root the same way for comparison.
+  local daemon_vault_canon=""
+  if [ -n "$vault_root" ] && [ -d "$vault_root" ]; then
+    daemon_vault_canon="$( cd "$vault_root" && pwd -P )"
+  fi
+  if [ "$daemon_vault_canon" = "$PATH_CANON" ]; then
+    echo "fresh-vault: stopping daemon (serving target vault)"
+    "$VOID_OS_BIN" daemon stop
+    return 0
+  fi
+  if [ "$FLAG_FORCE_STOP" -eq 1 ]; then
+    echo "fresh-vault: WARNING — stopping daemon serving foreign vault: $vault_root"
+    "$VOID_OS_BIN" daemon stop
+    return 0
+  fi
+  echo "fresh-vault: refusing to stop daemon serving foreign vault: $vault_root" >&2
+  echo "fresh-vault: pass --force-stop to override" >&2
+  exit 2
+}
+
 # --- main ----------------------------------------------------------------
 main() {
   parse_args "$@"
@@ -168,7 +232,8 @@ main() {
   HOME_CANON="$home_canon"
   confirm_wipe
   prebuild_plugin
-  echo "fresh-vault: ready to wipe $PATH_CANON (T5–T9 land here)"
+  daemon_guard_and_stop
+  echo "fresh-vault: ready to wipe $PATH_CANON (T6–T9 land here)"
 }
 
 main "$@"
