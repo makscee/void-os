@@ -282,16 +282,19 @@ describe("ChatList", () => {
     root.unmount();
   });
 
-  test("renders cost cell with formatted USD per row", async () => {
+  test("renders context cell with formatted tokens + tooltip per row", async () => {
     const React = await import("react");
     const { createRoot } = await import("react-dom/client");
     const act = (React as any).act;
     const { ChatList } = await import("../src/chat/ChatList");
 
     const api = stubApi([
-      { id: "c1", agent: "maya", title: "expensive",  last_msg: null, updated_at: 3, last_run_status: "done", cost_usd: 1.234, input_required: false },
-      { id: "c2", agent: "maya", title: "cheap",      last_msg: null, updated_at: 2, last_run_status: "done", cost_usd: 0.42,  input_required: false },
-      { id: "c3", agent: "maya", title: "free",       last_msg: null, updated_at: 1, last_run_status: "done", cost_usd: 0,     input_required: false },
+      { id: "c1", agent: "maya", title: "big",   last_msg: null, updated_at: 3, last_run_status: "done", cost_usd: 0, input_required: false,
+        context_tokens: 12345, context_input_tokens: 1000, context_output_tokens: 2000, context_cache_create_tokens: 3000, context_cache_read_tokens: 6345 },
+      { id: "c2", agent: "maya", title: "small", last_msg: null, updated_at: 2, last_run_status: "done", cost_usd: 0, input_required: false,
+        context_tokens: 420,   context_input_tokens: 100,  context_output_tokens: 200,  context_cache_create_tokens: 50,   context_cache_read_tokens: 70 },
+      { id: "c3", agent: "maya", title: "empty", last_msg: null, updated_at: 1, last_run_status: "done", cost_usd: 0, input_required: false,
+        context_tokens: null,  context_input_tokens: null, context_output_tokens: null, context_cache_create_tokens: null, context_cache_read_tokens: null },
     ]);
 
     const host = (globalThis as any).document.createElement("div");
@@ -306,11 +309,16 @@ describe("ChatList", () => {
     });
     await flush(act);
 
-    const cellText = (id: string) =>
-      host.querySelector(`[data-testid='chat-row'][data-chat-id='${id}'] [data-testid='cost-cell']`)?.textContent;
-    expect(cellText("c1")).toBe("$1.23");
-    expect(cellText("c2")).toBe("$0.42");
-    expect(cellText("c3")).toBe("$0.00");
+    const cell = (id: string) =>
+      host.querySelector(`[data-testid='chat-row'][data-chat-id='${id}'] [data-testid='context-cell']`) as HTMLElement | null;
+
+    expect(cell("c1")?.textContent).toBe("12.3k");
+    expect(cell("c2")?.textContent).toBe("420");
+    expect(cell("c3")?.textContent).toBe("—");
+
+    expect(cell("c1")?.getAttribute("title")).toBe("1k in / 2k out / 3k cc / 6.3k cr");
+    expect(cell("c2")?.getAttribute("title")).toBe("100 in / 200 out / 50 cc / 70 cr");
+    expect(cell("c3")?.getAttribute("title")).toBe("");
 
     root.unmount();
   });
