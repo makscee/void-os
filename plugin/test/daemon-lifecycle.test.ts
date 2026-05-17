@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveBinary, BinaryNotFoundError } from "../src/daemon-lifecycle";
+import { resolveBinary, BinaryNotFoundError, ensureDaemon, VaultMismatchError } from "../src/daemon-lifecycle";
 
 let dir: string;
 beforeEach(() => {
@@ -49,5 +49,49 @@ describe("resolveBinary", () => {
     await expect(
       resolveBinary({}, { home: dir, pathDirs: [] }),
     ).rejects.toThrow(BinaryNotFoundError);
+  });
+});
+
+describe("ensureDaemon", () => {
+  it("attaches when /health returns 200 with matching vault_root", async () => {
+    const probe = async () => ({ ok: true, vault_root: "/V", version: "0.1", port: 7777 });
+    const result = await ensureDaemon({
+      vaultRoot: "/V",
+      settings: { resolvedBinaryPath: "/bin/echo" },
+      probeHealth: probe,
+      spawnCli: async () => { throw new Error("must not spawn"); },
+    });
+    expect(result.port).toBe(7777);
+    expect(result.vault_root).toBe("/V");
+  });
+
+  it("throws VaultMismatchError when /health returns a different vault_root", async () => {
+    const probe = async () => ({ ok: true, vault_root: "/OTHER", version: "0.1", port: 7777 });
+    await expect(ensureDaemon({
+      vaultRoot: "/V",
+      settings: { resolvedBinaryPath: "/bin/echo" },
+      probeHealth: probe,
+      spawnCli: async () => { throw new Error("must not spawn"); },
+    })).rejects.toBeInstanceOf(VaultMismatchError);
+  });
+
+  it("spawns when probe rejects, then attaches after poll succeeds", async () => {
+    let probeCalls = 0;
+    const probe = async () => {
+      probeCalls++;
+      if (probeCalls < 3) throw new Error("ECONNREFUSED");
+      return { ok: true, vault_root: "/V", version: "0.1", port: 7777 };
+    };
+    const spawnCalls: string[][] = [];
+    const result = await ensureDaemon({
+      vaultRoot: "/V",
+      settings: { resolvedBinaryPath: "/bin/echo" },
+      probeHealth: probe,
+      spawnCli: async (bin, args) => { spawnCalls.push([bin, ...args]); },
+      pollIntervalMs: 5,
+      pollTimeoutMs: 500,
+    });
+    expect(result.vault_root).toBe("/V");
+    expect(spawnCalls[0]).toEqual(["/bin/echo", "daemon", "start", "--vault", "/V"]);
   });
 });

@@ -103,3 +103,60 @@ export async function resolveBinary(
   }
   throw new BinaryNotFoundError();
 }
+
+export type HealthSnapshot = {
+  ok: boolean;
+  vault_root: string;
+  version: string;
+  port: number;
+};
+
+export type EnsureDaemonOpts = {
+  vaultRoot: string;
+  settings: LifecycleSettings;
+  probeHealth: () => Promise<HealthSnapshot>;
+  spawnCli: (bin: string, args: string[]) => Promise<void>;
+  pollIntervalMs?: number;
+  pollTimeoutMs?: number;
+};
+
+export type DaemonAttachment = {
+  port: number;
+  vault_root: string;
+  version: string;
+};
+
+export async function ensureDaemon(opts: EnsureDaemonOpts): Promise<DaemonAttachment> {
+  const bin = await resolveBinary(opts.settings);
+  const intervalMs = opts.pollIntervalMs ?? 250;
+  const timeoutMs = opts.pollTimeoutMs ?? 10000;
+
+  // Try existing daemon.
+  try {
+    const h = await opts.probeHealth();
+    if (h.ok) {
+      if (h.vault_root !== opts.vaultRoot) throw new VaultMismatchError(h.vault_root);
+      return { port: h.port, vault_root: h.vault_root, version: h.version };
+    }
+  } catch (e) {
+    if (e instanceof VaultMismatchError) throw e;
+    // fall through to spawn
+  }
+
+  await opts.spawnCli(bin, ["daemon", "start", "--vault", opts.vaultRoot]);
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const h = await opts.probeHealth();
+      if (h.ok) {
+        if (h.vault_root !== opts.vaultRoot) throw new VaultMismatchError(h.vault_root);
+        return { port: h.port, vault_root: h.vault_root, version: h.version };
+      }
+    } catch (e) {
+      if (e instanceof VaultMismatchError) throw e;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new SpawnError("daemon did not become ready within 10s");
+}
