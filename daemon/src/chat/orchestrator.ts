@@ -503,6 +503,7 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
         await drainRun({
           handle,
           signal: cancelSignal,
+          agentName: chat.agent,
           onSession: (sid) => {
             // Double gate: in-memory boolean + the IS NULL check on the
             // canonical row. Across runs (--resume), claudev re-emits the

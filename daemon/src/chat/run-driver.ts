@@ -1,5 +1,6 @@
 import type { ProviderHandle } from "../providers/types.ts";
 import type { Part, Role } from "../types/a2a.ts";
+import { maybeSynthDenial } from "./parts/denial-synth.ts";
 
 export interface PartFrame {
   parts: Part[];
@@ -12,6 +13,14 @@ export interface DrainRunArgs {
   signal?: AbortSignal;
   onSession?: (sessionId: string) => void;
   onPart?: (frame: PartFrame) => void;
+  /**
+   * VOS-109: agent identity for denial synthesis fallback. When a tool_result
+   * carries `WRITE_SCOPE_DENIED:` (CC hook path) without a trailing
+   * `for agent <name>` suffix, the synthesiser falls back to this name.
+   * Optional for back-compat with callers (mostly tests) that don't care;
+   * production callers (orchestrator, dispatch-child) MUST pass it.
+   */
+  agentName?: string;
 }
 
 export interface TerminalOutcome {
@@ -40,7 +49,7 @@ export function mergeAdjacentText(parts: Part[]): Part[] {
 }
 
 export async function drainRun(args: DrainRunArgs): Promise<TerminalOutcome> {
-  const { handle, signal, onSession, onPart } = args;
+  const { handle, signal, onSession, onPart, agentName } = args;
 
   const agentParts: Part[] = [];
   let firstAssistantSeen = false;
@@ -84,11 +93,25 @@ export async function drainRun(args: DrainRunArgs): Promise<TerminalOutcome> {
         const partsEvt = evt as { role: Role; parts: Part[] };
         if (partsEvt.role === "ROLE_AGENT") firstAssistantSeen = true;
         let frameText = "";
+        const augmented: Part[] = [];
         for (const p of partsEvt.parts) {
           if (isText(p)) frameText += p.text;
+          augmented.push(p);
           agentParts.push(p);
+          // VOS-109: synth a DenialPart immediately after any offending
+          // deny tool_result so the augmented frame keeps them adjacent.
+          // agentName fallback: tests may omit; synth tolerates "" since
+          // the deny-path that needs the fallback only fires on CC hook
+          // text shaped "WRITE_SCOPE_DENIED: <path>" — that path requires
+          // a real agent name in production but the predicate still
+          // matches with "" (it just produces a degenerate message).
+          const denial = maybeSynthDenial(p, agentName ?? "");
+          if (denial) {
+            augmented.push(denial);
+            agentParts.push(denial);
+          }
         }
-        onPart?.({ parts: partsEvt.parts, frameText, role: partsEvt.role });
+        onPart?.({ parts: augmented, frameText, role: partsEvt.role });
       }
     }
   } finally {

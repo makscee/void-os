@@ -129,6 +129,7 @@ export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn 
           bus: deps.bus,
           messages,
           provider: providerFor(args.agentName),
+          agentName: args.agentName,
           childTaskId,
           message: args.message,
           cwd: deps.cwd,
@@ -158,6 +159,8 @@ interface RunChildArgs {
   bus: EventBus;
   messages: MessagesRepo;
   provider: Provider;
+  /** VOS-109: agent identity threaded to drainRun for denial synthesis. */
+  agentName: string;
   childTaskId: string;
   message: string;
   /** Vault-aware cwd threaded from DispatchChildDeps. Passed to
@@ -170,7 +173,7 @@ interface RunChildArgs {
 }
 
 async function runChildOnProvider(args: RunChildArgs): Promise<void> {
-  const { db, bus, messages, provider, childTaskId, message, cwd, emit } = args;
+  const { db, bus, messages, provider, agentName, childTaskId, message, cwd, emit } = args;
   const childRunId = "child-" + childTaskId;
 
   const ctxRow = db
@@ -219,6 +222,7 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
     // chat.token for the concatenated frame text.
     outcome = await drainRun({
       handle,
+      agentName,
       onPart: (frame) => {
         for (const p of frame.parts) {
           if (typeof (p as TextPart).text === "string") continue;
