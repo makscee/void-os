@@ -27,3 +27,24 @@ export function validateBridgeEnv(env: Record<string, string | undefined>): Brid
     runId:     env.VOS_RUN_ID && env.VOS_RUN_ID.length > 0 ? env.VOS_RUN_ID : null,
   };
 }
+
+// JSON-RPC envelope shape (loose, intentionally — bridge is a proxy).
+export interface JsonRpcMessage {
+  jsonrpc: "2.0";
+  id?: number | string;
+  method?: string;
+  params?: Record<string, unknown> & { _meta?: Record<string, unknown> };
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+}
+
+export function stampMeta(msg: JsonRpcMessage, cfg: BridgeConfig): JsonRpcMessage {
+  if (msg.method !== "tools/call" || !msg.params) return msg;
+  const stamped: Record<string, unknown> = {
+    ...(msg.params._meta ?? {}),
+    task_id: cfg.taskId,
+    context_id: cfg.contextId,
+  };
+  if (cfg.runId !== null) stamped.run_id = cfg.runId;
+  return { ...msg, params: { ...msg.params, _meta: stamped } };
+}
