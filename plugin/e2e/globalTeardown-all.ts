@@ -3,11 +3,30 @@
  * down both the shared and the ask-user-isolated daemons. Each teardown
  * is wrapped in try/catch so a failure in one doesn't leak the other.
  */
+import type { FullConfig } from "@playwright/test";
 import sharedTeardown from "./globalTeardown.ts";
 import askUserTeardown from "./globalTeardown-ask-user.ts";
 
-export default async function globalTeardownAll() {
-  // Tear down the ask-user daemon first since it was started last.
-  try { await askUserTeardown(); } catch (err) { console.error("[teardown] ask-user:", err); }
-  try { await sharedTeardown(); } catch (err) { console.error("[teardown] shared:", err); }
+// Mirror of globalSetup-all selection: parse --project from argv (FullConfig
+// gives the declared list, not the filter).
+function selectedProjects(allNames: string[]): Set<string> {
+  const argv = process.argv;
+  const picks: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--project" && argv[i + 1]) picks.push(argv[i + 1]);
+    else if (a.startsWith("--project=")) picks.push(a.slice("--project=".length));
+  }
+  return picks.length > 0 ? new Set(picks) : new Set(allNames);
+}
+
+export default async function globalTeardownAll(config: FullConfig) {
+  const selected = selectedProjects(config.projects.map((p) => p.name));
+  // Tear down ask-user first (started last in setup).
+  if (selected.has("ask-user")) {
+    try { await askUserTeardown(); } catch (err) { console.error("[teardown] ask-user:", err); }
+  }
+  if (selected.has("main")) {
+    try { await sharedTeardown(); } catch (err) { console.error("[teardown] shared:", err); }
+  }
 }
