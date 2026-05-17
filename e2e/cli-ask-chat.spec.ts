@@ -185,6 +185,11 @@ async function runVoidOs(
       HOME: homeDir,
       VOID_OS_BASE: baseUrl,
       VOID_OS_TOKEN: TOKEN,
+      // CLI's vaultMissing() probe (cli/ask.ts:49-54) checks
+      // VOID_OS_VAULT_ROOT and otherwise falls back to ~/Library/.../vault.
+      // With an isolated HOME the fallback never exists → exit 5 before the
+      // request ever reaches the daemon. Mirror the daemon's vault root.
+      VOID_OS_VAULT_ROOT: vaultRoot,
     },
     stdin: opts.stdinLines ? "pipe" : "ignore",
     stdout: "pipe",
