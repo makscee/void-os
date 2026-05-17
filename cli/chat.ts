@@ -23,6 +23,7 @@ import {
   resolveBase,
   resolveToken,
 } from "./lib/client.ts";
+import { parseSseFrames } from "./lib/sse-parse.ts";
 import { createRenderer, type Frame } from "./lib/stream-render.ts";
 
 interface IO {
@@ -40,35 +41,6 @@ Ctrl-C while idle exits with code 130.
 flags:
   --verbose   dump raw SSE frames as JSON to stderr alongside rendered output
 `;
-
-async function* parseSseFrames(res: Response): AsyncIterable<Frame> {
-  if (!res.body) return;
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      let ev: string | undefined;
-      let data: string | undefined;
-      for (const line of block.split("\n")) {
-        if (line.startsWith("event:")) ev = line.slice(6).trim();
-        else if (line.startsWith("data:")) data = line.slice(5).trim();
-      }
-      if (!ev || !data) continue;
-      try {
-        yield { event: ev, data: JSON.parse(data) } as Frame;
-      } catch {
-        // skip malformed JSON
-      }
-    }
-  }
-}
 
 /**
  * Line-pump: an event-driven adapter over readline that lets us request the
@@ -273,6 +245,7 @@ export default async function chat(args: string[], _opts: { prefix?: string } = 
       }
 
       runActive = true;
+      let sawRunEnd = false;
       try {
         for await (const frame of parseSseFrames(res)) {
           if (gate) {
@@ -304,12 +277,24 @@ export default async function chat(args: string[], _opts: { prefix?: string } = 
             continue;
           }
           renderer.handle(frame);
-          if (frame.event === "run_end") break;
+          if (frame.event === "run_end") {
+            sawRunEnd = true;
+            break;
+          }
         }
       } finally {
         runActive = false;
       }
-      // Stream closed; loop back for next user input.
+      // If the SSE stream closed without a terminal run_end frame, the
+      // daemon died or the connection dropped mid-run. The REPL is
+      // unusable in that state (next /message will fail-fast anyway), so
+      // surface the failure clearly and exit 3 (daemon offline) rather
+      // than silently re-prompting.
+      if (!sawRunEnd) {
+        stderr.write("error: daemon stream ended unexpectedly\n");
+        return 3;
+      }
+      // Stream closed cleanly; loop back for next user input.
     }
   } finally {
     process.removeListener("SIGINT", onSigint);

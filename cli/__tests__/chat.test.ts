@@ -314,3 +314,24 @@ test("missing daemon token surfaces NoTokenError message and exits 3", async () 
     else delete process.env.HOME;
   }
 });
+
+test("stream ends without run_end surfaces clear error and exits 3", async () => {
+  // Daemon's SSE stream closes mid-run (no run_end, no error frame). This
+  // means the daemon died or the connection dropped — REPL is unusable.
+  frameQueues = {
+    c1: [
+      [
+        { event: "text", data: { text: "partial..." } },
+        // No run_end here — stream just ends.
+      ],
+    ],
+  };
+  const err = collectStream();
+  const code = await chat(["stub"], {
+    stdin: withStdin(["hello"]),
+    stdout: collectStream().stream,
+    stderr: err.stream,
+  });
+  expect(code).toBe(3);
+  expect(err.chunks.join("")).toContain("stream ended unexpectedly");
+});
