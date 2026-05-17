@@ -26,12 +26,12 @@ function sseBody(frames: Frame[]): ReadableStream {
   const enc = new TextEncoder();
   return new ReadableStream({
     start(ctl) {
-      // Match daemon's SSE shape: data-only event with the typed event name
-      // embedded in the JSON. The protocol client extracts the `event` field
-      // from the JSON payload (sseFrames yields the parsed JSON object).
+      // Match daemon's SSE shape (see daemon/src/api/chat-stream.ts:38):
+      // `event: <name>\ndata: <bareDataJson>\n\n`. The CLI's inline
+      // parseSseFrames reads `event:` authoritatively and JSON-parses
+      // `data:` as the per-event payload.
       for (const f of frames) {
-        const payload = JSON.stringify({ event: f.event, data: f.data });
-        ctl.enqueue(enc.encode(`event: ${f.event}\ndata: ${payload}\n\n`));
+        ctl.enqueue(enc.encode(`event: ${f.event}\ndata: ${JSON.stringify(f.data)}\n\n`));
       }
       ctl.close();
     },

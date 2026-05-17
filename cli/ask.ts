@@ -24,9 +24,55 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "./lib/args.ts";
-import { buildClient, NoTokenError } from "./lib/client.ts";
+import {
+  buildClient,
+  NoTokenError,
+  resolveBase,
+  resolveToken,
+} from "./lib/client.ts";
 import { UnreachableError } from "@voidos/protocol";
 import { createRenderer, type Frame } from "./lib/stream-render.ts";
+
+/**
+ * Parse SSE frames directly off a Response body, yielding {event, data}.
+ * Mirrors the daemon's wire shape (event: <name>\ndata: <json>\n\n) — we
+ * preserve `event` so the renderer can route ask_user / run_end correctly.
+ *
+ * The protocol client's `client.chat.stream` is lazy (fetches on first
+ * iteration), which races the orchestrator: by the time the GET reaches
+ * the daemon and the bus subscriber is wired up, send() may already have
+ * driven the orchestrator to `run_end`. We avoid that race by opening
+ * the stream with `fetch()` ourselves BEFORE posting the message — the
+ * daemon's `/chat/:id/stream` handler subscribes synchronously on entry.
+ */
+async function* parseSseFrames(res: Response): AsyncIterable<Frame> {
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let ev: string | undefined;
+      let data: string | undefined;
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) ev = line.slice(6).trim();
+        else if (line.startsWith("data:")) data = line.slice(5).trim();
+      }
+      if (!ev || !data) continue;
+      try {
+        yield { event: ev, data: JSON.parse(data) } as Frame;
+      } catch {
+        // skip malformed JSON
+      }
+    }
+  }
+}
 
 const USAGE = `usage: void-os ask <agent> "message" [--stream] [--verbose]
 
@@ -132,7 +178,7 @@ export default async function ask(args: string[], io: IO = {}): Promise<number> 
     return 4;
   }
 
-  // --- Create chat + send message ------------------------------------------
+  // --- Create chat ----------------------------------------------------------
   let chatId: string;
   try {
     const created = await client.chat.create({ agent });
@@ -145,6 +191,33 @@ export default async function ask(args: string[], io: IO = {}): Promise<number> 
     stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
     return 1;
   }
+
+  // --- Open SSE stream BEFORE sending --------------------------------------
+  // Race fix: the daemon's `/chat/:id/stream` handler subscribes to the
+  // event bus inside the GET; the orchestrator's `dispatch` (driven by
+  // POST /message) awaits drainRun fully and emits `run_end` before
+  // returning. If we sent first and subscribed after, the run could
+  // complete (bus emits run_end) before our subscriber existed — we'd
+  // hang forever on an empty stream. So: open the GET first, await the
+  // Response (subscription is in place), THEN POST the message.
+  const base = resolveBase();
+  const token = resolveToken();
+  const streamUrl = `${base}/chat/${encodeURIComponent(chatId)}/stream`;
+  let streamRes: Response;
+  try {
+    streamRes = await fetch(streamUrl, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  } catch {
+    stderr.write("daemon not running; try: void-os daemon start\n");
+    return 3;
+  }
+  if (!streamRes.ok || !streamRes.body) {
+    stderr.write(`stream failed: ${streamRes.status}\n`);
+    return 1;
+  }
+
+  // --- Send message ---------------------------------------------------------
   try {
     await client.chat.send(chatId, message);
   } catch (e) {
@@ -170,11 +243,7 @@ export default async function ask(args: string[], io: IO = {}): Promise<number> 
   process.once("SIGINT", onSignal);
 
   try {
-    for await (const raw of client.chat.stream(chatId)) {
-      // The protocol client yields the parsed JSON payload from each `data:`
-      // line. Daemon embeds the frame envelope as `{event, data}` so we use
-      // it directly as our Frame type after a shape check.
-      const frame = raw as Frame;
+    for await (const frame of parseSseFrames(streamRes)) {
       if (!frame || typeof frame !== "object" || !("event" in frame)) continue;
 
       if (frame.event === "ask_user") {
