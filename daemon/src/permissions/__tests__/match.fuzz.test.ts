@@ -21,7 +21,11 @@ async function hookDecide(toolPath: string, readPaths: string[]): Promise<boolea
   await proc.stdin.end();
   const out = await new Response(proc.stdout).text();
   await proc.exited;
-  return (JSON.parse(out.trim()) as { continue: boolean }).continue;
+  // Hook now uses {continue: true, decision: "block"} to deny tool calls so the
+  // session survives (continue:false would terminate CC outright). Treat any
+  // "block" decision as a deny for engine/hook parity.
+  const out_d = JSON.parse(out.trim()) as { continue: boolean; decision?: "block" };
+  return out_d.continue && out_d.decision !== "block";
 }
 
 // Pseudo-random but deterministic (seeded). Avoids flaky reruns.

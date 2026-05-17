@@ -56,7 +56,11 @@ export interface BuildAppDeps {
   titler?: Titler;
   // Override the emit-to-clients fan-out (defaults to module-level broadcast()).
   emit?: (type: string, payload: Record<string, unknown>) => void;
-  // Static chat-dispatch cwd. Defaults to VOID_OS_CHAT_CWD env or process.cwd().
+  // Static chat-dispatch cwd. Defaults to VOID_OS_CHAT_CWD env or the daemon's
+  // vaultRoot. Anchoring on the vault root keeps Bash exploration and relative
+  // file ops inside the agent's read_scope; process.cwd() (where `bun run dev`
+  // happened to be invoked from) leaked daemon source paths into the agent and
+  // produced spurious READ_SCOPE_DENIED hits.
   chatCwd?: string;
   // Default agent name for cc-spawner static deps. Overridden in production
   // wiring once per-chat agent lookup lands; for now mirrors the chats.agent
@@ -221,7 +225,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
         db: deps.db,
         tracesDir,
         agent: deps.defaultAgent ?? "maya",
-        cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
+        cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? deps.vaultRoot,
         engine,
         daemonBase,
         hookScriptPath,
@@ -231,7 +235,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
         db: deps.db,
         repo,
         provider,
-        cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
+        cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? deps.vaultRoot,
         emit,
         titler,
       });
@@ -250,7 +254,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   const dispatchChildTask = makeDispatchChildTask({
     db: deps.db,
     bus,
-    cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? process.cwd(),
+    cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? deps.vaultRoot,
     tracesDir: path.join(deps.vaultRoot, ".traces"),
     emit,
     // VOS-106: thread the same engine + hook wiring used by the orchestrator

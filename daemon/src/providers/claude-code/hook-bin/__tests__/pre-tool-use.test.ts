@@ -7,7 +7,7 @@ const VAULT = "/tmp/vos-106-hook-test-vault"; // doesn't need to exist for match
 async function runHook(input: unknown, env: Record<string, string>): Promise<{
   stdout: string;
   exitCode: number;
-  decision: { continue: boolean; stopReason?: string };
+  decision: { continue: boolean; decision?: "block"; reason?: string; stopReason?: string };
 }> {
   const proc = Bun.spawn(["bun", HOOK], {
     stdin: "pipe",
@@ -44,8 +44,9 @@ describe("pre-tool-use hook", () => {
       { tool_name: "Read", tool_input: { file_path: `${VAULT}/work/tasks/active/X.md` } },
       readJournalOnly,
     );
-    expect(decision.continue).toBe(false);
-    expect(decision.stopReason).toMatch(/READ_SCOPE_DENIED/);
+    expect(decision.continue).toBe(true);
+    expect(decision.decision).toBe("block");
+    expect(decision.reason).toMatch(/READ_SCOPE_DENIED/);
   });
 
   it("allows Edit inside write_scope", async () => {
@@ -61,8 +62,9 @@ describe("pre-tool-use hook", () => {
       { tool_name: "Write", tool_input: { file_path: `${VAULT}/work/X.md` } },
       readJournalOnly,
     );
-    expect(decision.continue).toBe(false);
-    expect(decision.stopReason).toMatch(/WRITE_SCOPE_DENIED/);
+    expect(decision.continue).toBe(true);
+    expect(decision.decision).toBe("block");
+    expect(decision.reason).toMatch(/WRITE_SCOPE_DENIED/);
   });
 
   it("denies SYSTEM_DENY even when write_scope would allow", async () => {
@@ -75,8 +77,9 @@ describe("pre-tool-use hook", () => {
       { tool_name: "Edit", tool_input: { file_path: `${VAULT}/agents/maya/agent.md` } },
       env,
     );
-    expect(decision.continue).toBe(false);
-    expect(decision.stopReason).toMatch(/SYSTEM_DENY/);
+    expect(decision.continue).toBe(true);
+    expect(decision.decision).toBe("block");
+    expect(decision.reason).toMatch(/SYSTEM_DENY/);
   });
 
   it("Bash: cat outside scope denies via read gate", async () => {
@@ -88,7 +91,8 @@ describe("pre-tool-use hook", () => {
         VOS_SYSTEM_DENY: JSON.stringify([]),
       },
     );
-    expect(decision.continue).toBe(false);
+    expect(decision.continue).toBe(true);
+    expect(decision.decision).toBe("block");
   });
 
   it("Bash: shell substitution denies even with broad scope", async () => {
@@ -101,7 +105,8 @@ describe("pre-tool-use hook", () => {
       { tool_name: "Bash", tool_input: { command: "cat $(ls vault/)" } },
       broad,
     );
-    expect(decision.continue).toBe(false);
+    expect(decision.continue).toBe(true);
+    expect(decision.decision).toBe("block");
   });
 
   // VOS-106 T11.1: pipe/chain bypass — `cat x | tee y` parses verb=cat in the
@@ -117,8 +122,9 @@ describe("pre-tool-use hook", () => {
       { tool_name: "Bash", tool_input: { command: "cat x | tee y" } },
       broad,
     );
-    expect(decision.continue).toBe(false);
-    expect(decision.stopReason).toMatch(/BASH_SHELL_(META|SUBSTITUTION)/);
+    expect(decision.continue).toBe(true);
+    expect(decision.decision).toBe("block");
+    expect(decision.reason).toMatch(/BASH_SHELL_(META|SUBSTITUTION)/);
   });
 
   it("Bash: pwd allows without scope check", async () => {

@@ -1,8 +1,13 @@
 #!/usr/bin/env bun
 // VOS-106 T3: PreToolUse hook script. Spawned by CC per tool call.
-// Reads CC's tool-call payload on stdin; reads scopes from env; prints
-// {continue: bool, stopReason?: string} on stdout. Always exit 0 — CC
-// reads the decision from stdout, not from exit code.
+// Reads CC's tool-call payload on stdin; reads scopes from env. Always exit 0 —
+// CC reads the decision from stdout, not from exit code.
+//
+// Output shape (PreToolUse): {continue: true, decision: "block" | undefined,
+// reason?: string}. `decision: "block"` denies just THIS tool call and feeds
+// `reason` back to the model so it can adjust; `continue: false` would
+// terminate the whole CC session (terminal_reason: hook_stopped), which is
+// only correct for genuinely catastrophic states like HOOK_BAD_INPUT.
 
 import * as path from "node:path";
 import { matchPath } from "../../../permissions/match";
@@ -18,7 +23,24 @@ interface ToolCall {
 }
 interface Decision {
   continue: boolean;
+  decision?: "block";
+  reason?: string;
   stopReason?: string;
+}
+
+function deny(reason: string): Decision {
+  // PreToolUse: block this tool, keep the session alive, feed `reason` to the model.
+  return { continue: true, decision: "block", reason };
+}
+
+function allow(): Decision {
+  return { continue: true };
+}
+
+function fatal(stopReason: string): Decision {
+  // Reserve continue:false for genuinely catastrophic states (the hook itself
+  // is broken). Tool-level denials must NOT use this — they'd terminate CC.
+  return { continue: false, stopReason };
 }
 
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
@@ -49,13 +71,10 @@ function gateRead(paths: string[], cwd: string, reads: readonly string[]): Decis
   for (const p of paths) {
     const abs = resolveAbs(p, cwd);
     if (!matchPath(abs, reads)) {
-      return {
-        continue: false,
-        stopReason: `READ_SCOPE_DENIED: ${p} outside read_scope`,
-      };
+      return deny(`READ_SCOPE_DENIED: ${p} outside read_scope`);
     }
   }
-  return { continue: true };
+  return allow();
 }
 
 function gateWrite(
@@ -67,16 +86,13 @@ function gateWrite(
   for (const p of paths) {
     const abs = resolveAbs(p, cwd);
     if (matchPath(abs, systemDeny)) {
-      return { continue: false, stopReason: `SYSTEM_DENY: ${p}` };
+      return deny(`SYSTEM_DENY: ${p}`);
     }
     if (!matchPath(abs, writes)) {
-      return {
-        continue: false,
-        stopReason: `WRITE_SCOPE_DENIED: ${p} outside write_scope`,
-      };
+      return deny(`WRITE_SCOPE_DENIED: ${p} outside write_scope`);
     }
   }
-  return { continue: true };
+  return allow();
 }
 
 async function readStdin(): Promise<string> {
@@ -93,7 +109,7 @@ try {
   call = JSON.parse(raw) as ToolCall;
 } catch {
   // Bad input is the daemon's bug, not the agent's — fail closed.
-  emit({ continue: false, stopReason: "HOOK_BAD_INPUT" });
+  emit(fatal("HOOK_BAD_INPUT"));
 }
 
 const cwd = process.env.VOS_VAULT_ROOT ?? process.cwd();
@@ -135,23 +151,23 @@ if (tool === "Bash") {
   // since under a sufficiently broad scope a literal sentinel under cwd could
   // otherwise match a `**` glob.
   if (rdPaths.includes(SHELL_SUBSTITUTION_SENTINEL) || wrPaths.includes(SHELL_SUBSTITUTION_SENTINEL)) {
-    emit({ continue: false, stopReason: "BASH_SHELL_SUBSTITUTION: unanalyzable command" });
+    emit(deny("BASH_SHELL_SUBSTITUTION: unanalyzable command"));
   }
   // VOS-106 T11.1: meta-token sentinel (pipes, chains, stderr redirects).
   // Same fail-closed treatment as shell substitution — literal-token analysis
   // can't see verbs hiding behind `|`/`;`/`&&`/`2>`/`<`, so deny outright.
   if (rdPaths.includes(SHELL_META_SENTINEL) || wrPaths.includes(SHELL_META_SENTINEL)) {
-    emit({ continue: false, stopReason: "BASH_SHELL_META: chain/pipe/redirect unanalyzable" });
+    emit(deny("BASH_SHELL_META: chain/pipe/redirect unanalyzable"));
   }
   if (wrPaths.length > 0) {
     const dec = gateWrite(wrPaths, cwd, writes, systemDeny);
-    if (!dec.continue) emit(dec);
+    if (dec.decision === "block") emit(dec);
   }
   if (rdPaths.length > 0) {
     const dec = gateRead(rdPaths, cwd, reads);
-    if (!dec.continue) emit(dec);
+    if (dec.decision === "block") emit(dec);
   }
-  emit({ continue: true });
+  emit(allow());
 }
 
-emit({ continue: true });
+emit(allow());
