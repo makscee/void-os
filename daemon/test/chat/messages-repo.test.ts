@@ -105,8 +105,11 @@ test("appendMessage(ROLE_AGENT) with mixed parts round-trips via walk", () => {
   ];
   repo.appendMessage(tid, cid, "run-1", "ROLE_AGENT", parts, 2000);
 
+  // VOS-114: walk emits in stored chronological order. Consecutive text parts
+  // separated by a tool entry now flush as two separate assistant entries so
+  // the prose stays anchored to its position relative to the tool call.
   expect(repo.walk(cid)).toEqual([
-    { role: "assistant", content: "looking\ndone", ts: 2000, task_id: tid },
+    { role: "assistant", content: "looking", ts: 2000, task_id: tid },
     {
       role: "tool_use",
       tool_call_id: "c1",
@@ -115,6 +118,7 @@ test("appendMessage(ROLE_AGENT) with mixed parts round-trips via walk", () => {
       ts: 2000,
       task_id: tid,
     },
+    { role: "assistant", content: "done", ts: 2000, task_id: tid },
   ]);
 });
 

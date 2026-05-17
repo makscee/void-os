@@ -118,23 +118,24 @@ test("happy path: user + assistant + tool_use + tool_result all persisted", asyn
   expect(result.status).toBe("done");
 
   const walked = messages.walk(chat.id);
-  // VOS-83 mig-0007: a turn's parts (text + tool_use + tool_result) are
-  // buffered onto a single agent row. walk emits the merged text entry
-  // first, then iterates DataParts (tool_use, tool_result) in declaration
-  // order. The legacy interleaved [user, tool_use, tool_result, assistant]
-  // order is replaced by [user, assistant, tool_use, tool_result].
+  // VOS-114: parts are emitted in their stored chronological order. Consecutive
+  // text parts merge into one assistant entry; a tool entry between two text
+  // parts flushes the prose around it, so prose stays anchored to its
+  // position in the part stream.
   expect(walked.map((m: any) => m.role)).toEqual([
     "user",
     "assistant",
     "tool_use",
     "tool_result",
+    "assistant",
   ]);
   expect((walked[0] as any).content).toBe("hello");
-  expect((walked[1] as any).content).toBe("thinking...\n done");
+  expect((walked[1] as any).content).toBe("thinking...");
   expect((walked[2] as any).tool_call_id).toBe("u_1");
   expect((walked[2] as any).name).toBe("Bash");
   expect((walked[3] as any).tool_call_id).toBe("u_1");
   expect((walked[3] as any).output).toBe("ok");
+  expect((walked[4] as any).content).toBe(" done");
 });
 
 test("cancel mid-stream: user + partial assistant in messages table", async () => {

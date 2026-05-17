@@ -127,36 +127,37 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
           parts = [];
         }
         const surfaceRole = r.role === "ROLE_USER" ? "user" : "assistant";
-        const text = parts
-          .filter(
-            (p): p is { text: string } =>
-              typeof (p as { text?: unknown }).text === "string",
-          )
-          .map((p) => (p as { text: string }).text)
-          .join("\n");
-        // VOS-80 stopped-badge contract (preserved through mig-0007):
-        // emit an empty-content assistant entry when the run cancelled
-        // before any text streamed — the cancelled flag on this entry
-        // drives the UI "↯ stopped" pill. For ROLE_USER rows we still
-        // require text. ROLE_AGENT rows with both empty text and no
-        // cancellation are dropped (no row to surface).
+        // VOS-114: emit parts in their stored chronological order. The previous
+        // implementation emitted the concatenated text once UP FRONT and then
+        // tool entries AFTER, which inverted the natural sequence for the common
+        // tool-then-text turn (Bash ls → "here's what I found"). The chat-row
+        // reducer creates a new assistant bubble per assistant ReplayEntry, so
+        // emission order is the rendered order. Group consecutive text parts so
+        // we don't fragment the assistant bubble.
         const isCancelledAgent =
           surfaceRole === "assistant" && r.run_status === "cancelled";
-        if (text || isCancelledAgent) {
-          const entry: ReplayEntry = {
+        const rowStartIdx = out.length;
+        let textBuf: string[] = [];
+        const flushText = (): void => {
+          if (textBuf.length === 0) return;
+          out.push({
             role: surfaceRole,
-            content: text,
+            content: textBuf.join("\n"),
             ts: r.ts,
             task_id: r.task_id,
-          };
-          if (isCancelledAgent) {
-            (entry as { cancelled?: boolean }).cancelled = true;
-          }
-          out.push(entry);
-        }
+          });
+          textBuf = [];
+        };
         for (const p of parts) {
+          if (typeof (p as { text?: unknown }).text === "string") {
+            textBuf.push((p as { text: string }).text);
+            continue;
+          }
           const data = (p as { data?: { kind?: string } }).data;
           if (!data) continue;
+          // Flush accumulated text before a tool entry so prose stays anchored
+          // to its position in the part stream.
+          flushText();
           if (data.kind === "tool_use") {
             out.push({
               role: "tool_use",
@@ -177,6 +178,28 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
               ts: r.ts,
               task_id: r.task_id,
             });
+          }
+        }
+        flushText();
+        // VOS-80 stopped-badge contract: if the run cancelled, surface the ↯
+        // pill. If text already streamed for this row, tag the first emitted
+        // assistant entry. Otherwise emit an empty assistant entry so the UI
+        // has a row to render the pill on.
+        if (isCancelledAgent) {
+          if (out.length === rowStartIdx) {
+            const entry: ReplayEntry & { cancelled?: boolean } = {
+              role: surfaceRole,
+              content: "",
+              ts: r.ts,
+              task_id: r.task_id,
+            };
+            entry.cancelled = true;
+            out.push(entry);
+          } else {
+            const first = out[rowStartIdx] as ReplayEntry & {
+              cancelled?: boolean;
+            };
+            if (first.role === "assistant") first.cancelled = true;
           }
         }
       }
