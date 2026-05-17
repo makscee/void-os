@@ -83,6 +83,7 @@ describe("cc-spawner loader integration", () => {
 
     const mcp = JSON.parse(readFileSync(mcpPath, "utf8"));
     expect(mcp.mcpServers["void-os"].url).toContain("agent=journaler");
-    expect(mcp.mcpServers["void-os"].url).toContain(`run=${runId}`);
+    // URL is stable across runs — runId no longer in query (was busting prompt cache).
+    expect(mcp.mcpServers["void-os"].url).not.toContain("run=");
   });
 });

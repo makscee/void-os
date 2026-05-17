@@ -46,13 +46,25 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
       ],
     },
     additionalDirectories,
+    // Block the built-in AskUserQuestion tool so agents reach the user via
+    // the MCP vos_ask_user surface (which the void-os plugin renders as
+    // option buttons). Without this, the model prefers the trained-in name
+    // and the plugin shows the raw tool input as JSON.
+    permissions: {
+      deny: ["AskUserQuestion"],
+    },
   };
 
+  // MCP URL: only ?agent= is read by the daemon. Including &run=<runId>
+  // (different per dispatch) caused CC's MCP client to treat each turn as
+  // a fresh server, re-fetching tool definitions and busting the Anthropic
+  // prompt cache — ~22k cache_create tokens per turn (~$0.42/turn on Opus).
+  // Keep the URL stable across runs; runId is already in the trace/db.
   const mcp = {
     mcpServers: {
       "void-os": {
         type: "http",
-        url: `${args.daemonBase}/mcp?agent=${encodeURIComponent(args.agentName)}&run=${encodeURIComponent(args.runId)}`,
+        url: `${args.daemonBase}/mcp?agent=${encodeURIComponent(args.agentName)}`,
       },
     },
   };

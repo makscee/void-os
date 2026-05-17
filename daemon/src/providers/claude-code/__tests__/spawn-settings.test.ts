@@ -37,7 +37,7 @@ describe("buildSpawnSettings", () => {
     expect(settings.additionalDirectories).toEqual(["/Users/x/.config/something"]);
   });
 
-  it("writes mcp.json pointing at /mcp?agent=<n>&run=<id>", () => {
+  it("writes mcp.json pointing at /mcp?agent=<n> (stable URL across runs)", () => {
     const dir = freshDir();
     const { mcpConfigPath } = buildSpawnSettings({
       agentName: "journaler",
@@ -52,7 +52,7 @@ describe("buildSpawnSettings", () => {
     const mcp = JSON.parse(readFileSync(mcpConfigPath, "utf8"));
     expect(mcp.mcpServers["void-os"]).toEqual({
       type: "http",
-      url: "http://127.0.0.1:17777/mcp?agent=journaler&run=run-xyz",
+      url: "http://127.0.0.1:17777/mcp?agent=journaler",
     });
   });
 
