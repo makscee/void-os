@@ -1,7 +1,8 @@
-import { statSync, constants, accessSync } from "node:fs";
-import { join } from "node:path";
+import { statSync, constants, accessSync, readFileSync } from "node:fs";
+import { join, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
+import { FileSystemAdapter, requestUrl, type App } from "obsidian";
 
 export class BinaryNotFoundError extends Error {
   constructor() {
@@ -159,4 +160,99 @@ export async function ensureDaemon(opts: EnsureDaemonOpts): Promise<DaemonAttach
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new SpawnError("daemon did not become ready within 10s");
+}
+
+/**
+ * Resolve the absolute filesystem path of the loaded Obsidian vault. Throws
+ * UnsupportedPlatformError on mobile / non-desktop adapters (no FS access).
+ */
+export function getVaultRoot(app: App): string {
+  const adapter = app.vault.adapter;
+  if (!(adapter instanceof FileSystemAdapter)) {
+    throw new UnsupportedPlatformError(
+      "void-os requires Obsidian desktop (FileSystemAdapter)",
+    );
+  }
+  return pathResolve(adapter.getBasePath());
+}
+
+/**
+ * Read the daemon's listening port from the canonical JSON pidfile
+ * (`~/.void-os/daemon.json`, written by the CLI per VOS-120). Falls back to
+ * the legacy `daemon.port` text file for a single release. Returns null if
+ * neither file exists or parsing fails.
+ */
+export function readDaemonPort(home: string): number | null {
+  try {
+    const raw = readFileSync(join(home, ".void-os", "daemon.json"), "utf8");
+    const parsed = JSON.parse(raw) as { port?: unknown };
+    return typeof parsed.port === "number" ? parsed.port : null;
+  } catch {
+    try {
+      const legacy = readFileSync(
+        join(home, ".void-os", "daemon.port"),
+        "utf8",
+      );
+      const n = Number(legacy.trim());
+      return Number.isFinite(n) && n > 0 ? n : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * Build a probeHealth callback bound to the user's home directory.
+ *
+ * /health is Bearer-auth gated (see daemon/src/auth/middleware.ts); the
+ * shared secret lives in `~/.void-os/token` and is created by the daemon
+ * on first boot. The probe reads it on each call so token rotation between
+ * spawns is picked up immediately. Missing port or missing token both
+ * surface as "not ready yet" — same shape as ECONNREFUSED so the
+ * ensureDaemon poll loop just keeps waiting.
+ */
+export function makeProductionProbe(
+  home: string,
+): () => Promise<HealthSnapshot> {
+  return async () => {
+    const port = readDaemonPort(home);
+    if (port == null) throw new Error("ECONNREFUSED");
+    let token = "";
+    try {
+      token = readFileSync(join(home, ".void-os", "token"), "utf8").trim();
+    } catch {
+      throw new Error("ECONNREFUSED");
+    }
+    const resp = await requestUrl({
+      url: `http://127.0.0.1:${port}/health`,
+      throw: true,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = resp.json as {
+      ok: boolean;
+      vault_root: string;
+      version: string;
+    };
+    return {
+      ok: body.ok,
+      vault_root: pathResolve(body.vault_root),
+      version: body.version,
+      port,
+    };
+  };
+}
+
+/**
+ * Spawn the daemon detached so it outlives Obsidian. `detached: true` plus
+ * `unref()` releases the child from the parent's event loop / process group;
+ * `stdio: "ignore"` prevents the parent from holding the child's pipes open.
+ */
+export function makeProductionSpawn(): (
+  bin: string,
+  args: string[],
+) => Promise<void> {
+  return async (bin, args) => {
+    const child = spawn(bin, args, { detached: true, stdio: "ignore" });
+    child.unref();
+  };
 }
