@@ -25,9 +25,11 @@ scripts/fresh-vault.sh [<path>] [--yes] [--skip-plugin] [--force-stop]
 
 | Code | Meaning |
 |---|---|
-| 0 | success, or user aborted at confirmation |
+| 0 | success (incl. user-aborted, see note below) |
 | 2 | guard rejected the path, or daemon serves a foreign vault without `--force-stop` |
 | non-zero from `void-os init` / `daemon start` | propagated; script halts |
+
+> Note: user-aborted-at-confirmation also exits 0. CI scripts wanting to distinguish "wiped & re-inited" from "user said no" should pass `--yes`.
 
 ### LXC E2E
 
