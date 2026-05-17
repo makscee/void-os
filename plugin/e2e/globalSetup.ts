@@ -268,8 +268,11 @@ export async function setupE2E(opts: SetupE2EOpts = {}) {
       const stmt = seedDb.prepare(
         "INSERT OR IGNORE INTO agent_cards (agent_name, card_json, source_mtime) VALUES (?, ?, 0)",
       );
-      // VOS-108: maya's card declares an empty write_scope so the MCP
-      // scope-gate denies vault.* writes (permission-deny.spec.ts asserts
+      // VOS-108: maya is intentionally write-deny globally for the
+      // permission-deny spec — do NOT extend maya for write-path tests;
+      // add a new agent_card instead.
+      // Maya's card declares an empty write_scope so the MCP scope-gate
+      // denies vault.* writes (permission-deny.spec.ts asserts
       // SCOPE_DENIED). read_scope stays permissive so unrelated read
       // paths still work for the other specs. Without explicit scopes the
       // engine defaults write to read, which allows writes and breaks the

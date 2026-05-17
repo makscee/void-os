@@ -7,9 +7,9 @@
  * /mcp Streamable-HTTP transport; MCP-over-HTTP IS HTTP.
  *
  * The shared e2e daemon (plugin/e2e/globalSetup.ts) seeds the `maya`
- * agent_card as `{"name":"maya"}` only — no read_scope / write_scope —
- * which the scope gate treats as empty-write-scope, so any vault.create
- * by `?agent=maya` must reject with SCOPE_DENIED.
+ * agent_card with `read_scope:["vault/**"], write_scope:[]` — the empty
+ * write_scope makes the scope gate deny every vault.* write, so any
+ * vault.create by `?agent=maya` must reject with SCOPE_DENIED.
  */
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
