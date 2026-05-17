@@ -77,14 +77,22 @@ const toThreadMessage = (m: ChatMessage): ThreadMessageLike => {
       if (p.kind === "text") {
         return { type: "text" as const, text: p.text };
       }
-      return {
-        type: "tool-call" as const,
-        toolCallId: p.toolCallId,
-        toolName: p.name,
-        args: p.input,
-        result: p.output,
-        isError: p.isError,
-      };
+      if (p.kind === "tool") {
+        return {
+          type: "tool-call" as const,
+          toolCallId: p.toolCallId,
+          toolName: p.name,
+          args: p.input,
+          result: p.output,
+          isError: p.isError,
+        };
+      }
+      // VOS-109: DenialPart pass-through. T5 will wire the dedicated
+      // renderer via `components.data.by_name.denial`; until then route as
+      // a placeholder text part so the bubble stays renderable. The
+      // assistant-ui DataMessagePart shape isn't legal in ThreadMessageLike
+      // here, so we keep type-safety with a degenerate text fallback.
+      return { type: "text" as const, text: p.message };
     }) as ThreadMessageLike["content"];
     if (m.cancelled) {
       (content as Array<{ type: "text"; text: string }>).push({

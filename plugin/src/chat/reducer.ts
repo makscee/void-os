@@ -46,7 +46,23 @@ export type ToolPart = {
    *  (VOS-91). */
   childTaskId?: string;
 };
-export type AssistantPart = TextPart | ToolPart;
+/** VOS-109: synthesised by the daemon (run-driver `maybeSynthDenial`) and
+ *  appended to the parts stream immediately after a SCOPE_DENIED tool_result.
+ *  Lands in the plugin two ways:
+ *   - refetch: messages-repo surfaces a `role:"denial"` ReplayMessage row
+ *     (T6), which `replayToMessages` attaches to the nearest assistant turn.
+ *   - live:    `chat.denial` DaemonFrame (additive on bus.ts), routed into
+ *     `liveDenials` by the reducer's frame switch. Cleared on run.end /
+ *     run.error / set_chat / local_cancel like the other overlay slots. */
+export type DenialPart = {
+  kind: "denial";
+  toolCallId: string;
+  reason: "scope_violation";
+  attemptedPath: string;
+  agent: string;
+  message: string;
+};
+export type AssistantPart = TextPart | ToolPart | DenialPart;
 
 export interface ChatMessage {
   /** Stable id used for dedupe. For server-sourced rows the daemon supplies
@@ -135,6 +151,18 @@ export type ReplayMessage =
       output: string | Array<{ type?: string; text?: string }>;
       is_error?: boolean;
       ts?: number;
+    }
+  /** VOS-109: persisted denial row. Mirrors the daemon-side
+   *  DataPart{data:{kind:"denial",...}} surfaced by messages-repo (T6).
+   *  Attached to the nearest preceding assistant turn during replay. */
+  | {
+      role: "denial";
+      tool_call_id: string;
+      reason: "scope_violation";
+      attempted_path: string;
+      agent: string;
+      message: string;
+      ts?: number;
     };
 
 /** Inline error notice surfaced after a run.end{status:"error"} or run.error.
@@ -161,6 +189,10 @@ export interface ChatState {
   liveTokens: string;
   /** Overlay buffer for tool events in the current run. */
   liveToolEvents: ToolPart[];
+  /** VOS-109: overlay buffer for synthesised denial parts in the current
+   *  run. Fed by `chat.denial` frames; cleared together with the other
+   *  overlay slots on run.end / run.error / set_chat / local_cancel. */
+  liveDenials: DenialPart[];
   runState: RunState;
   /** run_id of the currently-streaming assistant message, if any. */
   activeRunId: string | null;
@@ -206,6 +238,7 @@ export const initialChatState = (chatId: string | null = null): ChatState => ({
   messages: [],
   liveTokens: "",
   liveToolEvents: [],
+  liveDenials: [],
   runState: "idle",
   activeRunId: null,
   pendingStoppedRunId: null,
@@ -345,6 +378,30 @@ function replayToMessages(rows: ReplayMessage[]): ChatMessage[] {
         parts[pIdx] = { ...t, output: outText, isError };
       }
       messages[lastAssistantIdx] = { ...a, parts };
+    } else if (m.role === "denial") {
+      // VOS-109: synthesised denial replay row. Attach to the nearest
+      // preceding assistant turn so the renderer sits adjacent to the
+      // offending tool_result (which is on the same turn by construction).
+      if (lastAssistantIdx === -1) {
+        messages.push({
+          id: `replay-assistant-${i}`,
+          role: "assistant",
+          text: "",
+          complete: true,
+          parts: [],
+        });
+        lastAssistantIdx = messages.length - 1;
+      }
+      const a = messages[lastAssistantIdx];
+      const parts = (a.parts ?? []).concat({
+        kind: "denial",
+        toolCallId: m.tool_call_id,
+        reason: m.reason,
+        attemptedPath: m.attempted_path,
+        agent: m.agent,
+        message: m.message,
+      });
+      messages[lastAssistantIdx] = { ...a, parts };
     }
   });
   return messages;
@@ -419,6 +476,7 @@ function clearOverlay(state: ChatState): ChatState {
   if (
     state.liveTokens === "" &&
     state.liveToolEvents.length === 0 &&
+    state.liveDenials.length === 0 &&
     state.activeRunId === null &&
     state.liveToolsFirst === false
   ) {
@@ -428,6 +486,7 @@ function clearOverlay(state: ChatState): ChatState {
     ...state,
     liveTokens: "",
     liveToolEvents: [],
+    liveDenials: [],
     activeRunId: null,
     liveToolsFirst: false,
   };
@@ -519,7 +578,18 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
       const nextChildTasks: Record<string, ChildTaskStream> = {};
       const nextToolCallToChild: Record<string, string> = {};
       const childEntries: Record<string, ReplayMessage[]> = {};
-      const rawMessages = action.messages as unknown as Array<ReplayMessage & { role: string; task_id?: string; child_task_id?: string; parent_task_id?: string; parent_tool_call_id?: string; agent?: string; task_state?: string; chat_id?: string }>;
+      // Re-typed as a permissive bag: messages may include synthetic
+      // `child_task_started` entries (T15) alongside ReplayMessage variants.
+      const rawMessages = action.messages as unknown as Array<{
+        role: string;
+        task_id?: string;
+        child_task_id?: string;
+        parent_task_id?: string;
+        parent_tool_call_id?: string;
+        agent?: string;
+        task_state?: string;
+        chat_id?: string;
+      }>;
       const startEntries = rawMessages.filter((m) => m.role === "child_task_started");
       for (const cts of startEntries) {
         const cid = cts.child_task_id!;
@@ -642,6 +712,7 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
         // we don't double-render the streaming turn next to its persisted form.
         liveTokens: isRefetch ? "" : state.liveTokens,
         liveToolEvents: isRefetch ? [] : state.liveToolEvents,
+        liveDenials: isRefetch ? [] : state.liveDenials,
         pendingStoppedRunId: isRefetch ? null : state.pendingStoppedRunId,
         pendingAskUser: nextPendingAskUser,
       };
@@ -752,6 +823,7 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
             ...state,
             liveTokens: "",
             liveToolEvents: [],
+            liveDenials: [],
             liveToolsFirst: false,
             runState: "running",
             activeRunId: runId,
@@ -871,6 +943,27 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
             return { ...next, pendingAskUser: null };
           }
           return next;
+        }
+        case "chat.denial": {
+          // VOS-109: synthesised denial frame, paired with the offending
+          // tool_result on the parts stream. Append to liveDenials so the
+          // overlay renderer can sit a denial bubble next to the tool row.
+          if (!runId) return state;
+          const toolCallId = typeof f.tool_call_id === "string" ? f.tool_call_id : null;
+          if (!toolCallId) return state;
+          if (state.liveDenials.some((d) => d.toolCallId === toolCallId)) return state;
+          const reasonRaw = typeof f.reason === "string" ? f.reason : "scope_violation";
+          const reason: DenialPart["reason"] =
+            reasonRaw === "scope_violation" ? "scope_violation" : "scope_violation";
+          const newPart: DenialPart = {
+            kind: "denial",
+            toolCallId,
+            reason,
+            attemptedPath: typeof f.attempted_path === "string" ? f.attempted_path : "",
+            agent: typeof f.agent === "string" ? f.agent : "",
+            message: typeof f.message === "string" ? f.message : "",
+          };
+          return { ...state, liveDenials: state.liveDenials.concat(newPart) };
         }
         case "run.end": {
           if (!runId) return state;

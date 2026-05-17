@@ -17,6 +17,20 @@ export type DaemonFrame = {
   | { type: "chat.token"; task_id?: string }
   | { type: "chat.tool_use"; task_id?: string }
   | { type: "chat.tool_result"; task_id?: string }
+  /** VOS-109: daemon-synthesised denial paired with the offending tool_result.
+   *  Emitted by orchestrator/dispatch-child after a SCOPE_DENIED hit; reducer
+   *  routes it into `liveDenials` for overlay rendering. */
+  | {
+      type: "chat.denial";
+      chat_id: string;
+      run_id: string;
+      tool_call_id: string;
+      reason: "scope_violation";
+      attempted_path: string;
+      agent: string;
+      message: string;
+      task_id?: string;
+    }
   | { type: "run.end" }
   | { type: "run.error" }
   | {

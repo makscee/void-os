@@ -18,6 +18,7 @@ export const ChildTaskContext = React.createContext<ChildTaskContextValue>({
     messages: [],
     liveTokens: "",
     liveToolEvents: [],
+    liveDenials: [],
     runState: "idle",
     activeRunId: null,
     pendingStoppedRunId: null,
