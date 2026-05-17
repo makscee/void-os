@@ -231,6 +231,12 @@ wipe_path() {
   fi
 }
 
+# --- init ---------------------------------------------------------------
+run_init() {
+  echo "fresh-vault: running void-os init --non-interactive --vault $PATH_CANON --skip-gh"
+  "$VOID_OS_BIN" init --non-interactive --vault "$PATH_CANON" --skip-gh
+}
+
 # --- main ----------------------------------------------------------------
 main() {
   parse_args "$@"
@@ -244,7 +250,8 @@ main() {
   prebuild_plugin
   daemon_guard_and_stop
   wipe_path
-  echo "fresh-vault: ready to wipe $PATH_CANON (T7–T9 land here)"
+  run_init
+  echo "fresh-vault: ready to wipe $PATH_CANON (T8–T9 land here)"
 }
 
 main "$@"
