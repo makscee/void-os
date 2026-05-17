@@ -221,6 +221,16 @@ except Exception:
   exit 2
 }
 
+# --- wipe ----------------------------------------------------------------
+wipe_path() {
+  if [ -e "$PATH_CANON" ] || [ -L "$PATH_CANON" ]; then
+    echo "fresh-vault: wiping $PATH_CANON"
+    rm -rf -- "$PATH_CANON"
+  else
+    echo "fresh-vault: $PATH_CANON does not exist — nothing to wipe"
+  fi
+}
+
 # --- main ----------------------------------------------------------------
 main() {
   parse_args "$@"
@@ -233,7 +243,8 @@ main() {
   confirm_wipe
   prebuild_plugin
   daemon_guard_and_stop
-  echo "fresh-vault: ready to wipe $PATH_CANON (T6–T9 land here)"
+  wipe_path
+  echo "fresh-vault: ready to wipe $PATH_CANON (T7–T9 land here)"
 }
 
 main "$@"
