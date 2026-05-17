@@ -55,7 +55,7 @@ describe("ChatList", () => {
         React.createElement(ChatList, {
           api,
           activeChatId: null,
-          onSelect: () => {},
+          onSelect: (_id: string, _agent: string) => {},
           onNewChat: () => {},
         }),
       );
@@ -85,7 +85,7 @@ describe("ChatList", () => {
       { id: "c1", agent: "maya", title: "A", last_msg: null, updated_at: 1, last_run_status: null, cost_usd: 0, input_required: false },
       { id: "c2", agent: "maya", title: "B", last_msg: null, updated_at: 0, last_run_status: null, cost_usd: 0, input_required: false },
     ]);
-    const selected: string[] = [];
+    const selected: Array<{ id: string; agent: string }> = [];
 
     const host = (globalThis as any).document.createElement("div");
     (globalThis as any).document.body.appendChild(host);
@@ -95,7 +95,7 @@ describe("ChatList", () => {
         React.createElement(ChatList, {
           api,
           activeChatId: null,
-          onSelect: (id: string) => selected.push(id),
+          onSelect: (id: string, agent: string) => selected.push({ id, agent }),
           onNewChat: () => {},
         }),
       );
@@ -104,7 +104,7 @@ describe("ChatList", () => {
 
     const rows = host.querySelectorAll("[data-testid='chat-row']");
     await act(async () => { (rows[1] as any).click(); });
-    expect(selected).toEqual(["c2"]);
+    expect(selected).toEqual([{ id: "c2", agent: "maya" }]);
 
     root.unmount();
   });
@@ -126,7 +126,7 @@ describe("ChatList", () => {
         React.createElement(ChatList, {
           api,
           activeChatId: null,
-          onSelect: () => {},
+          onSelect: (_id: string, _agent: string) => {},
           onNewChat: () => { clicked++; },
         }),
       );
@@ -175,7 +175,7 @@ describe("ChatList", () => {
 
     await act(async () => {
       root.render(React.createElement(ChatList, {
-        api, activeChatId: null, onSelect: () => {}, onNewChat: () => {},
+        api, activeChatId: null, onSelect: (_id: string, _agent: string) => {}, onNewChat: () => {},
       }));
     });
     await flush(act);
@@ -228,7 +228,7 @@ describe("ChatList", () => {
 
     await act(async () => {
       root.render(React.createElement(ChatList, {
-        api, activeChatId: null, onSelect: () => {}, onNewChat: () => {}, refreshKey: 0,
+        api, activeChatId: null, onSelect: (_id: string, _agent: string) => {}, onNewChat: () => {}, refreshKey: 0,
       }));
     });
     await flush(act);
@@ -236,7 +236,7 @@ describe("ChatList", () => {
 
     await act(async () => {
       root.render(React.createElement(ChatList, {
-        api, activeChatId: null, onSelect: () => {}, onNewChat: () => {}, refreshKey: 1,
+        api, activeChatId: null, onSelect: (_id: string, _agent: string) => {}, onNewChat: () => {}, refreshKey: 1,
       }));
     });
     await flush(act);
@@ -262,7 +262,7 @@ describe("ChatList", () => {
     await act(async () => {
       root.render(
         React.createElement(ChatList, {
-          api, activeChatId: null, onSelect: () => {}, onNewChat: () => {},
+          api, activeChatId: null, onSelect: (_id: string, _agent: string) => {}, onNewChat: () => {},
         }),
       );
     });
@@ -303,7 +303,7 @@ describe("ChatList", () => {
     await act(async () => {
       root.render(
         React.createElement(ChatList, {
-          api, activeChatId: null, onSelect: () => {}, onNewChat: () => {},
+          api, activeChatId: null, onSelect: (_id: string, _agent: string) => {}, onNewChat: () => {},
         }),
       );
     });

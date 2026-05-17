@@ -70,7 +70,7 @@ describe("ChatRoot tool UI (S4)", () => {
     (globalThis as any).document.body.appendChild(host);
     const root = createRoot(host);
     await act(async () => {
-      root.render(React.createElement(ChatRoot as any, { bus, api, chatId: "c1" }));
+      root.render(React.createElement(ChatRoot as any, { bus, api, chatId: "c1", agentsApi: { listAgents: async () => [] }, openPicker: async () => null }));
     });
 
     // Drain rAF + microtasks for hydration + commit.
@@ -112,7 +112,7 @@ describe("ChatRoot tool UI (S4)", () => {
     (globalThis as any).document.body.appendChild(host);
     const root = createRoot(host);
     await act(async () => {
-      root.render(React.createElement(ChatRoot as any, { bus, api, chatId: "c1" }));
+      root.render(React.createElement(ChatRoot as any, { bus, api, chatId: "c1", agentsApi: { listAgents: async () => [] }, openPicker: async () => null }));
     });
 
     const flush = async () => {
@@ -171,7 +171,7 @@ describe("ChatRoot tool UI (S4)", () => {
     (globalThis as any).document.body.appendChild(host);
     const root = createRoot(host);
     await act(async () => {
-      root.render(React.createElement(ChatRoot as any, { bus, api, chatId: "c1" }));
+      root.render(React.createElement(ChatRoot as any, { bus, api, chatId: "c1", agentsApi: { listAgents: async () => [] }, openPicker: async () => null }));
     });
     const flush = async () => {
       for (let i = 0; i < 25; i++) {

@@ -12,6 +12,7 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
 import type { AgentListEntry } from "../agents/types";
+import type { AgentsApi } from "../agents/api";
 import {
   useChatRuntime,
   QUEUED_MARKER,
@@ -20,6 +21,7 @@ import {
   ERROR_MARKER,
 } from "./runtime";
 import { ChatList } from "./ChatList";
+import { AgentList } from "./AgentList";
 import { CostMeter } from "./CostMeter";
 import { BashTool } from "./tools/BashTool";
 import { GenericTool } from "./tools/GenericTool";
@@ -31,6 +33,7 @@ import { ChildTaskContext } from "./ChildTaskContext";
 export interface ChatRootProps {
   bus: FrameBus;
   api: ChatApi;
+  agentsApi: Pick<AgentsApi, "listAgents">;
   chatId: string | null;
   onChatIdMinted?: (id: string) => void | Promise<void>;
   defaultAgent?: string;
@@ -50,7 +53,7 @@ export interface ChatRootProps {
 export interface WireOnNewChatDeps {
   api: { createChat(agent?: string): Promise<{ id: string; title: string; created_at: number }> };
   openPicker: () => Promise<AgentListEntry | null>;
-  onChatIdMinted?: (id: string) => void | Promise<void>;
+  onChatIdMinted?: (id: string, agentName: string) => void | Promise<void>;
   bumpRefresh: () => void;
   fallbackAgent?: string;  // defensive: if picker returns an entry with empty name
 }
@@ -59,9 +62,9 @@ export function wireOnNewChat(deps: WireOnNewChatDeps): () => Promise<void> {
   return async () => {
     const picked = await deps.openPicker();
     if (!picked) return;
-    const agentName = picked.name || deps.fallbackAgent;
+    const agentName = picked.name || deps.fallbackAgent || "";
     const created = await deps.api.createChat(agentName);
-    await deps.onChatIdMinted?.(created.id);
+    await deps.onChatIdMinted?.(created.id, agentName);
     deps.bumpRefresh();
   };
 }
@@ -236,6 +239,7 @@ export function ChatRoot(props: ChatRootProps) {
   // (props.chatId). When the parent later passes a different `props.chatId`
   // (e.g. fresh open after restart), we sync it down.
   const [activeChatId, setActiveChatId] = React.useState<string | null>(props.chatId);
+  const [activeAgent, setActiveAgent] = React.useState<string | null>(null);
   React.useEffect(() => { setActiveChatId(props.chatId); }, [props.chatId]);
 
   // Expose an imperative setter so the host (ChatView / Obsidian command)
@@ -358,8 +362,9 @@ export function ChatRoot(props: ChatRootProps) {
       wireOnNewChat({
         api: props.api,
         openPicker: props.openPicker,
-        onChatIdMinted: async (id) => {
+        onChatIdMinted: async (id, agentName) => {
           setActiveChatId(id);
+          if (agentName) setActiveAgent(agentName);
           await props.onChatIdMinted?.(id);
         },
         bumpRefresh,
@@ -368,9 +373,24 @@ export function ChatRoot(props: ChatRootProps) {
     [props.api, props.openPicker, props.onChatIdMinted, props.defaultAgent, bumpRefresh],
   );
 
-  const onSelect = React.useCallback((id: string) => {
+  const onSelect = React.useCallback((id: string, agent: string) => {
     setActiveChatId(id);
+    setActiveAgent(agent);
   }, []);
+
+  const onPickAgent = React.useCallback(async (name: string) => {
+    let prev: string | null = null;
+    setActiveAgent((current) => { prev = current; return name; });
+    try {
+      const created = await props.api.createChat(name);
+      setActiveChatId(created.id);
+      await props.onChatIdMinted?.(created.id);
+      bumpRefresh();
+    } catch (e) {
+      setActiveAgent(prev);
+      showToast(`Could not create chat: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [props.api, props.onChatIdMinted, bumpRefresh, showToast]);
 
   const childTaskCtx = React.useMemo(
     () => ({ chatState: handle.chatState, dispatch: handle.dispatch }),
@@ -390,6 +410,12 @@ export function ChatRoot(props: ChatRootProps) {
       <AskAgentTool />
       <div className="vos:flex vos:flex-row vos:h-full vos:w-full">
         <div className="vos:flex vos:flex-col vos:h-full vos:w-[260px] vos:shrink-0 vos:bg-[var(--background-secondary)]">
+          <AgentList
+            agentsApi={props.agentsApi}
+            activeAgent={activeAgent}
+            onPickAgent={onPickAgent}
+            refreshKey={refreshKey}
+          />
           <ChatList
             api={props.api}
             activeChatId={activeChatId}
