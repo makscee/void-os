@@ -14,7 +14,6 @@ import { VoidOsSettingsTab } from "./settings-tab";
 import { DEFAULT_RETRY_MS, DEFAULT_PING_MS, DEFAULT_PONG_TIMEOUT_MS } from "./config.ts";
 import {
   ensureDaemon,
-  getVaultRoot,
   makeProductionProbe,
   makeProductionSpawn,
   resolveBinary,
@@ -24,6 +23,7 @@ import {
   UnsupportedPlatformError,
   type DaemonAttachment,
 } from "./daemon-lifecycle";
+import { getVaultRoot } from "./vault-root";
 
 /** Lifecycle-phase status published on the Plugin instance. Surfaced by the
  *  settings tab (T8) and by E2E specs (T9) so they can assert the plugin's

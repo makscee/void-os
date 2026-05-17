@@ -2,7 +2,6 @@ import { statSync, constants, accessSync, readFileSync } from "node:fs";
 import { join, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
-import { FileSystemAdapter, requestUrl, type App } from "obsidian";
 
 export class BinaryNotFoundError extends Error {
   constructor() {
@@ -163,20 +162,6 @@ export async function ensureDaemon(opts: EnsureDaemonOpts): Promise<DaemonAttach
 }
 
 /**
- * Resolve the absolute filesystem path of the loaded Obsidian vault. Throws
- * UnsupportedPlatformError on mobile / non-desktop adapters (no FS access).
- */
-export function getVaultRoot(app: App): string {
-  const adapter = app.vault.adapter;
-  if (!(adapter instanceof FileSystemAdapter)) {
-    throw new UnsupportedPlatformError(
-      "void-os requires Obsidian desktop (FileSystemAdapter)",
-    );
-  }
-  return pathResolve(adapter.getBasePath());
-}
-
-/**
  * Read the daemon's listening port from the canonical JSON pidfile
  * (`~/.void-os/daemon.json`, written by the CLI per VOS-120). Falls back to
  * the legacy `daemon.port` text file for a single release. Returns null if
@@ -210,6 +195,13 @@ export function readDaemonPort(home: string): number | null {
  * spawns is picked up immediately. Missing port or missing token both
  * surface as "not ready yet" — same shape as ECONNREFUSED so the
  * ensureDaemon poll loop just keeps waiting.
+ *
+ * Uses `fetch` (not Obsidian's `requestUrl`) so this module stays free of
+ * the `obsidian` import — Bun's test runner cannot resolve `obsidian`
+ * (it ships .d.ts only, no runtime module), which would otherwise break
+ * the unit tests. CORS isn't a concern: `http://127.0.0.1:<port>` from
+ * the Electron renderer is loopback-local and not subject to a preflight
+ * (the daemon is a same-origin localhost peer for our purposes).
  */
 export function makeProductionProbe(
   home: string,
@@ -223,12 +215,11 @@ export function makeProductionProbe(
     } catch {
       throw new Error("ECONNREFUSED");
     }
-    const resp = await requestUrl({
-      url: `http://127.0.0.1:${port}/health`,
-      throw: true,
+    const resp = await fetch(`http://127.0.0.1:${port}/health`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const body = resp.json as {
+    if (!resp.ok) throw new Error(`health HTTP ${resp.status}`);
+    const body = (await resp.json()) as {
       ok: boolean;
       vault_root: string;
       version: string;
