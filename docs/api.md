@@ -244,3 +244,39 @@ For per-chat consumption, prefer `GET /chat/:id/stream`.
 ## POST /mcp
 
 MCP JSON-RPC bridge for agent subprocesses. See `daemon/src/adapters/mcp/`.
+
+## CLI (`void-os`)
+
+Install once from `workspace/void-os/`:
+
+```sh
+bun link
+```
+
+State files under `~/.void-os/`:
+
+| File | Written by | Purpose |
+|------|------------|---------|
+| `token` | daemon `ensureToken()` | bearer auth |
+| `daemon.pid` | `void-os daemon start` | PID for liveness + stop |
+| `daemon.port` | `void-os daemon start` | port for subsequent CLI calls |
+| `daemon.log` | `void-os daemon start` (stdout+stderr redirect) | tailable log |
+
+Environment overrides:
+
+- `VOID_OS_BASE` — daemon URL (default `http://127.0.0.1:<daemon.port>` or `:7777`)
+- `VOID_OS_TOKEN` — auth token (default `~/.void-os/token`)
+- `VOID_OS_PREFIX` — repo prefix (defaults to dir of `bin/void-os`)
+- `VOID_OS_PORT` — default port for `daemon start` (default 7777)
+- `VOID_OS_VAULT_ROOT` — default vault for `daemon start`
+
+Exit codes (stable contract):
+
+| Code | Meaning |
+|------|---------|
+| 0 | success |
+| 1 | runtime error (daemon reachable but operation failed; bad input data) |
+| 2 | usage error (bad flags, missing positional, unknown command) |
+| 3 | daemon unreachable (network refused, missing port file, no token) |
+
+Subcommand surface (VOS-117): `daemon {start, stop, status, logs}`, `agents list`, `vault {read, write, list}`, `plugin {install, status}`, `init` (pre-existing). `ask` and `chat` ship in VOS-118.

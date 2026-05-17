@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "void-os",
+      "dependencies": {
+        "@voidos/protocol": "workspace:*",
+      },
     },
     "daemon": {
       "name": "daemon",

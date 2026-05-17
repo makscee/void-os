@@ -1,35 +1,68 @@
 #!/usr/bin/env bun
-import { resolve, dirname } from "node:path"
-import { existsSync } from "node:fs"
-import { fileURLToPath } from "node:url"
+import { resolve, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const argv = process.argv.slice(2)
-const cmd = argv[0]
-const rest = argv.slice(1)
+const COMMANDS = ["init", "daemon", "agents", "vault", "plugin"];
 
-if (!cmd || cmd === "--help" || cmd === "-h") {
-  console.log(`usage: void-os <command> [args]
+const TOP_USAGE = `usage: void-os <command> [args]
 
 commands:
-  init      provision ~/void/ from vault-starter
-  daemon    run the void-os daemon
+  init      provision a vault from starter-vault
+  daemon    daemon lifecycle: start | stop | status | logs
+  agents    introspect agents: list
+  vault     vault ops: read | write | list
+  plugin    Obsidian plugin: install | status
 
-flags:
-  init --home <path>    override target vault dir
-  init --dry-run        print actions without writing
-  init --force          overwrite existing files
-`)
-  process.exit(cmd ? 0 : 1)
+global flags:
+  --help, -h    show usage for a command
+
+environment:
+  VOID_OS_BASE        override daemon URL (default http://127.0.0.1:<daemon.port> or :7777)
+  VOID_OS_TOKEN       override auth token (default ~/.void-os/token)
+  VOID_OS_PREFIX      override repo prefix (default: dir of this binary's parent)
+  VOID_OS_PORT        default port for \`daemon start\` (default 7777)
+  VOID_OS_VAULT_ROOT  default vault for \`daemon start\`
+
+exit codes: 0 ok · 1 runtime · 2 usage · 3 daemon unreachable
+`;
+
+const argv = process.argv.slice(2);
+
+if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+  console.log(TOP_USAGE);
+  process.exit(argv.length === 0 ? 2 : 0);
 }
 
-const here = dirname(fileURLToPath(import.meta.url))
-const prefix = process.env.VOID_OS_PREFIX ?? resolve(here, "..")
-const handler = resolve(prefix, "cli", `${cmd}.ts`)
+const cmd = argv[0];
+const rest = argv.slice(1);
+
+if (!COMMANDS.includes(cmd)) {
+  console.error(`void-os: unknown command "${cmd}"`);
+  console.error(TOP_USAGE);
+  process.exit(2);
+}
+
+const here = dirname(fileURLToPath(import.meta.url));
+const prefix = process.env.VOID_OS_PREFIX ?? resolve(here, "..");
+const handler = resolve(prefix, "cli", `${cmd}.ts`);
 
 if (!existsSync(handler)) {
-  console.error(`void-os: unknown command "${cmd}"`)
-  process.exit(2)
+  console.error(`void-os: handler not found: ${handler}`);
+  process.exit(1);
 }
 
-const mod = await import(handler)
-await mod.default(rest, { prefix })
+const mod = await import(handler);
+let code: unknown;
+try {
+  code = await mod.default(rest, { prefix });
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/^unknown flag|expects a value/.test(msg)) {
+    console.error(`void-os: ${msg}`);
+    console.error(`run \`void-os ${cmd} --help\` for usage`);
+    process.exit(2);
+  }
+  throw err;
+}
+process.exit(typeof code === "number" ? code : 0);
