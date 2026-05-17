@@ -53,5 +53,16 @@ if (!existsSync(handler)) {
 }
 
 const mod = await import(handler);
-const code = await mod.default(rest, { prefix });
+let code: unknown;
+try {
+  code = await mod.default(rest, { prefix });
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/^unknown flag|expects a value/.test(msg)) {
+    console.error(`void-os: ${msg}`);
+    console.error(`run \`void-os ${cmd} --help\` for usage`);
+    process.exit(2);
+  }
+  throw err;
+}
 process.exit(typeof code === "number" ? code : 0);

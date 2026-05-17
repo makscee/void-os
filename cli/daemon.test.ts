@@ -152,3 +152,11 @@ test("logs without file prints message + exit 0", () => {
   expect(r.status).toBe(0);
   expect(r.stderr).toContain("no daemon log yet");
 });
+
+test("unknown flag exits 2 with clean stderr (no stacktrace)", () => {
+  const r = spawnSync(BIN, ["daemon", "status", "--bogus"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 5000 });
+  expect(r.status).toBe(2);
+  expect(r.stderr).toContain("unknown flag");
+  // No raw Bun/Node stacktrace.
+  expect(r.stderr).not.toContain("at ");
+});
