@@ -80,6 +80,7 @@ describe("ChatRoot integration (S2)", () => {
         React.createElement(ChatRoot, {
           bus,
           api,
+          agentsApi: { listAgents: async () => [] },
           chatId: "c1",
           openPicker: async () => ({ name: "maya", description: "test" }),
         }),

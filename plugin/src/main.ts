@@ -118,6 +118,7 @@ export default class VoidOsPlugin extends Plugin {
       new ChatView(leaf, () => ({
         bus: this.bus!,
         api,
+        agentsApi,
         chatId: this.settings!.get().chatId,
         onChatIdMinted: (id) => this.settings!.setChatId(id),
         defaultAgent: "maya", // retained as fallback only

@@ -12,6 +12,7 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
 import type { AgentListEntry } from "../agents/types";
+import type { AgentsApi } from "../agents/api";
 import {
   useChatRuntime,
   QUEUED_MARKER,
@@ -31,6 +32,7 @@ import { ChildTaskContext } from "./ChildTaskContext";
 export interface ChatRootProps {
   bus: FrameBus;
   api: ChatApi;
+  agentsApi: Pick<AgentsApi, "listAgents">;
   chatId: string | null;
   onChatIdMinted?: (id: string) => void | Promise<void>;
   defaultAgent?: string;
