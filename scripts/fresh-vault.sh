@@ -12,9 +12,14 @@ REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd -P )"
 # Prefer the repo's own bin/void-os so fresh clones work without a global
 # install. Allow override via VOID_OS_BIN env var.
 VOID_OS_BIN="${VOID_OS_BIN:-$REPO_ROOT/bin/void-os}"
+if [ ! -e "$VOID_OS_BIN" ]; then
+  echo "fresh-vault: void-os binary not found at $VOID_OS_BIN" >&2
+  echo "fresh-vault: set VOID_OS_BIN, or ensure $REPO_ROOT/bin/void-os exists" >&2
+  exit 2
+fi
 if [ ! -x "$VOID_OS_BIN" ]; then
-  echo "fresh-vault: void-os binary not executable at $VOID_OS_BIN" >&2
-  echo "fresh-vault: set VOID_OS_BIN, or ensure $REPO_ROOT/bin/void-os is executable" >&2
+  echo "fresh-vault: void-os binary at $VOID_OS_BIN is not executable" >&2
+  echo "fresh-vault: run 'chmod +x $VOID_OS_BIN'" >&2
   exit 2
 fi
 
