@@ -292,7 +292,14 @@ function replayToMessages(rows: ReplayMessage[]): ChatMessage[] {
         msg.cancelled = true;
       }
       messages.push(msg);
-      if (m.role === "assistant") lastAssistantIdx = messages.length - 1;
+      if (m.role === "assistant") {
+        lastAssistantIdx = messages.length - 1;
+      } else {
+        // VOS-114: a user turn ends the prior assistant scope. Otherwise a tool
+        // entry from a later assistant turn would attach to the previous
+        // greeting bubble instead of starting a fresh assistant message.
+        lastAssistantIdx = -1;
+      }
     } else if (m.role === "tool_use") {
       if (lastAssistantIdx === -1) {
         messages.push({
