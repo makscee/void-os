@@ -31,6 +31,13 @@ import type { VaultWriter } from "../../vault/writer.ts";
 import type { AskUserBridge } from "../../chat/ask-user-bridge.ts";
 import { honoBridge } from "./hono-bridge.ts";
 import { vaultReadDef, makeVaultRead } from "./tools/vault-read.ts";
+import { vaultCreateDef, makeVaultCreate } from "./tools/vault-create.ts";
+import { vaultAppendDef, makeVaultAppend } from "./tools/vault-append.ts";
+import { vaultReplaceSectionDef, makeVaultReplaceSection } from "./tools/vault-replace-section.ts";
+import { vaultSetPropertyDef, makeVaultSetProperty } from "./tools/vault-set-property.ts";
+import { vaultPatchDef, makeVaultPatch } from "./tools/vault-patch.ts";
+import { vaultDeleteDef, makeVaultDelete } from "./tools/vault-delete.ts";
+import { vaultMoveDef, makeVaultMove } from "./tools/vault-move.ts";
 import { askUserDef, makeAskUser } from "./tools/ask-user.ts";
 import { askAgentDef, makeAskAgent } from "./tools/ask-agent.ts";
 
@@ -126,6 +133,17 @@ export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Ser
     vaultReadDef,
     makeVaultRead({ vaultRoot, db, engine, agent: callingAgent }) as never,
   );
+
+  const writeDeps = { vaultRoot, db, engine, writer, agent: callingAgent };
+
+  mcp.registerTool("vault.create",          vaultCreateDef,         makeVaultCreate(writeDeps) as never);
+  mcp.registerTool("vault.append",          vaultAppendDef,         makeVaultAppend(writeDeps) as never);
+  mcp.registerTool("vault.replace_section", vaultReplaceSectionDef, makeVaultReplaceSection(writeDeps) as never);
+  mcp.registerTool("vault.set_property",    vaultSetPropertyDef,    makeVaultSetProperty(writeDeps) as never);
+  mcp.registerTool("vault.patch",           vaultPatchDef,          makeVaultPatch(writeDeps) as never);
+  mcp.registerTool("vault.delete",          vaultDeleteDef,         makeVaultDelete(writeDeps) as never);
+  mcp.registerTool("vault.move",            vaultMoveDef,           makeVaultMove(writeDeps) as never);
+
   mcp.registerTool(
     "ask_user",
     askUserDef,

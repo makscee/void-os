@@ -55,7 +55,20 @@ describe("mountMcp /mcp", () => {
     const { tools } = await client.listTools();
     // VOS-88 T7: ask_user joins vault.read on the tools list.
     // VOS-89 T10: ask_agent registered alongside.
-    expect(tools.map((t) => t.name).sort()).toEqual(["ask_agent", "ask_user", "vault.read"]);
+    // VOS-108 T10: 7 vault.* write tools (create/append/replace_section/
+    // set_property/patch/delete/move) registered alongside vault.read.
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      "ask_agent",
+      "ask_user",
+      "vault.append",
+      "vault.create",
+      "vault.delete",
+      "vault.move",
+      "vault.patch",
+      "vault.read",
+      "vault.replace_section",
+      "vault.set_property",
+    ]);
     await client.close();
     ctx.server.stop();
   });

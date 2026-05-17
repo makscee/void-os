@@ -12,6 +12,7 @@ import { resolveVaultPath, ERR } from "../../../vault/paths.ts";
 import type { PermissionEngine, AgentDefn } from "../../../permissions/engine.ts";
 import type { VaultWriter } from "../../../vault/writer.ts";
 import { assertCanWrite, errResult } from "./_scope-gate.ts";
+import { mcpRunCtx } from "./_run-ctx.ts";
 
 export const vaultReplaceSectionInput = {
   path: z.string().min(1),
@@ -36,7 +37,7 @@ export function makeVaultReplaceSection(deps: VaultReplaceSectionDeps) {
   const { vaultRoot, engine, agent, writer } = deps;
   return async (
     args: z.objectOutputType<typeof vaultReplaceSectionInput, z.ZodTypeAny>,
-    _extra: RequestHandlerExtra<any, any>,
+    extra: RequestHandlerExtra<any, any>,
   ): Promise<CallToolResult> => {
     const rel = args.path;
     let abs: string;
@@ -52,7 +53,7 @@ export function makeVaultReplaceSection(deps: VaultReplaceSectionDeps) {
     if (denied) return denied;
 
     try {
-      await writer.replace_section(rel, args.section, args.content, { agent: agent.name, run_id: "" });
+      await writer.replace_section(rel, args.section, args.content, mcpRunCtx(extra, agent.name));
     } catch (e) {
       const code = (e as { code?: string }).code;
       const errno = (e as NodeJS.ErrnoException).code;
