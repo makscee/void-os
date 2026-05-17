@@ -3,7 +3,7 @@ import { resolve, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const COMMANDS = ["init", "daemon", "agents", "vault", "plugin"];
+const COMMANDS = ["init", "daemon", "agents", "vault", "plugin", "ask", "chat"];
 
 const TOP_USAGE = `usage: void-os <command> [args]
 
@@ -13,6 +13,8 @@ commands:
   agents    introspect agents: list
   vault     vault ops: read | write | list
   plugin    Obsidian plugin: install | status
+  ask       one-shot agent invocation: ask <agent> "message" [--stream] [--verbose]
+  chat      interactive REPL with an agent: chat <agent> [--verbose]
 
 global flags:
   --help, -h    show usage for a command
