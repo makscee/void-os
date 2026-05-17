@@ -2,5 +2,8 @@
   "name": "void-os",
   "private": true,
   "type": "module",
-  "workspaces": ["daemon", "plugin", "protocol"]
+  "workspaces": ["daemon", "plugin", "protocol"],
+  "dependencies": {
+    "@clack/prompts": "^1.4.0"
+  }
 }
