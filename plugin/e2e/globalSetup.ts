@@ -113,20 +113,9 @@ export async function setupE2E(opts: SetupE2EOpts = {}) {
   // routes don't notice; permission-deny.spec.ts (which drives MCP
   // directly) does. Mirrors permission-deny-mcp.test.ts line 54-56.
   const tmpdir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), tmpdirPrefix)));
-  const daemonVault = path.join(tmpdir, "vault");
   const dbPath = path.join(tmpdir, "state.sqlite");
   const obsidianUserDataDir = path.join(tmpdir, "obsidian-user-data");
-  fs.mkdirSync(daemonVault, { recursive: true });
   fs.mkdirSync(obsidianUserDataDir, { recursive: true });
-
-  // Plant a minimal `agents/maya/agent.md` into the daemon's vault so
-  // boot-time `scanVaultAgents(...).upsertAll(...)` mirrors a real maya row
-  // into the `agents` table. The agent picker (Obsidian SuggestModal) opens
-  // on click of `new-chat-btn`; if the table is empty the picker shows the
-  // empty notice and Enter is a no-op, blocking every spec that mints a chat.
-  // The 0008 migration also seeds `maya`, but this fixture removes any
-  // dependence on migration ordering or test-time DB state.
-  fs.cpSync(DAEMON_FIXTURE_VAULT, daemonVault, { recursive: true });
 
   // Per-spec switchable fake script. Daemon points at this path for the
   // whole run; specs swap its contents by copying a different fixture in
@@ -150,15 +139,24 @@ export async function setupE2E(opts: SetupE2EOpts = {}) {
   // (workspace.json, appearance.json, plugin-data tweaks) don't pollute the
   // checked-in fixture. The build output + resolved data.json go into the
   // copy as well.
-  const VAULT_PATH = path.join(tmpdir, "fixture-vault");
+  //
+  // VOS-120 T9-fix-D: VAULT_PATH is now the single source of truth — the
+  // daemon's VOID_OS_VAULT_ROOT also points here (was a separate
+  // tmpdir/vault pre-VOS-120). The plugin's ensureDaemon now enforces
+  // vault_root parity between Obsidian's loaded vault and /health's
+  // reported value; the only way to keep that check green in the harness
+  // is to point the daemon at Obsidian's vault.
+  const VAULT_PATH = fs.realpathSync(
+    fs.mkdtempSync(path.join(tmpdir, "fixture-vault-")),
+  );
   fs.cpSync(FIXTURE_VAULT, VAULT_PATH, { recursive: true });
+  fs.cpSync(DAEMON_FIXTURE_VAULT, VAULT_PATH, { recursive: true });
   const PLUGIN_OUT = path.join(VAULT_PATH, ".obsidian", "plugins", "void-os");
 
   // VOS-89 T16: seed vault/agents/maya + vault/agents/journaler so the daemon's
   // boot-time vault scanner (src/index.ts) populates the `agents` table for
-  // both. The DAEMON's vault root is `daemonVault` (set below), NOT the
-  // Obsidian fixture vault, so the agent files must live there.
-  const daemonAgentsDir = path.join(daemonVault, "agents");
+  // both. Lives under VAULT_PATH (= daemon vault, see comment above).
+  const daemonAgentsDir = path.join(VAULT_PATH, "agents");
   fs.mkdirSync(path.join(daemonAgentsDir, "maya"), { recursive: true });
   fs.mkdirSync(path.join(daemonAgentsDir, "journaler"), { recursive: true });
   // VOS-91 T19: seed `deep` for the nested-spec depth-2 chain.
@@ -235,13 +233,21 @@ export async function setupE2E(opts: SetupE2EOpts = {}) {
     ),
   );
 
+  // VOS-120 T9-fix-D: isolate HOME so the daemon writes its token + (we then
+  // synthesize) daemon.json under a per-run tmpdir instead of the real user
+  // home. Obsidian (below) gets the same HOME so the plugin's
+  // makeProductionProbe reads the same `~/.void-os/daemon.json` we write.
+  const harnessHome = path.join(tmpdir, "home");
+  fs.mkdirSync(path.join(harnessHome, ".void-os"), { recursive: true });
+
   // Spawn daemon.
   const env: Record<string, string> = {
     ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>,
+    HOME: harnessHome,
     VOID_OS_PORT: String(port),
     VOID_OS_HOST: "127.0.0.1",
     VOID_OS_DB: dbPath,
-    VOID_OS_VAULT_ROOT: daemonVault,
+    VOID_OS_VAULT_ROOT: VAULT_PATH,
     VOS_PROVIDER: "fake",
     VOS_TITLER: "stub",
     VOS_FAKE_SCRIPT: fakeScriptPath,
@@ -276,6 +282,29 @@ export async function setupE2E(opts: SetupE2EOpts = {}) {
     daemon.kill("SIGKILL");
     throw err;
   }
+
+  // VOS-120 T9-fix-D: synthesize the JSON pidfile under the isolated HOME.
+  // The harness daemon is launched via `bun run src/index.ts` (not via
+  // `void-os daemon start`), so cli/daemon.ts's writePidJson never runs.
+  // The plugin's makeProductionProbe reads HOME/.void-os/daemon.json to
+  // discover port + auth token; without this file the plugin would attempt
+  // its own ensureDaemon spawn and race the harness daemon.
+  // realpath VAULT_PATH so it matches what the daemon's /health reports
+  // after pathResolve(body.vault_root) on the renderer side.
+  fs.writeFileSync(
+    path.join(harnessHome, ".void-os", "daemon.json"),
+    JSON.stringify(
+      {
+        pid: daemon.pid,
+        port,
+        vault_root: VAULT_PATH,
+        version: "0.0.1",
+        started_at: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
 
   // VOS-89 T16: seed agent_cards for maya + journaler. Production code
   // does NOT (yet) populate agent_cards from the vault scan — the ask_agent handler's
@@ -337,6 +366,9 @@ export async function setupE2E(opts: SetupE2EOpts = {}) {
     {
       stdio: ["ignore", "inherit", "inherit"],
       detached: false,
+      // VOS-120 T9-fix-D: pass HOME so the plugin's makeProductionProbe
+      // reads the synthesized daemon.json + token from the isolated dir.
+      env: { ...process.env, HOME: harnessHome } as NodeJS.ProcessEnv,
     },
   );
 

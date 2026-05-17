@@ -22,6 +22,7 @@ type OsLike = { homedir: () => string };
 type FsLike = {
   readFileSync: (p: string, e?: string) => string | Buffer;
   writeFileSync: (p: string, d: string | Buffer) => void;
+  appendFileSync: (p: string, d: string | Buffer) => void;
   existsSync: (p: string) => boolean;
   statSync: (p: string) => { isFile: () => boolean };
   accessSync: (p: string, mode?: number) => void;

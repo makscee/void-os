@@ -213,19 +213,28 @@ export function readDaemonPort(home: string): number | null {
  * the Electron renderer is loopback-local and not subject to a preflight
  * (the daemon is a same-origin localhost peer for our purposes).
  */
+/**
+ * VOS-120 T9-fix-D: accept an injected fetcher. In the Obsidian renderer,
+ * native `fetch()` is CORS-gated and the daemon emits no
+ * Access-Control-Allow-Origin header (intentionally — it is a same-origin
+ * peer for our purposes). Callers must inject a CORS-free fetcher
+ * (typically `requestUrlAsFetch()` over Obsidian's main-process
+ * `requestUrl`). Bun unit tests can pass `globalThis.fetch` directly.
+ */
 export function makeProductionProbe(
   home: string,
+  fetcher: typeof fetch = fetch,
 ): () => Promise<HealthSnapshot> {
   return async () => {
     const port = readDaemonPort(home);
     if (port == null) throw new Error("ECONNREFUSED");
     let token = "";
     try {
-      token = readFileSync(join(home, ".void-os", "token"), "utf8").trim();
+      token = (readFileSync(join(home, ".void-os", "token"), "utf8") as string).trim();
     } catch {
       throw new Error("ECONNREFUSED");
     }
-    const resp = await fetch(`http://127.0.0.1:${port}/health`, {
+    const resp = await fetcher(`http://127.0.0.1:${port}/health`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!resp.ok) throw new Error(`health HTTP ${resp.status}`);

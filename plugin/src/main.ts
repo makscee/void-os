@@ -77,6 +77,10 @@ function requestUrlAsFetch(): typeof fetch {
       ok: r.status >= 200 && r.status < 300,
       status: r.status,
       text: async () => text,
+      // VOS-120 T9-fix-D: makeProductionProbe also calls .json() on the
+      // response — provide a parser. Falls back to throwing SyntaxError
+      // for non-JSON bodies (matches native fetch behaviour).
+      json: async () => JSON.parse(text),
     } as Response;
   }) as unknown as typeof fetch;
 }
@@ -151,7 +155,7 @@ export default class VoidOsPlugin extends Plugin {
       attachment = await ensureDaemon({
         vaultRoot,
         settings: this.settings.get(),
-        probeHealth: makeProductionProbe(homedir()),
+        probeHealth: makeProductionProbe(homedir(), requestUrlAsFetch()),
         spawnCli: makeProductionSpawn(),
       });
     } catch (e) {
@@ -241,7 +245,7 @@ export default class VoidOsPlugin extends Plugin {
       // T8 wiring: probeHealth distinguishes "ws dropped" from "daemon died",
       // and respawn lets the FSM spend its one auto-restart budget without a
       // user click. Arrow keeps `this` bound to the plugin instance.
-      probeHealth: makeProductionProbe(homedir()),
+      probeHealth: makeProductionProbe(homedir(), requestUrlAsFetch()),
       respawn: () => this.restartDaemon(),
     });
     this.fsm.start();
@@ -321,7 +325,7 @@ export default class VoidOsPlugin extends Plugin {
       attachment = await ensureDaemon({
         vaultRoot: getVaultRoot(this.app),
         settings: this.settings.get(),
-        probeHealth: makeProductionProbe(homedir()),
+        probeHealth: makeProductionProbe(homedir(), requestUrlAsFetch()),
         spawnCli: makeProductionSpawn(),
       });
     } catch (e) {
