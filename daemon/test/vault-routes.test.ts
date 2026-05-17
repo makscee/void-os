@@ -65,3 +65,98 @@ test("GET /vault/file — no token → 401", async () => {
   const res = await ctx.app.request("/vault/file?path=a");
   expect(res.status).toBe(401);
 });
+
+test("PUT /vault/file — write new file round-trips", async () => {
+  const res = await ctx.app.request("/vault/file", {
+    method: "PUT",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({ path: "new.md", content: "hello\n" }),
+  });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as any;
+  expect(body.path).toBe(path.join(ctx.vaultRoot, "new.md"));
+  expect(body.size).toBe(6);
+  expect(fs.readFileSync(path.join(ctx.vaultRoot, "new.md"), "utf8")).toBe("hello\n");
+});
+
+test("PUT /vault/file — overwrites existing", async () => {
+  fs.writeFileSync(path.join(ctx.vaultRoot, "x"), "old");
+  const res = await ctx.app.request("/vault/file", {
+    method: "PUT",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({ path: "x", content: "new" }),
+  });
+  expect(res.status).toBe(200);
+  expect(fs.readFileSync(path.join(ctx.vaultRoot, "x"), "utf8")).toBe("new");
+});
+
+test("PUT /vault/file — creates parent dirs", async () => {
+  const res = await ctx.app.request("/vault/file", {
+    method: "PUT",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({ path: "a/b/c.md", content: "deep" }),
+  });
+  expect(res.status).toBe(200);
+  expect(fs.readFileSync(path.join(ctx.vaultRoot, "a/b/c.md"), "utf8")).toBe("deep");
+});
+
+test("PUT /vault/file — body > 10MB → 413 E_TOO_LARGE", async () => {
+  const big = "a".repeat(10 * 1024 * 1024 + 1);
+  const res = await ctx.app.request("/vault/file", {
+    method: "PUT",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({ path: "big.txt", content: big }),
+  });
+  expect(res.status).toBe(413);
+  expect((await res.json() as any).error).toBe("E_TOO_LARGE");
+});
+
+test("PUT /vault/file — excluded dest → 403 E_EXCLUDED", async () => {
+  const res = await ctx.app.request("/vault/file", {
+    method: "PUT",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({ path: ".obsidian/x.json", content: "{}" }),
+  });
+  expect(res.status).toBe(403);
+  expect((await res.json() as any).error).toBe("E_EXCLUDED");
+});
+
+test("PUT /vault/file — symlink escape rejected", async () => {
+  // Create a symlink inside vault that points outside vault.
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "outside-"));
+  fs.symlinkSync(outside, path.join(ctx.vaultRoot, "link"));
+  try {
+    const res = await ctx.app.request("/vault/file", {
+      method: "PUT",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ path: "link/x.md", content: "escape!" }),
+    });
+    expect(res.status).toBe(403);
+    const err = (await res.json() as any).error;
+    // Either E_SYMLINK_ESCAPE or E_OUT_OF_SCOPE acceptable; both block.
+    expect(["E_SYMLINK_ESCAPE", "E_OUT_OF_SCOPE"]).toContain(err);
+    expect(fs.existsSync(path.join(outside, "x.md"))).toBe(false);
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("PUT /vault/file — malformed body → 400 E_INVALID_BODY", async () => {
+  const res = await ctx.app.request("/vault/file", {
+    method: "PUT",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({ path: "", content: "x" }),
+  });
+  expect(res.status).toBe(400);
+  expect((await res.json() as any).error).toBe("E_INVALID_BODY");
+});
+
+test("PUT /vault/file — write is atomic (no .tmp leaks on success)", async () => {
+  await ctx.app.request("/vault/file", {
+    method: "PUT",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({ path: "atomic.md", content: "done" }),
+  });
+  const siblings = fs.readdirSync(ctx.vaultRoot);
+  expect(siblings.some(n => n.startsWith("atomic.md.tmp-"))).toBe(false);
+});
