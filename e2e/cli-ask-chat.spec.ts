@@ -124,6 +124,15 @@ async function startDaemon(opts: {
   const vaultRoot = mkdtempSync(join(tmpdir(), "vos-cli-e2e-vault-"));
   mkdirSync(join(vaultRoot, "agents"), { recursive: true });
   seedAgent(vaultRoot, opts.agent);
+  // VOS-118: the orchestrator's provider is constructed with the daemon's
+  // defaultAgent ("maya"), which is what the fake provider's vos_ask_user
+  // directive uses in its `?agent=<name>` URL when POSTing back to /mcp. If
+  // "maya" is not registered as an agent in the vault, /mcp returns
+  // UNKNOWN_AGENT and bridge.open is never reached — the ask_user SSE frame
+  // never fires. Seed it here so the MCP route can resolve it.
+  if (opts.agent !== "maya") {
+    seedAgent(vaultRoot, "maya");
+  }
 
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
