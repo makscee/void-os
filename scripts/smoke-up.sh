@@ -141,9 +141,31 @@ else
   # exec'ing the bun child. $! captured the wrapper; the real long-running
   # daemon pid lives in $SMOKE_HOME/.void-os/daemon.json. Overwrite
   # $SMOKE_PIDFILE so reuse-check and smoke-down target the real process.
-  REAL_PID="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['pid'])" "$SMOKE_HOME/.void-os/daemon.json")"
-  if [ -z "$REAL_PID" ]; then
-    echo "smoke-up: could not read pid from $SMOKE_HOME/.void-os/daemon.json" >&2
+  #
+  # The daemon may write daemon.json in two steps (create empty, then
+  # serialise JSON), so the file can exist but be momentarily empty or
+  # contain partial JSON. Poll up to 5s for a valid JSON with a non-zero
+  # `pid` field.
+  REAL_PID=""
+  i=0
+  while [ "$i" -lt 50 ]; do
+    REAL_PID="$(python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    p = d.get('pid')
+    print(p if p else '')
+except Exception:
+    print('')
+" "$SMOKE_HOME/.void-os/daemon.json" 2>/dev/null)"
+    [ -n "$REAL_PID" ] && [ "$REAL_PID" != "0" ] && break
+    sleep 0.1
+    i=$((i+1))
+  done
+  if [ -z "$REAL_PID" ] || [ "$REAL_PID" = "0" ]; then
+    echo "smoke-up: daemon.json never resolved a valid pid. Tail of $SMOKE_LOG:" >&2
+    tail -30 "$SMOKE_LOG" >&2
+    rm -f "$SMOKE_PIDFILE"
     exit 3
   fi
   echo "$REAL_PID" > "$SMOKE_PIDFILE"
