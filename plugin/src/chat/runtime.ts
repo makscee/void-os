@@ -21,6 +21,7 @@
 // POST /chat/:id/cancel (no-op on 409).
 
 import { useEffect, useMemo, useReducer, useRef, useCallback, type Dispatch } from "react";
+import { flushSync } from "react-dom";
 import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
@@ -318,7 +319,34 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
   // commit-phase effect below, but the bus subscriber sees every frame).
   useEffect(() => {
     const off = deps.bus.on((frame) => {
-      dispatch({ kind: "frame", frame });
+      // VOS-140: React 18/19 automatic batching collapses successive
+      // chat.token (and tool_use/tool_result) dispatches that arrive on
+      // the same task/microtask burst into a single commit. The user
+      // then sees the whole accumulated assistant message appear at
+      // once instead of streaming token-by-token. Force a synchronous
+      // commit per streaming frame so each delta lands in its own
+      // render. Other frame types (run.start/end/error, message_user,
+      // task state, …) keep normal batched dispatch — batching is
+      // harmless there. flushSync warns if called inside a render, but
+      // bus subscribers run from WS `onmessage` (outside render) so it
+      // is safe. The try/catch fallback guards the test path where
+      // emissions happen inside React `act()`, which routes flushSync
+      // back through act and can throw.
+      const streamingType =
+        frame.type === "chat.token" ||
+        frame.type === "chat.tool_use" ||
+        frame.type === "chat.tool_result";
+      if (streamingType) {
+        try {
+          flushSync(() => {
+            dispatch({ kind: "frame", frame });
+          });
+        } catch {
+          dispatch({ kind: "frame", frame });
+        }
+      } else {
+        dispatch({ kind: "frame", frame });
+      }
       // Direct refetch trigger on terminal frames — independent of
       // runState transition detection.
       if (frame.type === "run.end" || frame.type === "run.error") {
