@@ -374,4 +374,117 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
       console.warn = orig;
     }
   });
+
+  // VOS-142: permissions.allow mirrors toolsArg so CC pre-approves every tool
+  // we hand to --tools and stops popping per-call permission prompts.
+
+  test("VOS-142: permissions.allow deep-equals toolsArg (declared agent)", () => {
+    const dir = freshDir();
+    const built = buildSpawnSettings({
+      agentName: "tinker",
+      scopes: { readPaths: [], writePaths: [] },
+      systemDeny: [],
+      vaultRoot: VAULT,
+      daemonBase: "http://127.0.0.1:8729",
+      runId: "R-1",
+      taskId: "T-1",
+      contextId: "C-1",
+      settingsDir: dir,
+      hookScriptPath: "/hook.ts",
+      declaredTools: ["vault.read", "ask_user"],
+    });
+    const settings = JSON.parse(readFileSync(built.settingsPath, "utf8"));
+    expect(settings.permissions.allow).toEqual(built.toolsArg);
+  });
+
+  test("VOS-142: permissions.deny stays [AskUserQuestion] when allow is populated", () => {
+    const dir = freshDir();
+    const built = buildSpawnSettings({
+      agentName: "tinker",
+      scopes: { readPaths: [], writePaths: [] },
+      systemDeny: [],
+      vaultRoot: VAULT,
+      daemonBase: "http://127.0.0.1:8729",
+      runId: "R-1",
+      taskId: "T-1",
+      contextId: "C-1",
+      settingsDir: dir,
+      hookScriptPath: "/hook.ts",
+      declaredTools: ["ask_user"],
+    });
+    const settings = JSON.parse(readFileSync(built.settingsPath, "utf8"));
+    expect(settings.permissions.deny).toEqual(["AskUserQuestion"]);
+  });
+
+  test("VOS-142: legacy agent (declaredTools undefined) → allow mirrors maximal toolsArg", () => {
+    const dir = freshDir();
+    const orig = console.warn;
+    console.warn = () => {};
+    try {
+      _resetLegacyToolsWarnedForTests();
+      const built = buildSpawnSettings({
+        agentName: "no-tools-declared-vos142",
+        scopes: { readPaths: [], writePaths: [] },
+        systemDeny: [],
+        vaultRoot: VAULT,
+        daemonBase: "http://127.0.0.1:8729",
+        runId: "R-2",
+        taskId: "T-2",
+        contextId: "C-2",
+        settingsDir: dir,
+        hookScriptPath: "/hook.ts",
+      });
+      const settings = JSON.parse(readFileSync(built.settingsPath, "utf8"));
+      expect(settings.permissions.allow).toEqual([...ALLOWED_TOOLS]);
+      expect(built.toolsArg).toEqual([...ALLOWED_TOOLS]);
+    } finally {
+      console.warn = orig;
+    }
+  });
+
+  test("VOS-142: empty declaredTools → allow has built-ins only, no mcp__void-os__*", () => {
+    const dir = freshDir();
+    const built = buildSpawnSettings({
+      agentName: "locked-vos142",
+      scopes: { readPaths: [], writePaths: [] },
+      systemDeny: [],
+      vaultRoot: VAULT,
+      daemonBase: "http://127.0.0.1:8729",
+      runId: "R-3",
+      taskId: "T-3",
+      contextId: "C-3",
+      settingsDir: dir,
+      hookScriptPath: "/hook.ts",
+      declaredTools: [],
+    });
+    const settings = JSON.parse(readFileSync(built.settingsPath, "utf8"));
+    expect(settings.permissions.allow).toEqual([...ALLOWED_BUILTIN_TOOLS]);
+    expect(
+      (settings.permissions.allow as string[]).some((t) => t.startsWith("mcp__")),
+    ).toBe(false);
+  });
+
+  test("VOS-142: MCP intersection — declaredTools=['ask_user'] excludes other vault.* names", () => {
+    const dir = freshDir();
+    const built = buildSpawnSettings({
+      agentName: "tinker-narrow",
+      scopes: { readPaths: [], writePaths: [] },
+      systemDeny: [],
+      vaultRoot: VAULT,
+      daemonBase: "http://127.0.0.1:8729",
+      runId: "R-4",
+      taskId: "T-4",
+      contextId: "C-4",
+      settingsDir: dir,
+      hookScriptPath: "/hook.ts",
+      declaredTools: ["ask_user"],
+    });
+    const settings = JSON.parse(readFileSync(built.settingsPath, "utf8"));
+    const allow = settings.permissions.allow as string[];
+    expect(allow).toContain("mcp__void-os__ask_user");
+    expect(allow).not.toContain("mcp__void-os__vault_read");
+    expect(allow).not.toContain("mcp__void-os__ask_agent");
+    expect(allow).toContain("Bash");
+    expect(allow).toContain("Read");
+  });
 });
