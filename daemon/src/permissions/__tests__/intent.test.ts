@@ -21,3 +21,32 @@ describe("toIntent — type shape", () => {
     expect("tools" in intent || intent.tools === undefined).toBe(true);
   });
 });
+
+describe("toIntent — tools tri-state + deny constants", () => {
+  test("tools undefined → intent.tools undefined (legacy maximal sentinel)", () => {
+    const defn: AgentDefn = { name: "legacy" };
+    expect(toIntent(defn, SCOPES_RW, SYS_DENY).tools).toBeUndefined();
+  });
+
+  test("tools=[] → intent.tools=[] (explicit empty)", () => {
+    const defn: AgentDefn = { name: "no-mcp", tools: [] };
+    expect(toIntent(defn, SCOPES_RW, SYS_DENY).tools).toEqual([]);
+  });
+
+  test("tools=['ask_user'] → intent.tools=['ask_user']", () => {
+    const defn: AgentDefn = { name: "asker", tools: ["ask_user"] };
+    expect(toIntent(defn, SCOPES_RW, SYS_DENY).tools).toEqual(["ask_user"]);
+  });
+
+  test("denyTools always equals ['AskUserQuestion']", () => {
+    expect(toIntent({ name: "x" }, SCOPES_RW, SYS_DENY).denyTools).toEqual(["AskUserQuestion"]);
+  });
+
+  test("systemDenyPaths passes through verbatim", () => {
+    expect(toIntent({ name: "x" }, SCOPES_RW, SYS_DENY).systemDenyPaths).toEqual(SYS_DENY);
+  });
+
+  test("systemDenyPaths empty array passes through", () => {
+    expect(toIntent({ name: "x" }, SCOPES_RW, []).systemDenyPaths).toEqual([]);
+  });
+});
