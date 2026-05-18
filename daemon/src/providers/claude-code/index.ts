@@ -407,6 +407,16 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         "-p", req.prompt,
         "--output-format", "stream-json",
         "--verbose",
+        // VOS-140: enable per-delta token streaming. Without this flag CC emits
+        // exactly one `{type:"assistant"}` frame per turn carrying the entire
+        // assistant content — the chat.token WS event then fires once per turn
+        // and the plugin appears batched. With `--include-partial-messages` CC
+        // also emits `{type:"stream_event"}` frames wrapping Anthropic
+        // message-stream events (content_block_delta carries delta.text), which
+        // cc-shape.ts normalizes into per-delta PartsEvents. The terminal
+        // assistant frame still arrives — cc-shape.ts dedups its text blocks so
+        // we don't double-emit (tool_use blocks are preserved).
+        "--include-partial-messages",
         "--strict-mcp-config",
         ...SETTING_SOURCES_ARGS,
         "--tools", toolsArg.join(","),

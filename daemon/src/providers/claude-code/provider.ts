@@ -6,7 +6,7 @@ import type {
   ProviderHandle,
   ProviderSpawnRequest,
 } from "../types.ts";
-import { normalizeCcEvent } from "./cc-shape.ts";
+import { makeCcNormalizer } from "./cc-shape.ts";
 
 // VOS-96: the CC spawner iterator still emits raw CC wire-format frames.
 // `CcIter` is the pre-normalization seam; provider.ts runs each frame
@@ -71,6 +71,12 @@ export function makeClaudeCodeProvider(
         agent: req.agent,
       });
 
+      // VOS-140: stateful normalizer — tracks per-stream whether CC emitted
+      // any stream_event/content_block_delta text_delta. When yes, the
+      // terminal `assistant` frame's text blocks are dedupped so chat.token
+      // doesn't double-fire. When no (legacy spawner, fakes that pre-date
+      // --include-partial-messages), assistant text passes through unchanged.
+      const normalize = makeCcNormalizer();
       async function* events(): AsyncIterable<ProviderEvent> {
         try {
           for await (const e of raw) {
@@ -78,7 +84,7 @@ export function makeClaudeCodeProvider(
             // per ADR-0001 §Decision. The upstream spawner yields legacy CC
             // shape; we translate on the seam so consumers (orchestrator,
             // dispatch-child) see only `SessionEvent | PartsEvent`.
-            const canonical: CanonicalProviderEvent | null = normalizeCcEvent(e);
+            const canonical: CanonicalProviderEvent | null = normalize(e);
             if (canonical === null) {
               // Non-canonical frames (e.g. CC `{type:"result"}` terminal
               // sentinels) have no consumer-facing equivalent — drop.

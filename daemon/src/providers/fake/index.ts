@@ -25,7 +25,7 @@ import type {
 } from "../types.ts";
 import { TraceWriter } from "../../trace/writer";
 import { classifyToolEvents } from "../claude-code/parser.ts";
-import { normalizeCcEvent } from "../claude-code/cc-shape.ts";
+import { makeCcNormalizer } from "../claude-code/cc-shape.ts";
 import { parseUsageFromAssistantEvent } from "../claude-code/usage-extract.ts";
 import type { Database } from "bun:sqlite";
 import type { EventBus, UsageTurn } from "../../events/index.ts";
@@ -215,8 +215,11 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
       // emits after T3. Scripts on disk stay CC-frame-shaped (per ADR-0001
       // §Decision); the normalizer runs at the seam. T4 will complete the
       // fake's migration (drop the widen hack, etc.).
-      const yieldCanonical = (raw: LegacyProviderEvent): CanonicalProviderEvent | null =>
-        normalizeCcEvent(raw);
+      // VOS-140: stateful normalizer per spawn — matches the live CC
+      // provider's behavior. Test scripts can emit `stream_event` frames to
+      // exercise the dedup path; legacy assistant-only scripts pass through
+      // unchanged.
+      const yieldCanonical = makeCcNormalizer();
 
       async function* gen(): AsyncGenerator<ProviderEvent> {
         started = true;

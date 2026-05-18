@@ -12,7 +12,7 @@ import type {
   CanonicalProviderEvent,
   LegacyProviderEvent,
 } from "../../src/providers/types.ts";
-import { normalizeCcEvent } from "../../src/providers/claude-code/cc-shape.ts";
+import { makeCcNormalizer } from "../../src/providers/claude-code/cc-shape.ts";
 
 export async function* normalizeStream(
   // Test helper: accepts any iterable of frames. The production seam types
@@ -20,15 +20,21 @@ export async function* normalizeStream(
   // fixtures keep their concise inline literal form without churn. Each
   // element is treated as either a canonical event (passed through) or a
   // raw CC frame (normalized via the same path the prod provider uses).
+  //
+  // VOS-140: uses the stateful normalizer (per-iteration) so test fakes that
+  // also emit `stream_event` text_delta frames trigger the assistant-text
+  // dedup, while legacy assistant-only fixtures keep their pre-VOS-140
+  // behavior.
   src: AsyncIterable<unknown>,
 ): AsyncGenerator<CanonicalProviderEvent, void, void> {
+  const normalize = makeCcNormalizer();
   for await (const e of src) {
     const ev = e as { type?: unknown };
     if (ev.type === "session" || ev.type === "parts") {
       yield ev as unknown as CanonicalProviderEvent;
       continue;
     }
-    const c = normalizeCcEvent(ev as LegacyProviderEvent);
+    const c = normalize(ev as LegacyProviderEvent);
     if (c) yield c;
   }
 }
