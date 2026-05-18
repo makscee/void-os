@@ -38,6 +38,9 @@ export function validateFlags(f: Flags): void {
   if (f.ghRepo && f.skipGh) {
     throw new FlagsError("--gh-repo and --skip-gh are mutually exclusive", 64)
   }
+  if (f.obsidianVault && f.skipObsidian) {
+    throw new FlagsError("--obsidian-vault and --skip-obsidian are mutually exclusive", 64)
+  }
 }
 
 export function parseFlags(args: string[]): Flags {

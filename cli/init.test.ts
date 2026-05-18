@@ -169,6 +169,20 @@ describe("validateFlags", () => {
     }
   })
 
+  it("--obsidian-vault + --skip-obsidian mutually exclusive (exit 64)", () => {
+    try {
+      validateFlags(parseFlags([
+        "--non-interactive", "--vault", "/tmp/v",
+        "--obsidian-vault", "myvault", "--skip-obsidian",
+      ]))
+      throw new Error("should have thrown")
+    } catch (e) {
+      expect(e).toBeInstanceOf(FlagsError)
+      expect((e as FlagsError).exitCode).toBe(64)
+      expect((e as FlagsError).message).toMatch(/mutually exclusive/)
+    }
+  })
+
   it("valid --non-interactive --vault X passes", () => {
     expect(() => validateFlags(parseFlags([
       "--non-interactive", "--vault", "/tmp/v",

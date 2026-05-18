@@ -15,7 +15,7 @@ export interface ExecResult {
 export type SshRunner = (
   host: string,
   cmd: string,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; input?: string },
 ) => Promise<ExecResult>
 
 // --- pure parser, unit-tested ---
@@ -37,9 +37,17 @@ export function pickFreeCtid(pctListOut: string, range: [number, number]): numbe
 
 // --- ssh runner ---
 
-export const defaultSshRunner: SshRunner = (host, cmd, opts) =>
+// `spawnImpl` is injectable for tests — production callers pass undefined and
+// get the real `node:child_process` spawn. The 4th parameter is intentionally
+// outside the SshRunner type so the public contract stays clean.
+export const defaultSshRunner = (
+  host: string,
+  cmd: string,
+  opts?: { timeoutMs?: number; input?: string },
+  spawnImpl: typeof spawn = spawn,
+): Promise<ExecResult> =>
   new Promise((resolve) => {
-    const p = spawn("ssh", [
+    const p = spawnImpl("ssh", [
       "-o",
       "BatchMode=yes",
       "-o",
@@ -47,6 +55,10 @@ export const defaultSshRunner: SshRunner = (host, cmd, opts) =>
       host,
       cmd,
     ])
+    if (opts?.input !== undefined) {
+      p.stdin.write(opts.input)
+      p.stdin.end()
+    }
     let stdout = ""
     let stderr = ""
     p.stdout.on("data", (d) => {
@@ -74,7 +86,7 @@ export const defaultSshRunner: SshRunner = (host, cmd, opts) =>
 
 // --- LXC operations ---
 
-const PCT = "sudo /usr/local/sbin/vos-pct" // sudoers-scoped wrapper
+export const PCT = "sudo /usr/local/sbin/vos-pct" // sudoers-scoped wrapper
 const LOCK = "/var/lock/vos-e2e-ctid"
 
 export async function provisionLxc(
@@ -92,42 +104,65 @@ export async function provisionLxc(
   const suffix = Math.random().toString(36).slice(2, 8)
   const hostname = `vos-e2e-${suffix}`
 
-  // Pick + create under flock to serialize concurrent callers.
-  const pickAndCreate = `
+  // List + create under retry. Two concurrent callers may compute the same ctid;
+  // the create runs under flock and a collision (existing ctid) re-lists + re-picks.
+  const MAX_ATTEMPTS = 3
+  let lastErr = ""
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const listRes = await ssh(`root@${towerHost}`, `${PCT} list`, { timeoutMs: 30_000 })
+    if (listRes.exitCode !== 0) {
+      throw new Error(`provisionLxc: pct list failed: ${listRes.stderr || listRes.stdout}`)
+    }
+    const ctid = pickFreeCtid(listRes.stdout, range)
+
+    const createCmd = `
 flock ${LOCK} -c '
   set -e
-  list=$(${PCT} list)
-  ctid=$(echo "$list" | awk "NR>1 && \\$1 >= ${range[0]} && \\$1 <= ${range[1]} {print \\$1}" | sort -n | tail -1)
-  if [ -z "$ctid" ]; then ctid=${range[0]}; else ctid=$((ctid + 1)); fi
-  if [ "$ctid" -gt ${range[1]} ]; then echo "no free CTID" >&2; exit 1; fi
-  ${PCT} create $ctid local:vztmpl/${template}.tar.zst \\
+  ${PCT} create ${ctid} local:vztmpl/${template}.tar.zst \\
     --hostname ${hostname} \\
     --memory 1024 --cores 2 --rootfs local-lvm:8 \\
     --features nesting=1 --unprivileged 1 \\
     --net0 name=eth0,bridge=vmbr0,ip=dhcp \\
     --start 1
-  echo CTID=$ctid
+  echo CTID=${ctid}
 '
 `
-  const r = await ssh(`root@${towerHost}`, pickAndCreate, { timeoutMs: 60_000 })
-  if (r.exitCode !== 0) {
-    throw new Error(`provisionLxc failed: ${r.stderr || r.stdout}`)
+    const r = await ssh(`root@${towerHost}`, createCmd, { timeoutMs: 60_000 })
+    if (r.exitCode === 0) {
+      const m = r.stdout.match(/CTID=(\d+)/)
+      if (!m) throw new Error(`provisionLxc: could not parse CTID from output: ${r.stdout}`)
+      return { ctid: Number(m[1]), hostname, towerHost }
+    }
+    lastErr = r.stderr || r.stdout
+    // Collision marker: pct create errors loudly when the ctid already exists.
+    if (!/already exists|configuration file.*already/i.test(lastErr)) {
+      throw new Error(`provisionLxc failed: ${lastErr}`)
+    }
+    // else: collision — loop, re-list, re-pick.
   }
-  const m = r.stdout.match(/CTID=(\d+)/)
-  if (!m) throw new Error(`provisionLxc: could not parse CTID from output: ${r.stdout}`)
-  return { ctid: Number(m[1]), hostname, towerHost }
+  throw new Error(`provisionLxc: exhausted ${MAX_ATTEMPTS} attempts; last error: ${lastErr}`)
 }
 
 export async function lxcExec(
   h: LxcHandle,
   cmd: string,
-  opts: { timeoutMs?: number; allowFailure?: boolean; ssh?: SshRunner } = {},
+  opts: {
+    timeoutMs?: number
+    allowFailure?: boolean
+    ssh?: SshRunner
+    input?: string
+  } = {},
 ): Promise<ExecResult> {
   const ssh = opts.ssh ?? defaultSshRunner
-  // base64 the cmd so quoting never breaks.
+  // base64 the cmd so quoting never breaks. Use process substitution `<(...)`
+  // so the inner bash reads its script from a fifo and stdin stays bound to
+  // ssh's stdin (a `| bash` pipe would consume stdin before the cmd sees it).
   const b64 = Buffer.from(cmd).toString("base64")
-  const wrapped = `${PCT} exec ${h.ctid} -- bash -lc "echo ${b64} | base64 -d | bash"`
-  const r = await ssh(`root@${h.towerHost}`, wrapped, { timeoutMs: opts.timeoutMs ?? 60_000 })
+  const wrapped = `${PCT} exec ${h.ctid} -- bash -lc 'bash <(echo ${b64} | base64 -d)'`
+  const r = await ssh(`root@${h.towerHost}`, wrapped, {
+    timeoutMs: opts.timeoutMs ?? 60_000,
+    input: opts.input,
+  })
   if (r.exitCode !== 0 && !opts.allowFailure) {
     throw new Error(
       `lxcExec failed (exit ${r.exitCode}) cmd=${cmd.slice(0, 120)}\nstderr: ${r.stderr}\nstdout: ${r.stdout}`,

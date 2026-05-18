@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import type { LxcHandle } from "./lxc"
+import { PCT, type LxcHandle } from "./lxc"
 
 const DEFAULT_EXCLUDES = ["node_modules", ".git", "dist", "tmp", "*.log"]
 
@@ -54,8 +54,8 @@ export async function rsyncIntoLxc(
   const tarName = `vos-e2e-${h.ctid}.tar.gz`
   const cmd = [
     `tar -czf /tmp/${tarName} -C ${stagingDir} .`,
-    `sudo /usr/local/sbin/vos-pct push ${h.ctid} /tmp/${tarName} /tmp/${tarName}`,
-    `sudo /usr/local/sbin/vos-pct exec ${h.ctid} -- bash -c 'mkdir -p ${destPath} && tar -xzf /tmp/${tarName} -C ${destPath} && rm /tmp/${tarName}'`,
+    `${PCT} push ${h.ctid} /tmp/${tarName} /tmp/${tarName}`,
+    `${PCT} exec ${h.ctid} -- bash -c 'mkdir -p ${destPath} && tar -xzf /tmp/${tarName} -C ${destPath} && rm /tmp/${tarName}'`,
     `rm /tmp/${tarName}`,
     `rm -rf ${stagingDir}`,
   ].join(" && ")
