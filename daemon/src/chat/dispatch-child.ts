@@ -207,6 +207,9 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
       // identifier into contextId.
       taskId: childTaskId,
       contextId,
+      // VOS-124: forward the agent name so providers write the correct
+      // identity into turn.start.payload.agent.
+      agent: agentName,
     });
 
     // VOS-96 T6: canonical event loop per ADR-0001 §Decision. Provider

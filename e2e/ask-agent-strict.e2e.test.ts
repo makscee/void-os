@@ -3,12 +3,9 @@
  *
  * Two scenarios exercised against a real daemon + real CLI binary:
  *
- *   1. ask tinker "ping" — known agent, exits 0, trace has turn.start.
- *      Agent identity is asserted from the `runs` DB table (runs.agent)
- *      because the fake provider writes `turn.start.payload.agent` =
- *      `opts.agent` (= defaultAgent ?? "maya"), not `req.agent`. The DB
- *      path is authoritative: `runs.agent` = req.agent = chat.agent =
- *      the value sent in `POST /chats { agent: "tinker" }`.
+ *   1. ask tinker "ping" — known agent, exits 0, trace turn.start.payload.agent
+ *      === "tinker" (acceptance bullet 2). Also asserted via DB runs.agent as
+ *      belt-and-suspenders.
  *
  *   2. ask ghost "ping"  — unknown agent, exits 4, stderr mentions "ghost"
  *      + "not found". The CLI pre-flight (agents list check) rejects before
@@ -226,7 +223,7 @@ describe("ask-agent-strict: tinker (known) + ghost (unknown)", () => {
   });
 
   // ── Test 1: known agent ─────────────────────────────────────────────────
-  test("ask tinker ping: exits 0 and runs table records agent=tinker", async () => {
+  test("ask tinker ping: exits 0, trace.turn.start.payload.agent === tinker, runs.agent === tinker", async () => {
     const r = await runVoidOs(rig, ["ask", "tinker", "ping"]);
 
     // Exit 0.
@@ -237,11 +234,6 @@ describe("ask-agent-strict: tinker (known) + ghost (unknown)", () => {
     }
     expect(r.code).toBe(0);
 
-    // ── DB assertion: runs.agent captures the chat's agent ────────────────
-    // The fake provider's turn.start.payload.agent uses opts.agent
-    // (= defaultAgent ?? "maya"), not req.agent. The authoritative agent
-    // identity is stored in runs.agent = req.agent = chat.agent = "tinker".
-    // We open the SQLite DB read-only after the CLI exits.
     const db = new Database(rig.dbPath, { readonly: true });
     try {
       const row = db
@@ -249,11 +241,14 @@ describe("ask-agent-strict: tinker (known) + ghost (unknown)", () => {
         .get() as { agent: string; trace_path: string | null } | undefined;
 
       expect(row).toBeDefined();
+
+      // ── Belt-and-suspenders: DB runs.agent ────────────────────────────────
       expect(row!.agent).toBe("tinker");
 
-      // ── Trace assertion: turn.start event exists in the JSONL trace ──────
-      // We assert the trace file was written and contains a turn.start line.
-      // Per VOS-124 repro notes the field name is `kind` (not `event`).
+      // ── Primary assertion (VOS-124 acceptance bullet 2): trace payload ────
+      // The fake provider now forwards req.agent → turn.start.payload.agent,
+      // so the trace carries the per-run requested agent, not the provider's
+      // static opts.agent identity.
       if (row!.trace_path) {
         const lines = readFileSync(row!.trace_path, "utf8")
           .split("\n")
@@ -269,15 +264,11 @@ describe("ask-agent-strict: tinker (known) + ghost (unknown)", () => {
 
         expect(turnStartLine).toBeDefined();
 
-        // The trace turn.start event exists. Note: in fake-provider mode,
-        // payload.agent = opts.agent (= "maya", the daemon's defaultAgent),
-        // NOT req.agent. Agent correctness is asserted above via runs.agent.
-        // If fake provider is ever updated to use req.agent in turn.start
-        // (matching the claude-code provider), the assertion below would be:
-        //   expect(JSON.parse(turnStartLine!).payload.agent).toBe("tinker");
-        const parsed = JSON.parse(turnStartLine!);
-        expect(parsed.payload).toBeDefined();
-        expect(typeof parsed.payload.runId).toBe("string");
+        const startEvent = JSON.parse(turnStartLine!);
+        expect(startEvent.payload).toBeDefined();
+        expect(typeof startEvent.payload.runId).toBe("string");
+        // VOS-124 acceptance bullet 2: trace.turn.start.payload.agent === requested agent.
+        expect(startEvent.payload.agent).toBe("tinker");
       }
     } finally {
       db.close();

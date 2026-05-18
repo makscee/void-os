@@ -232,7 +232,10 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
           trace.write("turn.start", {
             runId: req.runId,
             chatId: req.contextId ?? null,
-            agent: opts.agent ?? "fake",
+            // VOS-124: prefer req.agent (per-run requested agent) over
+            // opts.agent (provider's static identity). Aligns fake with
+            // the claude-code provider which already uses req.agent here.
+            agent: req.agent ?? opts.agent ?? "fake",
             kind: "chat",
             userMessage: req.prompt,
           });
