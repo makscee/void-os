@@ -153,5 +153,58 @@ echo "smoke-up: daemon ready on http://127.0.0.1:$PORT"
 echo "smoke-up: pidfile=$SMOKE_HOME/.void-os/daemon.json"
 echo "smoke-up: smoke-pid=$(cat "$SMOKE_PIDFILE")"
 
-# Obsidian spawn lives in Task 5.
+# Obsidian spawn.
+if [ "$FLAG_NO_OBSIDIAN" -eq 1 ]; then
+  echo "smoke-up: --no-obsidian → skipping Obsidian"
+  exit 0
+fi
+
+OBSIDIAN_BIN="/Applications/Obsidian.app/Contents/MacOS/Obsidian"
+if [ ! -x "$OBSIDIAN_BIN" ]; then
+  echo "smoke-up: WARNING — $OBSIDIAN_BIN not executable; skipping Obsidian spawn"
+  echo "smoke-up: open manually: open 'obsidian://open?path=$SMOKE_VAULT'"
+  exit 0
+fi
+
+# Pre-seed obsidian.json with the smoke vault registered + open + trusted.
+# Shape mirrors what plugin/e2e/globalSetup.ts writes for its harness:
+#   vaults: { <id>: { path, ts, open: true, trusted: true } }
+#   updateDisabled: true   (don't auto-update Obsidian mid-session)
+# `trusted: true` skips the "Trust author" modal on Obsidian 1.8+.
+# `updateDisabled: true` prevents Obsidian from hot-swapping obsidian.asar
+# and unloading the plugin underneath you.
+VAULT_ID="$(printf '%s' "$SMOKE_VAULT" | cksum | awk '{print $1}')"
+NOW_MS="$(date +%s)000"
+cat > "$SMOKE_USERDATA/obsidian.json" <<EOF
+{
+  "vaults": {
+    "$VAULT_ID": {
+      "path": "$SMOKE_VAULT",
+      "ts": $NOW_MS,
+      "open": true,
+      "trusted": true
+    }
+  },
+  "updateDisabled": true
+}
+EOF
+
+# Reuse-check for Obsidian process.
+if [ -f "$SMOKE_OBSIDIAN_PIDFILE" ] && pid_alive "$(cat "$SMOKE_OBSIDIAN_PIDFILE")"; then
+  echo "smoke-up: Obsidian already alive (pid=$(cat "$SMOKE_OBSIDIAN_PIDFILE"))"
+else
+  echo "smoke-up: spawning Obsidian with HOME=$SMOKE_HOME --user-data-dir=$SMOKE_USERDATA"
+  HOME="$SMOKE_HOME" nohup "$OBSIDIAN_BIN" \
+    "--user-data-dir=$SMOKE_USERDATA" "$SMOKE_VAULT" \
+    >/dev/null 2>&1 &
+  echo $! > "$SMOKE_OBSIDIAN_PIDFILE"
+fi
+
+echo "smoke-up: Obsidian pid=$(cat "$SMOKE_OBSIDIAN_PIDFILE")"
+echo
+echo "smoke-up: READY"
+echo "  vault: $SMOKE_VAULT"
+echo "  daemon: http://127.0.0.1:$PORT (pid $(cat "$SMOKE_PIDFILE"))"
+echo "  obsidian: pid $(cat "$SMOKE_OBSIDIAN_PIDFILE")"
+echo "  tear down: smoke-down.sh $ID"
 exit 0
