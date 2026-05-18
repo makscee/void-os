@@ -33,7 +33,13 @@ function expandPattern(
     expanded = pattern;
     anchorRoot = null;
   } else {
-    return { ok: false, reason: `pattern lacks vault/, ~/, or / prefix: ${pattern}` };
+    // VOS-122 F10: bare patterns (no `vault/`, `~/`, or `/` prefix) are
+    // vault-relative. This matches what the starter Tinker agent declares
+    // (`read_scope: ['**']`, `write_scope: ['agents/**', 'CLAUDE.md', ...]`)
+    // and what authors writing agent.md naturally expect. The traversal-escape
+    // check below still rejects bare `../etc` style escapes.
+    expanded = path.join(opts.vaultRoot, pattern);
+    anchorRoot = opts.vaultRoot;
   }
 
   if (anchorRoot) {
