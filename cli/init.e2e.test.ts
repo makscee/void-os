@@ -74,6 +74,7 @@ function runInit(args: string[], answers: { text: string[]; confirm: boolean[] }
       prompter,
       preflight: fakePreflight,
       skipBuild: true,
+      skipDaemonStart: true,
     })
       .finally(() => {
         logSpy.mockRestore()
@@ -142,7 +143,7 @@ describe("initCommand() — end-to-end against real fs", () => {
     const stdout = run.logs.join("\n")
     expect(stdout).toContain(`void-os seeded at ${home}`)
     expect(stdout).toContain("git initialized + first commit")
-    expect(stdout).toContain("void-os ask tinker")
+    expect(stdout).toContain("void-os ask <agent>")
     expect(stdout).toContain("install Obsidian")
     expect(stdout).toContain("plugin: not installed (build artifact missing)")
   })
@@ -169,6 +170,7 @@ describe("initCommand() — end-to-end against real fs", () => {
           obsidian: { found: true, paths: ["/fake/path"] },
         },
         skipBuild: true,
+        skipDaemonStart: true,
       })
     } finally {
       logSpy.mockRestore()
@@ -177,7 +179,7 @@ describe("initCommand() — end-to-end against real fs", () => {
     const stdout = logs.join("\n")
     expect(stdout).toContain(`open Obsidian, "Open vault" → ${home}`)
     expect(stdout).toContain('enable "void-os"')
-    expect(stdout).toContain("void-os ask tinker")
+    expect(stdout).toContain("void-os ask <agent>")
   })
 
   it("re-run without --force: no overwrites, marker not rewritten, report says already initialized", async () => {
@@ -266,6 +268,7 @@ describe("initCommand() --non-interactive", () => {
         prompter,
         preflight: fakePreflight,
         skipBuild: true,
+        skipDaemonStart: true,
       })
     } finally {
       logSpy.mockRestore()
