@@ -102,8 +102,9 @@ export async function loginClaudev(h: LxcHandle, accessCode: string): Promise<vo
   // for a pool API key from void-keys when invoking `claude`. So we verify the
   // token file exists with sane size; we do NOT check for an "sk-ant-" prefix
   // (that would only show up in v2's bundled flow).
-  await lxcExec(h, `bash -lc "printf '%s\\n' '${accessCode}' | claudev login"`, {
+  await lxcExec(h, "claudev login", {
     timeoutMs: 30_000,
+    input: accessCode + "\n",
   })
   const ver = await lxcExec(
     h,
