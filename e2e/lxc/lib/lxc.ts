@@ -86,7 +86,7 @@ export const defaultSshRunner = (
 
 // --- LXC operations ---
 
-const PCT = "sudo /usr/local/sbin/vos-pct" // sudoers-scoped wrapper
+export const PCT = "sudo /usr/local/sbin/vos-pct" // sudoers-scoped wrapper
 const LOCK = "/var/lock/vos-e2e-ctid"
 
 export async function provisionLxc(
