@@ -79,14 +79,21 @@ test("no-agent send: composer toast surfaces, no chat row created (VOS-126)", as
     // so the new ChatRoot mounts with `props.chatId = null`. That guarantees
     // `chatIdRef.current` starts null and `ensureChat` will fire createChat
     // with undefined defaultAgent → daemon 400 → toast path.
+    //
+    // NB: SettingsStore caches `current` in a closure (see chat/settings.ts);
+    // a bare `plugin.saveData({chatId:null})` updates disk but NOT the cache,
+    // so `settings.get().chatId` still returns the prior spec's id and
+    // ensureChat short-circuits. We monkey-patch `get()` to force the
+    // construction-time read to null for the rest of this spec.
     await page.evaluate(() => {
       // @ts-ignore — `app` is Obsidian's global in the renderer.
       const app = window.app;
       app.workspace.detachLeavesOfType("void-os-chat");
       const plugin = app.plugins.plugins["void-os"];
-      // SettingsStore.setChatId only accepts string, so we bypass and write
-      // via the Plugin saveData() API directly (same path setChatId uses).
-      return plugin.saveData({ ...(plugin.settings?.get?.() ?? {}), chatId: null });
+      const store = plugin.settings;
+      const origGet = store.get.bind(store);
+      store.get = () => ({ ...origGet(), chatId: null });
+      return plugin.saveData({ ...origGet(), chatId: null });
     });
 
     await page.evaluate(() => {
