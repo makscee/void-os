@@ -97,17 +97,19 @@ fi
 PORT="$(read_port_or_compute "$ID" "$SMOKE_ROOT")"
 
 # Daemon reuse: if recorded pid is alive AND its command line includes
-# 'void-os' AND 'daemon', skip spawn.
+# this worktree's daemon entrypoint, skip spawn. `$SMOKE_PIDFILE` holds
+# the *real* bun daemon pid (written below after pidfile-poll), not the
+# short-lived CLI wrapper. The real daemon's command line is
+# `bun run <WORKTREE>/workspace/void-os/daemon/src/index.ts` — the
+# absolute worktree path uniquely identifies this smoke instance.
+DAEMON_ENTRYPOINT="$WORKTREE/workspace/void-os/daemon/src/index.ts"
 SKIP_SPAWN=0
 if [ -f "$SMOKE_PIDFILE" ]; then
   EX_PID="$(cat "$SMOKE_PIDFILE")"
   if pid_alive "$EX_PID"; then
     EX_CMD="$(ps -o command= -p "$EX_PID" 2>/dev/null || true)"
-    # Match on the smoke vault path specifically — not on a generic
-    # 'void-os daemon' glob, which would also match the operator's
-    # main daemon if pid recycling reuses our recorded pid.
     case "$EX_CMD" in
-      *"--vault $SMOKE_VAULT"*) SKIP_SPAWN=1 ;;
+      *"$DAEMON_ENTRYPOINT"*) SKIP_SPAWN=1 ;;
     esac
   fi
 fi
@@ -134,6 +136,17 @@ else
     rm -f "$SMOKE_PIDFILE"
     exit 3
   fi
+
+  # `void-os daemon start` is a short-lived wrapper that exits after
+  # exec'ing the bun child. $! captured the wrapper; the real long-running
+  # daemon pid lives in $SMOKE_HOME/.void-os/daemon.json. Overwrite
+  # $SMOKE_PIDFILE so reuse-check and smoke-down target the real process.
+  REAL_PID="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['pid'])" "$SMOKE_HOME/.void-os/daemon.json")"
+  if [ -z "$REAL_PID" ]; then
+    echo "smoke-up: could not read pid from $SMOKE_HOME/.void-os/daemon.json" >&2
+    exit 3
+  fi
+  echo "$REAL_PID" > "$SMOKE_PIDFILE"
 fi
 
 echo "smoke-up: daemon ready on http://127.0.0.1:$PORT"
