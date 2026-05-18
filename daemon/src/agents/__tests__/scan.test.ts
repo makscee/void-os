@@ -95,6 +95,57 @@ describe("scanVaultAgents", () => {
     expect(scanVaultAgents(vault)).toEqual([]);
     rmSync(vault, { recursive: true, force: true });
   });
+
+  // VOS-124 T6: boot-time scan warn when 0 agents found
+  test("emits console.warn when agents dir is missing (0 agents)", () => {
+    const vault = makeVault(); // no agents/ dir
+    const warn = spyWarn();
+    try {
+      const rows = scanVaultAgents(vault);
+      expect(rows).toEqual([]);
+      expect(warn.calls.length).toBeGreaterThan(0);
+      const msg = warn.calls.join(" ");
+      expect(msg).toContain("agents/scan:");
+      expect(msg).toContain("0 agents found under");
+      expect(msg).toContain(vault + "/agents");
+    } finally {
+      warn.restore();
+      rmSync(vault, { recursive: true, force: true });
+    }
+  });
+
+  test("emits console.warn when agents dir is empty (0 agents)", () => {
+    const vault = makeVault();
+    mkdirSync(join(vault, "agents"), { recursive: true }); // empty dir
+    const warn = spyWarn();
+    try {
+      const rows = scanVaultAgents(vault);
+      expect(rows).toEqual([]);
+      expect(warn.calls.length).toBeGreaterThan(0);
+      const msg = warn.calls.join(" ");
+      expect(msg).toContain("agents/scan:");
+      expect(msg).toContain("0 agents found under");
+      expect(msg).toContain(vault + "/agents");
+    } finally {
+      warn.restore();
+      rmSync(vault, { recursive: true, force: true });
+    }
+  });
+
+  test("does NOT emit scan-empty warn when agents are found", () => {
+    const vault = makeVault();
+    writeAgent(vault, "maya", { name: "maya", description: "front desk", model: "opus" });
+    const warn = spyWarn();
+    try {
+      const rows = scanVaultAgents(vault);
+      expect(rows.length).toBe(1);
+      const scanEmptyWarns = warn.calls.filter((c) => c.includes("agents/scan:") && c.includes("0 agents found"));
+      expect(scanEmptyWarns).toEqual([]);
+    } finally {
+      warn.restore();
+      rmSync(vault, { recursive: true, force: true });
+    }
+  });
 });
 
 function spyWarn() {
