@@ -1,15 +1,16 @@
 import {
   test,
   expect,
-  chromium,
   request,
   type APIRequestContext,
-  type Browser,
   type Page,
 } from "@playwright/test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getVaultPage } from "../helpers/vault-page.ts";
+import { mintChat, sendMessage } from "../helpers/daemon-api.ts";
+import { withFixtureSwap } from "../helpers/fixture-swap.ts";
 
 /**
  * VOS-114 T6 — chat list polish e2e (migrated from VOS-104 T8).
@@ -63,24 +64,6 @@ function loadState(): E2EState {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAYA_SCRIPT = path.join(HERE, "..", "fixtures", "ask-agent", "maya.jsonl");
 
-async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  let page = browser.contexts().flatMap((ctx) => ctx.pages())
-    .find((p) => p.url() === "app://obsidian.md/index.html");
-  if (!page) {
-    const ctx = browser.contexts()[0];
-    page = await ctx.waitForEvent("page", {
-      predicate: (p) => p.url() === "app://obsidian.md/index.html",
-      timeout: 20_000,
-    });
-  }
-  await page.waitForLoadState("domcontentloaded");
-  try {
-    await page.getByRole("button", { name: /Trust author/i }).click({ timeout: 5_000 });
-  } catch { /* already trusted */ }
-  return { browser, page };
-}
-
 /** Open the chat view (no agent picker / no chat mint). Used only so the
  *  ChatList sidebar is rendered and observable. */
 async function openChatView(page: Page) {
@@ -93,23 +76,6 @@ async function openChatView(page: Page) {
   await expect(page.getByTestId("vos-chat-root")).toBeVisible({ timeout: 10_000 });
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
-}
-
-async function mintChatViaApi(api: APIRequestContext, agent: string): Promise<string> {
-  const res = await api.post("/chats", { data: { agent } });
-  expect(res.status()).toBe(200);
-  const body = (await res.json()) as { id: string };
-  expect(body.id).toBeTruthy();
-  return body.id;
-}
-
-async function sendMessageViaApi(
-  api: APIRequestContext,
-  chatId: string,
-  text: string,
-): Promise<void> {
-  const res = await api.post(`/chat/${chatId}/message`, { data: { text } });
-  expect([200, 201, 202]).toContain(res.status());
 }
 
 /**
@@ -136,16 +102,6 @@ function fireMessageViaApi(
 
 test.describe("VOS-114 chat list polish", () => {
   test.setTimeout(120_000);
-
-  // Snapshot maya's pinned fake-script so each test can restore the
-  // original ask_agent depth-1 fixture for sibling specs.
-  let originalMaya = "";
-  test.beforeEach(() => {
-    originalMaya = readFileSync(MAYA_SCRIPT, "utf8");
-  });
-  test.afterEach(() => {
-    writeFileSync(MAYA_SCRIPT, originalMaya);
-  });
 
   test("status dot transitions to input_required on ask_user and clears on answer", async () => {
     const state = loadState();
@@ -179,63 +135,64 @@ test.describe("VOS-114 chat list polish", () => {
       }),
       JSON.stringify({ type: "result", subtype: "success" }),
     ].join("\n") + "\n";
-    writeFileSync(MAYA_SCRIPT, askJsonl);
 
-    const { page: p } = await getVaultPage(state.cdpPort);
-    await openChatView(p);
+    await withFixtureSwap(MAYA_SCRIPT, askJsonl, async () => {
+      const { page: p } = await getVaultPage(state.cdpPort);
+      await openChatView(p);
 
-    const api = await request.newContext({
-      baseURL: `http://127.0.0.1:${state.port}`,
-    });
-    try {
-      const chatId = await mintChatViaApi(api, "maya");
-      // Fire-and-forget — orchestrator.dispatch blocks until run.end, and this
-      // run parks on `vos_ask_user` until /answer is POSTed below. Awaiting
-      // the message POST here would deadlock the test.
-      const messagePromise = fireMessageViaApi(api, chatId, "go");
-
-      const row = p.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
-      await expect(row).toBeVisible({ timeout: 30_000 });
-      const dot = row.locator(`[data-testid='chat-row-status']`);
-
-      // Wait for the unified status dot to reach input_required. T1+T2 set
-      // data-status once the chat.task row flips to TASK_STATE_INPUT_REQUIRED;
-      // T7 refreshes ChatList on chat.task.state_changed.
-      await expect.poll(
-        async () => dot.evaluate((el) => (el as HTMLElement).dataset.status ?? ""),
-        { timeout: 30_000, intervals: [200, 500, 1000] },
-      ).toBe("input_required");
-
-      // Resolve the prompt via direct POST. The in-thread banner-clear
-      // path is already covered by ask-user.spec — here we only assert
-      // the sidebar status clears.
-      const msgsRes = await api.get(`/chat/${chatId}/messages`);
-      const messages = (await msgsRes.json()) as Array<{
-        role: string;
-        tool_call_id?: string;
-        name?: string;
-      }>;
-      const askUseRow = [...messages]
-        .reverse()
-        .find((m) => m.role === "tool_use" && m.name === "ask_user");
-      expect(askUseRow?.tool_call_id).toBeTruthy();
-      const ansRes = await api.post(`/chat/${chatId}/answer`, {
-        data: { tool_use_id: askUseRow!.tool_call_id, answer: "red" },
+      const api = await request.newContext({
+        baseURL: `http://127.0.0.1:${state.port}`,
       });
-      expect(ansRes.status()).toBe(200);
+      try {
+        const { chatId } = await mintChat(api, "maya");
+        // Fire-and-forget — orchestrator.dispatch blocks until run.end, and this
+        // run parks on `vos_ask_user` until /answer is POSTed below. Awaiting
+        // the message POST here would deadlock the test.
+        const messagePromise = fireMessageViaApi(api, chatId, "go");
 
-      // Status exits input_required — may briefly be "running" then settle to "idle".
-      await expect.poll(
-        async () => dot.evaluate((el) => (el as HTMLElement).dataset.status ?? ""),
-        { timeout: 30_000, intervals: [200, 500, 1000] },
-      ).not.toBe("input_required");
+        const row = p.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
+        await expect(row).toBeVisible({ timeout: 30_000 });
+        const dot = row.locator(`[data-testid='chat-row-status']`);
 
-      // Drain the fire-and-forget message POST so afterEach() restoring the
-      // pinned maya script doesn't race with an in-flight orchestrator run.
-      await messagePromise;
-    } finally {
-      await api.dispose();
-    }
+        // Wait for the unified status dot to reach input_required. T1+T2 set
+        // data-status once the chat.task row flips to TASK_STATE_INPUT_REQUIRED;
+        // T7 refreshes ChatList on chat.task.state_changed.
+        await expect.poll(
+          async () => dot.evaluate((el) => (el as HTMLElement).dataset.status ?? ""),
+          { timeout: 30_000, intervals: [200, 500, 1000] },
+        ).toBe("input_required");
+
+        // Resolve the prompt via direct POST. The in-thread banner-clear
+        // path is already covered by ask-user.spec — here we only assert
+        // the sidebar status clears.
+        const msgsRes = await api.get(`/chat/${chatId}/messages`);
+        const messages = (await msgsRes.json()) as Array<{
+          role: string;
+          tool_call_id?: string;
+          name?: string;
+        }>;
+        const askUseRow = [...messages]
+          .reverse()
+          .find((m) => m.role === "tool_use" && m.name === "ask_user");
+        expect(askUseRow?.tool_call_id).toBeTruthy();
+        const ansRes = await api.post(`/chat/${chatId}/answer`, {
+          data: { tool_use_id: askUseRow!.tool_call_id, answer: "red" },
+        });
+        expect(ansRes.status()).toBe(200);
+
+        // Status exits input_required — may briefly be "running" then settle to "idle".
+        await expect.poll(
+          async () => dot.evaluate((el) => (el as HTMLElement).dataset.status ?? ""),
+          { timeout: 30_000, intervals: [200, 500, 1000] },
+        ).not.toBe("input_required");
+
+        // Drain the fire-and-forget message POST so the fixture-swap restore
+        // doesn't race with an in-flight orchestrator run.
+        await messagePromise;
+      } finally {
+        await api.dispose();
+      }
+    });
   });
 
   test("row exposes agent badge, relative time, and tokens after a run completes", async () => {
@@ -258,56 +215,57 @@ test.describe("VOS-114 chat list polish", () => {
       }),
       JSON.stringify({ type: "result", subtype: "success" }),
     ].join("\n") + "\n";
-    writeFileSync(MAYA_SCRIPT, jsonl);
 
-    const { page: p } = await getVaultPage(state.cdpPort);
-    await openChatView(p);
+    await withFixtureSwap(MAYA_SCRIPT, jsonl, async () => {
+      const { page: p } = await getVaultPage(state.cdpPort);
+      await openChatView(p);
 
-    const api = await request.newContext({
-      baseURL: `http://127.0.0.1:${state.port}`,
+      const api = await request.newContext({
+        baseURL: `http://127.0.0.1:${state.port}`,
+      });
+      try {
+        const { chatId } = await mintChat(api, "maya");
+        await sendMessage(api, chatId, "compute");
+
+        const row = p.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
+        await expect(row).toBeVisible({ timeout: 30_000 });
+        const tokensCell = row.locator(`[data-testid='context-cell']`);
+
+        // Poll until context-cell shows a non-empty token count — gated by
+        // run.end → cost write → bus refresh round-trip + POLL_MS ceiling.
+        await expect.poll(
+          async () => (await tokensCell.textContent()) ?? "",
+          { timeout: 30_000, intervals: [200, 500, 1000] },
+        ).toMatch(/\d/);
+
+        const ui = (await tokensCell.textContent()) ?? "";
+        expect(ui).toBeTruthy();
+
+        // VOS-114: tooltip dropped — title attribute must be absent.
+        const titleAttr = await tokensCell.getAttribute("title");
+        expect(titleAttr).toBeNull();
+
+        // Agent badge — all top-level chats are minted with agent: "maya".
+        const badge = row.locator(`[data-testid='chat-row-agent']`);
+        await expect(badge).toHaveText("maya");
+
+        // Relative time — should mention a time unit after run completes.
+        const timeEl = row.locator(`[data-testid='chat-row-time']`);
+        await expect.poll(
+          async () => (await timeEl.textContent()) ?? "",
+          { timeout: 10_000 },
+        ).toMatch(/(seconds|minute|hour|day)/);
+
+        // Cross-check against daemon truth (ledger pipeline healthy).
+        const costRes = await api.get("/cost/today");
+        const json = (await costRes.json()) as {
+          by_chat: Array<{ chat_id: string; usd: number }>;
+        };
+        const usd = json.by_chat.find((c) => c.chat_id === chatId)?.usd ?? 0;
+        expect(usd).toBeGreaterThan(0);
+      } finally {
+        await api.dispose();
+      }
     });
-    try {
-      const chatId = await mintChatViaApi(api, "maya");
-      await sendMessageViaApi(api, chatId, "compute");
-
-      const row = p.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
-      await expect(row).toBeVisible({ timeout: 30_000 });
-      const tokensCell = row.locator(`[data-testid='context-cell']`);
-
-      // Poll until context-cell shows a non-empty token count — gated by
-      // run.end → cost write → bus refresh round-trip + POLL_MS ceiling.
-      await expect.poll(
-        async () => (await tokensCell.textContent()) ?? "",
-        { timeout: 30_000, intervals: [200, 500, 1000] },
-      ).toMatch(/\d/);
-
-      const ui = (await tokensCell.textContent()) ?? "";
-      expect(ui).toBeTruthy();
-
-      // VOS-114: tooltip dropped — title attribute must be absent.
-      const titleAttr = await tokensCell.getAttribute("title");
-      expect(titleAttr).toBeNull();
-
-      // Agent badge — all top-level chats are minted with agent: "maya".
-      const badge = row.locator(`[data-testid='chat-row-agent']`);
-      await expect(badge).toHaveText("maya");
-
-      // Relative time — should mention a time unit after run completes.
-      const timeEl = row.locator(`[data-testid='chat-row-time']`);
-      await expect.poll(
-        async () => (await timeEl.textContent()) ?? "",
-        { timeout: 10_000 },
-      ).toMatch(/(seconds|minute|hour|day)/);
-
-      // Cross-check against daemon truth (ledger pipeline healthy).
-      const costRes = await api.get("/cost/today");
-      const json = (await costRes.json()) as {
-        by_chat: Array<{ chat_id: string; usd: number }>;
-      };
-      const usd = json.by_chat.find((c) => c.chat_id === chatId)?.usd ?? 0;
-      expect(usd).toBeGreaterThan(0);
-    } finally {
-      await api.dispose();
-    }
   });
 });

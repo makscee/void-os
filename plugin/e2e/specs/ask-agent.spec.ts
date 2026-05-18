@@ -35,17 +35,17 @@
 //   schema. We instead use `parent_task_id IS NULL` (root) + `target_agent`
 //   for the child. Caller agent identity = contexts.agent_name.
 
-import { test, expect, chromium, type Page, type Browser } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 // Playwright runs under Node, not Bun. Use node:sqlite (>=v22.5).
 import { DatabaseSync } from "node:sqlite";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   waitForTaskRow,
   waitForTaskState,
   type TaskRow,
 } from "../test-utils/wait-for-state.ts";
+import { getVaultPage } from "../helpers/vault-page.ts";
+import { openEventsWs, callAskAgentOverMcp } from "../helpers/daemon-api.ts";
 
 interface E2EState {
   port: number;
@@ -53,108 +53,6 @@ interface E2EState {
   vaultPath: string;
   obsidianUserDataDir: string;
   dbPath: string;
-}
-
-async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  let page = browser.contexts().flatMap((ctx) => ctx.pages())
-    .find((p) => p.url() === "app://obsidian.md/index.html");
-
-  if (!page) {
-    const ctx = browser.contexts()[0];
-    page = await ctx.waitForEvent("page", {
-      predicate: (p) => p.url() === "app://obsidian.md/index.html",
-      timeout: 20_000,
-    });
-  }
-  await page.waitForLoadState("domcontentloaded");
-
-  try {
-    await page.getByRole("button", { name: /Trust author/i }).click({ timeout: 5_000 });
-  } catch { /* already trusted */ }
-  return { browser, page };
-}
-
-/**
- * Connect to the daemon's /events WebSocket. Returns the WS plus a queue
- * of frames + a Promise-returning waiter (`waitFor`) that resolves on the
- * first matching frame. Used to detect the chat.tool_use{ask_agent} signal
- * that triggers the test's MCP bridge call.
- */
-function openEventsWs(port: number): {
-  ws: WebSocket;
-  waitFor: (predicate: (msg: Record<string, unknown>) => boolean, timeoutMs?: number) => Promise<Record<string, unknown>>;
-} {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/events`);
-  const queue: Record<string, unknown>[] = [];
-  const listeners: Array<(msg: Record<string, unknown>) => void> = [];
-  ws.addEventListener("message", (ev) => {
-    let msg: Record<string, unknown>;
-    try {
-      msg = JSON.parse(typeof ev.data === "string" ? ev.data : ev.data.toString()) as Record<string, unknown>;
-    } catch { return; }
-    queue.push(msg);
-    for (const l of listeners.splice(0)) l(msg);
-  });
-  return {
-    ws,
-    waitFor(predicate, timeoutMs = 10_000) {
-      return new Promise((resolve, reject) => {
-        // First scan the queue for an already-arrived match.
-        const hit = queue.find(predicate);
-        if (hit) return resolve(hit);
-        const t = setTimeout(() => reject(new Error(`waitFor: timeout after ${timeoutMs}ms`)), timeoutMs);
-        const listener = (msg: Record<string, unknown>) => {
-          if (predicate(msg)) {
-            clearTimeout(t);
-            resolve(msg);
-          } else {
-            listeners.push(listener);
-          }
-        };
-        listeners.push(listener);
-      });
-    },
-  };
-}
-
-/**
- * Issue a real MCP `ask_agent` tool call against the daemon. Mirrors the
- * pattern in daemon/test/integration/ask-agent.test.ts: one fresh
- * StreamableHTTPClientTransport per call (stateless mode).
- */
-async function callAskAgentOverMcp(args: {
-  port: number;
-  taskId: string;
-  contextId: string;
-  targetAgentId: string;
-  message: string;
-  toolCallId: string;
-}): Promise<unknown> {
-  const client = new Client({ name: "vos89-t16-spec", version: "0.0.0" });
-  const transport = new StreamableHTTPClientTransport(
-    // VOS-106 T8: /mcp requires ?agent=<name> for calling-agent identity.
-    // The caller here is maya (parent dispatching ask_agent to a child).
-    new URL(`http://127.0.0.1:${args.port}/mcp?agent=maya`),
-  );
-  await client.connect(transport);
-  try {
-    // VOS-97 ADR-0002: runtime ids travel via params._meta, not arguments.
-    return await client.callTool({
-      name: "ask_agent",
-      arguments: {
-        target_agent_id: args.targetAgentId,
-        message: args.message,
-      },
-      _meta: {
-        task_id: args.taskId,
-        context_id: args.contextId,
-        tool_call_id: args.toolCallId,
-      },
-    });
-  } finally {
-    await client.close();
-  }
 }
 
 test("ask_agent end-to-end: maya -> journaler via real MCP + plugin UI", async () => {
@@ -169,7 +67,7 @@ test("ask_agent end-to-end: maya -> journaler via real MCP + plugin UI", async (
   const askAgentResult = (async () => {
     const frame = await events.waitFor(
       (msg) => msg.type === "chat.tool_use" && msg.name === "ask_agent",
-      30_000,
+      { timeoutMs: 30_000 },
     );
     const chatId = String(frame.chat_id);
     const toolCallId = String(frame.tool_call_id ?? "");
@@ -377,7 +275,7 @@ test("ask_agent end-to-end: maya -> journaler via real MCP + plugin UI", async (
     await expect(chatRoot.getByRole("paragraph").filter({ hasText: "hello from fake" }))
       .toBeVisible({ timeout: 10_000 });
   } finally {
-    try { events.ws.close(); } catch { /* ignore */ }
+    events.close();
     await browser.close();
   }
 });

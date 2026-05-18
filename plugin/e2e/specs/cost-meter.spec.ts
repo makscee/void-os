@@ -1,15 +1,16 @@
 import {
   test,
   expect,
-  chromium,
   request,
   type APIRequestContext,
-  type Browser,
   type Page,
 } from "@playwright/test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getVaultPage } from "../helpers/vault-page.ts";
+import { mintChat, sendMessage } from "../helpers/daemon-api.ts";
+import { withFixtureSwap } from "../helpers/fixture-swap.ts";
 
 /**
  * VOS-110 — Chat list shows context tokens; CostMeter shows daily 4-token
@@ -58,26 +59,6 @@ function loadState(): E2EState {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAYA_SCRIPT = path.join(HERE, "..", "fixtures", "ask-agent", "maya.jsonl");
 
-async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  // Inlined per harness convention (no shared helpers module); see
-  // chat-roundtrip.spec.ts and ask-user.spec.ts for prior art.
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  let page = browser.contexts().flatMap((ctx) => ctx.pages())
-    .find((p) => p.url() === "app://obsidian.md/index.html");
-  if (!page) {
-    const ctx = browser.contexts()[0];
-    page = await ctx.waitForEvent("page", {
-      predicate: (p) => p.url() === "app://obsidian.md/index.html",
-      timeout: 20_000,
-    });
-  }
-  await page.waitForLoadState("domcontentloaded");
-  try {
-    await page.getByRole("button", { name: /Trust author/i }).click({ timeout: 5_000 });
-  } catch { /* already trusted */ }
-  return { browser, page };
-}
-
 async function openChatView(page: Page) {
   await expect(page.getByTestId("vos-status-bar"))
     .toHaveText("void-os: connected", { timeout: 20_000 });
@@ -88,29 +69,6 @@ async function openChatView(page: Page) {
   await expect(page.getByTestId("vos-chat-root")).toBeVisible({ timeout: 10_000 });
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
-}
-
-async function mintChatViaApi(api: APIRequestContext, agent: string): Promise<string> {
-  const res = await api.post("/chats", { data: { agent } });
-  expect(res.status()).toBe(200);
-  const body = (await res.json()) as { id: string };
-  expect(body.id).toBeTruthy();
-  return body.id;
-}
-
-async function sendMessageViaApi(
-  api: APIRequestContext,
-  chatId: string,
-  text: string,
-): Promise<void> {
-  // POST /chat/:id/message blocks until orchestrator.dispatch drains
-  // run.end — by the time it returns, the cost subscriber has already
-  // written a costs row (subscribeRunEnd runs synchronously on bus emit
-  // and the fake provider emits run.end immediately after the script
-  // exits cleanly). Awaiting is the right shape here because no part of
-  // this fixture parks on vos_ask_user.
-  const res = await api.post(`/chat/${chatId}/message`, { data: { text } });
-  expect([200, 201, 202]).toContain(res.status());
 }
 
 async function getChatContextTokens(
@@ -143,16 +101,6 @@ async function getCostTodayTotalTokens(api: APIRequestContext): Promise<number> 
 test.describe("VOS-110 token meter", () => {
   test.setTimeout(180_000);
 
-  // Snapshot maya's pinned fake-script so the per-test mutation restores
-  // cleanly for sibling specs (ask-agent*, chat-roundtrip, chat-list-polish).
-  let originalMaya = "";
-  test.beforeEach(() => {
-    originalMaya = readFileSync(MAYA_SCRIPT, "utf8");
-  });
-  test.afterEach(() => {
-    writeFileSync(MAYA_SCRIPT, originalMaya);
-  });
-
   test("context_tokens populates per chat and /cost/today total grows across runs; meter renders 4-token split", async () => {
     const state = loadState();
 
@@ -175,79 +123,80 @@ test.describe("VOS-110 token meter", () => {
       }),
       JSON.stringify({ type: "result", subtype: "success" }),
     ].join("\n") + "\n";
-    writeFileSync(MAYA_SCRIPT, jsonl);
 
-    const { page, browser } = await getVaultPage(state.cdpPort);
-    await openChatView(page);
+    await withFixtureSwap(MAYA_SCRIPT, jsonl, async () => {
+      const { page, browser } = await getVaultPage(state.cdpPort);
+      await openChatView(page);
 
-    const api = await request.newContext({
-      baseURL: `http://127.0.0.1:${state.port}`,
+      const api = await request.newContext({
+        baseURL: `http://127.0.0.1:${state.port}`,
+      });
+      try {
+        const { chatId } = await mintChat(api, "maya");
+
+        // ── Run 1 ─────────────────────────────────────────────────────
+        // Snapshot /cost/today total BEFORE the first run so the cumulative
+        // assertion proves a new costs row landed (not just that some
+        // earlier run already pushed the total above zero).
+        const totalBefore1 = await getCostTodayTotalTokens(api);
+        await sendMessage(api, chatId, "one");
+
+        // Per-chat: latest-turn context size > 0 (proves T2/T3 daemon-side
+        // LEFT JOIN exposes the costs row's token sum).
+        await expect.poll(
+          async () => await getChatContextTokens(api, chatId),
+          { timeout: 15_000, intervals: [100, 250, 500] },
+        ).toBeGreaterThan(0);
+
+        // Cumulative: /cost/today total strictly grew (proves the costs row
+        // was inserted today, not pre-existing).
+        await expect.poll(
+          async () => await getCostTodayTotalTokens(api),
+          { timeout: 15_000, intervals: [100, 250, 500] },
+        ).toBeGreaterThan(totalBefore1);
+
+        const ctx1 = await getChatContextTokens(api, chatId);
+        const totalAfter1 = await getCostTodayTotalTokens(api);
+        expect(ctx1).toBeGreaterThan(0);
+        expect(totalAfter1).toBeGreaterThan(totalBefore1);
+
+        // ── Run 2 ─────────────────────────────────────────────────────
+        // Per-turn context (ctx2) is per-latest-row, not cumulative — it
+        // may equal ctx1 since the planted fixture is identical. The strict
+        // monotonicity claim belongs to /cost/today, not to context_tokens.
+        await sendMessage(api, chatId, "two");
+        await expect.poll(
+          async () => await getCostTodayTotalTokens(api),
+          { timeout: 15_000, intervals: [100, 250, 500] },
+        ).toBeGreaterThan(totalAfter1);
+
+        const ctx2 = await getChatContextTokens(api, chatId);
+        expect(ctx2).toBeGreaterThan(0);
+
+        // ── Meter shape ───────────────────────────────────────────────
+        // After at least one run landed today, the CostMeter widget must
+        // render the 4-token split `<n>k? in / <n>k? out / <n>k? cc /
+        // <n>k? cr`. Gating on the digit-bearing regex prevents the spec
+        // flaking on the cold-start loading text `— in / — out / — cc /
+        // — cr`, which does NOT contain a digit before `in`.
+        const meter = page.getByTestId("cost-meter");
+        await expect(meter).toBeVisible({ timeout: 10_000 });
+        await expect.poll(
+          async () => {
+            const text = await meter.innerText();
+            return (
+              /\d+(\.\d+)?k? in/.test(text) &&
+              /out/.test(text) &&
+              /cc/.test(text) &&
+              /cr/.test(text)
+            );
+          },
+          { timeout: 15_000, intervals: [100, 250, 500] },
+        ).toBe(true);
+      } finally {
+        await api.dispose();
+        await browser.close();
+      }
     });
-    try {
-      const chatId = await mintChatViaApi(api, "maya");
-
-      // ── Run 1 ─────────────────────────────────────────────────────
-      // Snapshot /cost/today total BEFORE the first run so the cumulative
-      // assertion proves a new costs row landed (not just that some
-      // earlier run already pushed the total above zero).
-      const totalBefore1 = await getCostTodayTotalTokens(api);
-      await sendMessageViaApi(api, chatId, "one");
-
-      // Per-chat: latest-turn context size > 0 (proves T2/T3 daemon-side
-      // LEFT JOIN exposes the costs row's token sum).
-      await expect.poll(
-        async () => await getChatContextTokens(api, chatId),
-        { timeout: 15_000, intervals: [100, 250, 500] },
-      ).toBeGreaterThan(0);
-
-      // Cumulative: /cost/today total strictly grew (proves the costs row
-      // was inserted today, not pre-existing).
-      await expect.poll(
-        async () => await getCostTodayTotalTokens(api),
-        { timeout: 15_000, intervals: [100, 250, 500] },
-      ).toBeGreaterThan(totalBefore1);
-
-      const ctx1 = await getChatContextTokens(api, chatId);
-      const totalAfter1 = await getCostTodayTotalTokens(api);
-      expect(ctx1).toBeGreaterThan(0);
-      expect(totalAfter1).toBeGreaterThan(totalBefore1);
-
-      // ── Run 2 ─────────────────────────────────────────────────────
-      // Per-turn context (ctx2) is per-latest-row, not cumulative — it
-      // may equal ctx1 since the planted fixture is identical. The strict
-      // monotonicity claim belongs to /cost/today, not to context_tokens.
-      await sendMessageViaApi(api, chatId, "two");
-      await expect.poll(
-        async () => await getCostTodayTotalTokens(api),
-        { timeout: 15_000, intervals: [100, 250, 500] },
-      ).toBeGreaterThan(totalAfter1);
-
-      const ctx2 = await getChatContextTokens(api, chatId);
-      expect(ctx2).toBeGreaterThan(0);
-
-      // ── Meter shape ───────────────────────────────────────────────
-      // After at least one run landed today, the CostMeter widget must
-      // render the 4-token split `<n>k? in / <n>k? out / <n>k? cc /
-      // <n>k? cr`. Gating on the digit-bearing regex prevents the spec
-      // flaking on the cold-start loading text `— in / — out / — cc /
-      // — cr`, which does NOT contain a digit before `in`.
-      const meter = page.getByTestId("cost-meter");
-      await expect(meter).toBeVisible({ timeout: 10_000 });
-      await expect.poll(
-        async () => {
-          const text = await meter.innerText();
-          return (
-            /\d+(\.\d+)?k? in/.test(text) &&
-            /out/.test(text) &&
-            /cc/.test(text) &&
-            /cr/.test(text)
-          );
-        },
-        { timeout: 15_000, intervals: [100, 250, 500] },
-      ).toBe(true);
-    } finally {
-      await api.dispose();
-      await browser.close();
-    }
   });
 });

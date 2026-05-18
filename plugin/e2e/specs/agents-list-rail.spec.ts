@@ -12,8 +12,9 @@
 // data-agent-name + data-active attrs. Inlined CDP-connect helper
 // follows the chat-roundtrip / agent-picker pattern.
 
-import { test, expect, chromium, type Browser, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { getVaultPage } from "../helpers/vault-page.ts";
 
 interface E2EState {
   port: number;
@@ -21,24 +22,6 @@ interface E2EState {
   vaultPath: string;
   obsidianUserDataDir: string;
   fakeScriptPath: string;
-}
-
-async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  let page = browser.contexts().flatMap((ctx) => ctx.pages())
-    .find((p) => p.url() === "app://obsidian.md/index.html");
-  if (!page) {
-    const ctx = browser.contexts()[0];
-    page = await ctx.waitForEvent("page", {
-      predicate: (p) => p.url() === "app://obsidian.md/index.html",
-      timeout: 20_000,
-    });
-  }
-  await page.waitForLoadState("domcontentloaded");
-  try {
-    await page.getByRole("button", { name: /Trust author/i }).click({ timeout: 5_000 });
-  } catch { /* already trusted */ }
-  return { browser, page };
 }
 
 test("agents list rail: lists agents alphabetically, click mints chat with that agent", async ({ request }) => {

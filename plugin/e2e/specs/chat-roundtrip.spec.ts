@@ -1,7 +1,8 @@
-import { test, expect, chromium, type Page, type Browser } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { waitForTaskRow, waitForTaskState, type TaskRow } from "../test-utils/wait-for-state.ts";
+import { getVaultPage } from "../helpers/vault-page.ts";
 
 /**
  * Chat round-trip smoke. Drives the plugin from a connected state through
@@ -23,26 +24,6 @@ interface E2EState {
   obsidianUserDataDir: string;
   fakeScriptPath: string;
   dbPath: string;
-}
-
-async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  let page = browser.contexts().flatMap((ctx) => ctx.pages())
-    .find((p) => p.url() === "app://obsidian.md/index.html");
-
-  if (!page) {
-    const ctx = browser.contexts()[0];
-    page = await ctx.waitForEvent("page", {
-      predicate: (p) => p.url() === "app://obsidian.md/index.html",
-      timeout: 20_000,
-    });
-  }
-  await page.waitForLoadState("domcontentloaded");
-
-  try {
-    await page.getByRole("button", { name: /Trust author/i }).click({ timeout: 5_000 });
-  } catch { /* already trusted */ }
-  return { browser, page };
 }
 
 test("chat round-trip: user sends a message, fake provider replies", async () => {
