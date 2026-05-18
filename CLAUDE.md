@@ -12,6 +12,7 @@ E2E loop is heavy: ~60-90s per run (daemon + Playwright + Obsidian + scripted LL
 - **ChatList isEmpty filter hides rows with no text turns.** Plain `vos_ask_user`-only fixtures (e.g. `ask-with-options.jsonl`) produce rows that are filtered out. Emit at least one assistant text turn first ("thinking…") so the row renders.
 - **Bun.serve `idleTimeout` must be raised for long ask_user waits.** Default 10s drops the `/events` stream before the operator can answer. Daemon sets `idleTimeout: 255` — keep it if touching daemon entrypoint.
 - **Drive chats via REST when the picker isn't under test.** `POST /chats` + `POST /chat/:id/message` is faster and less flaky than UI picker. Save Playwright clicks for what the spec actually asserts.
+- **Ribbon icon clicks must use `vaultPage.evaluate(el => el.click())`, not `locator.click()`.** Obsidian renders ribbon items as bare `<div class="clickable-icon side-dock-ribbon-action" aria-label="…">` (not buttons). Playwright's actionability check hangs the full 60s test timeout even when the element is visible; `force: true` clicks but doesn't fire Obsidian's delegated handler. Dispatch the native click in-page. Caught VOS-139 2026-05-18.
 
 # context-mode — MANDATORY routing rules
 
