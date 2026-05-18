@@ -143,6 +143,35 @@ export function normalizeCcEvent(
   if (raw.type === "system" && typeof raw.session_id === "string") {
     return { type: "session", sessionId: raw.session_id };
   }
+  // VOS-140: CC's `--include-partial-messages` flag emits `stream_event` frames
+  // that wrap Anthropic message-stream events. The only subtype we surface is
+  // `content_block_delta` with a `text_delta` payload — that's the per-token
+  // text increment we want to forward as a ROLE_AGENT PartsEvent so the
+  // orchestrator can fire chat.token incrementally. Every other subtype
+  // (message_start, content_block_start/stop, message_delta, message_stop,
+  // input_json_delta, signature_delta, …) is dropped — we don't need them
+  // for token-level UI streaming.
+  if (raw.type === "stream_event") {
+    const inner = (raw as { event?: unknown }).event as
+      | {
+          type?: unknown;
+          delta?: { type?: unknown; text?: unknown };
+        }
+      | undefined;
+    if (!inner || typeof inner !== "object") return null;
+    if (inner.type !== "content_block_delta") return null;
+    const delta = inner.delta;
+    if (!delta || typeof delta !== "object") return null;
+    if (delta.type !== "text_delta") return null;
+    if (typeof delta.text !== "string" || delta.text.length === 0) return null;
+    const ts = typeof raw.ts === "number" ? raw.ts : Date.now();
+    return {
+      type: "parts",
+      role: "ROLE_AGENT",
+      parts: [{ text: delta.text } as Part],
+      ts,
+    };
+  }
   if (raw.type === "assistant" || raw.type === "user") {
     const role = raw.type === "assistant" ? "ROLE_AGENT" : "ROLE_USER";
     const ts = typeof raw.ts === "number" ? raw.ts : Date.now();
@@ -212,6 +241,72 @@ export function normalizeCcEvent(
   // Non-canonical frames (e.g. CC `{type:"result"}`, parser-only sentinels)
   // have no consumer-facing equivalent in the canonical union — drop them.
   return null;
+}
+
+/**
+ * VOS-140: stateful CC normalizer for a single provider run.
+ *
+ * Wraps `normalizeCcEvent` with a per-stream flag tracking whether any
+ * `stream_event` content_block_delta text_delta has been observed in this
+ * iteration. When yes, the terminal `assistant` frame's text blocks are
+ * dropped (they would otherwise double-emit text that was already streamed
+ * incrementally). tool_use blocks on the assistant frame are always kept.
+ *
+ * When no stream_event text_delta has been observed (e.g. legacy spawner,
+ * test fakes that emit only assistant frames), the assistant text passes
+ * through unchanged — preserving back-compat with every test that pre-dates
+ * `--include-partial-messages`.
+ *
+ * Each provider spawn / iterator instantiates a fresh normalizer; the state
+ * resets per run.
+ */
+export function makeCcNormalizer(): (
+  raw: LegacyProviderEvent,
+) => CanonicalProviderEvent | null {
+  let sawStreamingText = false;
+  return (raw: LegacyProviderEvent): CanonicalProviderEvent | null => {
+    // Detect text_delta arrivals before delegating, so the assistant-frame
+    // dedup below knows whether to drop terminal text blocks.
+    if (raw.type === "stream_event") {
+      const inner = (raw as { event?: unknown }).event as
+        | { type?: unknown; delta?: { type?: unknown; text?: unknown } }
+        | undefined;
+      if (
+        inner &&
+        typeof inner === "object" &&
+        inner.type === "content_block_delta" &&
+        inner.delta &&
+        typeof inner.delta === "object" &&
+        inner.delta.type === "text_delta" &&
+        typeof inner.delta.text === "string" &&
+        inner.delta.text.length > 0
+      ) {
+        sawStreamingText = true;
+      }
+      return normalizeCcEvent(raw);
+    }
+    if (sawStreamingText && raw.type === "assistant") {
+      // Strip text blocks before normalize so they don't double-emit. We
+      // synthesize a shallow-cloned record with text blocks removed; tool_use
+      // and other block types pass through untouched. If after filtering
+      // there are no remaining content blocks, the normalizer's existing
+      // `if (parts.length === 0) return null` short-circuits.
+      const msg = raw.message as { content?: unknown } | undefined;
+      const content = msg?.content;
+      if (Array.isArray(content)) {
+        const filtered = content.filter((b) => {
+          if (!b || typeof b !== "object") return true;
+          return (b as { type?: unknown }).type !== "text";
+        });
+        const cloned: LegacyProviderEvent = {
+          ...raw,
+          message: { ...(msg ?? {}), content: filtered },
+        };
+        return normalizeCcEvent(cloned);
+      }
+    }
+    return normalizeCcEvent(raw);
+  };
 }
 
 export function extractToolResults(record: CcRecordLike): ToolResultBlock[] {
