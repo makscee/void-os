@@ -87,6 +87,18 @@ export interface AgentDefn {
    * ask any agent".
    */
   ask_agent_allow?: string[];
+  /**
+   * VOS-122 F7: optional declared tool allowlist sourced from the agent.md
+   * frontmatter `tools:` field. The CC spawner intersects this with the
+   * maximal MCP tool set to compute the effective `--tools` arg. `undefined`
+   * means the agent did not declare tools (legacy) — the spawner falls back
+   * to the maximal set and emits a deprecation warning. An empty array means
+   * "no MCP tools allowed".
+   *
+   * Names follow the registered MCP form (e.g. `vault.read`, `ask_agent`),
+   * NOT the CC-emitted `mcp__void-os__vault_read` form.
+   */
+  tools?: string[];
 }
 
 export interface ResolvedScopes {

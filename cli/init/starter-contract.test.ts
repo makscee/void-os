@@ -60,8 +60,13 @@ describe("starter-vault tinker agent.md", () => {
   it("frontmatter tools list still includes core vault + ask_user tools", () => {
     const tools = fm.tools as string[]
     // The starter agent must still be able to read/write the vault and ask
-    // the user — those are the irreducible Concierge capabilities.
-    for (const t of ["vault.read", "vault.write", "ask_user"]) {
+    // the user — those are the irreducible Concierge capabilities. Note: the
+    // MCP surface exposes `vault.create` (new file), `vault.append`, etc. —
+    // there is no aggregate `vault.write` tool. Pre-F7 tinker frontmatter
+    // used `vault.write`/`vault.list` as logical names; F7 tightened the
+    // declared list to match the real MCP tool names (see
+    // ALLOWED_MCP_TOOLS_VOID_OS in spawn-settings.ts).
+    for (const t of ["vault.read", "vault.create", "ask_user"]) {
       expect(tools).toContain(t)
     }
   })

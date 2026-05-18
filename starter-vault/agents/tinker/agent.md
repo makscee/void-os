@@ -17,11 +17,13 @@ write_scope:
 skills: []
 tools:
   - vault.read
-  - vault.write
+  - vault.create
   - vault.append
+  - vault.replace_section
+  - vault.set_property
+  - vault.patch
   - vault.move
   - vault.delete
-  - vault.list
   - ask_user
 ---
 

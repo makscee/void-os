@@ -107,6 +107,13 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
   if (Array.isArray(parsed.write_scope)) {
     defn.write_scope = parsed.write_scope as string[];
   }
+  // VOS-122 F7: declared tool allowlist (sourced from agent.md frontmatter
+  // `tools:`). Absent => legacy permissive path in the CC spawner.
+  if (Array.isArray(parsed.tools)) {
+    defn.tools = (parsed.tools as unknown[]).filter(
+      (x): x is string => typeof x === "string",
+    );
+  }
   return defn;
 }
 
