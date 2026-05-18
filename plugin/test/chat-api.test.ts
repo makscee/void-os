@@ -9,7 +9,9 @@ function fakeFetch(handler: (url: string, init?: RequestInit) => Response) {
 }
 
 describe("makeChatApi", () => {
-  test("createChat POSTs /chats with default agent and parses JSON", async () => {
+  test("createChat POSTs /chats with the supplied agent and parses JSON", async () => {
+    // VOS-124: no silent "maya" default — callers must pass an agent name.
+    // createChat() with no arg sends no agent field (daemon rejects it at T3).
     const calls: { url: string; body?: string }[] = [];
     const api = makeChatApi(
       "http://test",
@@ -21,10 +23,14 @@ describe("makeChatApi", () => {
         );
       }) as any,
     );
-    const r = await api.createChat();
+    // With an explicit agent name:
+    const r = await api.createChat("journaler");
     expect(r).toEqual({ id: "c1", title: "untitled", created_at: 1 });
     expect(calls[0].url).toBe("http://test/chats");
-    expect(JSON.parse(calls[0].body!)).toEqual({ agent: "maya" });
+    expect(JSON.parse(calls[0].body!)).toEqual({ agent: "journaler" });
+    // With no agent (undefined) — body omits the field:
+    await api.createChat();
+    expect(JSON.parse(calls[1].body!)).toEqual({});
   });
 
   test("postMessage POSTs /chat/:id/message with text body", async () => {

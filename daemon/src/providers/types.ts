@@ -66,6 +66,10 @@ export interface ProviderSpawnRequest {
   runId: string;
   taskId: string;               // ADR-0001 §Decision
   contextId: string;            // ADR-0001 §Decision; supersedes the legacy chatId
+  /** VOS-124: per-run requested agent name. Providers use this for
+   *  turn.start.payload.agent so the trace reflects the actual agent that
+   *  was invoked, not the provider's static identity (opts.agent). */
+  agent?: string;
   prompt: string;
   cwd: string;
   resumeFrom?: string;          // session id passed to --resume

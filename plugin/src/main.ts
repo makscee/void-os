@@ -228,7 +228,10 @@ export default class VoidOsPlugin extends Plugin {
         agentsApi,
         chatId: this.settings!.get().chatId,
         onChatIdMinted: (id) => this.settings!.setChatId(id),
-        defaultAgent: "maya", // retained as fallback only
+        // defaultAgent intentionally omitted — callers must pick an agent
+        // explicitly. T3 (VOS-124) rejects unknown agents at the daemon
+        // boundary; a silent "maya" fallback here would silently route to
+        // the wrong agent if the user never opened the picker.
         openPicker,
       })),
     );
