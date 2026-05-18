@@ -203,6 +203,9 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
     // the spawn flags — both skip the PreToolUse layer that enforces F7.
     permissions: {
       allow: toolsArg,
+      // VOS-107: AskUserQuestion denied so agents reach the user via the MCP
+      // vos_ask_user surface (plugin renders option buttons). Without this,
+      // the model prefers the trained-in name and the plugin shows raw JSON.
       deny: ["AskUserQuestion"],
     },
   };
