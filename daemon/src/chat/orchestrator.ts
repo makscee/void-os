@@ -48,6 +48,7 @@ import type { Part, DataPart } from "../types/a2a";
 
 import type { Provider, ProviderHandle } from "../providers/index.ts";
 import { drainRun, mergeAdjacentText } from "./run-driver.ts";
+import { setPendingAskUserToolUseId } from "./ask-user-pending-registry.ts";
 
 export interface TitlerLike {
   title(chatId: string): Promise<void>;
@@ -525,11 +526,23 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
               if (!data || typeof data !== "object") continue;
               const kind = (data as { kind?: unknown }).kind;
               if (kind === "tool_use") {
+                const toolCallId = (data as { tool_call_id?: string }).tool_call_id;
+                const toolName = (data as { tool_name?: string }).tool_name;
+                // VOS-147: stash CC's toolu_* id so the upcoming MCP
+                // tools/call for ask_user uses it as the bridge slot id.
+                // Without this, /answer first-try 409s because the plugin
+                // posts CC's id but the bridge stored a random UUID.
+                if (
+                  typeof toolCallId === "string" &&
+                  (toolName === "ask_user" || toolName === "mcp__void-os__ask_user")
+                ) {
+                  setPendingAskUserToolUseId(taskId, runId, toolCallId);
+                }
                 emit("chat.tool_use", {
                   chat_id: chatId,
                   run_id: runId,
-                  tool_call_id: (data as { tool_call_id?: string }).tool_call_id,
-                  name: (data as { tool_name?: string }).tool_name,
+                  tool_call_id: toolCallId,
+                  name: toolName,
                   input: (data as { input?: unknown }).input,
                 });
               } else if (kind === "tool_result") {
