@@ -118,3 +118,19 @@ describe("toIntent — coupled defaults", () => {
     expect(intent.network).toBe("none");
   });
 });
+
+describe("toIntent — denyTools normalization", () => {
+  test("explicit tools containing deny-listed name is stripped", () => {
+    const defn: AgentDefn = { name: "x", tools: ["AskUserQuestion", "Bash"] };
+    expect(toIntent(defn, SCOPES_RW, SYS_DENY).tools).toEqual(["Bash"]);
+  });
+
+  test("normalization preserves order otherwise", () => {
+    const defn: AgentDefn = { name: "x", tools: ["Bash", "ask_user", "AskUserQuestion", "Read"] };
+    expect(toIntent(defn, SCOPES_RW, SYS_DENY).tools).toEqual(["Bash", "ask_user", "Read"]);
+  });
+
+  test("normalization is a no-op when tools is undefined", () => {
+    expect(toIntent({ name: "x" }, SCOPES_RW, SYS_DENY).tools).toBeUndefined();
+  });
+});

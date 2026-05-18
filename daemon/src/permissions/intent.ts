@@ -34,13 +34,16 @@ export function toIntent(
   const defaultNetwork: "none" | "allow" = posture === "read-only" ? "none" : "allow";
   const network: "none" | "allow" = defn.network ?? defaultNetwork;
 
+  const denyTools = ["AskUserQuestion"];
+  const tools = defn.tools === undefined ? undefined : defn.tools.filter((t) => !denyTools.includes(t));
+
   return {
-    tools: defn.tools,
+    tools,
     readPaths: scopes.readPaths,
     writePaths: scopes.writePaths,
     network,
     posture,
-    denyTools: ["AskUserQuestion"],
+    denyTools,
     systemDenyPaths,
   };
 }
