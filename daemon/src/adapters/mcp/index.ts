@@ -83,11 +83,82 @@ export interface McpDeps {
 }
 
 /**
+ * VOS-145: shape of the parsed `agent_cards.card_json` payload (all fields
+ * `unknown` so the helper can defensively validate before casting).
+ */
+export interface AgentDefnCard {
+  name?: unknown;
+  read_scope?: unknown;
+  write_scope?: unknown;
+  ask_agent_allow?: unknown;
+  tools?: unknown;
+  network?: unknown;
+  posture?: unknown;
+}
+
+/**
+ * VOS-145: pure card-validation helper. Lifted out of `defaultLoadAgentDefn`
+ * so it can be unit-tested without the sqlite round-trip. Validates the
+ * new `network` + `posture` fields and rejects bogus values with a clear
+ * error. All existing field-reads (ask_agent_allow, read_scope, write_scope,
+ * tools) are preserved with their original `Array.isArray` defensive checks.
+ */
+export function validateAgentDefnCard(card: AgentDefnCard, fallbackName: string): AgentDefn {
+  const name = typeof card.name === "string" && card.name.length > 0 ? card.name : fallbackName;
+
+  const network = card.network;
+  if (network !== undefined && network !== "none" && network !== "allow") {
+    throw new Error(
+      `agent ${name}: 'network' must be 'none' or 'allow' (got ${JSON.stringify(network)})`,
+    );
+  }
+
+  const posture = card.posture;
+  if (
+    posture !== undefined &&
+    posture !== "read-only" &&
+    posture !== "workspace-write" &&
+    posture !== "open"
+  ) {
+    throw new Error(
+      `agent ${name}: 'posture' must be 'read-only', 'workspace-write', or 'open' (got ${JSON.stringify(posture)})`,
+    );
+  }
+
+  const defn: AgentDefn = { name };
+  if (Array.isArray(card.ask_agent_allow)) {
+    defn.ask_agent_allow = card.ask_agent_allow as string[];
+  }
+  if (Array.isArray(card.read_scope)) {
+    defn.read_scope = card.read_scope as string[];
+  }
+  if (Array.isArray(card.write_scope)) {
+    defn.write_scope = card.write_scope as string[];
+  }
+  // VOS-122 F7: declared tool allowlist (sourced from agent.md frontmatter
+  // `tools:`). Absent => legacy permissive path in the CC spawner.
+  if (Array.isArray(card.tools)) {
+    defn.tools = (card.tools as unknown[]).filter(
+      (x): x is string => typeof x === "string",
+    );
+  }
+  if (network !== undefined) {
+    defn.network = network;
+  }
+  if (posture !== undefined) {
+    defn.posture = posture;
+  }
+  return defn;
+}
+
+/**
  * VOS-89 T10: default AgentDefn loader — reads `agent_cards.card_json`
  * and parses it. The card JSON is expected to carry at least `name`;
  * `ask_agent_allow` is optional, and when absent the field is left
  * `undefined` (NOT empty array), which the permission gate in
  * ask_agent treats as permissive at the agent level.
+ *
+ * VOS-145: card validation extracted to `validateAgentDefnCard` (pure helper).
  */
 export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn {
   const row = db
@@ -96,25 +167,8 @@ export function defaultLoadAgentDefn(db: Database, agentName: string): AgentDefn
   if (!row) {
     throw new Error(`unknown agent: ${agentName}`);
   }
-  const parsed = JSON.parse(row.card_json) as Record<string, unknown>;
-  const defn: AgentDefn = { name: agentName };
-  if (Array.isArray(parsed.ask_agent_allow)) {
-    defn.ask_agent_allow = parsed.ask_agent_allow as string[];
-  }
-  if (Array.isArray(parsed.read_scope)) {
-    defn.read_scope = parsed.read_scope as string[];
-  }
-  if (Array.isArray(parsed.write_scope)) {
-    defn.write_scope = parsed.write_scope as string[];
-  }
-  // VOS-122 F7: declared tool allowlist (sourced from agent.md frontmatter
-  // `tools:`). Absent => legacy permissive path in the CC spawner.
-  if (Array.isArray(parsed.tools)) {
-    defn.tools = (parsed.tools as unknown[]).filter(
-      (x): x is string => typeof x === "string",
-    );
-  }
-  return defn;
+  const card = JSON.parse(row.card_json) as AgentDefnCard;
+  return validateAgentDefnCard(card, agentName);
 }
 
 export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): McpServer {
