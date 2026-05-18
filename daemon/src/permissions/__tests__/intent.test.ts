@@ -92,3 +92,29 @@ describe("toIntent — explicit network/posture", () => {
     expect(toIntent(defn, SCOPES_RW, SYS_DENY).posture).toBe("read-only");
   });
 });
+
+describe("toIntent — coupled defaults", () => {
+  test("write-capable scopes default: posture='workspace-write', network='allow'", () => {
+    const intent = toIntent({ name: "x" }, SCOPES_RW, SYS_DENY);
+    expect(intent.posture).toBe("workspace-write");
+    expect(intent.network).toBe("allow");
+  });
+
+  test("read-only scopes default: posture='read-only', network='none' (coupled)", () => {
+    const intent = toIntent({ name: "x" }, SCOPES_RO, SYS_DENY);
+    expect(intent.posture).toBe("read-only");
+    expect(intent.network).toBe("none");
+  });
+
+  test("read-only scopes + explicit network='allow' → 'allow' wins", () => {
+    const intent = toIntent({ name: "x", network: "allow" }, SCOPES_RO, SYS_DENY);
+    expect(intent.posture).toBe("read-only");
+    expect(intent.network).toBe("allow");
+  });
+
+  test("write-capable + explicit network='none' → 'none' wins", () => {
+    const intent = toIntent({ name: "x", network: "none" }, SCOPES_RW, SYS_DENY);
+    expect(intent.posture).toBe("workspace-write");
+    expect(intent.network).toBe("none");
+  });
+});
