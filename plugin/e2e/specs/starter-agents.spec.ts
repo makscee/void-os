@@ -109,9 +109,10 @@ test("starter-vault agents declare scoped read/write with write ⊆ read", () =>
     .filter((d) => d.isDirectory())
     .map((d) => d.name);
 
-  // Plan stated 3 starter agents (maya, journaler, task-tracker).
-  expect(folders.length).toBeGreaterThanOrEqual(3);
-  for (const required of ["maya", "journaler", "task-tracker"]) {
+  // Post-VOS-119: legacy seed agents (maya, journaler, task-tracker) were
+  // dropped; tinker/ replaced them as the single canonical starter agent.
+  expect(folders.length).toBeGreaterThanOrEqual(1);
+  for (const required of ["tinker"]) {
     expect(folders, `missing starter agent: ${required}`).toContain(required);
   }
 
