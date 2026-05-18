@@ -24,19 +24,22 @@ interface Entry {
 
 const _registry = new Map<string, Entry>();
 
-function key(taskId: string, runId: string | null | undefined): string {
-  return `${taskId}::${runId ?? ""}`;
+function key(taskId: string): string {
+  return taskId;
 }
 
 /** Orchestrator-side: record CC's tool_use id for an in-flight ask_user.
- *  Idempotent per (taskId, runId): a second set replaces the prior id and
- *  resolves any pending awaiter. */
+ *  Keyed by taskId only: ask_user blocks the task until /answer resolves,
+ *  so at most one open prompt per task at a time. (Orchestrator's per-turn
+ *  runId differs from the spawn-time VOS_RUN_ID seen by ask-user.ts in
+ *  later turns, so runId is NOT a reliable correlator.)
+ *  Idempotent: a second set replaces the prior id and resolves any awaiter. */
 export function setPendingAskUserToolUseId(
   taskId: string,
-  runId: string | null | undefined,
+  _runIdUnused: string | null | undefined,
   toolUseId: string,
 ): void {
-  const k = key(taskId, runId);
+  const k = key(taskId);
   const prev = _registry.get(k);
   if (prev) {
     prev.toolUseId = toolUseId;
@@ -53,10 +56,10 @@ export function setPendingAskUserToolUseId(
  *  always cleared after this returns (success or timeout). */
 export async function takePendingAskUserToolUseId(
   taskId: string,
-  runId: string | null | undefined,
+  _runIdUnused: string | null | undefined,
   timeoutMs: number,
 ): Promise<string | null> {
-  const k = key(taskId, runId);
+  const k = key(taskId);
   const existing = _registry.get(k);
   if (existing) {
     _registry.delete(k);
