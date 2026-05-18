@@ -126,4 +126,16 @@ describe("decideFromFlags", () => {
     })
     expect(d.obsidianVaultName).toBe("custom")
   })
+
+  it("skipGh wins over ghRepo when both reach decideFromFlags", () => {
+    const r = { ...niBaseReport, gh: { found: true, authed: true } }
+    const d = decideFromFlags(r, {
+      nonInteractive: true,
+      vault: "/tmp/v",
+      ghRepo: "x",
+      skipGh: true,
+      skipObsidian: true,
+    })
+    expect(d.gh).toEqual({ push: false })
+  })
 })

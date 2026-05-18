@@ -94,7 +94,9 @@ export function decideFromFlags(
   const vaultPath = expandHome(flags.vault)
 
   let gh: GhDecision = { push: false }
-  if (flags.ghRepo) {
+  if (flags.skipGh) {
+    gh = { push: false }
+  } else if (flags.ghRepo) {
     if (!report.gh.found || !report.gh.authed) {
       throw new FlagsError(
         "gh not available (not installed or not authed); remove --gh-repo or fix gh first",
