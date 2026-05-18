@@ -1,0 +1,39 @@
+// daemon/src/permissions/intent.ts
+import type { AgentDefn } from "./engine";
+
+export type AgentPermissionPosture = "read-only" | "workspace-write" | "open";
+
+export interface AgentPermissionIntent {
+  /**
+   * Tri-state logical tool grants:
+   * - `undefined` ⇒ legacy ("author said nothing") ⇒ adapter grants maximal set.
+   * - `[]` ⇒ explicit "no tools" ⇒ adapter grants built-ins only, zero MCP.
+   * - non-empty ⇒ intersected against allowlist.
+   * Names are dotted registered form (e.g. `ask_user`), NOT CC-emitted `mcp__void-os__ask_user`.
+   */
+  tools?: string[];
+  readPaths: string[];
+  writePaths: string[];
+  network: "none" | "allow";
+  posture: AgentPermissionPosture;
+  /** Logical tool denies — always ['AskUserQuestion']. → CC permissions.deny. */
+  denyTools: string[];
+  /** Filesystem write blocklist (homeRoot, ~/.ssh, etc). → CC VOS_SYSTEM_DENY env. */
+  systemDenyPaths: string[];
+}
+
+export function toIntent(
+  defn: AgentDefn,
+  scopes: { readPaths: string[]; writePaths: string[] },
+  systemDenyPaths: string[],
+): AgentPermissionIntent {
+  return {
+    tools: defn.tools,
+    readPaths: scopes.readPaths,
+    writePaths: scopes.writePaths,
+    network: "allow",
+    posture: "workspace-write",
+    denyTools: ["AskUserQuestion"],
+    systemDenyPaths,
+  };
+}
