@@ -50,3 +50,23 @@ describe("toIntent — tools tri-state + deny constants", () => {
     expect(toIntent({ name: "x" }, SCOPES_RW, []).systemDenyPaths).toEqual([]);
   });
 });
+
+describe("toIntent — scopes pass through verbatim", () => {
+  test("readPaths from scopes argument", () => {
+    const scopes = { readPaths: ["/vault", "/tmp/x"], writePaths: ["/vault"] };
+    const intent = toIntent({ name: "x" }, scopes, SYS_DENY);
+    expect(intent.readPaths).toEqual(["/vault", "/tmp/x"]);
+  });
+
+  test("writePaths from scopes argument", () => {
+    const scopes = { readPaths: ["/vault"], writePaths: ["/vault/journal"] };
+    const intent = toIntent({ name: "x" }, scopes, SYS_DENY);
+    expect(intent.writePaths).toEqual(["/vault/journal"]);
+  });
+
+  test("read-only scopes (writePaths=[]) pass through", () => {
+    const scopes = { readPaths: ["/vault"], writePaths: [] };
+    const intent = toIntent({ name: "x" }, scopes, SYS_DENY);
+    expect(intent.writePaths).toEqual([]);
+  });
+});
