@@ -81,7 +81,6 @@ Flags:
 - `--skip-build` — skip `bun install` + plugin build (dev iteration)
 - `--force` — overwrite a non-empty target dir
 - `--gh-repo <name>` — opt in to creating a private GitHub repo + pushing initial commit
-- `--gh-public` — make the gh repo public (requires `--gh-repo`)
 
 Then start the daemon explicitly:
 
