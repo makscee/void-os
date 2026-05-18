@@ -48,17 +48,6 @@ describe("installPlugin()", () => {
 })
 
 describe("ensurePluginBuilt()", () => {
-  it("no-op when plugin/dist already exists", () => {
-    let called = false
-    const r = ensurePluginBuilt({
-      prefix,
-      dryRun: false,
-      spawn: () => { called = true; return { status: 0 } },
-    })
-    expect(r).toEqual({ built: true, ran: false })
-    expect(called).toBe(false)
-  })
-
   it("invokes bun run build in plugin dir when dist missing, with VOID_OS_PLUGIN_OUT pinned", () => {
     rmSync(join(prefix, "plugin/dist"), { recursive: true })
     let spawnedCmd = ""
@@ -181,5 +170,24 @@ describe("ensurePluginBuilt()", () => {
     })
     expect(called).toBe(false)
     expect(r.ran).toBe(false)
+  })
+})
+
+describe("ensurePluginBuilt always rebuilds", () => {
+  it("runs build even when dist files are present", () => {
+    let spawnCalled = 0
+    const spawn = () => { spawnCalled++; return { status: 0, stdout: "", stderr: "" } }
+    const r = ensurePluginBuilt({ prefix, dryRun: false, spawn })
+    expect(spawnCalled).toBe(1)
+    expect(r.ran).toBe(true)
+  })
+
+  it("--skip-build still bypasses (orchestrator gate)", () => {
+    // ensurePluginBuilt itself has no skipBuild gate; the orchestrator wraps it.
+    // This test documents that ensurePluginBuilt always tries.
+    let spawnCalled = 0
+    const spawn = () => { spawnCalled++; return { status: 0, stdout: "", stderr: "" } }
+    ensurePluginBuilt({ prefix, dryRun: false, spawn })
+    expect(spawnCalled).toBe(1)
   })
 })

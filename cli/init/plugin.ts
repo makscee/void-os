@@ -69,10 +69,6 @@ export function ensurePluginBuilt(opts: {
 }): EnsureBuiltResult {
   const { cmd, args, cwd, env, distDir } = pluginBuildEnv(opts.prefix)
   const pluginDir = cwd
-  // Already built? Trust dist only if the key artifacts are present.
-  if (existsSync(distDir) && PLUGIN_DIST_FILES.every((f) => existsSync(join(distDir, f)))) {
-    return { built: true, ran: false }
-  }
   if (!existsSync(pluginDir)) return { built: false, ran: false }
   if (opts.dryRun) return { built: false, ran: false }
 
