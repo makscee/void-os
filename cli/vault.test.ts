@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
+// VOS-134: daemon pre-flights the CC wrapper at boot. Tests just need the env
+// var to point at any existing file; the daemon never invokes it here.
+process.env.VOID_OS_CC_BIN = process.env.VOID_OS_CC_BIN ?? "/bin/sh";
+
 const VOS_ROOT = resolve(__dirname, "..");
 const BIN = join(VOS_ROOT, "bin/void-os");
 

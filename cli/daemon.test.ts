@@ -6,6 +6,10 @@ import { spawnSync } from "node:child_process";
 import { readPidJson, writePidJson } from "./lib/state-dir.ts";
 import { cmdStart, isPidAlive } from "./daemon.ts";
 
+// VOS-134: daemon now pre-flights the CC wrapper at boot. Tests don't care
+// which binary it is — `/bin/sh` is always present and just needs to exist.
+process.env.VOID_OS_CC_BIN = process.env.VOID_OS_CC_BIN ?? "/bin/sh";
+
 const VOS_ROOT = resolve(__dirname, "..");
 const BIN = join(VOS_ROOT, "bin/void-os");
 

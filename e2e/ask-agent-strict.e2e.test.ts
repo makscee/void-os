@@ -153,6 +153,10 @@ async function startDaemon(): Promise<DaemonRig> {
       VOS_FAKE_SCRIPT_tinker: FIX_HAPPY,
       ANTHROPIC_API_KEY: "",
       VOID_KEYS_URL: "",
+      // VOS-134: daemon pre-flights the CC wrapper at boot. VOS_PROVIDER=fake
+      // never actually spawns it, but the pre-flight runs unconditionally.
+      // Point at /bin/sh (always exists) to satisfy the check.
+      VOID_OS_CC_BIN: process.env.VOID_OS_CC_BIN ?? "/bin/sh",
     },
     stdout: "ignore",
     stderr: "ignore",

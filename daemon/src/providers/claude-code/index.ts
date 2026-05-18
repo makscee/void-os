@@ -2,8 +2,8 @@
 // T5: full wire-up — Bun.spawn + parser + watchdog + runs/events writes.
 
 import type { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, existsSync } from "node:fs";
+import { join, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { EventBus, UsageTurn } from "../../events/index.js";
 import { createStreamParser, classifyToolEvents } from "./parser.js";
@@ -98,17 +98,126 @@ export class NoSessionError extends Error {
 const VERSION_RE = /(\d+\.\d+(?:\.\d+)?)\s*\(Claude Code\)/;
 const FALLBACK_VERSION_RE = /\b(\d+\.\d+\.\d+)\b/;
 
+/** VOS-134: env var to point at a non-PATH `claudev` (or replacement wrapper).
+ *  Fresh-user fix — `~/.claudev/bin/claudev` is NOT on default PATH; instead
+ *  of forcing every operator to edit their shell rc, the daemon reads this
+ *  env var first and falls back to "claudev" (PATH lookup). */
+export const CC_BIN_ENV_VAR = "VOID_OS_CC_BIN";
+export const DEFAULT_CC_BIN = "claudev";
+
+/**
+ * VOS-134: resolve the CC wrapper binary for spawn + probe.
+ * Precedence:
+ *   1. Explicit `binary` arg (test-injected / deps-override)
+ *   2. `process.env.VOID_OS_CC_BIN`
+ *   3. "claudev" (PATH lookup)
+ */
+export function resolveCcBin(explicit?: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (explicit !== undefined && explicit !== "") return explicit;
+  const fromEnv = env[CC_BIN_ENV_VAR];
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+  return DEFAULT_CC_BIN;
+}
+
+/** VOS-134: PATH search for a bare-name binary. Returns the absolute path of
+ *  the first executable named `name` on PATH, or null if none found. Used by
+ *  the daemon's pre-flight check to surface "claudev missing" BEFORE the
+ *  HTTP server binds — instead of the deferred "Executable not found in $PATH"
+ *  buried in the first spawn attempt. */
+export function findOnPath(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  // Absolute / relative path with separator: check directly.
+  if (name.includes("/") || isAbsolute(name)) {
+    return existsSync(name) ? name : null;
+  }
+  const pathVar = env.PATH ?? "";
+  if (!pathVar) return null;
+  for (const dir of pathVar.split(":")) {
+    if (!dir) continue;
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+export interface CcBinCheckArgs {
+  /** Override env (tests). Defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface CcBinCheckResult {
+  ok: boolean;
+  /** Effective CC binary name/path used for spawn — what resolveCcBin returned. */
+  binary: string;
+  /** Absolute path if resolution found a file; null otherwise. */
+  resolvedPath: string | null;
+  /** Actionable error string (set when ok===false). */
+  reason?: string;
+}
+
+/**
+ * VOS-134: daemon-startup pre-flight check. Resolves the CC wrapper via
+ * env var → PATH → default, and verifies it exists. Returns a structured
+ * result; the caller is responsible for log + exit. Fail-fast so the user
+ * sees a clear message before any HTTP traffic is accepted.
+ */
+export function checkCcBinAvailable(args: CcBinCheckArgs = {}): CcBinCheckResult {
+  const env = args.env ?? process.env;
+  const binary = resolveCcBin(undefined, env);
+  // Absolute path: must exist on disk.
+  if (binary.includes("/") || isAbsolute(binary)) {
+    if (existsSync(binary)) {
+      return { ok: true, binary, resolvedPath: binary };
+    }
+    return {
+      ok: false,
+      binary,
+      resolvedPath: null,
+      reason:
+        `void-os daemon: CC wrapper not found at ${binary} ` +
+        `(from ${env[CC_BIN_ENV_VAR] ? CC_BIN_ENV_VAR : "default"}). ` +
+        `Set ${CC_BIN_ENV_VAR} to your Claude Code wrapper path, ` +
+        `or ensure '${DEFAULT_CC_BIN}' is on PATH. ` +
+        `Then retry 'void-os daemon start'.`,
+    };
+  }
+  // Bare name: PATH lookup.
+  const found = findOnPath(binary, env);
+  if (found) {
+    return { ok: true, binary, resolvedPath: found };
+  }
+  const path = env.PATH ?? "";
+  const pathPreview = path.length > 200 ? path.slice(0, 200) + "…" : path;
+  return {
+    ok: false,
+    binary,
+    resolvedPath: null,
+    reason:
+      `void-os daemon: CC wrapper not found. ` +
+      `Set ${CC_BIN_ENV_VAR} to your Claude Code wrapper path ` +
+      `(e.g. ~/.claudev/bin/claudev), ` +
+      `or ensure '${DEFAULT_CC_BIN}' is on PATH. ` +
+      `Current PATH: ${pathPreview}. ` +
+      `Then retry 'void-os daemon start'.`,
+  };
+}
+
 /**
  * Probe claudev by invoking `claudev claude --version`.
  * Returns structured result. Handles ENOENT (claudev not on PATH) gracefully.
+ * VOS-134: when called with no args, honours `VOID_OS_CC_BIN` env var before
+ * falling back to "claudev". Tests can still pass an explicit binary string.
  */
 export const probeClaudev = async (
-  binary = "claudev",
+  binary?: string,
 ): Promise<ProbeResult> => {
+  const effectiveBinary = resolveCcBin(binary);
   let proc: Awaited<ReturnType<typeof Bun.spawn>>;
   try {
     proc = Bun.spawn({
-      cmd: [binary, "claude", "--version"],
+      cmd: [effectiveBinary, "claude", "--version"],
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -176,7 +285,10 @@ interface CcSpawnerDeps {
 
 export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
   mkdirSync(deps.tracesDir, { recursive: true });
-  const binary = deps.binary ?? "claudev";
+  // VOS-134: honour `VOID_OS_CC_BIN` env var when deps.binary is unset, so
+  // operators can point at `~/.claudev/bin/claudev` without editing PATH.
+  // Explicit deps.binary (test injection) still wins.
+  const binary = resolveCcBin(deps.binary);
   const tickMs = deps.watchdogTickMs ?? DEFAULT_WATCHDOG_TICK_MS;
   const now = deps.now ?? (() => Date.now());
 
