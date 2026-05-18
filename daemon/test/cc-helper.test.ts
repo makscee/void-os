@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { probeClaudev } from "../src/providers/claude-code/index.js";
 
 const hasClaudev = await (async () => {
@@ -12,7 +12,19 @@ const hasClaudev = await (async () => {
   }
 })();
 
+// VOS-134: belt-and-braces snapshot/restore of VOID_OS_CC_BIN so a future
+// leak from sibling tests (or a careless import side-effect) can't silently
+// re-break the PATH-resolution case below.
 describe("probeClaudev", () => {
+  let savedCcBin: string | undefined;
+  beforeEach(() => {
+    savedCcBin = process.env.VOID_OS_CC_BIN;
+    delete process.env.VOID_OS_CC_BIN;
+  });
+  afterEach(() => {
+    if (savedCcBin !== undefined) process.env.VOID_OS_CC_BIN = savedCcBin;
+    else delete process.env.VOID_OS_CC_BIN;
+  });
   test.if(hasClaudev)("returns version when claudev is on PATH", async () => {
     const result = await probeClaudev();
     expect(result.ok).toBe(true);
