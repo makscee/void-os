@@ -1,7 +1,13 @@
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, accessSync, constants as fsConstants } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
+
+export interface ClaudevDetection {
+  found: boolean
+  path?: string
+  source?: "env" | "path"
+}
 
 export interface PreflightReport {
   os: "darwin" | "linux" | "unknown"
@@ -9,6 +15,7 @@ export interface PreflightReport {
   bun: { found: boolean; version?: string }
   gh: { found: boolean; authed: boolean }
   obsidian: { found: boolean }
+  claudev: ClaudevDetection
 }
 
 export interface PreflightDeps {
@@ -16,6 +23,7 @@ export interface PreflightDeps {
   fileExists: (path: string) => boolean
   runSync: (cmd: string, args: string[]) => { status: number; stdout: string; stderr: string }
   platform: NodeJS.Platform
+  env: NodeJS.ProcessEnv
 }
 
 const defaultDeps: PreflightDeps = {
@@ -29,25 +37,46 @@ const defaultDeps: PreflightDeps = {
     return { status: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }
   },
   platform: process.platform,
+  env: process.env,
 }
 
-export function detect(deps: PreflightDeps = defaultDeps): PreflightReport {
-  const os: PreflightReport["os"] =
-    deps.platform === "darwin" ? "darwin" :
-    deps.platform === "linux" ? "linux" : "unknown"
+function isExecutable(p: string): boolean {
+  try { accessSync(p, fsConstants.X_OK); return true } catch { return false }
+}
 
-  const claudeBin = deps.whichSync("claude")
-  const bunBin = deps.whichSync("bun")
-  const ghBin = deps.whichSync("gh")
+export function detectClaudev(env: NodeJS.ProcessEnv = process.env): ClaudevDetection {
+  const fromEnv = env.VOID_OS_CC_BIN
+  if (fromEnv && existsSync(fromEnv) && isExecutable(fromEnv)) {
+    return { found: true, path: fromEnv, source: "env" }
+  }
+  const paths = (env.PATH ?? "").split(":").filter(Boolean)
+  for (const dir of paths) {
+    const candidate = join(dir, "claudev")
+    if (existsSync(candidate) && isExecutable(candidate)) {
+      return { found: true, path: candidate, source: "path" }
+    }
+  }
+  return { found: false }
+}
+
+export function detect(deps: Partial<PreflightDeps> = {}): PreflightReport {
+  const d: PreflightDeps = { ...defaultDeps, ...deps }
+  const os: PreflightReport["os"] =
+    d.platform === "darwin" ? "darwin" :
+    d.platform === "linux" ? "linux" : "unknown"
+
+  const claudeBin = d.whichSync("claude")
+  const bunBin = d.whichSync("bun")
+  const ghBin = d.whichSync("gh")
 
   let ghAuthed = false
   if (ghBin) {
-    ghAuthed = deps.runSync("gh", ["auth", "status"]).status === 0
+    ghAuthed = d.runSync("gh", ["auth", "status"]).status === 0
   }
 
   const obsidianFound =
-    os === "darwin" ? deps.fileExists("/Applications/Obsidian.app") :
-    os === "linux" ? (deps.whichSync("obsidian") !== null || deps.fileExists(join(homedir(), ".config/Obsidian"))) :
+    os === "darwin" ? d.fileExists("/Applications/Obsidian.app") :
+    os === "linux" ? (d.whichSync("obsidian") !== null || d.fileExists(join(homedir(), ".config/Obsidian"))) :
     false
 
   return {
@@ -56,6 +85,7 @@ export function detect(deps: PreflightDeps = defaultDeps): PreflightReport {
     bun: { found: !!bunBin },
     gh: { found: !!ghBin, authed: ghAuthed },
     obsidian: { found: obsidianFound },
+    claudev: detectClaudev(d.env),
   }
 }
 
@@ -80,5 +110,11 @@ export function enforce(report: PreflightReport, opts: { offerBrewInstallBun?: (
     } else {
       throw new PreflightError("bun not found")
     }
+  }
+  if (!report.claudev?.found) {
+    throw new PreflightError(
+      "claudev not found. Set VOID_OS_CC_BIN=/abs/path/to/claudev or add claudev to PATH. See: https://github.com/makscee/claudev",
+      2,
+    )
   }
 }
