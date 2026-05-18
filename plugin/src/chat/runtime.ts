@@ -427,14 +427,9 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
       const text = rawText.trim();
       if (!text) return;
 
-      let chatId = chatIdRef.current;
-      if (!chatId) {
-        const created = await deps.api.createChat(deps.defaultAgent);
-        chatId = created.id;
-        chatIdRef.current = chatId;
-        dispatch({ kind: "set_chat", chatId });
-        await deps.onChatIdMinted?.(chatId);
-      }
+      const res = await ensureChat(deps, chatIdRef, dispatch);
+      if (!res.ok) return;
+      const chatId = res.chatId;
 
       // ask_user routing. Read directly from `state.pendingAskUser` — the
       // callback's dep array includes it, so the latest reducer snapshot is
