@@ -75,13 +75,22 @@ function AskUserRender(props: {
         data-tool="ask_user"
         data-tool-state={isError ? "error" : "done"}
         className={
-          "vos:my-[var(--size-4-2)] vos:rounded-[var(--radius-s)] vos:border vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:text-[var(--text-muted)] vos:text-xs " +
+          "vos:my-[var(--size-4-2)] vos:rounded-[var(--radius-s)] vos:border vos:px-[var(--size-4-2)] vos:py-[var(--size-4-2)] vos:text-xs " +
           (isError
             ? "vos:border-[var(--text-error,#e35a5a)]"
             : "vos:border-[var(--background-modifier-border)]")
         }
       >
-        answered: {resultText || "(empty)"}
+        {/* VOS-142: keep the question visible in the resolved state. Reading
+            just "answered: red" without context is opaque. */}
+        {question && (
+          <div className="vos:text-[var(--text-normal)] vos:whitespace-pre-wrap vos:mb-[var(--size-4-1)]">
+            {question}
+          </div>
+        )}
+        <div className="vos:text-[var(--text-muted)]">
+          answered: {resultText || "(empty)"}
+        </div>
       </div>
     );
   }

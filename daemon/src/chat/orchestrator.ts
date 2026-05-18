@@ -563,7 +563,39 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           // appendMessage). last_msg preview is now derived from messages
           // by repo.list(); setLastMsg is retained only for the updated_at
           // bump (used by list ordering).
-          const flushed = mergeAdjacentText(agentParts);
+          //
+          // VOS-142: ask_user tool_use/result rows are already persisted
+          // separately by ask-user-bridge (with its own UUID tool_call_id
+          // and the bare `ask_user` tool name — kept for the ChatList
+          // preview during pause, per VOS-104 T8b). Re-flushing them here
+          // would produce a second, parallel row with CC's `toolu_*` id
+          // and the raw `mcp__void-os__ask_user` name, and the plugin
+          // would render both as duplicate `answered:` blocks. Drop them
+          // from the flush; bridge's rows remain canonical for ask_user.
+          const askUserIds = new Set<string>();
+          for (const p of agentParts) {
+            const d = (p as DataPart).data as
+              | { kind?: string; tool_name?: string; tool_call_id?: string }
+              | undefined;
+            if (
+              d?.kind === "tool_use" &&
+              (d.tool_name === "ask_user" || d.tool_name === "mcp__void-os__ask_user") &&
+              typeof d.tool_call_id === "string"
+            ) {
+              askUserIds.add(d.tool_call_id);
+            }
+          }
+          const filteredParts =
+            askUserIds.size === 0
+              ? agentParts
+              : agentParts.filter((p) => {
+                  const d = (p as DataPart).data as
+                    | { kind?: string; tool_call_id?: string }
+                    | undefined;
+                  if (!d || (d.kind !== "tool_use" && d.kind !== "tool_result")) return true;
+                  return typeof d.tool_call_id !== "string" || !askUserIds.has(d.tool_call_id);
+                });
+          const flushed = mergeAdjacentText(filteredParts);
           if (flushed.length > 0) {
             messages.appendMessage(
               taskId,
