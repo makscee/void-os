@@ -15,7 +15,7 @@ export interface ExecResult {
 export type SshRunner = (
   host: string,
   cmd: string,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; input?: string },
 ) => Promise<ExecResult>
 
 // --- pure parser, unit-tested ---
@@ -37,9 +37,17 @@ export function pickFreeCtid(pctListOut: string, range: [number, number]): numbe
 
 // --- ssh runner ---
 
-export const defaultSshRunner: SshRunner = (host, cmd, opts) =>
+// `spawnImpl` is injectable for tests — production callers pass undefined and
+// get the real `node:child_process` spawn. The 4th parameter is intentionally
+// outside the SshRunner type so the public contract stays clean.
+export const defaultSshRunner = (
+  host: string,
+  cmd: string,
+  opts?: { timeoutMs?: number; input?: string },
+  spawnImpl: typeof spawn = spawn,
+): Promise<ExecResult> =>
   new Promise((resolve) => {
-    const p = spawn("ssh", [
+    const p = spawnImpl("ssh", [
       "-o",
       "BatchMode=yes",
       "-o",
@@ -47,6 +55,10 @@ export const defaultSshRunner: SshRunner = (host, cmd, opts) =>
       host,
       cmd,
     ])
+    if (opts?.input !== undefined) {
+      p.stdin.write(opts.input)
+      p.stdin.end()
+    }
     let stdout = ""
     let stderr = ""
     p.stdout.on("data", (d) => {
@@ -134,13 +146,23 @@ flock ${LOCK} -c '
 export async function lxcExec(
   h: LxcHandle,
   cmd: string,
-  opts: { timeoutMs?: number; allowFailure?: boolean; ssh?: SshRunner } = {},
+  opts: {
+    timeoutMs?: number
+    allowFailure?: boolean
+    ssh?: SshRunner
+    input?: string
+  } = {},
 ): Promise<ExecResult> {
   const ssh = opts.ssh ?? defaultSshRunner
-  // base64 the cmd so quoting never breaks.
+  // base64 the cmd so quoting never breaks. Use process substitution `<(...)`
+  // so the inner bash reads its script from a fifo and stdin stays bound to
+  // ssh's stdin (a `| bash` pipe would consume stdin before the cmd sees it).
   const b64 = Buffer.from(cmd).toString("base64")
-  const wrapped = `${PCT} exec ${h.ctid} -- bash -lc "echo ${b64} | base64 -d | bash"`
-  const r = await ssh(`root@${h.towerHost}`, wrapped, { timeoutMs: opts.timeoutMs ?? 60_000 })
+  const wrapped = `${PCT} exec ${h.ctid} -- bash -lc 'bash <(echo ${b64} | base64 -d)'`
+  const r = await ssh(`root@${h.towerHost}`, wrapped, {
+    timeoutMs: opts.timeoutMs ?? 60_000,
+    input: opts.input,
+  })
   if (r.exitCode !== 0 && !opts.allowFailure) {
     throw new Error(
       `lxcExec failed (exit ${r.exitCode}) cmd=${cmd.slice(0, 120)}\nstderr: ${r.stderr}\nstdout: ${r.stdout}`,

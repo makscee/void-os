@@ -1,5 +1,5 @@
 import { describe, test, it, expect } from "bun:test"
-import { pickFreeCtid, provisionLxc } from "./lxc"
+import { pickFreeCtid, provisionLxc, lxcExec, defaultSshRunner } from "./lxc"
 
 const pctListOutput = `VMID       Status     Lock         Name
 100        running                 mcow-svc
@@ -113,4 +113,40 @@ describe("provisionLxc", () => {
       provisionLxc({ ctidRange: [9100, 9199], towerHost: "tower", ssh }),
     ).rejects.toThrow(/permission denied/)
   })
+})
+
+describe("lxcExec input option", () => {
+  it("forwards input string to the ssh runner", async () => {
+    let captured: { cmd: string; opts: any } | null = null
+    const ssh: any = async (_host: string, cmd: string, opts: any) => {
+      captured = { cmd, opts }
+      return { stdout: "", stderr: "", exitCode: 0 }
+    }
+    await lxcExec(
+      { ctid: 9101, hostname: "vos-e2e-x", towerHost: "tower" },
+      "claudev login",
+      { ssh, input: "secret-code\n" },
+    )
+    expect(captured!.opts.input).toBe("secret-code\n")
+    // The wrapped cmd still base64s the inner cmd, so 'claudev login' should appear base64'd.
+    const b64 = Buffer.from("claudev login").toString("base64")
+    expect(captured!.cmd).toContain(b64)
+    // Wrap MUST use process substitution `bash <(...)` — a `| bash` pipe would
+    // consume the inner cmd's stdin and accessCode would never reach claudev login.
+    expect(captured!.cmd).toContain("bash <(echo")
+    expect(captured!.cmd).not.toMatch(/\| bash"?$/)
+  })
+})
+
+describe("defaultSshRunner input forwarding", () => {
+  it("forwards opts.input to the spawned process stdin", async () => {
+    // Use injectable spawn pointing at `cat` directly — avoids requiring
+    // a working localhost ssh in CI. defaultSshRunner accepts a 4th arg
+    // (spawnImpl) for testability; production paths pass undefined.
+    const { spawn } = await import("node:child_process")
+    const spawnImpl: any = (_program: string, _args: string[]) => spawn("cat", [])
+    const r = await defaultSshRunner("localhost", "cat", { input: "hello\n" }, spawnImpl)
+    expect(r.stdout).toContain("hello")
+    expect(r.exitCode).toBe(0)
+  }, 10_000)
 })
