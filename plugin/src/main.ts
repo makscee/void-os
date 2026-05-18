@@ -253,6 +253,10 @@ export default class VoidOsPlugin extends Plugin {
     });
     this.fsm.start();
 
+    this.addRibbonIcon("circle-dot", "void-os chat", () => {
+      void this.activateChatView();
+    });
+
     this.addCommand({
       id: "open-chat-view",
       name: "Open void-os chat",
