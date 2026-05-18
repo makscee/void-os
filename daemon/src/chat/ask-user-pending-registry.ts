@@ -20,9 +20,18 @@ interface Entry {
   /** Resolved when set() is called. Awaiters subscribe here so the order
    *  CC-stream-processing vs MCP-call-arrival doesn't matter. */
   resolve: () => void;
+  /** Self-expiry timer for setter-side stale entries (CC emitted tool_use
+   *  but MCP tools/call never arrived — crash, cancel, net drop). Without
+   *  this a stale id could leak into the next ask_user round and 409. */
+  staleTimer?: ReturnType<typeof setTimeout>;
 }
 
 const _registry = new Map<string, Entry>();
+
+/** TTL for setter-side entries with no awaiter. Long enough to cover normal
+ *  CC-stream → MCP-request latency (orders of milliseconds), short enough to
+ *  not survive a long-running prior turn. */
+const STALE_ENTRY_TTL_MS = 60_000;
 
 function key(taskId: string): string {
   return taskId;
@@ -42,13 +51,20 @@ export function setPendingAskUserToolUseId(
   const k = key(taskId);
   const prev = _registry.get(k);
   if (prev) {
+    if (prev.staleTimer) clearTimeout(prev.staleTimer);
     prev.toolUseId = toolUseId;
     prev.resolve();
     return;
   }
   // No awaiter yet — store a sentinel entry. The future awaiter (if any)
-  // will see the id immediately on take().
-  _registry.set(k, { toolUseId, resolve: () => {} });
+  // will see the id immediately on take(). Self-expire after TTL so a
+  // stale id (CC emitted tool_use but MCP tools/call never landed) doesn't
+  // pollute the next ask_user round.
+  const staleTimer = setTimeout(() => {
+    const cur = _registry.get(k);
+    if (cur && cur.toolUseId === toolUseId) _registry.delete(k);
+  }, STALE_ENTRY_TTL_MS);
+  _registry.set(k, { toolUseId, resolve: () => {}, staleTimer });
 }
 
 /** MCP-handler-side: consume the stored id, waiting up to `timeoutMs` for
@@ -62,6 +78,7 @@ export async function takePendingAskUserToolUseId(
   const k = key(taskId);
   const existing = _registry.get(k);
   if (existing) {
+    if (existing.staleTimer) clearTimeout(existing.staleTimer);
     _registry.delete(k);
     return existing.toolUseId;
   }
