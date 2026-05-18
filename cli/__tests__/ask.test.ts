@@ -20,7 +20,8 @@ let scenario:
   | "happy_with_tool"
   | "ask_user"
   | "agent_unknown"
-  | "daemon_down" = "happy";
+  | "daemon_down"
+  | "run_end_error" = "happy";
 
 function sseBody(frames: Frame[]): ReadableStream {
   const enc = new TextEncoder();
@@ -82,6 +83,12 @@ function startServer() {
             { event: "tool_result", data: { ok: true, size: 42 } },
             { event: "text", data: { text: "pong" } },
             { event: "run_end", data: {} },
+          ];
+        } else if (scenario === "run_end_error") {
+          frames = [
+            { event: "hello", data: { chat_id: "c1", version: "1" } },
+            { event: "text", data: { text: "before failure" } },
+            { event: "run_end", data: { status: "error", error: "tool exploded" } },
           ];
         } else {
           frames = [
@@ -233,6 +240,17 @@ test("usage error (unknown flag) returns 2", async () => {
   const cap = captureIo();
   const code = await ask(["tinker", "ping", "--bogus"], cap.io);
   expect(code).toBe(2);
+});
+
+test("run_end with status=error returns 7 and writes daemon error to stderr", async () => {
+  scenario = "run_end_error";
+  startServer();
+  const cap = captureIo();
+  const code = await ask(["tinker", "ping"], cap.io);
+  expect(code).toBe(7);
+  expect(cap.err.join("")).toContain("tool exploded");
+  // Buffered text from before the run_end must have flushed to stdout.
+  expect(cap.out.join("")).toContain("before failure");
 });
 
 test("--help prints usage and returns 0", async () => {
