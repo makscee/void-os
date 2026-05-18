@@ -15,6 +15,9 @@ export function scanVaultAgents(vaultRoot: string): AgentRow[] {
   try {
     entries = readdirSync(agentsDir);
   } catch {
+    console.warn(
+      `agents/scan: 0 agents found under ${agentsDir} (directory missing or empty)`,
+    );
     return [];
   }
 
@@ -71,6 +74,12 @@ export function scanVaultAgents(vaultRoot: string): AgentRow[] {
       vault_path: filePath,
       updated_at: now,
     });
+  }
+
+  if (rows.length === 0) {
+    console.warn(
+      `agents/scan: 0 agents found under ${agentsDir} (directory missing or empty)`,
+    );
   }
 
   return rows;

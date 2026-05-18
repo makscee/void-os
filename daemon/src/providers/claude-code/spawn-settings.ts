@@ -50,6 +50,13 @@ export const ALLOWED_TOOLS: readonly string[] = Object.freeze([
   "WebFetch",
   "WebSearch",
   mcpToolNameFor("void-os", "vault.read"),
+  mcpToolNameFor("void-os", "vault.create"),
+  mcpToolNameFor("void-os", "vault.append"),
+  mcpToolNameFor("void-os", "vault.replace_section"),
+  mcpToolNameFor("void-os", "vault.set_property"),
+  mcpToolNameFor("void-os", "vault.patch"),
+  mcpToolNameFor("void-os", "vault.delete"),
+  mcpToolNameFor("void-os", "vault.move"),
   mcpToolNameFor("void-os", "ask_user"),
   mcpToolNameFor("void-os", "ask_agent"),
 ]);

@@ -27,6 +27,7 @@
     "@voidos/protocol": "workspace:*",
     "lucide-react": "^1.14.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "react-markdown": "^10.1.0"
   }
 }

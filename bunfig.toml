@@ -1,0 +1,5 @@
+[test]
+# Exclude Playwright spec files — these run via `playwright test`, not `bun test`.
+# plugin/e2e/ uses @playwright/test + node:sqlite (Node-only); loading them under
+# bun causes "Playwright Test did not expect test() to be called here" errors.
+pathIgnorePatterns = ["e2e/**/*.spec.ts", "plugin/e2e/**/*.spec.ts"]

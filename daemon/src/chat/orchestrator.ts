@@ -490,6 +490,10 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           // requires both fields after T10.
           taskId,
           contextId: chatId,
+          // VOS-124: forward the chat's agent so providers write the correct
+          // identity into turn.start.payload.agent (req.agent takes precedence
+          // over the provider's static opts.agent).
+          agent: chat.agent,
           resumeFrom: chat.session_id ?? undefined,
         });
         let cancelController = cancelControllers.get(runId);

@@ -40,19 +40,14 @@ describe("migration 0007 — A2A schema alignment", () => {
   });
 
   it("drops legacy tables", () => {
-    // VOS-90 T8: 0007 drops `events`, `agents`, and `plans`. 0008
-    // recreates `agents` (AgentRepo + GET /agents still target the v1
-    // shape — dropping was an oversight). So after running the full
-    // migrations directory, `events` and `plans` must still be gone,
-    // but `agents` must exist.
-    const tables = db.query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('events','plans')",
+    // 0007 drops `events` and `agents` (the legacy event-log + agent-list
+    // surfaces replaced by the A2A schema). `plans` never existed in this
+    // schema lineage. 0008 recreates `agents` (AgentRepo still targets the
+    // v1 shape), but this file scopes to <=0007, so `agents` is absent here.
+    const droppedTables = db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('events','agents')",
     ).all();
-    expect(tables).toEqual([]);
-    const agentsTable = db.query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'",
-    ).all() as Array<{ name: string }>;
-    expect(agentsTable).toEqual([{ name: "agents" }]);
+    expect(droppedTables).toEqual([]);
   });
 
   it("creates `contexts` with target schema", () => {

@@ -39,6 +39,7 @@ function freshDb(): Database {
     "0005_costs_cache.sql",
     "0006_costs_chat_id.sql",
     "0007_a2a_tables.sql",
+    "0008_agents_recreate.sql", // VOS-124: agents table required for strict agent validation
   ]) {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
