@@ -2,6 +2,21 @@
 
 Canonical path: `/Users/admin/hub/workspace/void-os` (was `~/void-os`). All VOS-* tasks tracked in hub at `/Users/admin/hub/vault/work/tasks/`. Workflow conventions in `/Users/admin/hub/CLAUDE.md` (Unified Workflow section). Worktrees stay at `~/void-os-wt/<ID>/` (NOT `~/hub-wt/`). Default branch: `main`. Direct push to GitHub allowed via `/done` (external repo merge per hub convention).
 
+# Manual smoke testing
+
+Run `scripts/smoke-up.sh <ID>` from any task tab to stand up an isolated stack at `/tmp/void-os-smoke/<ID>/`. Operator's main daemon, main Obsidian, and `~/void` vault remain untouched. See `scripts/README.md` for the full command surface, per-file plugin symlink layout, and `daemonUrl` wiring.
+
+Use when:
+- Manual UX pass on a task's plugin changes
+- Two task tabs both need a live daemon to test
+- Plugin behavior depends on a fresh vault
+
+Do not use:
+- For E2E test runs (the Playwright harness in `plugin/e2e/` is the gate)
+- To bake operator data — `/tmp/void-os-smoke/<ID>/` is ephemeral by design
+
+First-time vault may require a one-time manual Enable in Obsidian (Settings → Community plugins → void-os); the enabled state persists in `<vault>/.obsidian/community-plugins.json` across subsequent smoke-up runs.
+
 # E2E gotchas (plugin/e2e) — READ BEFORE WRITING SPECS
 
 E2E loop is heavy: ~60-90s per run (daemon + Playwright + Obsidian + scripted LLM). Mistakes burn hours. Lessons from VOS-104 T8:
