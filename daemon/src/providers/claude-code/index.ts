@@ -190,6 +190,9 @@ export function checkCcBinAvailable(args: CcBinCheckArgs = {}): CcBinCheckResult
   }
   const path = env.PATH ?? "";
   const pathPreview = path.length > 200 ? path.slice(0, 200) + "…" : path;
+  // VOS-134 I2: when PATH is unset the preview is empty — render "<unset>"
+  // instead of leaving a useless lone "." in the message.
+  const pathDisplay = pathPreview || "<unset>";
   return {
     ok: false,
     binary,
@@ -199,7 +202,7 @@ export function checkCcBinAvailable(args: CcBinCheckArgs = {}): CcBinCheckResult
       `Set ${CC_BIN_ENV_VAR} to your Claude Code wrapper path ` +
       `(e.g. ~/.claudev/bin/claudev), ` +
       `or ensure '${DEFAULT_CC_BIN}' is on PATH. ` +
-      `Current PATH: ${pathPreview}. ` +
+      `Current PATH: ${pathDisplay}. ` +
       `Then retry 'void-os daemon start'.`,
   };
 }
@@ -223,9 +226,15 @@ export const probeClaudev = async (
     });
   } catch (err) {
     const e = err as { code?: string; message?: string };
+    // VOS-134 I1: name the binary we actually tried to spawn. The previous
+    // hard-coded "claudev not found on PATH" lied when the binary came from
+    // VOID_OS_CC_BIN or an explicit absolute-path argument.
     return {
       ok: false,
-      error: e.code === "ENOENT" ? "claudev not found on PATH" : (e.message ?? String(err)),
+      error:
+        e.code === "ENOENT"
+          ? `'${effectiveBinary}' not found (ENOENT)`
+          : (e.message ?? String(err)),
       code: -1,
     };
   }

@@ -45,4 +45,18 @@ describe("probeClaudev", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBeDefined();
   });
+
+  // VOS-134 I1: when probeClaudev fails with ENOENT, the error message
+  // should name the effective binary it actually tried to spawn — not the
+  // misleading hard-coded "claudev not found on PATH" (which lies when the
+  // binary was supplied via VOID_OS_CC_BIN or an explicit absolute path).
+  test("ENOENT error wording names the effective binary", async () => {
+    const absentAbs = "/abs/definitely/not/here/claudev-xyz";
+    const result = await probeClaudev(absentAbs);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe(-1);
+    expect(result.error).toBeDefined();
+    expect(result.error!).toContain(absentAbs);
+    expect(result.error!).not.toBe("claudev not found on PATH");
+  });
 });

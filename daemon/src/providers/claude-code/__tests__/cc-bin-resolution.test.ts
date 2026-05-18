@@ -103,4 +103,14 @@ describe("checkCcBinAvailable", () => {
     expect(result.reason).toContain("/abs/missing/claudev");
     expect(result.reason).toContain(CC_BIN_ENV_VAR);
   });
+
+  // VOS-134 I2: when PATH is unset, the preview previously rendered as a
+  // useless lone "." (env.PATH ?? "" coerced to falsy in template). The
+  // message should say "<unset>" so the operator knows to set PATH itself.
+  it("renders empty PATH as '<unset>' in the failure reason", () => {
+    const result = checkCcBinAvailable({ env: {} });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("Current PATH: <unset>");
+    expect(result.reason).not.toMatch(/Current PATH: \.\s/);
+  });
 });
