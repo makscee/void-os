@@ -22,6 +22,12 @@ export interface CcIter {
     task_id: string;          // VOS-112
     resume: string | null;
     prompt: string;
+    /** VOS-122 F9: per-call agent overrides the spawner's static deps.agent
+     *  fallback. When set, the underlying cc.spawn receives this name so the
+     *  CC subprocess loads the requested agent's card + scopes — not the
+     *  daemon-wide `defaultAgent` (which previously pinned every chat to
+     *  "maya" regardless of `chat.agent`). */
+    agent?: string;
   }): AsyncIterable<RawCcEvent>;
   cancel?(runId: string): Promise<boolean>;
 }
@@ -58,6 +64,11 @@ export function makeClaudeCodeProvider(
         task_id: req.taskId,
         resume: req.resumeFrom ?? null,
         prompt: req.prompt,
+        // VOS-122 F9: forward the requested agent so the CC subprocess loads
+        // the right card. Without this every chat span resolved to the
+        // daemon-wide `defaultAgent` ("maya"), which doesn't exist in starter
+        // vaults → "unknown agent: maya" at agent_cards lookup.
+        agent: req.agent,
       });
 
       async function* events(): AsyncIterable<ProviderEvent> {

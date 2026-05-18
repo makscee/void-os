@@ -64,6 +64,11 @@ export function scanAgentCards(vaultRoot: string): CardRow[] {
     if (w) card.write_scope = w;
     const a = stringArrayField(fm.ask_agent_allow);
     if (a) card.ask_agent_allow = a;
+    // VOS-122 F7: capture declared tool allowlist so the CC spawner can
+    // intersect it with the maximal MCP tool set. Absent => legacy (allow-all
+    // with warning); empty array => no MCP tools.
+    const t = stringArrayField(fm.tools);
+    if (t) card.tools = t;
 
     rows.push({
       name: fm.name,

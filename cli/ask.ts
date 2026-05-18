@@ -17,7 +17,7 @@
  *
  * Exit codes follow the VOS-118 spec (`docs/superpowers/specs/.../design.md`):
  *   0 success · 2 usage · 3 daemon offline · 4 agent unknown
- *   5 vault not configured · 6 ask_user during ask
+ *   5 vault not configured · 6 ask_user during ask · 7 run ended with error
  */
 
 import { existsSync } from "node:fs";
@@ -232,6 +232,16 @@ export default async function ask(args: string[], io: IO = {}): Promise<number> 
       }
       renderer.handle(frame);
       if (frame.event === "run_end") {
+        // VOS-122 F8: respect run terminal status. Daemon emits
+        // {status: "ok" | "error", error?: string} on run_end when the
+        // orchestrator aborted (tool error, model exception, etc.).
+        const data = frame.data as { status?: unknown; error?: unknown };
+        if (data.status === "error") {
+          const msg =
+            (typeof data.error === "string" && data.error) || "run failed";
+          stderr.write(`${msg}\n`);
+          return 7;
+        }
         return 0;
       }
     }

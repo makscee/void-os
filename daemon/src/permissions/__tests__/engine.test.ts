@@ -61,10 +61,32 @@ describe('expandPattern', () => {
     if (r.ok) expect(r.expanded).toBe('/tmp/x/**');
   });
 
-  test('bare relative pattern is rejected', () => {
+  // VOS-122 F10: bare patterns are now interpreted as vault-relative — the
+  // starter Tinker agent ships with `read_scope: ['**']` and
+  // `write_scope: ['agents/**', 'CLAUDE.md', ...]`. Anchoring under vaultRoot
+  // matches author intent + the traversal check still rejects bare escapes.
+  test('bare relative pattern expands under vaultRoot', () => {
     const r = __test__.expandPattern('notes/**', opts);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.expanded).toBe('/vault/notes/**');
+  });
+
+  test('bare `**` expands to vaultRoot/**', () => {
+    const r = __test__.expandPattern('**', opts);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.expanded).toBe('/vault/**');
+  });
+
+  test('bare single-file pattern expands under vaultRoot', () => {
+    const r = __test__.expandPattern('CLAUDE.md', opts);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.expanded).toBe('/vault/CLAUDE.md');
+  });
+
+  test('bare traversal escape is still rejected', () => {
+    const r = __test__.expandPattern('../etc/passwd', opts);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toMatch(/prefix/i);
+    if (!r.ok) expect(r.reason).toMatch(/escape|traversal|anchor/i);
   });
 
   test('vault/../escape is rejected (traversal escapes vaultRoot)', () => {
@@ -104,7 +126,10 @@ describe('resolveScopes', () => {
     expect(r.writePaths).toEqual([`${VAULT}/notes/**`]);
   });
 
-  test('bad patterns are dropped, good ones survive, logger.warn called', () => {
+  // VOS-122 F10: bare patterns are vault-relative now, so `notes/**` and
+  // `vault/notes/**` resolve to the same expanded path. Invalid patterns are
+  // only those that escape their anchor root via `..` traversal.
+  test('traversal-escape patterns are dropped, good ones survive, logger.warn called', () => {
     const warns: Array<{ msg: string; ctx?: unknown }> = [];
     const eng = createPermissionEngine({
       vaultRoot: VAULT, homeRoot: HOME,
@@ -112,28 +137,62 @@ describe('resolveScopes', () => {
     });
     const r = eng.resolveScopes({
       name: 'maya',
-      read_scope: ['notes/**', 'vault/notes/**'],
+      read_scope: ['../etc/passwd', 'vault/notes/**'],
     });
     expect(r.readPaths).toEqual([`${VAULT}/notes/**`]);
     expect(warns.length).toBe(1);
-    expect(warns[0]!.msg).toMatch(/notes\/\*\*/);
+    expect(warns[0]!.msg).toMatch(/etc\/passwd/);
   });
 
-  test('ZeroScopeError when every read_scope pattern is invalid', () => {
+  test('bare read_scope expands under vaultRoot (Tinker default)', () => {
     const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
-    expect(() => eng.resolveScopes({ name: 'maya', read_scope: ['notes/**'] }))
+    const r = eng.resolveScopes({
+      name: 'tinker',
+      read_scope: ['**'],
+      write_scope: ['agents/**', 'CLAUDE.md'],
+    });
+    expect(r.readPaths).toEqual([`${VAULT}/**`]);
+    expect(r.writePaths).toEqual([`${VAULT}/agents/**`, `${VAULT}/CLAUDE.md`]);
+  });
+
+  test('ZeroScopeError when every read_scope pattern is invalid (traversal)', () => {
+    const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
+    expect(() => eng.resolveScopes({ name: 'maya', read_scope: ['../oops/**'] }))
       .toThrow(ZeroScopeError);
   });
 
   test('ZeroScopeError carries agent name', () => {
     const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
     try {
-      eng.resolveScopes({ name: 'journaler', read_scope: ['nope/**'] });
+      eng.resolveScopes({ name: 'journaler', read_scope: ['../nope/**'] });
       throw new Error('should have thrown');
     } catch (e) {
       expect(e).toBeInstanceOf(ZeroScopeError);
       expect((e as ZeroScopeError).agent).toBe('journaler');
     }
+  });
+
+  // VOS-122 F10: scope is a pattern, not a pre-enumerated file list. canRead
+  // / canWrite must match the requested path against the pattern set
+  // regardless of whether that path (or anything matching the pattern)
+  // currently exists on disk.
+  test('canRead matches non-existent paths (scope is allowance pattern)', () => {
+    const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
+    const tinker: AgentDefn = { name: 'tinker', read_scope: ['**'] };
+    expect(eng.canRead(`${VAULT}/agents/does-not-exist-yet.md`, tinker)).toBe(true);
+    expect(eng.canRead('/outside/vault/x', tinker)).toBe(false);
+  });
+
+  test('canWrite matches non-existent paths under write_scope pattern', () => {
+    const eng = createPermissionEngine({ vaultRoot: VAULT, homeRoot: HOME });
+    const author: AgentDefn = {
+      name: 'author',
+      read_scope: ['**'],
+      write_scope: ['pages/**', 'CLAUDE.md'],
+    };
+    expect(eng.canWrite(`${VAULT}/pages/brand-new-page.md`, author)).toBe(true);
+    expect(eng.canWrite(`${VAULT}/CLAUDE.md`, author)).toBe(true);
+    expect(eng.canWrite(`${VAULT}/journal/entry.md`, author)).toBe(false);
   });
 });
 

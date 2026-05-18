@@ -136,6 +136,40 @@ describe("scanAgentCards", () => {
     rmSync(vault, { recursive: true, force: true });
   });
 
+  test("VOS-122 F7: tools array serializes into card_json (declared allowlist)", () => {
+    const vault = makeVault();
+    writeAgent(vault, "tinker", {
+      name: "tinker",
+      description: "meta",
+      model: "opus",
+      tools: ["vault.read", "vault.create", "ask_user"],
+    });
+    const db = freshDb();
+    upsertAgentCards(db, scanAgentCards(vault));
+    const cards = readCards(db);
+    expect(cards.length).toBe(1);
+    const card = JSON.parse(cards[0].card_json);
+    expect(card.tools).toEqual(["vault.read", "vault.create", "ask_user"]);
+    db.close();
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  test("VOS-122 F7: agent.md without tools field => card.tools absent (legacy)", () => {
+    const vault = makeVault();
+    writeAgent(vault, "legacy", {
+      name: "legacy",
+      description: "no tools field",
+      model: "opus",
+    });
+    const db = freshDb();
+    upsertAgentCards(db, scanAgentCards(vault));
+    const cards = readCards(db);
+    const card = JSON.parse(cards[0].card_json);
+    expect(card.tools).toBeUndefined();
+    db.close();
+    rmSync(vault, { recursive: true, force: true });
+  });
+
   test("read_scope/write_scope/ask_agent_allow arrays serialize into card_json", () => {
     const vault = makeVault();
     writeAgent(vault, "maya", {

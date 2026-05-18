@@ -63,7 +63,7 @@ export interface SpawnerIterDeps {
  * naturally-stuck runs still get a chance to flush.
  */
 export function makeCcSpawnerIter(deps: SpawnerIterDeps): {
-  spawn(args: { chat_id: string; task_id: string; resume: string | null; prompt: string }): AsyncIterable<ProviderEvent>;
+  spawn(args: { chat_id: string; task_id: string; resume: string | null; prompt: string; agent?: string }): AsyncIterable<ProviderEvent>;
   cancel?(runId: string): Promise<boolean>;
 } {
   // Per-spawner-instance map. Multiple chats running in parallel have
@@ -72,7 +72,7 @@ export function makeCcSpawnerIter(deps: SpawnerIterDeps): {
   // block runs (run.end or run.error or cancel-induced kill).
   const activeProcs = new Map<string, { kill: (opts?: KillOpts) => Promise<void> }>();
   return {
-    spawn(args: { chat_id: string; task_id: string; resume: string | null; prompt: string }): AsyncIterable<ProviderEvent> {
+    spawn(args: { chat_id: string; task_id: string; resume: string | null; prompt: string; agent?: string }): AsyncIterable<ProviderEvent> {
       return iterate(deps, args, activeProcs);
     },
     async cancel(runId: string): Promise<boolean> {
@@ -94,7 +94,7 @@ export function makeCcSpawnerIter(deps: SpawnerIterDeps): {
  */
 async function* iterate(
   deps: SpawnerIterDeps,
-  args: { chat_id: string; task_id: string; resume: string | null; prompt: string },
+  args: { chat_id: string; task_id: string; resume: string | null; prompt: string; agent?: string },
   activeProcs: Map<string, { kill: (opts?: KillOpts) => Promise<void> }>,
 ): AsyncGenerator<ProviderEvent, void, void> {
   const queue: ProviderEvent[] = [];
@@ -165,7 +165,10 @@ async function* iterate(
     // passes `resume` (string | null); cc wants `resumeFrom` (string | undef).
     const proc = await deps.cc.spawn({
       prompt: args.prompt,
-      agent: deps.agent,
+      // VOS-122 F9: per-call args.agent (from ProviderSpawnRequest.agent →
+      // chat.agent) wins over deps.agent (daemon-wide `defaultAgent` static
+      // fallback). Without this every chat resolved to "maya".
+      agent: args.agent ?? deps.agent,
       cwd: deps.cwd,
       chatId: args.chat_id,
       taskId: args.task_id,

@@ -14,7 +14,6 @@ import type { AgentDefn, PermissionEngine } from "../../permissions/engine.js";
 import { resolveSystemDeny } from "../../permissions/engine.js";
 import {
   buildSpawnSettings,
-  ALLOWED_TOOLS,
   SETTING_SOURCES_ARGS,
 } from "./spawn-settings.ts";
 import { readAgentPersonaBody } from "./persona.ts";
@@ -216,6 +215,7 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       let settingsPath: string;
       let mcpConfigPath: string;
       let hookEnv: Record<string, string>;
+      let toolsArg: string[];
       try {
         const agentDefn = deps.loadAgentDefn(req.agent);
         const scopes = deps.engine.resolveScopes(agentDefn);
@@ -239,10 +239,16 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
           contextId: req.contextId,
           settingsDir: deps.tracesDir,
           hookScriptPath: deps.hookScriptPath,
+          // VOS-122 F7: gate MCP tools by the agent's declared frontmatter
+          // `tools:` list. `agentDefn.tools` is `undefined` for legacy agents
+          // (no field) — buildSpawnSettings preserves the pre-F7 behavior in
+          // that case and warns once.
+          declaredTools: agentDefn.tools,
         });
         settingsPath = built.settingsPath;
         mcpConfigPath = built.mcpConfigPath;
         hookEnv = built.env;
+        toolsArg = built.toolsArg;
       } catch (err) {
         const e = err as { message?: string };
         deps.db
@@ -282,7 +288,7 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         "--verbose",
         "--strict-mcp-config",
         ...SETTING_SOURCES_ARGS,
-        "--tools", ALLOWED_TOOLS.join(","),
+        "--tools", toolsArg.join(","),
         "--settings", settingsPath,
         "--mcp-config", mcpConfigPath,
         ...(persona.body ? ["--append-system-prompt", persona.body] : []),

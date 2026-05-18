@@ -66,16 +66,27 @@ describe("initCommand() — phase orchestrator", () => {
       logs.push(args.map(String).join(" "))
     })
 
+    const daemonCalls: Array<{ vault: string; prefix: string }> = []
     try {
       await initCommand({
         args: ["--skip-build"],
         prefix,
         prompter,
         preflight: fakePreflight,
+        daemonStart: async (o) => {
+          daemonCalls.push(o)
+          return { status: "spawned", pid: 1234, port: 7777, vault: o.vault }
+        },
       })
     } finally {
       logSpy.mockRestore()
     }
+
+    // F5: daemon auto-start invoked exactly once on the seeded vault.
+    expect(daemonCalls.length).toBe(1)
+    expect(daemonCalls[0]?.vault).toBe(home)
+    expect(daemonCalls[0]?.prefix).toBe(prefix)
+    expect(logs.join("\n")).toContain("daemon started on port 7777")
 
     // Seed effects landed:
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
@@ -111,6 +122,7 @@ describe("initCommand() — phase orchestrator", () => {
         prefix,
         prompter,
         preflight: fakePreflight,
+        skipDaemonStart: true,
       })
     } finally {
       logSpy.mockRestore()
@@ -132,6 +144,7 @@ describe("initCommand() — phase orchestrator", () => {
           prefix,
           prompter,
           preflight: fakePreflight,
+          skipDaemonStart: true,
         })
       } finally {
         logSpy.mockRestore()
@@ -150,6 +163,7 @@ describe("initCommand() — phase orchestrator", () => {
         prefix,
         prompter: prompter2,
         preflight: fakePreflight,
+        skipDaemonStart: true,
       })
     } finally {
       logSpy.mockRestore()

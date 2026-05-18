@@ -33,7 +33,13 @@ function expandPattern(
     expanded = pattern;
     anchorRoot = null;
   } else {
-    return { ok: false, reason: `pattern lacks vault/, ~/, or / prefix: ${pattern}` };
+    // VOS-122 F10: bare patterns (no `vault/`, `~/`, or `/` prefix) are
+    // vault-relative. This matches what the starter Tinker agent declares
+    // (`read_scope: ['**']`, `write_scope: ['agents/**', 'CLAUDE.md', ...]`)
+    // and what authors writing agent.md naturally expect. The traversal-escape
+    // check below still rejects bare `../etc` style escapes.
+    expanded = path.join(opts.vaultRoot, pattern);
+    anchorRoot = opts.vaultRoot;
   }
 
   if (anchorRoot) {
@@ -87,6 +93,18 @@ export interface AgentDefn {
    * ask any agent".
    */
   ask_agent_allow?: string[];
+  /**
+   * VOS-122 F7: optional declared tool allowlist sourced from the agent.md
+   * frontmatter `tools:` field. The CC spawner intersects this with the
+   * maximal MCP tool set to compute the effective `--tools` arg. `undefined`
+   * means the agent did not declare tools (legacy) — the spawner falls back
+   * to the maximal set and emits a deprecation warning. An empty array means
+   * "no MCP tools allowed".
+   *
+   * Names follow the registered MCP form (e.g. `vault.read`, `ask_agent`),
+   * NOT the CC-emitted `mcp__void-os__vault_read` form.
+   */
+  tools?: string[];
 }
 
 export interface ResolvedScopes {

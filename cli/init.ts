@@ -7,8 +7,9 @@ import { configure, decideFromFlags } from "./init/configure"
 import type { Decisions } from "./init/configure"
 import { runBuild, BuildError } from "./init/build"
 import { seed } from "./init/seed"
-import { installPlugin } from "./init/plugin"
+import { installPlugin, ensurePluginBuilt } from "./init/plugin"
 import { formatReport } from "./init/report"
+import { cmdStart, type StartResult } from "./daemon"
 
 // Re-export for backwards compatibility with existing tests + external callers.
 export { seed as provision } from "./init/seed"
@@ -93,6 +94,10 @@ export interface InitCommandOpts {
   preflight?: PreflightReport
   /** Skip the build phase entirely (testing convenience; equivalent to --skip-build). */
   skipBuild?: boolean
+  /** Override daemon-start (testing seam; defaults to real cmdStart). */
+  daemonStart?: (opts: { vault: string; prefix: string }) => Promise<StartResult>
+  /** Skip auto daemon-start entirely (testing seam). */
+  skipDaemonStart?: boolean
 }
 
 /**
@@ -188,6 +193,12 @@ export async function initCommand(opts: InitCommandOpts): Promise<void> {
   }
 
   // 5. PLUGIN
+  // Auto-build plugin/dist if missing (fresh clone has no built artifact).
+  // Mirrors scripts/fresh-vault.sh. Surface stdout/stderr only on failure.
+  const buildResult = ensurePluginBuilt({ prefix: opts.prefix, dryRun: flags.dryRun })
+  if (buildResult.ran && !buildResult.built && buildResult.error) {
+    console.warn(`warning: plugin pre-build failed: ${buildResult.error}`)
+  }
   const pluginResult = installPlugin({
     prefix: opts.prefix,
     home: vaultPath,
@@ -204,6 +215,41 @@ export async function initCommand(opts: InitCommandOpts): Promise<void> {
     seed: seedResult,
     plugin: pluginResult,
   }))
+
+  // 7. DAEMON — auto-start on the seeded vault (matches scripts/fresh-vault.sh).
+  // Skipped on --dry-run; failures are non-fatal (init already succeeded).
+  if (!flags.dryRun && !opts.skipDaemonStart) {
+    const startFn = opts.daemonStart
+      ?? ((o) => cmdStart({ vault: o.vault, prefix: o.prefix }))
+    try {
+      const result: StartResult = await startFn({
+        vault: vaultPath,
+        prefix: opts.prefix,
+      })
+      switch (result.status) {
+        case "spawned":
+          console.log(`daemon started on port ${result.port} (pid=${result.pid})`)
+          break
+        case "already-running":
+          console.log(`daemon already running on port ${result.port} (pid=${result.pid})`)
+          break
+        case "vault-mismatch":
+          console.warn(
+            `warning: daemon is serving a different vault (${result.activeVault}); ` +
+            `stop it with 'void-os daemon stop' then 'void-os daemon start --vault ${vaultPath}'`,
+          )
+          break
+        case "spawn-failed":
+          console.warn(`warning: daemon failed to start (${result.reason})`)
+          break
+        case "would-spawn":
+          // unreachable: dryRun gated above
+          break
+      }
+    } catch (e) {
+      console.warn(`warning: daemon start raised: ${(e as Error).message}`)
+    }
+  }
 }
 
 export default async function cli(args: string[], ctx: { prefix: string }) {

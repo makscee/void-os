@@ -36,7 +36,10 @@ export function mcpToolNameFor(server: string, tool: string): string {
   return `mcp__${server}__${tool.replace(/\./g, "_")}`;
 }
 
-export const ALLOWED_TOOLS: readonly string[] = Object.freeze([
+// VOS-111: built-in CC tools. Not agent-scoped — every spawn gets these
+// regardless of the agent.md frontmatter. They are filesystem-level surfaces
+// that the PreToolUse hook already gates per-path.
+export const ALLOWED_BUILTIN_TOOLS: readonly string[] = Object.freeze([
   "Bash",
   "Edit",
   "MultiEdit",
@@ -49,16 +52,34 @@ export const ALLOWED_TOOLS: readonly string[] = Object.freeze([
   "TodoWrite",
   "WebFetch",
   "WebSearch",
-  mcpToolNameFor("void-os", "vault.read"),
-  mcpToolNameFor("void-os", "vault.create"),
-  mcpToolNameFor("void-os", "vault.append"),
-  mcpToolNameFor("void-os", "vault.replace_section"),
-  mcpToolNameFor("void-os", "vault.set_property"),
-  mcpToolNameFor("void-os", "vault.patch"),
-  mcpToolNameFor("void-os", "vault.delete"),
-  mcpToolNameFor("void-os", "vault.move"),
-  mcpToolNameFor("void-os", "ask_user"),
-  mcpToolNameFor("void-os", "ask_agent"),
+]);
+
+// VOS-122 F7: maximal MCP tool set exposed by the void-os server. The
+// agent's frontmatter `tools:` field is the authoritative gate — this
+// constant is the maximal set the spawner intersects with. Names use the
+// registered (dotted) form; intersection happens BEFORE conversion to the
+// CC-emitted `mcp__void-os__*` form via `mcpToolNameFor`.
+export const ALLOWED_MCP_TOOLS_VOID_OS: readonly string[] = Object.freeze([
+  "vault.read",
+  "vault.create",
+  "vault.append",
+  "vault.replace_section",
+  "vault.set_property",
+  "vault.patch",
+  "vault.delete",
+  "vault.move",
+  "ask_user",
+  "ask_agent",
+]);
+
+// Back-compat: pre-F7 callers (tests, hook scripts, runbook docs) imported
+// `ALLOWED_TOOLS` as the full superset. Keep it as the union of the two
+// split constants so those imports keep working. The CC spawner no longer
+// hands this list directly to `--tools` — it now passes a per-spawn
+// effective list computed in `buildSpawnSettings`.
+export const ALLOWED_TOOLS: readonly string[] = Object.freeze([
+  ...ALLOWED_BUILTIN_TOOLS,
+  ...ALLOWED_MCP_TOOLS_VOID_OS.map((t) => mcpToolNameFor("void-os", t)),
 ]);
 
 export const ALLOWED_MCP_SERVERS: readonly string[] = Object.freeze(["void-os"]);
@@ -81,12 +102,72 @@ export interface BuildSpawnSettingsArgs {
   contextId: string;
   settingsDir: string;
   hookScriptPath: string;
+  /**
+   * VOS-122 F7: agent's declared tool allowlist from agent.md `tools:`.
+   * `undefined` => legacy agent (no declaration) — grant the maximal set and
+   * emit a one-shot deprecation warning. Empty array => grant zero MCP
+   * tools. Otherwise intersect with {@link ALLOWED_MCP_TOOLS_VOID_OS}.
+   *
+   * Names use the registered (dotted) form, e.g. `vault.read`. Built-in CC
+   * tools are NOT agent-scoped (granted unconditionally).
+   */
+  declaredTools?: string[];
 }
 
 export interface SpawnSettings {
   settingsPath: string;
   mcpConfigPath: string;
   env: Record<string, string>;
+  /**
+   * VOS-122 F7: effective `--tools` argument list (CC-emitted names) for
+   * this spawn — built-ins + intersected MCP tools. Caller is expected to
+   * pass this verbatim to CC instead of the global {@link ALLOWED_TOOLS}.
+   */
+  toolsArg: string[];
+}
+
+// VOS-122 F7: one-shot deprecation warning per agent. Prevents log spam when
+// a legacy agent is spawned many times. Module-scoped because the warning is
+// about the agent's static frontmatter, not the per-run spawn.
+const _legacyToolsWarned = new Set<string>();
+export function _resetLegacyToolsWarnedForTests(): void {
+  _legacyToolsWarned.clear();
+}
+
+/**
+ * VOS-122 F7: compute the per-spawn `--tools` arg list.
+ *
+ * - Built-ins are always granted.
+ * - `declaredTools === undefined` => legacy: grant the maximal MCP set and
+ *   warn once per agent name (operator hasn't migrated the agent.md yet).
+ * - Otherwise intersect `declaredTools` with `ALLOWED_MCP_TOOLS_VOID_OS`.
+ *   Declared names not in the maximal set are silently dropped — the
+ *   maximal set is the source of truth for what MCP tools actually exist.
+ */
+export function computeEffectiveTools(
+  agentName: string,
+  declaredTools: string[] | undefined,
+): string[] {
+  const builtins = [...ALLOWED_BUILTIN_TOOLS];
+  let mcpTools: string[];
+  if (declaredTools === undefined) {
+    if (!_legacyToolsWarned.has(agentName)) {
+      _legacyToolsWarned.add(agentName);
+      console.warn(
+        `spawn-settings: agent "${agentName}" has no \`tools:\` frontmatter — ` +
+          `granting maximal MCP set (DEPRECATED, will tighten in a future ` +
+          `release; add a \`tools:\` array to agent.md to silence this warning)`,
+      );
+    }
+    mcpTools = [...ALLOWED_MCP_TOOLS_VOID_OS];
+  } else {
+    const declared = new Set(declaredTools);
+    mcpTools = ALLOWED_MCP_TOOLS_VOID_OS.filter((t) => declared.has(t));
+  }
+  return [
+    ...builtins,
+    ...mcpTools.map((t) => mcpToolNameFor("void-os", t)),
+  ];
 }
 
 function pathHeadIsUnderRoot(pattern: string, root: string): boolean {
@@ -165,5 +246,7 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
     NO_PROXY: noProxyEntries.join(","),
   };
 
-  return { settingsPath, mcpConfigPath, env };
+  const toolsArg = computeEffectiveTools(args.agentName, args.declaredTools);
+
+  return { settingsPath, mcpConfigPath, env, toolsArg };
 }

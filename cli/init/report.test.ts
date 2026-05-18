@@ -49,7 +49,9 @@ describe("formatReport()", () => {
     expect(report).toContain("/Users/u/vault")
     expect(report).toContain('Settings → Community plugins → enable "void-os"')
     expect(report).toContain("chat with Tinker")
-    expect(report).toContain('void-os ask tinker "hello"')
+    expect(report).toContain("void-os ask <agent>")
+    expect(report).toContain("void-os chat <agent>")
+    expect(report).not.toContain("VOS-118")
   })
 
   it("re-run (not fresh) shows re-applied headline + force hint", () => {
