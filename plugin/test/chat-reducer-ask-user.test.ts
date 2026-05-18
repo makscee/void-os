@@ -31,6 +31,25 @@ describe("reducer pendingAskUser", () => {
     });
   });
 
+  it("VOS-142: set by chat.tool_use with name==mcp__void-os__ask_user (live raw form)", () => {
+    const s1 = chatReducer(withChat(), {
+      kind: "frame",
+      frame: {
+        type: "chat.tool_use",
+        chat_id: baseChat,
+        run_id: "r1",
+        tool_call_id: "tu-1",
+        name: "mcp__void-os__ask_user",
+        input: { question: "color?" },
+      } as never,
+    });
+    expect(s1.pendingAskUser).toEqual({
+      toolUseId: "tu-1",
+      question: "color?",
+      options: undefined,
+    });
+  });
+
   it("ignores chat.tool_use with other names", () => {
     const s1 = chatReducer(withChat(), {
       kind: "frame",

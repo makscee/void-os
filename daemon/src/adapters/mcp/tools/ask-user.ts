@@ -16,6 +16,7 @@ import { z } from "zod/v3";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { AskUserBridge } from "../../../chat/ask-user-bridge.ts";
+import { takePendingAskUserToolUseId } from "../../../chat/ask-user-pending-registry.ts";
 
 export const ASK_USER_DEADLINE_MS = 30 * 60 * 1000;
 
@@ -58,10 +59,17 @@ export function makeAskUser(deps: AskUserDeps) {
     // id rather than minting a fresh one. Production agents never set this
     // hint — they only emit standard MCP tool calls — so they keep getting a
     // fresh UUID. Hint lives in _meta._vos_tool_use_id (was on args).
+    // VOS-147: prefer the CC tool_use_id captured by the orchestrator's
+    // onPart hook (per-run registry). Without this, the bridge's slot id
+    // diverges from the plugin's live `pendingAskUser.toolUseId` and the
+    // first POST /answer 409s. Fall back to the test hint (`_vos_tool_use_id`)
+    // and finally to a fresh UUID for paths that bypass the orchestrator.
+    const ccToolUseId = await takePendingAskUserToolUseId(taskId, runId, 750);
     const toolUseId =
-      typeof meta._vos_tool_use_id === "string" && meta._vos_tool_use_id.length > 0
+      ccToolUseId ??
+      (typeof meta._vos_tool_use_id === "string" && meta._vos_tool_use_id.length > 0
         ? meta._vos_tool_use_id
-        : randomUUID();
+        : randomUUID());
 
     const result = await deps.bridge.open({
       taskId,
