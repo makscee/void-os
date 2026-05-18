@@ -30,7 +30,7 @@ import {
   resolveBase,
   resolveToken,
 } from "./lib/client.ts";
-import { UnreachableError } from "@voidos/protocol";
+import { ApiError, UnreachableError } from "@voidos/protocol";
 import { parseSseFrames } from "./lib/sse-parse.ts";
 import { createRenderer, type Frame } from "./lib/stream-render.ts";
 
@@ -158,6 +158,10 @@ export default async function ask(args: string[], io: IO = {}): Promise<number> 
     if (e instanceof UnreachableError) {
       stderr.write("daemon not running; try: void-os daemon start\n");
       return 3;
+    }
+    if (e instanceof ApiError && e.status === 404 && e.code === "E_AGENT_NOT_FOUND") {
+      stderr.write(`${e.message || `agent '${agent}' not found`}\n`);
+      return 4;
     }
     stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
     return 1;
