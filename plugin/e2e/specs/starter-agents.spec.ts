@@ -40,8 +40,10 @@ interface E2EState {
 
 // Minimal frontmatter parser — extracts the `---\n...\n---` block and
 // reads the fields we need (name, read_scope, write_scope). Avoids a
-// gray-matter dep (not installed in plugin/). Only supports the shapes
-// the starter-vault uses: scalar string and inline-array `['a', 'b']`.
+// gray-matter dep (not installed in plugin/). Supports the two shapes
+// the starter-vault uses:
+//   inline array: `read_scope: ['**']`
+//   block list:   `write_scope:` then `  - 'agents/**'` lines
 function parseStarterFrontmatter(raw: string): {
   name: string | null;
   read_scope: string[] | null;
@@ -53,21 +55,38 @@ function parseStarterFrontmatter(raw: string): {
   const out: { name: string | null; read_scope: string[] | null; write_scope: string[] | null } = {
     name: null, read_scope: null, write_scope: null,
   };
-  for (const line of block.split("\n")) {
+  const lines = block.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const kv = line.match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
     if (!kv) continue;
     const [, key, rawVal] = kv;
     if (key === "name") {
       out.name = rawVal.replace(/^['"]|['"]$/g, "");
     } else if (key === "read_scope" || key === "write_scope") {
-      // Expect inline array like ['vault/**'] or [] — possibly with double quotes.
-      const arr = rawVal.match(/^\[(.*)\]$/);
-      if (!arr) continue;
-      const inner = arr[1].trim();
-      if (inner.length === 0) {
-        out[key] = [];
+      const trimmed = rawVal.trim();
+      if (trimmed.length === 0) {
+        // Block-list form: collect subsequent `  - 'item'` lines.
+        const collected: string[] = [];
+        let j = i + 1;
+        while (j < lines.length) {
+          const item = lines[j].match(/^\s+-\s+(.*)$/);
+          if (!item) break;
+          collected.push(item[1].trim().replace(/^['"]|['"]$/g, ""));
+          j++;
+        }
+        out[key] = collected;
+        i = j - 1;
       } else {
-        out[key] = inner.split(",").map((s) => s.trim().replace(/^['"]|['"]$/g, ""));
+        // Inline array like ['vault/**'] or [] — possibly with double quotes.
+        const arr = trimmed.match(/^\[(.*)\]$/);
+        if (!arr) continue;
+        const inner = arr[1].trim();
+        if (inner.length === 0) {
+          out[key] = [];
+        } else {
+          out[key] = inner.split(",").map((s) => s.trim().replace(/^['"]|['"]$/g, ""));
+        }
       }
     }
   }
@@ -141,9 +160,12 @@ test("starter-vault agents declare scoped read/write with write ⊆ read", () =>
   }
 });
 
-// A glob-aware prefix check: `vault/**` should cover `vault/work/**`.
-// Strip a trailing `/**` (or `**`) from the read pattern before testing prefix.
+// A glob-aware prefix check: `vault/**` should cover `vault/work/**`,
+// and a bare `**` should cover everything. Strip a trailing `/**` (or
+// `**`) from the read pattern before testing prefix; treat empty-stripped
+// patterns (i.e., the universal `**` glob) as covering any write.
 function prefixMatches(readPattern: string, writePattern: string): boolean {
   const stripped = readPattern.replace(/\/\*\*$/, "/").replace(/\*\*$/, "");
-  return stripped.length > 0 && writePattern.startsWith(stripped);
+  if (stripped.length === 0) return true;
+  return writePattern.startsWith(stripped);
 }
