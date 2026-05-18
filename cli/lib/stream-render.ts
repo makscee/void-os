@@ -133,12 +133,21 @@ export function createRenderer(opts: RendererOpts): Renderer {
         case "run_end":
           flushBuffer();
           return;
+        case "error": {
+          // VOS-122 F6: surface daemon-emitted error frames to the user.
+          // Flush any buffered text first so a partial answer isn't lost,
+          // then write the error line to stderr (both stream + buffered modes).
+          flushBuffer();
+          const msg = frame.data.message ?? "unknown";
+          const rid = frame.data.run_id ? ` [run_id=${frame.data.run_id}]` : "";
+          opts.stderr.write(`error: ${msg}${rid}\n`);
+          return;
+        }
         case "ask_user":
         case "hello":
         case "usage":
-        case "error":
           // T6 (chat) handles ask_user; ask handler short-circuits before
-          // reaching the renderer. hello/usage/error are no-ops here.
+          // reaching the renderer. hello/usage are no-ops here.
           return;
       }
     },

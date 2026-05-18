@@ -85,6 +85,24 @@ test("tolerates extra run_id field on every data payload (daemon emits it)", () 
   expect(io.out.join("")).toBe("hi· bash ls\n  ↳ ok\n");
 });
 
+test("error frame: stream mode writes message to stderr", () => {
+  const io = collect();
+  const r = createRenderer({ mode: "stream", stdout: io.stdout, stderr: io.stderr });
+  r.handle({ event: "error", data: { message: "tool crashed", run_id: "r_9" } });
+  expect(io.err.join("")).toContain("error: tool crashed");
+  expect(io.err.join("")).toContain("r_9");
+});
+
+test("error frame: ask-buffered mode flushes pending text + writes stderr", () => {
+  const io = collect();
+  const r = createRenderer({ mode: "ask-buffered", stdout: io.stdout, stderr: io.stderr });
+  r.handle({ event: "text", data: { text: "partial answer" } });
+  r.handle({ event: "error", data: { message: "boom" } });
+  // Buffered text flushed to stdout before the error appears on stderr.
+  expect(io.out.join("")).toBe("partial answer\n");
+  expect(io.err.join("")).toContain("error: boom");
+});
+
 test("ANSI escapes emitted when stdout isTTY=true; suppressed when isTTY=false", () => {
   const ttyOut: string[] = [];
   const ttyIo = {
