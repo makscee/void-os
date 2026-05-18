@@ -10,7 +10,8 @@ import permissionDenyUiTeardown from "./globalTeardown-permission-deny-ui.ts";
 import autospawnTeardown from "./globalTeardown-autospawn.ts";
 
 // Mirror of globalSetup-all selection: parse --project from argv (FullConfig
-// gives the declared list, not the filter).
+// gives the declared list, not the filter). Empty filter = default to "main"
+// only (must match globalSetup-all so teardown doesn't leak).
 function selectedProjects(allNames: string[]): Set<string> {
   const argv = process.argv;
   const picks: string[] = [];
@@ -19,7 +20,7 @@ function selectedProjects(allNames: string[]): Set<string> {
     if (a === "--project" && argv[i + 1]) picks.push(argv[i + 1]);
     else if (a.startsWith("--project=")) picks.push(a.slice("--project=".length));
   }
-  return picks.length > 0 ? new Set(picks) : new Set(allNames);
+  return picks.length > 0 ? new Set(picks) : new Set(["main"]);
 }
 
 export default async function globalTeardownAll(config: FullConfig) {
