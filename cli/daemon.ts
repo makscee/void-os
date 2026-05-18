@@ -26,8 +26,10 @@ export type StartOpts = {
   dryRun?: boolean;
 };
 export type StartResult =
-  | { status: "already-running"; pid: number; port: number }
-  | { status: "vault-mismatch"; activeVault: string; pid: number; port: number }
+  | { status: "already-running"; pid: number; port: number; vault: string }
+  // VOS-143: rename for clarity — `requestedVault` distinguishes the caller's
+  // intent from the daemon's `activeVault`. CLI/plugin consumers must update.
+  | { status: "vault-mismatch"; activeVault: string; requestedVault: string; pid: number; port: number }
   | { status: "would-spawn" }
   | { status: "spawned"; pid: number; port: number; vault: string; version?: string }
   | { status: "spawn-failed"; reason: string };
@@ -80,7 +82,9 @@ async function cmdStartCli(args: string[], ctx: { prefix: string }): Promise<num
   const result = await cmdStart({ vault: resolvedVault, port, prefix: ctx.prefix });
   switch (result.status) {
     case "already-running":
-      console.log(`already running (pid=${result.pid} port=${result.port})`);
+      console.log(
+        `already running (pid=${result.pid} port=${result.port} vault=${result.vault})`,
+      );
       return 0;
     case "vault-mismatch":
       console.error(
@@ -112,15 +116,30 @@ export async function cmdStart(opts: StartOpts): Promise<StartResult> {
   const existing = readPidJson();
   if (existing) {
     if (isPidAlive(existing.pid)) {
-      if (existing.vault_root === opts.vault) {
-        return { status: "already-running", pid: existing.pid, port: existing.port };
+      // Vault-mismatch is decided first — even an unresponsive daemon serving
+      // a different vault must not be silently replaced by a vault-B start.
+      if (existing.vault_root !== opts.vault) {
+        return {
+          status: "vault-mismatch",
+          activeVault: existing.vault_root,
+          requestedVault: opts.vault,
+          pid: existing.pid,
+          port: existing.port,
+        };
       }
-      return {
-        status: "vault-mismatch",
-        activeVault: existing.vault_root,
-        pid: existing.pid,
-        port: existing.port,
-      };
+      // VOS-143: pid alive isn't enough — confirm daemon is actually
+      // responsive before attaching. Otherwise plugin-spawned-then-crashed
+      // daemons leave a stale pidfile that blocks `daemon start`.
+      const healthy = (await isHealthy(existing.port, 1500)).ok;
+      if (healthy) {
+        return {
+          status: "already-running",
+          pid: existing.pid,
+          port: existing.port,
+          vault: existing.vault_root,
+        };
+      }
+      // pid alive but unresponsive → treat as stale + clean up.
     }
     removePidJson();
   }
@@ -134,7 +153,14 @@ export async function cmdStart(opts: StartOpts): Promise<StartResult> {
       const oldPort = existsSync(portPath())
         ? Number(readFileSync(portPath(), "utf8").trim()) || 0
         : 0;
-      return { status: "already-running", pid: oldPid, port: oldPort };
+      // Legacy path has no recorded vault — surface the caller's requested
+      // vault so the message still includes one (best-effort).
+      return {
+        status: "already-running",
+        pid: oldPid,
+        port: oldPort,
+        vault: opts.vault,
+      };
     }
   }
 
@@ -194,6 +220,28 @@ export async function cmdStart(opts: StartOpts): Promise<StartResult> {
 // Tiny mutable carrier so cmdStart can read the parsed health body.
 let ready_health: { version?: string } | null = null;
 
+// VOS-143: hoisted single-request /health probe. Used both for the pre-spawn
+// attach probe in cmdStart and (per-iteration) by raceHealth's post-spawn
+// poll. /health requires Bearer auth — see daemon/test/app-wiring.test.ts:76.
+async function isHealthy(port: number, timeoutMs: number): Promise<{ ok: boolean; version?: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/health`, {
+      headers: { Authorization: `Bearer ${tokenOrEmpty()}` },
+      signal: controller.signal,
+    });
+    if (!r.ok) return { ok: false };
+    let body: { version?: string } = {};
+    try { body = await r.json() as { version?: string }; } catch {}
+    return { ok: true, version: body.version };
+  } catch {
+    return { ok: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function raceHealth(child: import("node:child_process").ChildProcess, port: number, timeoutMs: number): Promise<"ok" | "timeout" | "child-exit"> {
   ready_health = null;
   const start = Date.now();
@@ -204,13 +252,11 @@ async function raceHealth(child: import("node:child_process").ChildProcess, port
   child.once("exit", () => { childExited = true; });
   while (Date.now() - start < timeoutMs) {
     if (childExited) return "child-exit";
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/health`, { headers: { Authorization: `Bearer ${tokenOrEmpty()}` } });
-      if (r.ok) {
-        try { ready_health = await r.json() as { version?: string }; } catch { ready_health = {}; }
-        return "ok";
-      }
-    } catch { /* not up yet */ }
+    const probe = await isHealthy(port, 1500);
+    if (probe.ok) {
+      ready_health = { version: probe.version };
+      return "ok";
+    }
     await sleep(200);
   }
   return "timeout";
