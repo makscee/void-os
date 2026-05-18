@@ -54,7 +54,7 @@ export function formatReport(r: ReportInput): string {
     lines.push(`  2. open vault at ${r.vaultPath}, enable void-os plugin`)
   }
   lines.push("")
-  lines.push('CLI access (`void-os ask tinker "hello"`) lands with VOS-118.')
+  lines.push('CLI access: `void-os ask <agent> "<msg>"` (one-shot) or `void-os chat <agent>` (interactive).')
 
   if (!fresh) {
     lines.push("")
