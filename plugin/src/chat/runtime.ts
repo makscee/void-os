@@ -29,6 +29,7 @@ import {
 
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
+import { ApiError } from "./api";
 import {
   chatReducer,
   initialChatState,
@@ -37,6 +38,52 @@ import {
   type LocalAction,
   type ToolPart,
 } from "./reducer";
+
+/** Composer toast copy for the no-agent createChat 400 path (VOS-126).
+ *  ASCII hyphens only — keeps the test assertion stable across Unicode
+ *  normalizations. References the Obsidian command id registered in main.ts. */
+export const NO_AGENT_TOAST_COPY =
+  "Pick an agent first - run the 'new-chat-with-agent' command, then send again.";
+
+/** Predicate for the daemon's "agent is required" 400 response (VOS-126).
+ *  Matches ApiError with status 400 and body.error === "E_INVALID_BODY". */
+export function isNoAgentError(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false;
+  if (err.status !== 400) return false;
+  const body = err.body;
+  if (!body || typeof body !== "object") return false;
+  return (body as { error?: unknown }).error === "E_INVALID_BODY";
+}
+
+export type EnsureChatResult =
+  | { ok: true; chatId: string }
+  | { ok: false; reason: "no_agent" };
+
+/** Bootstrap a chat for `sendText`: returns the existing chatId if one is
+ *  already minted, otherwise calls `createChat(defaultAgent)`. On the
+ *  no-agent 400 path, fires `onComposerToast` with NO_AGENT_TOAST_COPY and
+ *  returns `{ok:false, reason:"no_agent"}` so the caller can abort cleanly.
+ *  All other createChat failures propagate. (VOS-126) */
+export async function ensureChat(
+  deps: Pick<ChatRuntimeDeps, "api" | "defaultAgent" | "onChatIdMinted" | "onComposerToast">,
+  chatIdRef: { current: string | null },
+  dispatch: Dispatch<LocalAction>,
+): Promise<EnsureChatResult> {
+  if (chatIdRef.current) return { ok: true, chatId: chatIdRef.current };
+  try {
+    const created = await deps.api.createChat(deps.defaultAgent);
+    chatIdRef.current = created.id;
+    dispatch({ kind: "set_chat", chatId: created.id });
+    await deps.onChatIdMinted?.(created.id);
+    return { ok: true, chatId: created.id };
+  } catch (err: unknown) {
+    if (isNoAgentError(err)) {
+      deps.onComposerToast?.(NO_AGENT_TOAST_COPY);
+      return { ok: false, reason: "no_agent" };
+    }
+    throw err;
+  }
+}
 
 export interface ChatRuntimeDeps {
   bus: FrameBus;
@@ -380,14 +427,9 @@ export function useChatRuntime(deps: ChatRuntimeDeps): ChatRuntimeHandle {
       const text = rawText.trim();
       if (!text) return;
 
-      let chatId = chatIdRef.current;
-      if (!chatId) {
-        const created = await deps.api.createChat(deps.defaultAgent);
-        chatId = created.id;
-        chatIdRef.current = chatId;
-        dispatch({ kind: "set_chat", chatId });
-        await deps.onChatIdMinted?.(chatId);
-      }
+      const res = await ensureChat(deps, chatIdRef, dispatch);
+      if (!res.ok) return;
+      const chatId = res.chatId;
 
       // ask_user routing. Read directly from `state.pendingAskUser` — the
       // callback's dep array includes it, so the latest reducer snapshot is
