@@ -93,7 +93,52 @@ fi
   exit 0
 }
 
-echo "smoke-up: TODO daemon spawn (Task 4)" >&2
-exit 0
+# Resolve port (sticky if portfile exists, else compute + probe-bump).
+PORT="$(read_port_or_compute "$ID" "$SMOKE_ROOT")"
+
+# Daemon reuse: if recorded pid is alive AND its command line includes
+# 'void-os' AND 'daemon', skip spawn.
+SKIP_SPAWN=0
+if [ -f "$SMOKE_PIDFILE" ]; then
+  EX_PID="$(cat "$SMOKE_PIDFILE")"
+  if pid_alive "$EX_PID"; then
+    EX_CMD="$(ps -o command= -p "$EX_PID" 2>/dev/null || true)"
+    # Match on the smoke vault path specifically — not on a generic
+    # 'void-os daemon' glob, which would also match the operator's
+    # main daemon if pid recycling reuses our recorded pid.
+    case "$EX_CMD" in
+      *"--vault $SMOKE_VAULT"*) SKIP_SPAWN=1 ;;
+    esac
+  fi
+fi
+
+if [ "$SKIP_SPAWN" -eq 1 ]; then
+  echo "smoke-up: daemon already alive (pid=$(cat "$SMOKE_PIDFILE"), port=$PORT)"
+else
+  echo "smoke-up: spawning daemon HOME=$SMOKE_HOME PORT=$PORT vault=$SMOKE_VAULT"
+  # nohup + & detaches; redirect both streams to the smoke log.
+  HOME="$SMOKE_HOME" VOID_OS_PORT="$PORT" \
+    nohup "$VOID_OS_BIN" daemon start --vault "$SMOKE_VAULT" \
+      >"$SMOKE_LOG" 2>&1 &
+  echo $! > "$SMOKE_PIDFILE"
+
+  # Poll for the pidfile the daemon itself writes (in isolated HOME).
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -f "$SMOKE_HOME/.void-os/daemon.json" ]; do
+    sleep 0.1
+    i=$((i+1))
+  done
+  if [ ! -f "$SMOKE_HOME/.void-os/daemon.json" ]; then
+    echo "smoke-up: daemon failed to write pidfile in 5s. Tail of $SMOKE_LOG:" >&2
+    tail -30 "$SMOKE_LOG" >&2
+    rm -f "$SMOKE_PIDFILE"
+    exit 3
+  fi
+fi
+
+echo "smoke-up: daemon ready on http://127.0.0.1:$PORT"
+echo "smoke-up: pidfile=$SMOKE_HOME/.void-os/daemon.json"
+echo "smoke-up: smoke-pid=$(cat "$SMOKE_PIDFILE")"
 
 # Obsidian spawn lives in Task 5.
+exit 0
