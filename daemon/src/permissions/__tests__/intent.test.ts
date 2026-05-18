@@ -70,3 +70,25 @@ describe("toIntent — scopes pass through verbatim", () => {
     expect(intent.writePaths).toEqual([]);
   });
 });
+
+describe("toIntent — explicit network/posture", () => {
+  test("explicit network='none' wins", () => {
+    const defn: AgentDefn = { name: "x", network: "none" };
+    expect(toIntent(defn, SCOPES_RW, SYS_DENY).network).toBe("none");
+  });
+
+  test("explicit network='allow' wins (overrides default)", () => {
+    const defn: AgentDefn = { name: "x", network: "allow" };
+    expect(toIntent(defn, SCOPES_RW, SYS_DENY).network).toBe("allow");
+  });
+
+  test("explicit posture='open' wins (overrides write-derived default)", () => {
+    const defn: AgentDefn = { name: "x", posture: "open" };
+    expect(toIntent(defn, SCOPES_RW, SYS_DENY).posture).toBe("open");
+  });
+
+  test("explicit posture='read-only' wins even with non-empty writePaths", () => {
+    const defn: AgentDefn = { name: "x", posture: "read-only" };
+    expect(toIntent(defn, SCOPES_RW, SYS_DENY).posture).toBe("read-only");
+  });
+});

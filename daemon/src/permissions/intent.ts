@@ -27,12 +27,19 @@ export function toIntent(
   scopes: { readPaths: string[]; writePaths: string[] },
   systemDenyPaths: string[],
 ): AgentPermissionIntent {
+  const defaultPosture: AgentPermissionPosture = scopes.writePaths.length > 0 ? "workspace-write" : "read-only";
+  const posture: AgentPermissionPosture = defn.posture ?? defaultPosture;
+  // Coupled defaults: read-only posture defaults network to 'none' (least-privilege).
+  // Write-capable posture defaults network to 'allow' (preserves today's behavior).
+  const defaultNetwork: "none" | "allow" = posture === "read-only" ? "none" : "allow";
+  const network: "none" | "allow" = defn.network ?? defaultNetwork;
+
   return {
     tools: defn.tools,
     readPaths: scopes.readPaths,
     writePaths: scopes.writePaths,
-    network: "allow",
-    posture: "workspace-write",
+    network,
+    posture,
     denyTools: ["AskUserQuestion"],
     systemDenyPaths,
   };
