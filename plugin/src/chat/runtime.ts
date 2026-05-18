@@ -126,10 +126,18 @@ const toThreadMessage = (m: ChatMessage): ThreadMessageLike => {
         return { type: "text" as const, text: p.text };
       }
       if (p.kind === "tool") {
+        // VOS-142: live tool parts carry the raw CC name (e.g. `mcp__void-os__ask_user`),
+        // but tool renderers (AskUserTool, AskAgentTool, …) are registered under the
+        // bare registered name (`ask_user`, `ask_agent`). Replay path persists bare via
+        // ask-user-bridge, so the assistant-ui dispatch only matches there. Strip the
+        // MCP-prefix so live and replay both reach the right renderer.
+        const toolName = p.name.startsWith("mcp__void-os__")
+          ? p.name.slice("mcp__void-os__".length)
+          : p.name;
         return {
           type: "tool-call" as const,
           toolCallId: p.toolCallId,
-          toolName: p.name,
+          toolName,
           args: p.input,
           result: p.output,
           isError: p.isError,
