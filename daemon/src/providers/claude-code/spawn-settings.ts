@@ -183,6 +183,8 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
     (p) => !pathHeadIsUnderRoot(p, args.vaultRoot),
   );
 
+  const toolsArg = computeEffectiveTools(args.agentName, args.declaredTools);
+
   const settings = {
     hooks: {
       PreToolUse: [
@@ -193,11 +195,14 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
       ],
     },
     additionalDirectories,
-    // Block the built-in AskUserQuestion tool so agents reach the user via
-    // the MCP vos_ask_user surface (which the void-os plugin renders as
-    // option buttons). Without this, the model prefers the trained-in name
-    // and the plugin shows the raw tool input as JSON.
+    // VOS-142: pre-approve every tool we hand to --tools so CC stops gating
+    // mcp__void-os__* calls. Hooks still fire BEFORE rule evaluation
+    // (docs.claude.com/en/docs/claude-code/sdk/sdk-permissions), so the
+    // PreToolUse path gate remains authoritative for filesystem scope.
+    // MAINTAINER: do NOT add --bare or --dangerously-skip-permissions to
+    // the spawn flags — both skip the PreToolUse layer that enforces F7.
     permissions: {
+      allow: toolsArg,
       deny: ["AskUserQuestion"],
     },
   };
@@ -245,8 +250,6 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
     VOS_VAULT_ROOT: args.vaultRoot,
     NO_PROXY: noProxyEntries.join(","),
   };
-
-  const toolsArg = computeEffectiveTools(args.agentName, args.declaredTools);
 
   return { settingsPath, mcpConfigPath, env, toolsArg };
 }
