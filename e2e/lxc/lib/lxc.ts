@@ -92,30 +92,43 @@ export async function provisionLxc(
   const suffix = Math.random().toString(36).slice(2, 8)
   const hostname = `vos-e2e-${suffix}`
 
-  // Pick + create under flock to serialize concurrent callers.
-  const pickAndCreate = `
+  // List + create under retry. Two concurrent callers may compute the same ctid;
+  // the create runs under flock and a collision (existing ctid) re-lists + re-picks.
+  const MAX_ATTEMPTS = 3
+  let lastErr = ""
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const listRes = await ssh(`root@${towerHost}`, `${PCT} list`, { timeoutMs: 30_000 })
+    if (listRes.exitCode !== 0) {
+      throw new Error(`provisionLxc: pct list failed: ${listRes.stderr || listRes.stdout}`)
+    }
+    const ctid = pickFreeCtid(listRes.stdout, range)
+
+    const createCmd = `
 flock ${LOCK} -c '
   set -e
-  list=$(${PCT} list)
-  ctid=$(echo "$list" | awk "NR>1 && \\$1 >= ${range[0]} && \\$1 <= ${range[1]} {print \\$1}" | sort -n | tail -1)
-  if [ -z "$ctid" ]; then ctid=${range[0]}; else ctid=$((ctid + 1)); fi
-  if [ "$ctid" -gt ${range[1]} ]; then echo "no free CTID" >&2; exit 1; fi
-  ${PCT} create $ctid local:vztmpl/${template}.tar.zst \\
+  ${PCT} create ${ctid} local:vztmpl/${template}.tar.zst \\
     --hostname ${hostname} \\
     --memory 1024 --cores 2 --rootfs local-lvm:8 \\
     --features nesting=1 --unprivileged 1 \\
     --net0 name=eth0,bridge=vmbr0,ip=dhcp \\
     --start 1
-  echo CTID=$ctid
+  echo CTID=${ctid}
 '
 `
-  const r = await ssh(`root@${towerHost}`, pickAndCreate, { timeoutMs: 60_000 })
-  if (r.exitCode !== 0) {
-    throw new Error(`provisionLxc failed: ${r.stderr || r.stdout}`)
+    const r = await ssh(`root@${towerHost}`, createCmd, { timeoutMs: 60_000 })
+    if (r.exitCode === 0) {
+      const m = r.stdout.match(/CTID=(\d+)/)
+      if (!m) throw new Error(`provisionLxc: could not parse CTID from output: ${r.stdout}`)
+      return { ctid: Number(m[1]), hostname, towerHost }
+    }
+    lastErr = r.stderr || r.stdout
+    // Collision marker: pct create errors loudly when the ctid already exists.
+    if (!/already exists|configuration file.*already/i.test(lastErr)) {
+      throw new Error(`provisionLxc failed: ${lastErr}`)
+    }
+    // else: collision — loop, re-list, re-pick.
   }
-  const m = r.stdout.match(/CTID=(\d+)/)
-  if (!m) throw new Error(`provisionLxc: could not parse CTID from output: ${r.stdout}`)
-  return { ctid: Number(m[1]), hostname, towerHost }
+  throw new Error(`provisionLxc: exhausted ${MAX_ATTEMPTS} attempts; last error: ${lastErr}`)
 }
 
 export async function lxcExec(
