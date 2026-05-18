@@ -7,7 +7,7 @@ import { configure, decideFromFlags } from "./init/configure"
 import type { Decisions } from "./init/configure"
 import { runBuild, BuildError } from "./init/build"
 import { seed } from "./init/seed"
-import { installPlugin } from "./init/plugin"
+import { installPlugin, ensurePluginBuilt } from "./init/plugin"
 import { formatReport } from "./init/report"
 
 // Re-export for backwards compatibility with existing tests + external callers.
@@ -188,6 +188,12 @@ export async function initCommand(opts: InitCommandOpts): Promise<void> {
   }
 
   // 5. PLUGIN
+  // Auto-build plugin/dist if missing (fresh clone has no built artifact).
+  // Mirrors scripts/fresh-vault.sh. Surface stdout/stderr only on failure.
+  const buildResult = ensurePluginBuilt({ prefix: opts.prefix, dryRun: flags.dryRun })
+  if (buildResult.ran && !buildResult.built && buildResult.error) {
+    console.warn(`warning: plugin pre-build failed: ${buildResult.error}`)
+  }
   const pluginResult = installPlugin({
     prefix: opts.prefix,
     home: vaultPath,

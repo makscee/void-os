@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { installPlugin } from "./plugin"
+import { installPlugin, ensurePluginBuilt } from "./plugin"
 
 let root: string
 let prefix: string
@@ -43,5 +43,78 @@ describe("installPlugin()", () => {
     expect(r.installed).toBe(false)
     expect(r.warnings.length).toBeGreaterThan(0)
     expect(r.warnings[0]).toContain("plugin build artifact missing")
+  })
+})
+
+describe("ensurePluginBuilt()", () => {
+  it("no-op when plugin/dist already exists", () => {
+    let called = false
+    const r = ensurePluginBuilt({
+      prefix,
+      dryRun: false,
+      spawn: () => { called = true; return { status: 0 } },
+    })
+    expect(r).toEqual({ built: true, ran: false })
+    expect(called).toBe(false)
+  })
+
+  it("invokes bun run build in plugin dir when dist missing", () => {
+    rmSync(join(prefix, "plugin/dist"), { recursive: true })
+    let spawnedCmd = ""
+    let spawnedArgs: string[] = []
+    let spawnedCwd = ""
+    const r = ensurePluginBuilt({
+      prefix,
+      dryRun: false,
+      spawn: (cmd, args, o) => {
+        spawnedCmd = cmd
+        spawnedArgs = args
+        spawnedCwd = o.cwd
+        // Simulate successful build by creating dist.
+        mkdirSync(join(prefix, "plugin/dist"), { recursive: true })
+        writeFileSync(join(prefix, "plugin/dist/main.js"), "built")
+        return { status: 0, stdout: "", stderr: "" }
+      },
+    })
+    expect(spawnedCmd).toBe("bun")
+    expect(spawnedArgs).toEqual(["run", "build"])
+    expect(spawnedCwd).toBe(join(prefix, "plugin"))
+    expect(r).toEqual({ built: true, ran: true })
+  })
+
+  it("returns error when bun run build fails", () => {
+    rmSync(join(prefix, "plugin/dist"), { recursive: true })
+    const r = ensurePluginBuilt({
+      prefix,
+      dryRun: false,
+      spawn: () => ({ status: 1, stdout: "", stderr: "build broke" }),
+    })
+    expect(r.built).toBe(false)
+    expect(r.ran).toBe(true)
+    expect(r.error).toContain("build broke")
+  })
+
+  it("dryRun skips spawn entirely", () => {
+    rmSync(join(prefix, "plugin/dist"), { recursive: true })
+    let called = false
+    const r = ensurePluginBuilt({
+      prefix,
+      dryRun: true,
+      spawn: () => { called = true; return { status: 0 } },
+    })
+    expect(called).toBe(false)
+    expect(r.ran).toBe(false)
+  })
+
+  it("no-op when plugin dir itself is missing", () => {
+    rmSync(join(prefix, "plugin"), { recursive: true })
+    let called = false
+    const r = ensurePluginBuilt({
+      prefix,
+      dryRun: false,
+      spawn: () => { called = true; return { status: 0 } },
+    })
+    expect(called).toBe(false)
+    expect(r.ran).toBe(false)
   })
 })
