@@ -22,6 +22,19 @@ export interface AgentPermissionIntent {
   systemDenyPaths: string[];
 }
 
+function isCoveredBy(writePath: string, readPaths: string[]): boolean {
+  // Coverage = string-prefix containment on normalized paths. This matches the
+  // existing additionalDirectories semantics in spawn-settings.ts (CC treats
+  // a directory grant as recursive). Glob authoring is out of scope here; if
+  // future agents use globs, this check tightens with minimatch.
+  const norm = (p: string) => p.endsWith("/") ? p : p + "/";
+  const wp = norm(writePath);
+  return readPaths.some((rp) => {
+    const r = norm(rp);
+    return wp === r || wp.startsWith(r);
+  });
+}
+
 export function toIntent(
   defn: AgentDefn,
   scopes: { readPaths: string[]; writePaths: string[] },
@@ -37,10 +50,18 @@ export function toIntent(
   const denyTools = ["AskUserQuestion"];
   const tools = defn.tools === undefined ? undefined : defn.tools.filter((t) => !denyTools.includes(t));
 
+  const readPaths = scopes.readPaths;
+  const writePaths = scopes.writePaths;
+  for (const wp of writePaths) {
+    if (!isCoveredBy(wp, readPaths)) {
+      throw new Error(`writePath ${wp} not covered by any readPath`);
+    }
+  }
+
   return {
     tools,
-    readPaths: scopes.readPaths,
-    writePaths: scopes.writePaths,
+    readPaths,
+    writePaths,
     network,
     posture,
     denyTools,

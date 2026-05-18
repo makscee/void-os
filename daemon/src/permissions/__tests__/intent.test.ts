@@ -134,3 +134,25 @@ describe("toIntent — denyTools normalization", () => {
     expect(toIntent({ name: "x" }, SCOPES_RW, SYS_DENY).tools).toBeUndefined();
   });
 });
+
+describe("toIntent — writePaths subset invariant", () => {
+  test("writePaths covered by readPaths passes", () => {
+    const scopes = { readPaths: ["/vault"], writePaths: ["/vault/journal"] };
+    expect(() => toIntent({ name: "x" }, scopes, SYS_DENY)).not.toThrow();
+  });
+
+  test("writePaths=['/etc'] not covered by readPaths=['/vault'] throws", () => {
+    const scopes = { readPaths: ["/vault"], writePaths: ["/etc"] };
+    expect(() => toIntent({ name: "x" }, scopes, SYS_DENY))
+      .toThrow(/writePath \/etc not covered by any readPath/);
+  });
+
+  test("writePaths identical to readPaths passes", () => {
+    const scopes = { readPaths: ["/vault"], writePaths: ["/vault"] };
+    expect(() => toIntent({ name: "x" }, scopes, SYS_DENY)).not.toThrow();
+  });
+
+  test("read-only scopes (empty writePaths) always passes", () => {
+    expect(() => toIntent({ name: "x" }, SCOPES_RO, SYS_DENY)).not.toThrow();
+  });
+});
