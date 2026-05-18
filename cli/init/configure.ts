@@ -28,6 +28,7 @@ export async function configure(report: PreflightReport, prompter: Prompter): Pr
   const rawPath = await prompter.text({
     message: "vault location?",
     defaultValue: "~/vault",
+    placeholder: "~/vault",
     validate: (v) => {
       if (!v) return "required"
       if (!v.startsWith("~") && !isAbsolute(v)) return "must be absolute or ~-prefixed"
@@ -45,6 +46,7 @@ export async function configure(report: PreflightReport, prompter: Prompter): Pr
       const repoName = await prompter.text({
         message: "repo name?",
         defaultValue: "vault",
+        placeholder: "vault",
         validate: (v) => (/^[a-zA-Z0-9._-]+$/.test(v) ? undefined : "invalid repo name"),
       })
       gh = { push: true, repoName }
@@ -56,6 +58,7 @@ export async function configure(report: PreflightReport, prompter: Prompter): Pr
     obsidianVaultName = await prompter.text({
       message: "obsidian vault display name?",
       defaultValue: "void",
+      placeholder: "void",
     })
   }
 

@@ -3,7 +3,7 @@ import * as clack from "@clack/prompts"
 export interface Prompter {
   intro(msg: string): void
   outro(msg: string): void
-  text(opts: { message: string; defaultValue?: string; validate?: (v: string) => string | void }): Promise<string>
+  text(opts: { message: string; defaultValue?: string; placeholder?: string; validate?: (v: string) => string | void }): Promise<string>
   confirm(opts: { message: string; initialValue?: boolean }): Promise<boolean>
   cancel(msg?: string): never
 }
@@ -16,10 +16,11 @@ export class ClackPrompter implements Prompter {
   intro(msg: string) { clack.intro(msg) }
   outro(msg: string) { clack.outro(msg) }
 
-  async text(opts: { message: string; defaultValue?: string; validate?: (v: string) => string | void }) {
+  async text(opts: { message: string; defaultValue?: string; placeholder?: string; validate?: (v: string) => string | void }) {
     const r = await clack.text({
       message: opts.message,
       defaultValue: opts.defaultValue,
+      placeholder: opts.placeholder ?? opts.defaultValue,
       validate: opts.validate,
     })
     if (clack.isCancel(r)) this.cancel()
@@ -56,7 +57,7 @@ export class ScriptedPrompter implements Prompter {
   intro(msg: string) { this.log.push(`intro: ${msg}`) }
   outro(msg: string) { this.log.push(`outro: ${msg}`) }
 
-  async text(opts: { message: string; defaultValue?: string }): Promise<string> {
+  async text(opts: { message: string; defaultValue?: string; placeholder?: string }): Promise<string> {
     if (this.textQueue.length === 0) {
       throw new Error(`no scripted text answer for prompt: ${opts.message}`)
     }
