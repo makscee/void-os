@@ -52,7 +52,15 @@ export function runBuild(opts: BuildOpts): void {
   if (pluginInstall.status !== 0) throw new BuildError("bun install (plugin) failed")
 
   if (needsPluginBuild(opts.prefix)) {
-    const pluginBuild = spawn("bun", ["run", "build"], { cwd: pluginDir, stdio: "inherit" })
+    // plugin/build.ts defaults `out` to ~/void/.obsidian/plugins/void-os
+    // (dev-loop convenience). Pin VOID_OS_PLUGIN_OUT to <prefix>/plugin/dist
+    // so the artifacts land where installPlugin/ensurePluginBuilt expect them.
+    const distDir = join(pluginDir, "dist")
+    const pluginBuild = spawn("bun", ["run", "build"], {
+      cwd: pluginDir,
+      stdio: "inherit",
+      env: { ...process.env, VOID_OS_PLUGIN_OUT: distDir },
+    })
     if (pluginBuild.status !== 0) throw new BuildError("plugin build failed")
   }
 }
