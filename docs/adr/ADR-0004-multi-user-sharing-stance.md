@@ -33,7 +33,7 @@ That trigger is deliberately specific:
 - "First" means one is enough; this is not a market-research gate.
 - "Explicitly requests … with at least one named collaborator" rules out vague "would be cool" feedback and forces a concrete shape (two real humans, one real vault, one real workflow).
 
-When the trigger fires, the replacement ADR must answer: actor model (single shared vault vs federated), permission granularity (vault / folder / role-based via ADR-0004's role registry if shipped), transport (Relay fork vs first-party sync vs git-as-substrate), and identity (OAuth provider or local-only).
+When the trigger fires, the replacement ADR must answer: actor model (single shared vault vs federated), permission granularity (vault / folder / role-based), transport (Relay fork vs first-party sync vs git-as-substrate), and identity (OAuth provider or local-only).
 
 ## Consequences
 

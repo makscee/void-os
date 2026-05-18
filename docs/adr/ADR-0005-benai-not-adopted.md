@@ -22,7 +22,7 @@ BenAI ships an `os-mcp` skill that provisions Relay MCP v2 to the user's own Rai
 
 ### 2. Cowork-only rich-HTML widget (`mcp__visualize__show_widget`)
 
-BenAI's onboarding renders 12-category forms via a custom rich-HTML widget hosted on the Cowork product. The widget is bound to BenAI's hosted infrastructure — there is no path to use it without their backend. void-os covers the same UX surface with the existing `ask_user` MCP tool plus plugin views (see VOS-132 / VOS-126 task lineage in the source spec).
+BenAI's onboarding renders 12-category forms via a custom rich-HTML widget hosted on the Cowork product. The widget is bound to BenAI's hosted infrastructure — there is no path to use it without their backend. void-os covers the same UX surface with the existing `ask_user` MCP tool plus plugin views (see VOS-132 / VOS-133 task lineage in the source spec §3.10, §3.11).
 
 *Re-open trigger:* none. Even if Cowork were openable, the dependency direction is wrong.
 
