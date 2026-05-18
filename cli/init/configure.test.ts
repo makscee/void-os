@@ -223,3 +223,40 @@ describe("decideFromFlags", () => {
     expect(d.gh).toEqual({ push: false })
   })
 })
+
+describe("configure gh push gate", () => {
+  it("interactive: gh push defaults to false (initialValue), not true", async () => {
+    const reportWithGh = { ...baseReport, gh: { found: true, authed: true } }
+    const p = new ScriptedPrompter({
+      text: ["void"],
+      confirm: [false, true], // gh push: accept default (false); proceed: yes
+      select: [join(homedir(), "vault")],
+    })
+    const d = await configure(reportWithGh, p, noRepoDeps)
+    expect(d.gh.push).toBe(false)
+    expect(p.confirmInitialValues).toContain(false) // gh prompt's initialValue was false
+  })
+
+  it("non-interactive: skipGh=false + no ghRepo → no push (was: implicit push)", () => {
+    const reportWithGh = { ...niBaseReport, gh: { found: true, authed: true } }
+    const d = decideFromFlags(reportWithGh, {
+      nonInteractive: true,
+      vault: "/tmp/v",
+      skipGh: false,
+      skipObsidian: true,
+    })
+    expect(d.gh.push).toBe(false)
+  })
+
+  it("non-interactive: --gh-repo opts in", () => {
+    const reportWithGh = { ...niBaseReport, gh: { found: true, authed: true } }
+    const d = decideFromFlags(reportWithGh, {
+      nonInteractive: true,
+      vault: "/tmp/v",
+      skipGh: false,
+      ghRepo: "my-vault",
+      skipObsidian: true,
+    })
+    expect(d.gh).toEqual({ push: true, repoName: "my-vault" })
+  })
+})

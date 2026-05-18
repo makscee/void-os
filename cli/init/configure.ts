@@ -98,7 +98,7 @@ export async function configure(
   if (report.gh.found && report.gh.authed) {
     const push = await prompter.confirm({
       message: "create private GitHub repo and push initial commit?",
-      initialValue: true,
+      initialValue: false,
     })
     if (push) {
       const repoName = await prompter.text({
