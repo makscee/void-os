@@ -55,14 +55,23 @@ kill_grace() {
   return 0
 }
 
-# Audited in Task 1. Update here if daemon logging or plugin URI handlers
-# change. smoke-dogfood reads these; no duplication elsewhere.
-#   - SMOKE_DAEMON_CONNECT_GREP: regex matching a plugin-originated HTTP
-#     request line in daemon.log
-#   - SMOKE_PLUGIN_TRIGGER_URI: obsidian:// URI that round-trips a request
-#     through the daemon. Empty string if no such handler exists; in that
-#     case smoke-dogfood relies on cold-start autofire (set during T1).
-SMOKE_DAEMON_CONNECT_GREP='void-os daemon v[0-9.]+ listening on http://'
+# Audited in Task 1, re-pinned in Task 8 against live daemon output.
+# smoke-dogfood reads these; no duplication elsewhere.
+#
+# CAVEAT: daemon has no per-request log line and no plugin obsidian:// URI
+# handler exists. The plugin defaults to http://127.0.0.1:7777 (main daemon
+# port) and smoke-up does NOT inject `daemonUrl` into plugin data.json, so
+# the plugin in smoke Obsidian still talks to the MAIN daemon. Acceptance
+# #5 "plugin talks to SMOKE daemon, not main" therefore degrades to a
+# negative-only proof: main daemon pidfile unchanged (covered by #3).
+# The banner regex below proves "smoke daemon ran in isolated HOME on its
+# own port"; it does NOT prove plugin-connect.
+#
+#   - SMOKE_DAEMON_CONNECT_GREP: regex matching smoke daemon's ready banner
+#     in $SMOKE_LOG. Format pinned against live output (T8):
+#       "void-os daemon ready (pid=<N> port=<N> vault=<path> version=<X.Y.Z>)"
+#   - SMOKE_PLUGIN_TRIGGER_URI: empty — no obsidian:// handler exists.
+SMOKE_DAEMON_CONNECT_GREP='void-os daemon ready \(pid=[0-9]+ port=[0-9]+ vault='
 SMOKE_PLUGIN_TRIGGER_URI=''
 
 # read_port_or_compute <ID> <root>
