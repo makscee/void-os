@@ -223,6 +223,13 @@ describe("VOS-111: tool allowlist + name transform", () => {
       "WebFetch",
       "WebSearch",
       "mcp__void-os__vault_read",
+      "mcp__void-os__vault_create",
+      "mcp__void-os__vault_append",
+      "mcp__void-os__vault_replace_section",
+      "mcp__void-os__vault_set_property",
+      "mcp__void-os__vault_patch",
+      "mcp__void-os__vault_delete",
+      "mcp__void-os__vault_move",
       "mcp__void-os__ask_user",
       "mcp__void-os__ask_agent",
     ]);
