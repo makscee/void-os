@@ -23,12 +23,11 @@
 import {
   test,
   expect,
-  chromium,
-  type Browser,
   type Page,
   type Locator,
 } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { getVaultPage } from "../helpers/vault-page.ts";
 
 interface E2EState {
   port: number;
@@ -47,26 +46,6 @@ function readPermissionDenyState(): E2EState {
     );
   }
   return JSON.parse(readFileSync(p, "utf8")) as E2EState;
-}
-
-async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  // Inlined from chat-roundtrip / ask-user spec — the harness has no
-  // shared helpers module (per workspace CLAUDE.md gotchas).
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  let page = browser.contexts().flatMap((ctx) => ctx.pages())
-    .find((p) => p.url() === "app://obsidian.md/index.html");
-  if (!page) {
-    const ctx = browser.contexts()[0];
-    page = await ctx.waitForEvent("page", {
-      predicate: (p) => p.url() === "app://obsidian.md/index.html",
-      timeout: 20_000,
-    });
-  }
-  await page.waitForLoadState("domcontentloaded");
-  try {
-    await page.getByRole("button", { name: /Trust author/i }).click({ timeout: 5_000 });
-  } catch { /* already trusted */ }
-  return { browser, page };
 }
 
 async function openChatRoot(page: Page, chatId: string): Promise<Locator> {

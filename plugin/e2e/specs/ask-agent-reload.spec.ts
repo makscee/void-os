@@ -11,18 +11,18 @@
 // Uses the depth-1 subthread fixtures (cheaper than nested) — the default
 // journaler script pinned by globalSetup is already the subthread one.
 
-import { test, expect, chromium, type Page, type Browser } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { readFileSync, copyFileSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   waitForTaskRow,
   waitForTaskState,
   type TaskRow,
 } from "../test-utils/wait-for-state.ts";
+import { getVaultPage } from "../helpers/vault-page.ts";
+import { openEventsWs, callAskAgentOverMcp } from "../helpers/daemon-api.ts";
 
 interface E2EState {
   port: number;
@@ -31,94 +31,6 @@ interface E2EState {
   obsidianUserDataDir: string;
   dbPath: string;
   journalerActivePath: string;
-}
-
-async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  let page = browser.contexts().flatMap((ctx) => ctx.pages())
-    .find((p) => p.url() === "app://obsidian.md/index.html");
-
-  if (!page) {
-    const ctx = browser.contexts()[0];
-    page = await ctx.waitForEvent("page", {
-      predicate: (p) => p.url() === "app://obsidian.md/index.html",
-      timeout: 20_000,
-    });
-  }
-  await page.waitForLoadState("domcontentloaded");
-  try {
-    await page.getByRole("button", { name: /Trust author/i }).click({ timeout: 5_000 });
-  } catch { /* already trusted */ }
-  return { browser, page };
-}
-
-function openEventsWs(port: number): {
-  ws: WebSocket;
-  waitFor: (predicate: (msg: Record<string, unknown>) => boolean, timeoutMs?: number) => Promise<Record<string, unknown>>;
-} {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/events`);
-  const queue: Record<string, unknown>[] = [];
-  const listeners: Array<(msg: Record<string, unknown>) => void> = [];
-  ws.addEventListener("message", (ev) => {
-    let msg: Record<string, unknown>;
-    try {
-      msg = JSON.parse(typeof ev.data === "string" ? ev.data : ev.data.toString()) as Record<string, unknown>;
-    } catch { return; }
-    queue.push(msg);
-    for (const l of listeners.splice(0)) l(msg);
-  });
-  return {
-    ws,
-    waitFor(predicate, timeoutMs = 10_000) {
-      return new Promise((resolve, reject) => {
-        const hit = queue.find(predicate);
-        if (hit) return resolve(hit);
-        const t = setTimeout(() => reject(new Error(`waitFor: timeout after ${timeoutMs}ms`)), timeoutMs);
-        const listener = (msg: Record<string, unknown>) => {
-          if (predicate(msg)) {
-            clearTimeout(t);
-            resolve(msg);
-          } else {
-            listeners.push(listener);
-          }
-        };
-        listeners.push(listener);
-      });
-    },
-  };
-}
-
-async function callAskAgentOverMcp(args: {
-  port: number;
-  taskId: string;
-  contextId: string;
-  targetAgentId: string;
-  message: string;
-  toolCallId: string;
-}): Promise<unknown> {
-  const client = new Client({ name: "vos91-t19-reload-spec", version: "0.0.0" });
-  const transport = new StreamableHTTPClientTransport(
-    // VOS-106 T8: /mcp requires ?agent=<name> for calling-agent identity.
-    // The caller here is maya (parent dispatching ask_agent to a child).
-    new URL(`http://127.0.0.1:${args.port}/mcp?agent=maya`),
-  );
-  await client.connect(transport);
-  try {
-    return await client.callTool({
-      name: "ask_agent",
-      arguments: {
-        target_agent_id: args.targetAgentId,
-        message: args.message,
-      },
-      _meta: {
-        task_id: args.taskId,
-        context_id: args.contextId,
-        tool_call_id: args.toolCallId,
-      },
-    });
-  } finally {
-    await client.close();
-  }
 }
 
 test("reload replay: ask_agent card persists across page reload (T7+T15+T16)", async () => {
@@ -142,7 +54,7 @@ test("reload replay: ask_agent card persists across page reload (T7+T15+T16)", a
   const askAgentResultPromise = (async () => {
     const frame = await events.waitFor(
       (msg) => msg.type === "chat.tool_use" && msg.name === "ask_agent",
-      30_000,
+      { timeoutMs: 30_000 },
     );
     const chatId = String(frame.chat_id);
     const toolCallId = String(frame.tool_call_id ?? "");
@@ -245,7 +157,7 @@ test("reload replay: ask_agent card persists across page reload (T7+T15+T16)", a
     // ── Reload renderer ─────────────────────────────────────────────────
     // Close WS first; spec re-binds nothing after reload (we're testing the
     // pure replay path through HTTP refetch + reducer rebuild).
-    try { events.ws.close(); } catch { /* ignore */ }
+    events.close();
     await page.reload();
     await page.waitForLoadState("domcontentloaded");
     try {
@@ -290,7 +202,7 @@ test("reload replay: ask_agent card persists across page reload (T7+T15+T16)", a
     await expect(replayedCard).toContainText("chunk-1", { timeout: 5_000 });
     await expect(replayedCard).toContainText("chunk-2", { timeout: 5_000 });
   } finally {
-    try { events.ws.close(); } catch { /* ignore */ }
+    events.close();
     await browser.close();
   }
 });

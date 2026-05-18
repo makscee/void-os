@@ -15,7 +15,8 @@ import permissionDenyUiSetup from "./globalSetup-permission-deny-ui.ts";
 import autospawnSetup from "./globalSetup-autospawn.ts";
 
 // Playwright's FullConfig.projects is the full declared list, NOT filtered
-// by --project. Parse argv directly. Empty filter = run all.
+// by --project. Parse argv directly. Empty filter = default to "main" only
+// (opt-in for other projects via explicit --project).
 function selectedProjects(allNames: string[]): Set<string> {
   const argv = process.argv;
   const picks: string[] = [];
@@ -24,7 +25,7 @@ function selectedProjects(allNames: string[]): Set<string> {
     if (a === "--project" && argv[i + 1]) picks.push(argv[i + 1]);
     else if (a.startsWith("--project=")) picks.push(a.slice("--project=".length));
   }
-  return picks.length > 0 ? new Set(picks) : new Set(allNames);
+  return picks.length > 0 ? new Set(picks) : new Set(["main"]);
 }
 
 export default async function globalSetupAll(config: FullConfig) {

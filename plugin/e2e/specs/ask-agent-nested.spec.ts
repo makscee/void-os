@@ -18,13 +18,13 @@
 // path (state.journalerActivePath); this spec copies the nested journaler
 // fixture (which calls ask_agent(deep)) over it BEFORE kicking the chat.
 
-import { test, expect, chromium, type Page, type Browser } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { readFileSync, copyFileSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { getVaultPage } from "../helpers/vault-page.ts";
+import { openEventsWs, callAskAgentOverMcp } from "../helpers/daemon-api.ts";
 
 interface E2EState {
   port: number;
@@ -36,25 +36,6 @@ interface E2EState {
   deepActivePath: string;
 }
 
-async function getVaultPage(cdpPort: number): Promise<{ browser: Browser; page: Page }> {
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-  let page = browser.contexts().flatMap((ctx) => ctx.pages())
-    .find((p) => p.url() === "app://obsidian.md/index.html");
-
-  if (!page) {
-    const ctx = browser.contexts()[0];
-    page = await ctx.waitForEvent("page", {
-      predicate: (p) => p.url() === "app://obsidian.md/index.html",
-      timeout: 20_000,
-    });
-  }
-  await page.waitForLoadState("domcontentloaded");
-  try {
-    await page.getByRole("button", { name: /Trust author/i }).click({ timeout: 5_000 });
-  } catch { /* already trusted */ }
-  return { browser, page };
-}
-
 interface ToolUseFrame {
   type: string;
   chat_id: string;
@@ -63,58 +44,6 @@ interface ToolUseFrame {
   name?: string;
   input?: { target_agent_id?: string; message?: string };
   [k: string]: unknown;
-}
-
-function openEventsWs(port: number): {
-  ws: WebSocket;
-  onFrame: (cb: (msg: Record<string, unknown>) => void) => void;
-} {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/events`);
-  const listeners: Array<(msg: Record<string, unknown>) => void> = [];
-  ws.addEventListener("message", (ev) => {
-    let msg: Record<string, unknown>;
-    try {
-      msg = JSON.parse(typeof ev.data === "string" ? ev.data : ev.data.toString()) as Record<string, unknown>;
-    } catch { return; }
-    for (const l of listeners) l(msg);
-  });
-  return {
-    ws,
-    onFrame(cb) { listeners.push(cb); },
-  };
-}
-
-async function callAskAgentOverMcp(args: {
-  port: number;
-  taskId: string;
-  contextId: string;
-  targetAgentId: string;
-  message: string;
-  toolCallId: string;
-}): Promise<unknown> {
-  const client = new Client({ name: "vos91-t19-spec", version: "0.0.0" });
-  const transport = new StreamableHTTPClientTransport(
-    // VOS-106 T8: /mcp requires ?agent=<name> for calling-agent identity.
-    // The caller here is maya (parent dispatching ask_agent to a child).
-    new URL(`http://127.0.0.1:${args.port}/mcp?agent=maya`),
-  );
-  await client.connect(transport);
-  try {
-    return await client.callTool({
-      name: "ask_agent",
-      arguments: {
-        target_agent_id: args.targetAgentId,
-        message: args.message,
-      },
-      _meta: {
-        task_id: args.taskId,
-        context_id: args.contextId,
-        tool_call_id: args.toolCallId,
-      },
-    });
-  } finally {
-    await client.close();
-  }
 }
 
 /** Resolve the root parent task id for a chat. Race-safe poll. */
@@ -155,10 +84,20 @@ test("depth-2 nested ask_agent: maya → journaler → deep, live + auto-collaps
   // child emit). We dedupe by tool_call_id so we never bridge the same
   // frame twice (parent re-runs after resume can replay tool_use with the
   // same id).
+  // Nested spec needs every matching tool_use frame, not just the first —
+  // so we bind a raw listener on the helper's underlying ws rather than
+  // using `waitFor` (which resolves on first match). Helper buffers frames
+  // before we attach, but tool_use frames only arrive AFTER we send the
+  // chat message below, so attaching here is race-safe.
   const events = openEventsWs(state.port);
   const bridged = new Set<string>();
   const inflight: Promise<unknown>[] = [];
-  events.onFrame((msg) => {
+  events.ws.addEventListener("message", (ev) => {
+    let msg: Record<string, unknown>;
+    try {
+      const raw = typeof ev.data === "string" ? ev.data : (ev.data as { toString(): string }).toString();
+      msg = JSON.parse(raw) as Record<string, unknown>;
+    } catch { return; }
     if (msg.type !== "chat.tool_use" || msg.name !== "ask_agent") return;
     const frame = msg as unknown as ToolUseFrame;
     const callId = String(frame.tool_call_id ?? "");
@@ -282,7 +221,7 @@ test("depth-2 nested ask_agent: maya → journaler → deep, live + auto-collaps
       expect(deep!.parent_task_id).toBe(journaler.id);
     } finally { dbR.close(); }
   } finally {
-    try { events.ws.close(); } catch { /* ignore */ }
+    events.close();
     await browser.close();
   }
 });
