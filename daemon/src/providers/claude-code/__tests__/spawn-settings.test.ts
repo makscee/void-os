@@ -48,7 +48,8 @@ describe("buildSpawnSettings", () => {
     expect(settings.additionalDirectories).toEqual(["/Users/x/.config/something"]);
     // VOS-107 review followup: AskUserQuestion is denied so agents fall back to
     // the daemon's ask_user path instead of CC's built-in tool.
-    expect(settings.permissions).toEqual({ deny: ["AskUserQuestion"] });
+    expect(settings.permissions.deny).toEqual(["AskUserQuestion"]);
+    expect(Array.isArray(settings.permissions.allow)).toBe(true);
   });
 
   test("mcp.json now uses stdio transport with env-stamped runtime ids", () => {
