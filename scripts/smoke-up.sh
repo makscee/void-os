@@ -75,26 +75,96 @@ fi
 
 if [ -d "$SMOKE_VAULT" ]; then
   echo "smoke-up: vault exists at $SMOKE_VAULT — reusing"
-  echo "smoke-up: rebuilding plugin so symlinked dist tracks HEAD"
+  echo "smoke-up: rebuilding plugin so per-file-symlinked dist tracks HEAD"
   ( cd "$PLUGIN_DIR" && VOID_OS_PLUGIN_OUT="$PLUGIN_DIST" bun run build )
 else
   echo "smoke-up: seeding fresh vault at $SMOKE_VAULT"
   ( cd "$PLUGIN_DIR" && VOID_OS_PLUGIN_OUT="$PLUGIN_DIST" bun run build )
   "$VOID_OS_BIN" init --non-interactive --vault "$SMOKE_VAULT" --skip-gh
-  TARGET="$SMOKE_VAULT/.obsidian/plugins/void-os"
-  mkdir -p "$SMOKE_VAULT/.obsidian/plugins"
-  rm -rf -- "$TARGET"
-  ln -sfn "$PLUGIN_DIST" "$TARGET"
 fi
+
+# Plugin layout: a REAL directory (not a symlink to plugin/dist) with each
+# build artefact symlinked from PLUGIN_DIST. data.json lives here as a real
+# file so smoke writes (daemonUrl, etc.) do NOT leak into the worktree's
+# plugin/dist. Symlinks for main.js/manifest.json/styles.css preserve
+# "edit plugin source → rebuild → next smoke-up sees it".
+TARGET="$SMOKE_VAULT/.obsidian/plugins/void-os"
+mkdir -p "$SMOKE_VAULT/.obsidian/plugins"
+# If a prior smoke-up created TARGET as a symlink (legacy layout), drop it.
+if [ -L "$TARGET" ]; then
+  rm -f -- "$TARGET"
+fi
+mkdir -p "$TARGET"
+for f in main.js manifest.json styles.css; do
+  rm -f -- "$TARGET/$f"
+  ln -sfn "$PLUGIN_DIST/$f" "$TARGET/$f"
+done
+
+# Resolve port (sticky if portfile exists, else compute + probe-bump).
+PORT="$(read_port_or_compute "$ID" "$SMOKE_ROOT")"
+
+# Seed data.json with the smoke daemon's URL so the plugin targets THIS
+# task's daemon (per-ID port) and not the operator's main daemon. The
+# plugin's urlsFromAttachment resolution puts settings.daemonUrl ahead of
+# the ensureDaemon-probed attachment.port (see plugin/src/daemon-urls.ts).
+DATA_JSON="$TARGET/data.json"
+DAEMON_URL_FOR_PLUGIN="http://127.0.0.1:$PORT"
+python3 - "$DATA_JSON" "$DAEMON_URL_FOR_PLUGIN" <<'PY'
+import json, sys, os
+path, url = sys.argv[1], sys.argv[2]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+data["daemonUrl"] = url
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+PY
+echo "smoke-up: seeded plugin data.json daemonUrl=$DAEMON_URL_FOR_PLUGIN"
+
+# Enable void-os in community-plugins.json so Obsidian auto-loads it on
+# vault open. Without this, the plugin sits dormant on disk and the user
+# has to enable it manually (which the operator did during VOS-142 T5 but
+# every cold smoke would need that step too). This mirrors the E2E
+# fixture-vault pattern in plugin/e2e/globalSetup-autospawn.ts.
+COMMUNITY_PLUGINS="$SMOKE_VAULT/.obsidian/community-plugins.json"
+if [ ! -f "$COMMUNITY_PLUGINS" ]; then
+  echo '["void-os"]' > "$COMMUNITY_PLUGINS"
+  echo "smoke-up: enabled void-os in community-plugins.json"
+fi
+
+# Disable Obsidian's restricted (safe) mode so community plugins are
+# actually loaded — restrictedMode defaults to true, which silently
+# ignores community-plugins.json. Mirrors the e2e fixture app.json.
+APP_JSON="$SMOKE_VAULT/.obsidian/app.json"
+python3 - "$APP_JSON" <<'PY'
+import json, sys, os
+path = sys.argv[1]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+data["restrictedMode"] = False
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+PY
+echo "smoke-up: set restrictedMode=false in app.json"
 
 # Daemon spawn lives in Task 4.
 [ "$FLAG_SKIP_DAEMON" -eq 1 ] && {
   echo "smoke-up: --skip-daemon → done (vault ready at $SMOKE_VAULT)"
   exit 0
 }
-
-# Resolve port (sticky if portfile exists, else compute + probe-bump).
-PORT="$(read_port_or_compute "$ID" "$SMOKE_ROOT")"
 
 # Daemon reuse: if recorded pid is alive AND its command line includes
 # this worktree's daemon entrypoint, skip spawn. `$SMOKE_PIDFILE` holds
@@ -216,10 +286,32 @@ if [ -f "$SMOKE_OBSIDIAN_PIDFILE" ] && pid_alive "$(cat "$SMOKE_OBSIDIAN_PIDFILE
   echo "smoke-up: Obsidian already alive (pid=$(cat "$SMOKE_OBSIDIAN_PIDFILE"))"
 else
   echo "smoke-up: spawning Obsidian with HOME=$SMOKE_HOME --user-data-dir=$SMOKE_USERDATA"
-  HOME="$SMOKE_HOME" nohup "$OBSIDIAN_BIN" \
-    "--user-data-dir=$SMOKE_USERDATA" "$SMOKE_VAULT" \
-    >/dev/null 2>&1 &
-  echo $! > "$SMOKE_OBSIDIAN_PIDFILE"
+  # `open -na` is the macOS-correct way to launch a second instance of an
+  # already-running .app bundle. Direct Mach-O exec
+  # (`/Applications/Obsidian.app/Contents/MacOS/Obsidian`) yields a process
+  # that exists but never gets a window/foreground registration when an
+  # earlier instance is alive (LaunchServices routes it to background-only),
+  # which silently keeps the plugin from running its renderer code. The `-n`
+  # forces a new instance even if one is running; `-a` picks the .app
+  # bundle by name; `--args` passes argv to the child.
+  HOME="$SMOKE_HOME" open -na "Obsidian" --args \
+    "--user-data-dir=$SMOKE_USERDATA" "$SMOKE_VAULT"
+  # `open` returns immediately; resolve the spawned pid by finding the
+  # newest /Applications/Obsidian.app/Contents/MacOS/Obsidian process with
+  # our SMOKE_USERDATA in its command line.
+  i=0
+  OBS_PID=""
+  while [ "$i" -lt 50 ]; do
+    OBS_PID="$(pgrep -nf "Obsidian.*$SMOKE_USERDATA" 2>/dev/null || true)"
+    [ -n "$OBS_PID" ] && break
+    sleep 0.1
+    i=$((i+1))
+  done
+  if [ -z "$OBS_PID" ]; then
+    echo "smoke-up: failed to resolve smoke Obsidian pid within 5s" >&2
+    exit 3
+  fi
+  echo "$OBS_PID" > "$SMOKE_OBSIDIAN_PIDFILE"
 fi
 
 echo "smoke-up: Obsidian pid=$(cat "$SMOKE_OBSIDIAN_PIDFILE")"

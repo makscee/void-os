@@ -6,31 +6,32 @@
 # Stands up two parallel smoke stacks (independent worktrees), asserts the
 # VOS-146 acceptance bullets across them, then tears both down (--purge).
 #
-# Plugin-connect signal (audited T1, re-validated T8):
+# Plugin-connect signal (audited T1, re-validated T8, partially wired T9):
 # The daemon has NO per-request log line — Bun.serve has no middleware,
 # WebSocket open() is silent by design ("Silent by design" in boot.ts).
-# The plugin has NO obsidian:// URI handler. The plugin defaults to
-# http://127.0.0.1:7777 (DEFAULT_DAEMON_HTTP in plugin/src/chat/api.ts) and
-# smoke-up does NOT yet inject `daemonUrl` into the plugin's data.json, so
-# the plugin in smoke Obsidian still targets the MAIN daemon port. Live
-# T8 dogfood confirmed: zero ESTABLISHED peers on the smoke port.
+# The plugin has NO obsidian:// URI handler. The plugin's wire layer
+# (plugin/src/daemon-urls.ts) resolves settings.daemonUrl FIRST, falling
+# back to the ensureDaemon-probed attachment.port. smoke-up.sh seeds
+# <SMOKE_VAULT>/.obsidian/plugins/void-os/data.json with
+# {daemonUrl:"http://127.0.0.1:$PORT"} so when the plugin loads, it
+# targets the per-ID smoke daemon, not the operator's main daemon.
 #
-# Acceptance #5 "plugin talks to SMOKE daemon, not main" therefore degrades
-# to a NEGATIVE-ONLY proof in v1:
-#   - main daemon pidfile sha unchanged (acceptance #3) — IF the plugin
-#     had reached into the smoke daemon and accidentally rewrote the main
-#     pidfile, sha would change. It does not.
-# Positive proof of plugin-connect is BLOCKED on a follow-up task:
-# smoke-up must inject {daemonUrl:"http://127.0.0.1:$PORT"} into
-# <SMOKE_VAULT>/.obsidian/plugins/void-os/data.json before Obsidian spawn.
+# Caveat — autoload on a cold smoke vault is unreliable: Obsidian 1.8.4
+# honors community-plugins.json + restrictedMode=false on an already-seen
+# vault, but on the FIRST open of a brand-new vault the plugin usually
+# stays dormant until the user clicks Enable once. So the ESTABLISHED-peer
+# check below is INFO-only; ok/fail is gated on (a) + (b).
 #
-# What we DO positively assert in #5 here:
+# Acceptance #5 "plugin talks to SMOKE daemon, not main" is asserted via:
 #   (a) smoke daemon's ready banner in $ROOT/daemon.log (daemon ran in
 #       isolated HOME on the per-ID smoke port)
-#   (b) smoke Obsidian pid alive + vault symlink present (plugin loaded
-#       against smoke vault, isolated from main install)
-# Combined with #3 (main pidfile unchanged), this proves isolation of the
-# daemon side. Plugin-side wiring is the missing piece.
+#   (b) smoke Obsidian pid alive (vault loaded against smoke userdata)
+#   (c) [INFO] ESTABLISHED peer count on smoke port — proves plugin
+#       AUTOLOADED + connected when ≥ 1; 0 means the plugin sits dormant
+#       and the operator needs to enable it once.
+# Combined with #3 (main pidfile byte-unchanged), this proves daemon-side
+# isolation. The data.json daemonUrl wiring itself is unit-tested in
+# plugin/test/daemon-urls.test.ts.
 set -eo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd -P )"
@@ -78,9 +79,18 @@ RC_B=0; wait "$PID_B" || RC_B=$?
 ROOT_A="/tmp/void-os-smoke/$ID_A"
 ROOT_B="/tmp/void-os-smoke/$ID_B"
 
-# --- acceptance #1: vault + symlink --------------------------------------
-[ -L "$ROOT_A/vault/.obsidian/plugins/void-os" ] && ok "$ID_A vault symlink" || fail "$ID_A vault symlink"
-[ -L "$ROOT_B/vault/.obsidian/plugins/void-os" ] && ok "$ID_B vault symlink" || fail "$ID_B vault symlink"
+# --- acceptance #1: vault + plugin layout --------------------------------
+# Plugin layout is a REAL directory with per-file symlinks into the
+# worktree's plugin/dist + a real data.json (so smoke writes don't leak
+# into the worktree). Probe main.js as the canonical artefact symlink.
+for id in "$ID_A" "$ID_B"; do
+  d="/tmp/void-os-smoke/$id/vault/.obsidian/plugins/void-os"
+  if [ -d "$d" ] && [ -L "$d/main.js" ] && [ -f "$d/data.json" ]; then
+    ok "$id vault plugin layout (dir + main.js symlink + data.json)"
+  else
+    fail "$id vault plugin layout (dir+main.js+data.json missing at $d)"
+  fi
+done
 
 # --- acceptance #2: daemon alive + pidfile -------------------------------
 PORT_A="$(cat "$ROOT_A/daemon.port" 2>/dev/null || echo "")"
@@ -130,12 +140,28 @@ assert_isolation() {
     fail "$id smoke Obsidian pid $obs_pid not alive"
   fi
 
-  # (c) Diagnostic only: report ESTABLISHED peers on the smoke port.
-  # Not asserted — plugin-connect requires daemonUrl injection (follow-up).
+  # (c) Plugin-connect: ESTABLISHED peers on the smoke port.
+  # smoke-up.sh seeds data.json with daemonUrl=http://127.0.0.1:$PORT, and
+  # the plugin's urlsFromAttachment puts that ahead of attachment.port. The
+  # wiring is unit-tested (test/daemon-urls.test.ts). The remaining gap is
+  # the plugin AUTOLOADING on first vault open: Obsidian 1.8.4 honors
+  # community-plugins.json + restrictedMode=false on a previously-seen
+  # vault but on a brand-new vault the plugin only loads after either
+  # (i) a programmatic `app.plugins.enablePlugin("void-os")` over CDP
+  #     (what the e2e harness does), or
+  # (ii) the user clicking "Enable" once in Settings → Community plugins.
+  # So this assertion is informational: if peers ≥ 1, the autoload worked
+  # for this run (proves the daemonUrl seed works end-to-end); if 0, the
+  # plugin sits dormant on disk and the user needs the one-time Enable
+  # click. Either way the daemonUrl wiring itself is correct.
   if [ -n "$port" ]; then
     local est_count="0"
     est_count="$(lsof -nP -iTCP:"$port" -sTCP:ESTABLISHED 2>/dev/null | tail -n +2 | wc -l | tr -d ' ' || true)"
-    echo "  INFO  $id smoke port $port has $est_count ESTABLISHED peers (positive plugin-connect blocked on daemonUrl injection — not asserted)"
+    if [ "$est_count" -ge 1 ]; then
+      ok "$id plugin connected: $est_count ESTABLISHED peer(s) on smoke port $port"
+    else
+      echo "  INFO  $id no ESTABLISHED peers on smoke port $port (plugin dormant — enable once in Settings → Community plugins)"
+    fi
   fi
   return 0
 }
