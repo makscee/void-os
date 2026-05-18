@@ -243,6 +243,63 @@ function QueueSendButton(props: { send: (text: string) => Promise<void> }) {
   );
 }
 
+// VOS-142: while a run is in flight (including the ask_user pause),
+// assistant-ui's built-in Send button is replaced by QueueSendButton and the
+// textarea no longer treats Enter as submit. Wire Enter (no shift/cmd/ctrl/alt,
+// not mid-IME) to the same composer.setText + send path the button uses.
+// Lives inside AssistantRuntimeProvider so useAui() resolves.
+function ComposerKeyboardHandler(props: {
+  isRunning: boolean;
+  pendingAskUserButtonsOnly: boolean;
+  send: (text: string) => Promise<void>;
+  cancel: () => void | Promise<unknown>;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const aui = useAui();
+  const onKeyDownCapture = React.useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const target = e.target as HTMLElement | null;
+      const isTextarea =
+        target?.tagName === "TEXTAREA" ||
+        (target as { isContentEditable?: boolean })?.isContentEditable === true;
+      if (!isTextarea) return;
+      if (e.key === "Escape") {
+        if (!props.isRunning) return;
+        e.preventDefault();
+        void props.cancel();
+        return;
+      }
+      if (
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.nativeEvent.isComposing !== true
+      ) {
+        if (!props.isRunning) return;
+        if (props.pendingAskUserButtonsOnly) {
+          e.preventDefault();
+          return;
+        }
+        const composer = aui.composer();
+        const text = composer.getState().text;
+        if (!text.trim()) return;
+        e.preventDefault();
+        composer.setText("");
+        void props.send(text);
+      }
+    },
+    [aui, props],
+  );
+  return (
+    <div className={props.className} onKeyDownCapture={onKeyDownCapture}>
+      {props.children}
+    </div>
+  );
+}
+
 export function ChatRoot(props: ChatRootProps) {
   // Lift active chat into local state so the list can switch chats without
   // a remount of the leaf. Initial value comes from the persisted setting
@@ -453,24 +510,15 @@ export function ChatRoot(props: ChatRootProps) {
                 parent flex-col context) can starve the composer of height
                 and make the textarea unfocusable. Regression caught in S5
                 after the sidebar restructure changed the flex graph. */}
-            <div
+            <ComposerKeyboardHandler
               className="vos:shrink-0 vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)]"
-              onKeyDownCapture={(e) => {
-                // ESC = cancel active run. Only fires when textarea is focused
-                // AND a run is currently streaming. We don't steal ESC
-                // globally — the keydown comes from inside the composer
-                // wrapper, so ChatList / Obsidian's command palette are
-                // unaffected.
-                if (e.key !== "Escape") return;
-                const target = e.target as HTMLElement | null;
-                const isTextarea =
-                  target?.tagName === "TEXTAREA" ||
-                  (target as { isContentEditable?: boolean })?.isContentEditable === true;
-                if (!isTextarea) return;
-                if (!handle.isRunning) return;
-                e.preventDefault();
-                void handle.cancel();
-              }}
+              isRunning={handle.isRunning}
+              pendingAskUserButtonsOnly={
+                handle.pendingAskUser !== null &&
+                (handle.pendingAskUser.options?.length ?? 0) > 0
+              }
+              send={handle.send}
+              cancel={handle.cancel}
             >
               {handle.pendingAskUser && (() => {
                 const isButtonsOnly = (handle.pendingAskUser.options?.length ?? 0) > 0;
@@ -545,7 +593,7 @@ export function ChatRoot(props: ChatRootProps) {
                   {toast.text}
                 </div>
               )}
-            </div>
+            </ComposerKeyboardHandler>
           </ThreadPrimitive.Root>
         </div>
       </div>
