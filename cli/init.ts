@@ -228,13 +228,11 @@ export async function initCommand(opts: InitCommandOpts): Promise<void> {
   }))
 
   // 7. PROMPT OBSIDIAN — offer to open the seeded vault in Obsidian (macOS only when interactive).
+  // Errors propagate (matches the configure() pattern): Ctrl-C from the prompter exits 130 via
+  // ClackPrompter.cancel(), and tests' PrompterCancelled bubbles past printNextSteps.
   if (!flags.dryRun) {
     const promptObs = opts.promptObsidian ?? defaultPromptObsidian
-    try {
-      await promptObs({ vault: vaultPath, prompter, interactive: !flags.nonInteractive })
-    } catch (e) {
-      console.warn(`warning: obsidian prompt raised: ${(e as Error).message}`)
-    }
+    await promptObs({ vault: vaultPath, prompter, interactive: !flags.nonInteractive })
   }
 
   // 8. NEXT STEPS — print operator banner ("chat in Obsidian / chat in CLI").

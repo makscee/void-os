@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { provision, parseFlags, validateFlags, FlagsError, initCommand } from "./init"
-import { ScriptedPrompter } from "./init/prompter"
+import { ScriptedPrompter, PrompterCancelled } from "./init/prompter"
 import type { PreflightReport } from "./init/preflight"
 
 let tmpRoot: string
@@ -302,6 +302,38 @@ describe("initCommand new shape", () => {
     }
     expect(captured).not.toBeNull()
     expect(captured!.interactive).toBe(false)
+  })
+
+  it("propagates PrompterCancelled from promptObsidian (does not continue to printNextSteps)", async () => {
+    const prompter = new ScriptedPrompter({
+      text: [vault],
+      confirm: [true],
+      select: [vault],
+    })
+    let nextStepsCalls = 0
+    const logSpy = spyOn(console, "log").mockImplementation(() => {})
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+    let thrown: unknown = null
+    try {
+      await initCommand({
+        args: ["--skip-build"],
+        prefix: pfx,
+        prompter,
+        preflight: passingPreflight,
+        promptObsidian: async () => { throw new PrompterCancelled() },
+        printNextSteps: () => { nextStepsCalls++ },
+      })
+    } catch (e) {
+      thrown = e
+    } finally {
+      logSpy.mockRestore()
+      warnSpy.mockRestore()
+    }
+    expect(thrown).toBeInstanceOf(PrompterCancelled)
+    expect(nextStepsCalls).toBe(0)
+    // No swallowing into a warning either.
+    const warns = warnSpy.mock.calls.map((c) => c.map(String).join(" ")).join("\n")
+    expect(warns).not.toContain("obsidian prompt raised")
   })
 
   it("calls printNextSteps before exit", async () => {
