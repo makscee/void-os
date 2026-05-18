@@ -180,7 +180,11 @@ function MessageItem() {
   );
 }
 
-// Three-dot thinking indicator. Visible whenever the thread is running.
+// Three-dot thinking indicator. Visible whenever the thread is running
+// EXCEPT while paused at an `ask_user` prompt — the agent is not thinking,
+// it is waiting for the operator. The AskUserTool's own UI is the only
+// indicator that belongs there. (VOS-142 follow-up.)
+//
 // Approach: always render the dots while running. If the assistant has not
 // begun streaming, the dots sit alone below the user's last message. Once
 // a partial assistant message exists, the dots sit beneath the streaming
@@ -188,6 +192,8 @@ function MessageItem() {
 // primary signal, dots are secondary. This avoids needing to inspect the
 // last-message role from outside the messages list.
 function ThinkingIndicator() {
+  const { chatState } = React.useContext(ChildTaskContext);
+  if (chatState.pendingAskUser) return null;
   return (
     <ThreadPrimitive.If running>
       <div className="vos:w-full vos:my-[var(--size-4-2)]">
