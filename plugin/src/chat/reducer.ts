@@ -899,7 +899,12 @@ export function chatReducer(state: ChatState, action: LocalAction): ChatState {
             ? state
             : { ...state, liveToolsFirst: toolsFirst };
           const next = appendLiveToolUse(withFlag, toolCallId, name, input);
-          if (name !== "ask_user") return next;
+          // VOS-142: live tool_use frames carry the raw CC tool name
+          // (`mcp__void-os__ask_user`), but the replay/rehydrate path persists
+          // the bare name `ask_user` via ask-user-bridge. Accept both so the
+          // ask_user UI renders on the live path without a chat-switch refresh.
+          const isAskUser = name === "ask_user" || name === "mcp__void-os__ask_user";
+          if (!isAskUser) return next;
           const question = typeof input.question === "string" ? input.question : "";
           const options = Array.isArray(input.options)
             ? (input.options as unknown[]).filter((o): o is string => typeof o === "string")
