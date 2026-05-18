@@ -62,9 +62,8 @@ export interface BuildAppDeps {
   // happened to be invoked from) leaked daemon source paths into the agent and
   // produced spurious READ_SCOPE_DENIED hits.
   chatCwd?: string;
-  // Default agent name for cc-spawner static deps. Overridden in production
-  // wiring once per-chat agent lookup lands; for now mirrors the chats.agent
-  // default ("maya").
+  // Default agent name for cc-spawner static deps. Overridden per-chat via
+  // the run-request agent field once T3 validation is in place (VOS-124).
   defaultAgent?: string;
   // VOS-106
   /** Daemon's own base URL — spawned CC reaches /mcp here. Defaults to

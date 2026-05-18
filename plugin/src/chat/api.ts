@@ -203,9 +203,10 @@ function normalizeChats(raw: unknown): ChatSummary[] {
     if (!r || typeof r !== "object") continue;
     const o = r as Record<string, unknown>;
     if (typeof o.id !== "string") continue;
+    if (typeof o.agent !== "string") continue; // T3 guarantees agent is always set; skip corrupted/legacy rows
     out.push({
       id: o.id,
-      agent: typeof o.agent === "string" ? o.agent : "maya",
+      agent: o.agent,
       title: typeof o.title === "string" ? o.title : null,
       last_msg: typeof o.last_msg === "string" ? o.last_msg : null,
       updated_at: typeof o.updated_at === "number" ? o.updated_at : 0,
@@ -231,7 +232,7 @@ export function makeChatApi(
   fetchImpl: typeof fetch = fetch,
 ): ChatApi {
   return {
-    async createChat(agent = "maya") {
+    async createChat(agent?: string) {
       const res = await fetchImpl(`${base}/chats`, {
         method: "POST",
         headers: { "content-type": "application/json" },

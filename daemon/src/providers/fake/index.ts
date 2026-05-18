@@ -155,7 +155,10 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
         // NOT carry `agent` — the calling agent identity is set on the
         // provider instance via `opts.agent` by the factory
         // (daemon/src/providers/factory.ts → app.ts wires
-        // `agent: deps.defaultAgent ?? "maya"`).
+        // `agent: deps.defaultAgent ?? "maya"`; VOS-124 removed the
+        // silent-default from chat *creation* (chats.ts) but this
+        // spawner-level identity fallback is intentional for the
+        // subprocess harness — the daemon seeds "maya" as a known agent).
         //
         // Precedence: `req.agent` (legacy test extension hack — some
         // unit tests cast `ProviderSpawnRequest & { agent: string }` so
