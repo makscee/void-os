@@ -12,6 +12,7 @@ import { parseUsageFromAssistantEvent } from "./usage-extract.js";
 import { TraceWriter } from "../../trace/writer";
 import type { AgentDefn, PermissionEngine } from "../../permissions/engine.js";
 import { resolveSystemDeny } from "../../permissions/engine.js";
+import { toIntent } from "../../permissions/intent";
 import {
   buildSpawnSettings,
   SETTING_SOURCES_ARGS,
@@ -349,10 +350,14 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
           vaultRoot: deps.engine.vaultRoot,
           homeRoot: deps.engine.homeRoot,
         });
+        // VOS-145: collapse scopes + expandedDeny + agentDefn into a single
+        // provider-neutral `AgentPermissionIntent`. The CC adapter consumes
+        // intent.{readPaths,writePaths,tools,denyTools,systemDenyPaths};
+        // intent.{network,posture} ride along for future Codex/etc. adapters.
+        const intent = toIntent(agentDefn, scopes, expandedDeny);
         const built = buildSpawnSettings({
           agentName: req.agent,
-          scopes,
-          systemDeny: expandedDeny,
+          intent,
           vaultRoot: deps.engine.vaultRoot,
           daemonBase: deps.daemonBase,
           runId,
@@ -360,11 +365,6 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
           contextId: req.contextId,
           settingsDir: deps.tracesDir,
           hookScriptPath: deps.hookScriptPath,
-          // VOS-122 F7: gate MCP tools by the agent's declared frontmatter
-          // `tools:` list. `agentDefn.tools` is `undefined` for legacy agents
-          // (no field) — buildSpawnSettings preserves the pre-F7 behavior in
-          // that case and warns once.
-          declaredTools: agentDefn.tools,
         });
         settingsPath = built.settingsPath;
         mcpConfigPath = built.mcpConfigPath;

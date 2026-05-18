@@ -40,6 +40,7 @@ import { createAskUserBridge } from "../../src/chat/ask-user-bridge";
 import { createPermissionEngine } from "../../src/permissions/engine";
 import { mountMcp } from "../../src/adapters/mcp";
 import { buildSpawnSettings } from "../../src/providers/claude-code/spawn-settings";
+import { toIntent } from "../../src/permissions/intent";
 
 // >>> Operator: set this to the form recorded in runbook §A.
 //     Pinned form (claudev 0.2.18 / Claude Code 2.1.143):
@@ -160,10 +161,17 @@ exit 0
   // Then overwrite the settings.json's hook command to point at OUR side-
   // channel script instead of the production pre-tool-use.ts hook (we want
   // proof the hook FIRES, decoupled from the production hook's logic).
+  // VOS-145: migrate to intent shape. Same scopes / empty systemDeny as before;
+  // toIntent enforces writePath⊆readPath coverage (vaultRoot covers itself) and
+  // defaults posture/network from the empty AgentDefn.
+  const intent = toIntent(
+    { name: "probe-agent" },
+    { readPaths: [daemon.vaultRoot], writePaths: [daemon.vaultRoot] },
+    [],
+  );
   const built = buildSpawnSettings({
     agentName: "probe-agent",
-    scopes: { readPaths: [daemon.vaultRoot], writePaths: [daemon.vaultRoot] },
-    systemDeny: [],
+    intent,
     vaultRoot: daemon.vaultRoot,
     daemonBase: daemon.base,
     runId: "probe-run",
