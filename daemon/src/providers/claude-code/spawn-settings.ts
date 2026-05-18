@@ -5,6 +5,7 @@
 
 import { writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { AgentPermissionIntent } from "../../permissions/intent";
 
 // VOS-112: stdio bridge entrypoint shipped with the daemon. The daemon runs
 // from source (ADR-0003), so this path is the source file itself. Resolved
@@ -92,8 +93,20 @@ export const SETTING_SOURCES_ARGS: readonly string[] = Object.freeze([
 
 export interface BuildSpawnSettingsArgs {
   agentName: string;
-  scopes: { readPaths: string[]; writePaths: string[] };
-  systemDeny: string[];
+  /**
+   * VOS-145: provider-neutral permission intent. Carries scopes
+   * (`readPaths`/`writePaths`), declared tools (tri-state), `denyTools` (CC
+   * `permissions.deny`), and `systemDenyPaths` (F7 filesystem write-blocker,
+   * → `VOS_SYSTEM_DENY` env). The caller builds this via `toIntent(defn,
+   * scopes, systemDenyPaths)`; `network` + `posture` fields are carried
+   * through but not consumed by the CC adapter today (Codex adapter will
+   * use them).
+   *
+   * **`denyTools` and `systemDenyPaths` are distinct.** Wiring one into the
+   * other silently breaks F7's write blocklist or VOS-107's AskUserQuestion
+   * gate — see `permissions/intent.ts` doc comments.
+   */
+  intent: AgentPermissionIntent;
   vaultRoot: string;
   daemonBase: string;
   runId: string;
@@ -102,16 +115,6 @@ export interface BuildSpawnSettingsArgs {
   contextId: string;
   settingsDir: string;
   hookScriptPath: string;
-  /**
-   * VOS-122 F7: agent's declared tool allowlist from agent.md `tools:`.
-   * `undefined` => legacy agent (no declaration) — grant the maximal set and
-   * emit a one-shot deprecation warning. Empty array => grant zero MCP
-   * tools. Otherwise intersect with {@link ALLOWED_MCP_TOOLS_VOID_OS}.
-   *
-   * Names use the registered (dotted) form, e.g. `vault.read`. Built-in CC
-   * tools are NOT agent-scoped (granted unconditionally).
-   */
-  declaredTools?: string[];
 }
 
 export interface SpawnSettings {
@@ -179,11 +182,11 @@ function pathHeadIsUnderRoot(pattern: string, root: string): boolean {
 }
 
 export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings {
-  const additionalDirectories = args.scopes.readPaths.filter(
+  const additionalDirectories = args.intent.readPaths.filter(
     (p) => !pathHeadIsUnderRoot(p, args.vaultRoot),
   );
 
-  const toolsArg = computeEffectiveTools(args.agentName, args.declaredTools);
+  const toolsArg = computeEffectiveTools(args.agentName, args.intent.tools);
 
   const settings = {
     hooks: {
@@ -206,7 +209,9 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
       // VOS-107: AskUserQuestion denied so agents reach the user via the MCP
       // vos_ask_user surface (plugin renders option buttons). Without this,
       // the model prefers the trained-in name and the plugin shows raw JSON.
-      deny: ["AskUserQuestion"],
+      // VOS-145: `toIntent` always emits `denyTools = ['AskUserQuestion']`,
+      // preserving this invariant byte-for-byte under the new intent shape.
+      deny: args.intent.denyTools,
     },
   };
 
@@ -247,9 +252,13 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
   const noProxyEntries = ["127.0.0.1", "localhost", "::1"];
   if (inheritedNoProxy) noProxyEntries.push(inheritedNoProxy);
   const env: Record<string, string> = {
-    VOS_READ_PATHS: JSON.stringify(args.scopes.readPaths),
-    VOS_WRITE_PATHS: JSON.stringify(args.scopes.writePaths),
-    VOS_SYSTEM_DENY: JSON.stringify(args.systemDeny),
+    VOS_READ_PATHS: JSON.stringify(args.intent.readPaths),
+    VOS_WRITE_PATHS: JSON.stringify(args.intent.writePaths),
+    // VOS-145: F7 filesystem write blocklist (homeRoot, ~/.ssh, etc) flows
+    // through `intent.systemDenyPaths`. NOT `intent.denyTools` — that is the
+    // logical tool-name deny list (→ permissions.deny above). Collapsing the
+    // two silently disables one of the two gates.
+    VOS_SYSTEM_DENY: JSON.stringify(args.intent.systemDenyPaths),
     VOS_VAULT_ROOT: args.vaultRoot,
     NO_PROXY: noProxyEntries.join(","),
   };

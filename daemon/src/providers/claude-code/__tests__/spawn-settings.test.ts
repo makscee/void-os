@@ -12,6 +12,7 @@ import {
   computeEffectiveTools,
   mcpToolNameFor,
 } from "../spawn-settings";
+import { toIntent } from "../../../permissions/intent";
 
 const VAULT = "/tmp/vos-106-vault-test";
 
@@ -22,13 +23,17 @@ function freshDir(): string {
 describe("buildSpawnSettings", () => {
   it("writes settings.json with PreToolUse hook + additionalDirectories", () => {
     const dir = freshDir();
+    const intent = toIntent(
+      { name: "maya" },
+      {
+        readPaths: [VAULT, "/Users/x/.config/something"],
+        writePaths: [`${VAULT}/work`],
+      },
+      [`${VAULT}/agents/**`],
+    );
     const { settingsPath, mcpConfigPath, env } = buildSpawnSettings({
       agentName: "maya",
-      scopes: {
-        readPaths: [`${VAULT}/**`, "/Users/x/.config/something"],
-        writePaths: [`${VAULT}/work/**`],
-      },
-      systemDeny: [`${VAULT}/agents/**`],
+      intent,
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:17777",
       runId: "run-abc",
@@ -54,10 +59,14 @@ describe("buildSpawnSettings", () => {
 
   test("mcp.json now uses stdio transport with env-stamped runtime ids", () => {
     const tmp = mkdtempSync(join(tmpdir(), "vos112-"));
+    const intent = toIntent(
+      { name: "maya" },
+      { readPaths: ["/vault"], writePaths: [] },
+      [],
+    );
     const built = buildSpawnSettings({
       agentName: "maya",
-      scopes: { readPaths: [], writePaths: [] },
-      systemDeny: [],
+      intent,
       vaultRoot: "/vault",
       daemonBase: "http://127.0.0.1:8729",
       runId: "R-1",
@@ -83,10 +92,14 @@ describe("buildSpawnSettings", () => {
   });
 
   it("env exports JSON-encoded scope arrays", () => {
+    const intent = toIntent(
+      { name: "x" },
+      { readPaths: ["/r"], writePaths: ["/r/w"] },
+      ["/d"],
+    );
     const { env } = buildSpawnSettings({
       agentName: "x",
-      scopes: { readPaths: ["/r"], writePaths: ["/w"] },
-      systemDeny: ["/d"],
+      intent,
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:17777",
       runId: "r",
@@ -96,7 +109,7 @@ describe("buildSpawnSettings", () => {
       hookScriptPath: "/h",
     });
     expect(JSON.parse(env.VOS_READ_PATHS)).toEqual(["/r"]);
-    expect(JSON.parse(env.VOS_WRITE_PATHS)).toEqual(["/w"]);
+    expect(JSON.parse(env.VOS_WRITE_PATHS)).toEqual(["/r/w"]);
     expect(JSON.parse(env.VOS_SYSTEM_DENY)).toEqual(["/d"]);
     expect(env.VOS_VAULT_ROOT).toBe(VAULT);
   });
@@ -109,10 +122,14 @@ describe("buildSpawnSettings", () => {
     const prev = process.env.NO_PROXY;
     delete process.env.NO_PROXY;
     try {
+      const intent = toIntent(
+        { name: "x" },
+        { readPaths: ["/r"], writePaths: ["/r/w"] },
+        [],
+      );
       const { env } = buildSpawnSettings({
         agentName: "x",
-        scopes: { readPaths: ["/r"], writePaths: ["/w"] },
-        systemDeny: [],
+        intent,
         vaultRoot: VAULT,
         daemonBase: "http://127.0.0.1:17777",
         runId: "r",
@@ -134,10 +151,14 @@ describe("buildSpawnSettings", () => {
     const prev = process.env.NO_PROXY;
     process.env.NO_PROXY = "example.internal,10.0.0.0/8";
     try {
+      const intent = toIntent(
+        { name: "x" },
+        { readPaths: [], writePaths: [] },
+        [],
+      );
       const { env } = buildSpawnSettings({
         agentName: "x",
-        scopes: { readPaths: [], writePaths: [] },
-        systemDeny: [],
+        intent,
         vaultRoot: VAULT,
         daemonBase: "http://127.0.0.1:17777",
         runId: "r",
@@ -156,13 +177,17 @@ describe("buildSpawnSettings", () => {
 
   it("additionalDirectories excludes paths under vaultRoot (cwd already covers them)", () => {
     const dir = freshDir();
+    const intent = toIntent(
+      { name: "a" },
+      {
+        readPaths: [`${VAULT}/journal`, `${VAULT}/work`],
+        writePaths: [`${VAULT}/journal`],
+      },
+      [],
+    );
     const { settingsPath } = buildSpawnSettings({
       agentName: "a",
-      scopes: {
-        readPaths: [`${VAULT}/journal/**`, `${VAULT}/work/**`],
-        writePaths: [`${VAULT}/journal/**`],
-      },
-      systemDeny: [],
+      intent,
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:17777",
       runId: "r",
@@ -178,10 +203,14 @@ describe("buildSpawnSettings", () => {
   test("AC-5: mcp.json command+args are byte-equal across two consecutive spawns of the same agent (only env differs)", () => {
     const tmp1 = mkdtempSync(join(tmpdir(), "vos112-cache-1-"));
     const tmp2 = mkdtempSync(join(tmpdir(), "vos112-cache-2-"));
+    const intent = toIntent(
+      { name: "maya" },
+      { readPaths: ["/vault"], writePaths: [] },
+      [],
+    );
     const baseArgs = {
       agentName: "maya",
-      scopes: { readPaths: [], writePaths: [] },
-      systemDeny: [],
+      intent,
       vaultRoot: "/vault",
       daemonBase: "http://127.0.0.1:8729",
       hookScriptPath: "/hook.ts",
@@ -333,10 +362,14 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
 
   test("buildSpawnSettings: returns toolsArg reflecting declaredTools intersection", () => {
     const dir = mkdtempSync(join(tmpdir(), "vos-122-"));
+    const intent = toIntent(
+      { name: "tinker", tools: ["vault.read", "ask_user"] },
+      { readPaths: ["/vault"], writePaths: [] },
+      [],
+    );
     const built = buildSpawnSettings({
       agentName: "tinker",
-      scopes: { readPaths: [], writePaths: [] },
-      systemDeny: [],
+      intent,
       vaultRoot: "/vault",
       daemonBase: "http://127.0.0.1:8729",
       runId: "R-1",
@@ -344,7 +377,6 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
       contextId: "C-1",
       settingsDir: dir,
       hookScriptPath: "/hook.ts",
-      declaredTools: ["vault.read", "ask_user"],
     });
     expect(built.toolsArg).toContain("mcp__void-os__vault_read");
     expect(built.toolsArg).toContain("mcp__void-os__ask_user");
@@ -357,10 +389,14 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
     const orig = console.warn;
     console.warn = () => {};
     try {
+      const intent = toIntent(
+        { name: "no-tools-declared" },
+        { readPaths: ["/vault"], writePaths: [] },
+        [],
+      );
       const built = buildSpawnSettings({
         agentName: "no-tools-declared",
-        scopes: { readPaths: [], writePaths: [] },
-        systemDeny: [],
+        intent,
         vaultRoot: "/vault",
         daemonBase: "http://127.0.0.1:8729",
         runId: "R-2",
@@ -380,10 +416,14 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
 
   test("VOS-142: permissions.allow deep-equals toolsArg (declared agent)", () => {
     const dir = freshDir();
+    const intent = toIntent(
+      { name: "tinker", tools: ["vault.read", "ask_user"] },
+      { readPaths: ["/vault"], writePaths: [] },
+      [],
+    );
     const built = buildSpawnSettings({
       agentName: "tinker",
-      scopes: { readPaths: [], writePaths: [] },
-      systemDeny: [],
+      intent,
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:8729",
       runId: "R-1",
@@ -391,7 +431,6 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
       contextId: "C-1",
       settingsDir: dir,
       hookScriptPath: "/hook.ts",
-      declaredTools: ["vault.read", "ask_user"],
     });
     const settings = JSON.parse(readFileSync(built.settingsPath, "utf8"));
     expect(settings.permissions.allow).toEqual(built.toolsArg);
@@ -399,10 +438,14 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
 
   test("VOS-142: permissions.deny stays [AskUserQuestion] when allow is populated", () => {
     const dir = freshDir();
+    const intent = toIntent(
+      { name: "tinker", tools: ["ask_user"] },
+      { readPaths: ["/vault"], writePaths: [] },
+      [],
+    );
     const built = buildSpawnSettings({
       agentName: "tinker",
-      scopes: { readPaths: [], writePaths: [] },
-      systemDeny: [],
+      intent,
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:8729",
       runId: "R-1",
@@ -410,7 +453,6 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
       contextId: "C-1",
       settingsDir: dir,
       hookScriptPath: "/hook.ts",
-      declaredTools: ["ask_user"],
     });
     const settings = JSON.parse(readFileSync(built.settingsPath, "utf8"));
     expect(settings.permissions.deny).toEqual(["AskUserQuestion"]);
@@ -422,10 +464,14 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
     console.warn = () => {};
     try {
       _resetLegacyToolsWarnedForTests();
+      const intent = toIntent(
+        { name: "no-tools-declared-vos142" },
+        { readPaths: ["/vault"], writePaths: [] },
+        [],
+      );
       const built = buildSpawnSettings({
         agentName: "no-tools-declared-vos142",
-        scopes: { readPaths: [], writePaths: [] },
-        systemDeny: [],
+        intent,
         vaultRoot: VAULT,
         daemonBase: "http://127.0.0.1:8729",
         runId: "R-2",
@@ -444,10 +490,14 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
 
   test("VOS-142: empty declaredTools → allow has built-ins only, no mcp__void-os__*", () => {
     const dir = freshDir();
+    const intent = toIntent(
+      { name: "locked-vos142", tools: [] },
+      { readPaths: ["/vault"], writePaths: [] },
+      [],
+    );
     const built = buildSpawnSettings({
       agentName: "locked-vos142",
-      scopes: { readPaths: [], writePaths: [] },
-      systemDeny: [],
+      intent,
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:8729",
       runId: "R-3",
@@ -455,7 +505,6 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
       contextId: "C-3",
       settingsDir: dir,
       hookScriptPath: "/hook.ts",
-      declaredTools: [],
     });
     const settings = JSON.parse(readFileSync(built.settingsPath, "utf8"));
     expect(settings.permissions.allow).toEqual([...ALLOWED_BUILTIN_TOOLS]);
@@ -466,10 +515,14 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
 
   test("VOS-142: MCP intersection — declaredTools=['ask_user'] excludes other vault.* names", () => {
     const dir = freshDir();
+    const intent = toIntent(
+      { name: "tinker-narrow", tools: ["ask_user"] },
+      { readPaths: ["/vault"], writePaths: [] },
+      [],
+    );
     const built = buildSpawnSettings({
       agentName: "tinker-narrow",
-      scopes: { readPaths: [], writePaths: [] },
-      systemDeny: [],
+      intent,
       vaultRoot: VAULT,
       daemonBase: "http://127.0.0.1:8729",
       runId: "R-4",
@@ -477,7 +530,6 @@ describe("VOS-122 F7: per-spawn tool allowlist gated by agent.md tools:", () => 
       contextId: "C-4",
       settingsDir: dir,
       hookScriptPath: "/hook.ts",
-      declaredTools: ["ask_user"],
     });
     const settings = JSON.parse(readFileSync(built.settingsPath, "utf8"));
     const allow = settings.permissions.allow as string[];
