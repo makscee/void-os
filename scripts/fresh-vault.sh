@@ -33,9 +33,14 @@ VOID_OS_BIN="${VOID_OS_BIN:-$REPO_ROOT/bin/void-os}"
 [ -x "$VOID_OS_BIN" ] || { echo "fresh-vault: void-os binary not executable at $VOID_OS_BIN" >&2; exit 2; }
 
 # Canonicalize + safety guards (kept from old script).
-VAULT="$(cd "$(dirname "$PATH_ARG")" 2>/dev/null && pwd)/$(basename "$PATH_ARG")"
-[ "$VAULT" = "$HOME" ] && { echo "refusing to wipe \$HOME" >&2; exit 1; }
-[ "$VAULT" = "/" ]    && { echo "refusing to wipe /" >&2; exit 1; }
+# Resolve parent via `pwd -P` so symlinks don't let the guards be sidestepped.
+PARENT_DIR="$(cd "$(dirname "$PATH_ARG")" 2>/dev/null && pwd -P)" || {
+  echo "refusing: parent of '$PATH_ARG' does not exist" >&2; exit 1;
+}
+VAULT="$PARENT_DIR/$(basename "$PATH_ARG")"
+[ "$VAULT" = "$HOME" ]        && { echo "refusing to wipe \$HOME" >&2; exit 1; }
+[ "$VAULT" = "/" ]            && { echo "refusing to wipe /" >&2; exit 1; }
+[ "$VAULT" = "$HOME/vault" ]  && { echo "refusing to wipe real vault at \$HOME/vault" >&2; exit 1; }
 
 if [ "$YES" -ne 1 ]; then
   read -r -p "wipe $VAULT and re-init? type 'yes' to confirm: " ans
