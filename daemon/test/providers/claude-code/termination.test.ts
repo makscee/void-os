@@ -128,6 +128,31 @@ test("done resolves 'timeout' when underlying iterator times out", async () => {
   expect(out.reason).toBe("timeout");
 });
 
+test("VOS-122 F9: ProviderSpawnRequest.agent is forwarded into iter.spawn", async () => {
+  // Spy iter that captures the args object passed to spawn.
+  const captured: Array<{ agent?: string; chat_id: string; task_id: string }> = [];
+  const provider: Provider = makeClaudeCodeProvider({
+    iter: {
+      spawn: (args) => {
+        captured.push(args);
+        return (async function* () {})();
+      },
+    },
+  });
+  const h = provider.spawn({
+    runId: "r1",
+    prompt: "p",
+    cwd: "/tmp",
+    taskId: "t1",
+    contextId: "c1",
+    agent: "tinker",
+  });
+  for await (const _ of h.events) {}
+  await h.done;
+  expect(captured).toHaveLength(1);
+  expect(captured[0].agent).toBe("tinker");
+});
+
 test("done resolves 'cancel' (not 'error') when cancel then iterator throws", async () => {
   const provider: Provider = makeClaudeCodeProvider({
     iter: {

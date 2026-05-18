@@ -160,6 +160,35 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     expect(lastReq.value!.kind).toBe("chat");
   });
 
+  test("VOS-122 F9: per-call args.agent overrides deps.agent static fallback", async () => {
+    const bus = makeBus();
+    const { cc, lastReq } = stubSpawner(bus, (runId, b) => {
+      b.emit({ type: "run.end", runId, payload: { exitCode: 0, reason: "exited" } });
+    });
+    // deps.agent ("maya") is the daemon-wide defaultAgent fallback; the
+    // per-call agent ("tinker") must win — otherwise every chat span resolves
+    // to the static default regardless of chat.agent.
+    const spawner = makeCcSpawnerIter({ cc, bus, agent: "maya", cwd: "/work" });
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for await (const _ of spawner.spawn({ chat_id: "c1", task_id: "t1", resume: null, prompt: "x", agent: "tinker" })) {
+      /* drain */
+    }
+    expect(lastReq.value!.agent).toBe("tinker");
+  });
+
+  test("VOS-122 F9: falls back to deps.agent when args.agent omitted", async () => {
+    const bus = makeBus();
+    const { cc, lastReq } = stubSpawner(bus, (runId, b) => {
+      b.emit({ type: "run.end", runId, payload: { exitCode: 0, reason: "exited" } });
+    });
+    const spawner = makeCcSpawnerIter({ cc, bus, agent: "maya", cwd: "/work" });
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for await (const _ of spawner.spawn({ chat_id: "c1", task_id: "t1", resume: null, prompt: "x" })) {
+      /* drain */
+    }
+    expect(lastReq.value!.agent).toBe("maya");
+  });
+
   test("unsubscribes after iterator completes (no leaked listeners)", async () => {
     const bus = makeBus();
     const { cc } = stubSpawner(bus, (runId, b) => {
