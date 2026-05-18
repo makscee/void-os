@@ -58,14 +58,16 @@ kill_grace() {
 # Audited in Task 1, re-pinned in Task 8 against live daemon output.
 # smoke-dogfood reads these; no duplication elsewhere.
 #
-# CAVEAT: daemon has no per-request log line and no plugin obsidian:// URI
-# handler exists. The plugin defaults to http://127.0.0.1:7777 (main daemon
-# port) and smoke-up does NOT inject `daemonUrl` into plugin data.json, so
-# the plugin in smoke Obsidian still talks to the MAIN daemon. Acceptance
-# #5 "plugin talks to SMOKE daemon, not main" therefore degrades to a
-# negative-only proof: main daemon pidfile unchanged (covered by #3).
-# The banner regex below proves "smoke daemon ran in isolated HOME on its
-# own port"; it does NOT prove plugin-connect.
+# Plugin-connect signal: smoke-up.sh seeds plugin data.json with
+# `daemonUrl=http://127.0.0.1:<per-id-port>` before launching Obsidian, and
+# the plugin's urlsFromAttachment() ranks settings.daemonUrl ahead of the
+# attachment-derived URL (see plugin/src/daemon-urls.ts). The wiring itself
+# is covered by plugin/test/daemon-urls.test.ts (unit). End-to-end "plugin
+# actually connected" is proven manually by an ESTABLISHED WS peer count
+# on the smoke daemon — there is no per-request log line, and no plugin
+# obsidian:// URI handler exists, so smoke-dogfood cannot grep it from
+# $SMOKE_LOG automatically. The banner regex below proves only "smoke
+# daemon ran in isolated HOME on its own port".
 #
 #   - SMOKE_DAEMON_CONNECT_GREP: regex matching smoke daemon's ready banner
 #     in $SMOKE_LOG. Format pinned against live output (T8):

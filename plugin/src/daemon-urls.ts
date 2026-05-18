@@ -41,7 +41,14 @@ export function urlsFromAttachment(
       const ws = `${wsProto}//${u.host}/events`;
       return { http, ws };
     } catch {
-      // malformed URL — fall through to attachment-based defaults
+      // malformed URL — fall through to attachment-based defaults.
+      // Warn so the operator can spot a typo in the settings tab without
+      // having to debug a silent "why is the plugin on the wrong daemon"
+      // mystery. Fallback semantics intentionally remain silent (no throw).
+      console.warn(
+        "[void-os] malformed daemonUrl %s; falling back to attachment defaults",
+        daemonUrl,
+      );
     }
   }
   const http = `http://127.0.0.1:${att.port}`;

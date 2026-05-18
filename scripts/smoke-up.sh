@@ -95,10 +95,19 @@ if [ -L "$TARGET" ]; then
   rm -f -- "$TARGET"
 fi
 mkdir -p "$TARGET"
-for f in main.js manifest.json styles.css; do
-  rm -f -- "$TARGET/$f"
-  ln -sfn "$PLUGIN_DIST/$f" "$TARGET/$f"
+# Symlink every build artefact in $PLUGIN_DIST/* (skip data.json — that one
+# is owned by the smoke vault and must stay a real file so writes don't
+# leak into the worktree's plugin/dist/). Re-run each smoke-up so any new
+# artefact emitted by a later plugin build (e.g. sourcemaps, hot CSS) is
+# picked up without touching this script.
+shopt -s nullglob
+for src in "$PLUGIN_DIST"/*; do
+  base="$(basename "$src")"
+  [ "$base" = "data.json" ] && continue
+  rm -f -- "$TARGET/$base"
+  ln -sfn "$src" "$TARGET/$base"
 done
+shopt -u nullglob
 
 # Resolve port (sticky if portfile exists, else compute + probe-bump).
 PORT="$(read_port_or_compute "$ID" "$SMOKE_ROOT")"
@@ -187,6 +196,12 @@ fi
 if [ "$SKIP_SPAWN" -eq 1 ]; then
   echo "smoke-up: daemon already alive (pid=$(cat "$SMOKE_PIDFILE"), port=$PORT)"
 else
+  # Clear any stale daemon.json from a previous (now-dead) daemon so the
+  # pidfile-poll below cannot short-circuit on yesterday's metadata. The
+  # poll checks for the file's existence and a non-zero `pid` field, both
+  # of which a stale file would satisfy even though the recorded pid no
+  # longer maps to a live process.
+  rm -f -- "$SMOKE_HOME/.void-os/daemon.json"
   echo "smoke-up: spawning daemon HOME=$SMOKE_HOME PORT=$PORT vault=$SMOKE_VAULT"
   # nohup + & detaches; redirect both streams to the smoke log.
   HOME="$SMOKE_HOME" VOID_OS_PORT="$PORT" \

@@ -41,7 +41,15 @@ export async function makeSettingsStore(io: SettingsIO): Promise<SettingsStore> 
       await io.saveData(current);
     },
     async setDaemonUrl(url: string | undefined) {
-      current = { ...current, daemonUrl: url };
+      // Normalise: empty/whitespace-only input clears the override so the
+      // plugin falls back to the attachment-derived URL. Without this,
+      // data.json would persist `"daemonUrl": ""` which serialises as a
+      // pinned-but-malformed value — urlsFromAttachment() treats an empty
+      // string as "no override" (length check), but downstream code that
+      // checks `typeof === "string"` would see a literal empty value.
+      const normalised =
+        typeof url === "string" && url.trim() === "" ? undefined : url;
+      current = { ...current, daemonUrl: normalised };
       await io.saveData(current);
     },
     async setResolvedBinaryPath(path: string | undefined) {

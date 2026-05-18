@@ -62,7 +62,7 @@ Isolation mechanism: `HOME` is overridden to the smoke root so the daemon's pidf
 
 ### Plugin layout — per-file symlinks (not a dir symlink)
 
-`<vault>/.obsidian/plugins/void-os/` is a **real directory**. Each build artefact (`main.js`, `manifest.json`, `styles.css`) is symlinked individually from the worktree's `plugin/dist/<file>`. This is so `data.json` can live as a real local file inside the plugin dir without leaking writes back into the worktree's `plugin/dist/`. Legacy directory-symlinks created by older smoke-up runs are detected and replaced on the next run.
+`<vault>/.obsidian/plugins/void-os/` is a **real directory**. Every entry in the worktree's `plugin/dist/` is symlinked individually (`main.js`, `manifest.json`, `styles.css`, and any future artefact the build emits — the loop globs `$PLUGIN_DIST/*`). `data.json` is the only exception: it is excluded from the symlink loop and lives as a real local file inside the plugin dir, so smoke writes (daemonUrl, settings tab edits) do not leak back into the worktree's `plugin/dist/`. Legacy directory-symlinks created by older smoke-up runs are detected and replaced on the next run.
 
 ### daemonUrl wiring
 
@@ -75,3 +75,7 @@ smoke-up writes the plugin id into `<vault>/.obsidian/community-plugins.json` so
 ### Repeat `up` behavior
 
 Reuses existing vault and daemon (if alive). Always rebuilds the plugin so the per-file-symlinked dist tracks the worktree's HEAD. The `data.json` daemonUrl is re-seeded each run (cheap, idempotent). Pass `--reset` for a clean wipe.
+
+### Known limitations
+
+- **Port-collision rollover is racy.** The port for `<ID>` is `7800 + cksum(<ID>) % 100`, with a probe-and-bump fallback when the base port is already bound. The probe (`lsof`) and the daemon's actual `bind()` happen in separate processes, so two concurrent `smoke-up` invocations whose base ports collide may both pick the same free port and one of them will fail to bind. If you see a bind failure on a concurrent run, just rerun `smoke-up.sh <ID>` — the sticky `daemon.port` file written by the winning run will cause the second invocation to pick the next free port via the same probe.
