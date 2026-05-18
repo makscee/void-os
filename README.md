@@ -17,7 +17,11 @@ Tinker is the seed agent — a meta / curator role who helps you bootstrap the r
 ### Mac
 - macOS 13+ (Apple Silicon or Intel)
 - bun >= 1.3 — install via `curl -fsSL https://bun.sh/install | bash`
-- `claudev` on PATH — void-os spawns Claude Code subprocesses via the `claudev` wrapper. The binary name is hard-coded; confirm with `which claudev`. (There is no `VOID_OS_CC_BIN` env var yet — `claudev` must be on PATH of whatever shell starts the daemon.)
+- A Claude Code wrapper — void-os spawns CC subprocesses via a wrapper binary (default name: `claudev`). Point the daemon at it via either:
+  - `VOID_OS_CC_BIN=/abs/path/to/claudev` in the daemon's env (preferred — works regardless of PATH; e.g. `export VOID_OS_CC_BIN=$HOME/.claudev/bin/claudev`), or
+  - `claudev` on PATH for whatever shell starts the daemon (`which claudev` confirms).
+
+  The daemon pre-flights this at boot and refuses to start with an actionable error if neither resolves.
 - Anthropic API access — `claudev` handles auth for spawned CC sessions.
 - Optional: `gh` CLI authed, if you want `void-os init` to create a private GitHub repo for your vault.
 
@@ -25,7 +29,7 @@ Tinker is the seed agent — a meta / curator role who helps you bootstrap the r
 - Ubuntu 22.04+ or Debian 12+
 - `apt install -y curl git build-essential`
 - bun via the same `curl -fsSL https://bun.sh/install | bash`
-- `claudev` on PATH (same as Mac)
+- A Claude Code wrapper reachable via `VOID_OS_CC_BIN` or on PATH (same as Mac)
 
 ## 3. Mac install (the verified path)
 
@@ -93,7 +97,8 @@ The plugin and the CLI both talk to the same daemon on `127.0.0.1:7777`, so plug
 | Symptom | Cause | Fix |
 |---|---|---|
 | `void-os: command not found` after `bun link` | `~/.bun/bin` not on PATH | add `export PATH="$HOME/.bun/bin:$PATH"` to your shell rc |
-| `void-os ask` errors `Executable not found in $PATH: "claudev"` | CC wrapper not on PATH for the daemon process | make sure `claudev` is on PATH **before** `void-os daemon start`; stop + restart the daemon after fixing PATH |
+| daemon refuses to start with `CC wrapper not found ... Set VOID_OS_CC_BIN ...` | CC wrapper neither at `$VOID_OS_CC_BIN` nor on PATH for the daemon process | export `VOID_OS_CC_BIN=/abs/path/to/claudev` (e.g. `$HOME/.claudev/bin/claudev`) in the shell that starts the daemon, **then** `void-os daemon stop && void-os daemon start`. Or add the wrapper's directory to PATH and restart. |
+| `void-os ask` errors `Executable not found in $PATH: "claudev"` (legacy daemon without VOS-134 pre-flight) | CC wrapper not resolvable when the daemon spawned CC | upgrade to a daemon build that pre-flights (VOS-134+); set `VOID_OS_CC_BIN` and restart |
 | daemon errors with `EADDRINUSE: port 7777` | another vault's daemon is already running | `void-os daemon stop` first, then start for your target vault |
 | `init` says "plugin build artifact missing" | fresh clone without `bun install` | re-run `bun install`, then `void-os init` |
 | Obsidian doesn't show void-os under Community plugins | plugin install step didn't seed | check `<vault>/.obsidian/plugins/void-os/manifest.json` exists; if not, from the repo root run `( cd plugin && VOID_OS_PLUGIN_OUT="$PWD/dist" bun run build )` then re-run `void-os init` |
@@ -107,7 +112,7 @@ The plugin and the CLI both talk to the same daemon on `127.0.0.1:7777`, so plug
 
 - `void-os ask` is one-shot; if an agent invokes `ask_user`, the call exits 6 and points you to `void-os chat`. Use chat for anything that needs back-and-forth.
 - Daemon binds one vault at a time on port 7777; multi-vault requires multiple ports and isn't supported yet.
-- `claudev` PATH dependency is documented above; a dedicated `VOID_OS_CC_BIN` env var may land later.
+- The CC wrapper is resolved via `VOID_OS_CC_BIN` (preferred) or PATH lookup of `claudev`; the daemon pre-flights at boot and surfaces the fix in the error message.
 - Plugin chat list / agent panel UX is being iterated under the `vos-v1-router` milestone.
 
 ## 9. Next steps for new users

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { probeClaudev } from "../src/providers/claude-code/index.js";
 
 const hasClaudev = await (async () => {
@@ -12,7 +12,19 @@ const hasClaudev = await (async () => {
   }
 })();
 
+// VOS-134: belt-and-braces snapshot/restore of VOID_OS_CC_BIN so a future
+// leak from sibling tests (or a careless import side-effect) can't silently
+// re-break the PATH-resolution case below.
 describe("probeClaudev", () => {
+  let savedCcBin: string | undefined;
+  beforeEach(() => {
+    savedCcBin = process.env.VOID_OS_CC_BIN;
+    delete process.env.VOID_OS_CC_BIN;
+  });
+  afterEach(() => {
+    if (savedCcBin !== undefined) process.env.VOID_OS_CC_BIN = savedCcBin;
+    else delete process.env.VOID_OS_CC_BIN;
+  });
   test.if(hasClaudev)("returns version when claudev is on PATH", async () => {
     const result = await probeClaudev();
     expect(result.ok).toBe(true);
@@ -32,5 +44,19 @@ describe("probeClaudev", () => {
     const result = await probeClaudev("definitely-not-a-real-binary-12345");
     expect(result.ok).toBe(false);
     expect(result.error).toBeDefined();
+  });
+
+  // VOS-134 I1: when probeClaudev fails with ENOENT, the error message
+  // should name the effective binary it actually tried to spawn — not the
+  // misleading hard-coded "claudev not found on PATH" (which lies when the
+  // binary was supplied via VOID_OS_CC_BIN or an explicit absolute path).
+  test("ENOENT error wording names the effective binary", async () => {
+    const absentAbs = "/abs/definitely/not/here/claudev-xyz";
+    const result = await probeClaudev(absentAbs);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe(-1);
+    expect(result.error).toBeDefined();
+    expect(result.error!).toContain(absentAbs);
+    expect(result.error!).not.toBe("claudev not found on PATH");
   });
 });

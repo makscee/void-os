@@ -12,6 +12,7 @@ import { buildApp, VERSION, wsHandler } from "./app.ts";
 import { openDatabase } from "./adapters/sqlite/index.ts";
 import { bootRecovery } from "./boot.ts";
 import { ensureToken } from "./auth/token.ts";
+import { checkCcBinAvailable } from "./providers/claude-code/index.ts";
 
 const TOKEN = ensureToken();
 const BOOT_TIME = Date.now();
@@ -35,6 +36,19 @@ if (!fs.existsSync(vaultRoot)) {
   console.error(`void-os: vault root does not exist: ${vaultRoot}`);
   console.error("set VOID_OS_VAULT_ROOT or run void-os init");
   process.exit(2);
+}
+
+// VOS-134: pre-flight CC wrapper check. Without claudev (or VOID_OS_CC_BIN
+// pointing at the wrapper), every chat dispatch fails with a deferred
+// "Executable not found in $PATH" error mid-run. Surface it now with an
+// actionable message so the user knows exactly what to fix BEFORE the HTTP
+// server binds.
+{
+  const ccCheck = checkCcBinAvailable();
+  if (!ccCheck.ok) {
+    console.error(ccCheck.reason);
+    process.exit(3);
+  }
 }
 
 // VOS-111: warn if <vaultRoot>/.claude/settings.json exists (still loaded

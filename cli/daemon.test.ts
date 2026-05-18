@@ -6,6 +6,13 @@ import { spawnSync } from "node:child_process";
 import { readPidJson, writePidJson } from "./lib/state-dir.ts";
 import { cmdStart, isPidAlive } from "./daemon.ts";
 
+// VOS-134: daemon now pre-flights the CC wrapper at boot. Tests don't care
+// which binary it is — `/bin/sh` is always present and just needs to exist.
+// We scope the override to spawned child processes via `env:` to avoid leaking
+// into other test files (notably daemon/test/cc-helper.test.ts which expects
+// the real PATH-resolved claudev).
+const CC_BIN = process.env.VOID_OS_CC_BIN ?? "/bin/sh";
+
 const VOS_ROOT = resolve(__dirname, "..");
 const BIN = join(VOS_ROOT, "bin/void-os");
 
@@ -42,7 +49,7 @@ test("start writes pid + port and /health returns ready", async () => {
   const vault = join(tmp, "vault");
   // intentionally do NOT mkdir vault — start must create it.
   const r = spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], {
-    env: { ...process.env, HOME: tmp },
+    env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN },
     encoding: "utf8",
     timeout: 30000,
   });
@@ -55,8 +62,8 @@ test("start writes pid + port and /health returns ready", async () => {
 
 test("second start prints already running", async () => {
   const vault = join(tmp, "vault");
-  spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 30000 });
-  const r = spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 10000 });
+  spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
+  const r = spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 10000 });
   expect(r.status).toBe(0);
   expect(r.stdout).toContain("already running");
 });
@@ -77,7 +84,7 @@ test("start with port already in use exits 1 quickly (child-exit race)", async (
   await new Promise((r) => setTimeout(r, 300));
   try {
     const t0 = Date.now();
-    const r = spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 15000 });
+    const r = spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 15000 });
     const elapsed = Date.now() - t0;
     expect(r.status).not.toBe(0);
     // Should bail early (< 7 s), not wait the full 10 s poll timeout.
@@ -89,8 +96,8 @@ test("start with port already in use exits 1 quickly (child-exit race)", async (
 
 test("stop removes pid/port files and exits 0", async () => {
   const vault = join(tmp, "vault");
-  spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 30000 });
-  const r = spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 10000 });
+  spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
+  const r = spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 10000 });
   expect(r.status).toBe(0);
   expect(r.stdout).toContain("stopped");
   expect(existsSync(join(tmp, ".void-os/daemon.pid"))).toBe(false);
@@ -98,7 +105,7 @@ test("stop removes pid/port files and exits 0", async () => {
 });
 
 test("stop with no pid file is idempotent (not running, exit 0)", async () => {
-  const r = spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 5000 });
+  const r = spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(0);
   expect(r.stdout).toContain("not running");
 });
@@ -108,7 +115,7 @@ test("stop with stale pid file (live PID, no daemon) treats as stale (exit 0, no
   mkdirSync(join(tmp, ".void-os"), { recursive: true });
   writeFileSync(join(tmp, ".void-os/daemon.pid"), String(process.pid));
   writeFileSync(join(tmp, ".void-os/daemon.port"), String(port));
-  const r = spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 5000 });
+  const r = spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(0);
   expect(r.stdout).toContain("stale pid");
   // Test process must still be alive (test reaches this line).
@@ -116,47 +123,47 @@ test("stop with stale pid file (live PID, no daemon) treats as stale (exit 0, no
 });
 
 test("status when stopped prints stopped, exit 0", async () => {
-  const r = spawnSync(BIN, ["daemon", "status"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 5000 });
+  const r = spawnSync(BIN, ["daemon", "status"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(0);
   expect(r.stdout.trim()).toBe("stopped");
 });
 
 test("status when stopped --json", async () => {
-  const r = spawnSync(BIN, ["daemon", "status", "--json"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 5000 });
+  const r = spawnSync(BIN, ["daemon", "status", "--json"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(0);
   expect(JSON.parse(r.stdout)).toMatchObject({ running: false });
 });
 
 test("status when running prints pid/port/vault/version", async () => {
   const vault = join(tmp, "vault");
-  spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 30000 });
-  const r = spawnSync(BIN, ["daemon", "status"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 5000 });
+  spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
+  const r = spawnSync(BIN, ["daemon", "status"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(0);
   // Implementation pads keys for alignment; assert on the value being present
   // alongside its key, tolerant of whitespace.
   expect(r.stdout).toMatch(new RegExp(`port:\\s+${port}`));
   expect(r.stdout).toMatch(new RegExp(`vault:\\s+${vault.replace(/[/\\^$*+?.()|[\]{}]/g, "\\$&")}`));
-  spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 10000 });
+  spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 10000 });
 });
 
 test("logs --tail prints last N lines from log file", () => {
   mkdirSync(join(tmp, ".void-os"), { recursive: true });
   const lp = join(tmp, ".void-os/daemon.log");
   writeFileSync(lp, "L1\nL2\nL3\nL4\nL5\nL6\n");
-  const r = spawnSync(BIN, ["daemon", "logs", "--tail", "3"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 5000 });
+  const r = spawnSync(BIN, ["daemon", "logs", "--tail", "3"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(0);
   const lines = r.stdout.trim().split("\n");
   expect(lines.slice(-3)).toEqual(["L4", "L5", "L6"]);
 });
 
 test("logs without file prints message + exit 0", () => {
-  const r = spawnSync(BIN, ["daemon", "logs"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 5000 });
+  const r = spawnSync(BIN, ["daemon", "logs"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(0);
   expect(r.stderr).toContain("no daemon log yet");
 });
 
 test("unknown flag exits 2 with clean stderr (no stacktrace)", () => {
-  const r = spawnSync(BIN, ["daemon", "status", "--bogus"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 5000 });
+  const r = spawnSync(BIN, ["daemon", "status", "--bogus"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(2);
   expect(r.stderr).toContain("unknown flag");
   // No raw Bun/Node stacktrace.
