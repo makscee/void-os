@@ -55,10 +55,11 @@ afterEach(() => {
 describe("initCommand() — phase orchestrator", () => {
   it("runs preflight → configure (Scripted) → seed → plugin → report on a fresh target", async () => {
     const prompter = new ScriptedPrompter({
-      // configure asks: vault path (text), then proceed (confirm).
+      // configure asks: vault location (select), then proceed (confirm).
       // No gh/obsidian prompts because fakePreflight has both false.
-      text: [home],
+      text: [],
       confirm: [true],
+      select: [home],
     })
 
     const logs: string[] = []
@@ -66,27 +67,28 @@ describe("initCommand() — phase orchestrator", () => {
       logs.push(args.map(String).join(" "))
     })
 
-    const daemonCalls: Array<{ vault: string; prefix: string }> = []
+    const obsidianCalls: Array<{ vault: string; interactive: boolean }> = []
+    let nextStepsCalls = 0
     try {
       await initCommand({
         args: ["--skip-build"],
         prefix,
         prompter,
         preflight: fakePreflight,
-        daemonStart: async (o) => {
-          daemonCalls.push(o)
-          return { status: "spawned", pid: 1234, port: 7777, vault: o.vault }
-        },
+        promptObsidian: async (o) => { obsidianCalls.push({ vault: o.vault, interactive: o.interactive }) },
+        printNextSteps: () => { nextStepsCalls++ },
       })
     } finally {
       logSpy.mockRestore()
     }
 
-    // F5: daemon auto-start invoked exactly once on the seeded vault.
-    expect(daemonCalls.length).toBe(1)
-    expect(daemonCalls[0]?.vault).toBe(home)
-    expect(daemonCalls[0]?.prefix).toBe(prefix)
-    expect(logs.join("\n")).toContain("daemon started on port 7777")
+    // Post-report hooks fired exactly once on the seeded vault.
+    expect(obsidianCalls.length).toBe(1)
+    expect(obsidianCalls[0]?.vault).toBe(home)
+    expect(obsidianCalls[0]?.interactive).toBe(true)
+    expect(nextStepsCalls).toBe(1)
+    // Daemon is no longer auto-started at end of init.
+    expect(logs.join("\n")).not.toContain("daemon started")
 
     // Seed effects landed:
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true)
@@ -111,8 +113,9 @@ describe("initCommand() — phase orchestrator", () => {
   it("--home flag overrides the vault path chosen via configure", async () => {
     const overrideHome = join(tmpRoot, "elsewhere")
     const prompter = new ScriptedPrompter({
-      text: [home],
+      text: [],
       confirm: [true],
+      select: [home],
     })
     const logSpy = spyOn(console, "log").mockImplementation(() => {})
 
@@ -122,7 +125,8 @@ describe("initCommand() — phase orchestrator", () => {
         prefix,
         prompter,
         preflight: fakePreflight,
-        skipDaemonStart: true,
+        promptObsidian: async () => {},
+        printNextSteps: () => {},
       })
     } finally {
       logSpy.mockRestore()
@@ -136,7 +140,7 @@ describe("initCommand() — phase orchestrator", () => {
   it("re-running on a seeded vault reports an upgrade (no fresh-seed line)", async () => {
     // First run: fresh seed
     {
-      const prompter = new ScriptedPrompter({ text: [home], confirm: [true] })
+      const prompter = new ScriptedPrompter({ text: [], confirm: [true], select: [home] })
       const logSpy = spyOn(console, "log").mockImplementation(() => {})
       try {
         await initCommand({
@@ -144,7 +148,8 @@ describe("initCommand() — phase orchestrator", () => {
           prefix,
           prompter,
           preflight: fakePreflight,
-          skipDaemonStart: true,
+          promptObsidian: async () => {},
+          printNextSteps: () => {},
         })
       } finally {
         logSpy.mockRestore()
@@ -152,7 +157,7 @@ describe("initCommand() — phase orchestrator", () => {
     }
 
     // Second run: same dir → upgrade path
-    const prompter2 = new ScriptedPrompter({ text: [home], confirm: [true] })
+    const prompter2 = new ScriptedPrompter({ text: [], confirm: [true], select: [home] })
     const logs: string[] = []
     const logSpy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
       logs.push(args.map(String).join(" "))
@@ -163,7 +168,8 @@ describe("initCommand() — phase orchestrator", () => {
         prefix,
         prompter: prompter2,
         preflight: fakePreflight,
-        skipDaemonStart: true,
+        promptObsidian: async () => {},
+        printNextSteps: () => {},
       })
     } finally {
       logSpy.mockRestore()

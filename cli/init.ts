@@ -9,7 +9,10 @@ import { runBuild, BuildError } from "./init/build"
 import { seed } from "./init/seed"
 import { installPlugin, ensurePluginBuilt } from "./init/plugin"
 import { formatReport } from "./init/report"
-import { cmdStart, type StartResult } from "./daemon"
+import {
+  promptObsidian as obsidianHelper,
+  printNextSteps as nextStepsHelper,
+} from "./init/obsidian"
 
 // Re-export for backwards compatibility with existing tests + external callers.
 export { seed as provision } from "./init/seed"
@@ -94,10 +97,18 @@ export interface InitCommandOpts {
   preflight?: PreflightReport
   /** Skip the build phase entirely (testing convenience; equivalent to --skip-build). */
   skipBuild?: boolean
-  /** Override daemon-start (testing seam; defaults to real cmdStart). */
-  daemonStart?: (opts: { vault: string; prefix: string }) => Promise<StartResult>
-  /** Skip auto daemon-start entirely (testing seam). */
-  skipDaemonStart?: boolean
+  /** Test seam: override the Obsidian prompt at end of init. */
+  promptObsidian?: (opts: { vault: string; prompter: Prompter; interactive: boolean }) => Promise<void>
+  /** Test seam: override the next-steps banner. */
+  printNextSteps?: (opts: { vault: string }) => void
+}
+
+async function defaultPromptObsidian(o: { vault: string; prompter: Prompter; interactive: boolean }): Promise<void> {
+  await obsidianHelper({ vault: o.vault, prompter: o.prompter, interactive: o.interactive })
+}
+
+function defaultPrintNextSteps(o: { vault: string }): void {
+  nextStepsHelper({ vault: o.vault })
 }
 
 /**
@@ -216,39 +227,20 @@ export async function initCommand(opts: InitCommandOpts): Promise<void> {
     plugin: pluginResult,
   }))
 
-  // 7. DAEMON — auto-start on the seeded vault (matches scripts/fresh-vault.sh).
-  // Skipped on --dry-run; failures are non-fatal (init already succeeded).
-  if (!flags.dryRun && !opts.skipDaemonStart) {
-    const startFn = opts.daemonStart
-      ?? ((o) => cmdStart({ vault: o.vault, prefix: o.prefix }))
+  // 7. PROMPT OBSIDIAN — offer to open the seeded vault in Obsidian (macOS only when interactive).
+  if (!flags.dryRun) {
+    const promptObs = opts.promptObsidian ?? defaultPromptObsidian
     try {
-      const result: StartResult = await startFn({
-        vault: vaultPath,
-        prefix: opts.prefix,
-      })
-      switch (result.status) {
-        case "spawned":
-          console.log(`daemon started on port ${result.port} (pid=${result.pid})`)
-          break
-        case "already-running":
-          console.log(`daemon already running on port ${result.port} (pid=${result.pid})`)
-          break
-        case "vault-mismatch":
-          console.warn(
-            `warning: daemon is serving a different vault (${result.activeVault}); ` +
-            `stop it with 'void-os daemon stop' then 'void-os daemon start --vault ${vaultPath}'`,
-          )
-          break
-        case "spawn-failed":
-          console.warn(`warning: daemon failed to start (${result.reason})`)
-          break
-        case "would-spawn":
-          // unreachable: dryRun gated above
-          break
-      }
+      await promptObs({ vault: vaultPath, prompter, interactive: !flags.nonInteractive })
     } catch (e) {
-      console.warn(`warning: daemon start raised: ${(e as Error).message}`)
+      console.warn(`warning: obsidian prompt raised: ${(e as Error).message}`)
     }
+  }
+
+  // 8. NEXT STEPS — print operator banner ("chat in Obsidian / chat in CLI").
+  if (!flags.dryRun) {
+    const nextSteps = opts.printNextSteps ?? defaultPrintNextSteps
+    nextSteps({ vault: vaultPath })
   }
 }
 
