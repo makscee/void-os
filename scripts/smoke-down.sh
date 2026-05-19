@@ -48,6 +48,11 @@ if [ -f "$SMOKE_OBSIDIAN_PIDFILE" ]; then
   rm -f "$SMOKE_OBSIDIAN_PIDFILE"
 fi
 
+# VOS-145: clear the launchd session env var set by smoke-up.sh so it
+# doesn't leak into subsequent GUI app launches. Idempotent — no-op if
+# unset. Best-effort; ignore errors so teardown still completes.
+launchctl unsetenv VOID_OS_HOME 2>/dev/null || true
+
 if [ -f "$SMOKE_PIDFILE" ]; then
   d_pid="$(cat "$SMOKE_PIDFILE" 2>/dev/null || echo "")"
   if [ -n "$d_pid" ]; then
