@@ -3,15 +3,14 @@ import { promptObsidian, printNextSteps } from "./obsidian"
 import { ScriptedPrompter } from "./prompter"
 
 describe("promptObsidian", () => {
-  it("darwin + user says yes → spawns `open obsidian://open?path=...`", async () => {
+  it("darwin + user says yes → spawns `open -a Obsidian <vault>`", async () => {
     const calls: Array<{ cmd: string; args: string[] }> = []
     const spawn = (cmd: string, args: string[]) => { calls.push({ cmd, args }); return { status: 0 } as any }
     const p = new ScriptedPrompter({ text: [], confirm: [true] })
     await promptObsidian({ vault: "/tmp/my vault", platform: "darwin", prompter: p, spawn })
     expect(calls).toHaveLength(1)
     expect(calls[0].cmd).toBe("open")
-    expect(calls[0].args[0]).toContain("obsidian://open?path=")
-    expect(calls[0].args[0]).toContain(encodeURIComponent("/tmp/my vault"))
+    expect(calls[0].args).toEqual(["-a", "Obsidian", "/tmp/my vault"])
   })
 
   it("darwin + user says no → no spawn", async () => {

@@ -26,7 +26,8 @@ export async function promptObsidian(opts: PromptObsidianOpts): Promise<void> {
   const url = obsidianUrl(opts.vault)
 
   if (!interactive || platform !== "darwin") {
-    log(`Open vault in Obsidian: ${url}`)
+    log(`Open ${opts.vault} in Obsidian: select "Open folder as vault" and point at ${opts.vault}`)
+    log(`(or try: ${url} — only works if the vault is already registered)`)
     return
   }
 
@@ -37,9 +38,13 @@ export async function promptObsidian(opts: PromptObsidianOpts): Promise<void> {
   if (!yes) return
 
   const spawn = opts.spawn ?? ((c, a) => spawnSync(c, a, { stdio: "ignore" }))
-  const r = spawn("open", [url])
+  // `open -a Obsidian <vault>` makes Obsidian prompt "open folder as vault" for
+  // unregistered directories. The `obsidian://open?path=` URL scheme only
+  // matches already-registered vaults and errors with "Vault not found"
+  // otherwise, which is exactly the fresh-init case.
+  const r = spawn("open", ["-a", "Obsidian", opts.vault])
   if (r.status !== 0) {
-    warn(`open failed; launch manually: ${url}`)
+    warn(`open failed; launch Obsidian manually and select "Open folder as vault" pointing at ${opts.vault}`)
   }
 }
 
