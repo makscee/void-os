@@ -1,4 +1,6 @@
-import { Notice, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, requestUrl, setIcon, type WorkspaceLeaf } from "obsidian";
+import { DegradedHelpModal } from "./degraded-help-modal";
+import { iconFor, tooltipFor, statusBarTextFor } from "./ribbon-state";
 // VOS-120 T9-fix-A: lazy-require node built-ins (browser-target bundler
 // strips static `import "node:os" / "node:child_process"`).
 import { nodeCp } from "./node-runtime";
@@ -124,25 +126,77 @@ export default class VoidOsPlugin extends Plugin {
     state: "spawn-failed",
     error: "not-initialized",
   };
+  private ribbonEl: HTMLElement | null = null;
+  private statusBar: StatusBar | null = null;
+  private healthyRuntimeRegistered = false;
+  /** Current ribbon click handler — replaced when daemonStatus flips. The
+   *  HTMLElement listener registered in onload reads this closure variable so
+   *  we never remove/re-add the ribbon element (which would orphan entries). */
+  private ribbonHandler: () => void = () => {};
 
   async onload() {
     this.settings = await makeSettingsStore({
       loadData: () => this.loadData(),
       saveData: (d) => this.saveData(d),
     });
-    // Register the settings tab BEFORE any failure return — degraded states
-    // need a path for the user to set voidOsBinaryPath manually.
     this.addSettingTab(new VoidOsSettingsTab(this.app, this));
 
-    let attachment: DaemonAttachment;
+    // === Phase 1: Always-on UI ===
+    // Status bar — held instance, mode-gated.
+    const statusBarEl = this.addStatusBarItem();
+    statusBarEl.setAttribute("data-testid", "vos-status-bar");
+    this.statusBar = new StatusBar(statusBarEl);
+    // Ribbon — held element, mutated by refreshSurfacesForState. Register with
+    // neutral copy; refreshSurfacesForState immediately overwrites icon +
+    // tooltip + handler from the current daemonStatus (sentinel "spawn-failed:
+    // not-initialized" until attemptDaemon updates it), so the ribbon is
+    // clickable from the first frame and shows degraded copy during the
+    // attemptDaemon window rather than a stale healthy hint.
+    this.ribbonEl = this.addRibbonIcon("circle-alert", "void-os starting…", () => this.ribbonHandler());
+    this.refreshSurfacesForState();
+
+    // === Phase 2: Daemon attempt ===
+    await this.attemptDaemon();
+  }
+
+  async onunload() {
+    this.fsm?.stop();
+    this.fsm = null;
+    this.bus = null;
+  }
+
+  /** Non-throwing for typed errors — distinct from restartDaemon, which
+   *  rethrows for the FSM's reject contract. Updates daemonStatus and
+   *  refreshes UI surfaces.
+   *
+   *  Public (not private as in plan) because DegradedHelpModal calls
+   *  `this.plugin.attemptDaemon()` from another file. */
+  public async attemptDaemon(): Promise<void> {
     try {
       const vaultRoot = getVaultRoot(this.app);
-      attachment = await ensureDaemon({
+      const attachment = await ensureDaemon({
         vaultRoot,
         settings: this.settings.get(),
         probeHealth: makeProductionProbe(resolveHome(), requestUrlAsFetch()),
         spawnCli: makeProductionSpawn(),
       });
+      this.daemonStatus = {
+        state: "running",
+        port: attachment.port,
+        vault: attachment.vault_root,
+        version: attachment.version,
+      };
+      // Cache binary path resolution — best-effort, same logic as the old onload.
+      if (!this.settings.get().resolvedBinaryPath) {
+        try {
+          const resolved = await resolveBinary(this.settings.get());
+          await this.settings.setResolvedBinaryPath(resolved);
+        } catch {
+          // ensureDaemon succeeded; cache miss is silent.
+        }
+      }
+      this.registerHealthyRuntime(attachment);
+      this.refreshSurfacesForState();
     } catch (e) {
       if (e instanceof BinaryNotFoundError) {
         new Notice("void-os binary not found — set the path in plugin settings");
@@ -162,29 +216,38 @@ export default class VoidOsPlugin extends Plugin {
         new Notice("void-os requires Obsidian desktop");
         this.daemonStatus = { state: "spawn-failed", error: e.message };
       } else {
+        // Unknown error — record it as spawn-failed (best-effort label) so the
+        // ribbon flips to degraded instead of inheriting whatever stale value
+        // daemonStatus held. Then refresh surfaces and rethrow so the trace
+        // also lands in the Obsidian console.
+        this.daemonStatus = { state: "spawn-failed", error: e instanceof Error ? e.message : String(e) };
+        this.refreshSurfacesForState();
         throw e;
       }
-      // Degraded: chat UI / WS / commands are NOT registered.
-      return;
+      this.refreshSurfacesForState();
     }
+  }
 
-    this.daemonStatus = {
-      state: "running",
-      port: attachment.port,
-      vault: attachment.vault_root,
-      version: attachment.version,
-    };
-
-    // Cache a successful binary resolution so future loads skip the bash
-    // `command -v` probe. Best-effort — failure here is non-fatal.
-    if (!this.settings.get().resolvedBinaryPath) {
-      try {
-        const resolved = await resolveBinary(this.settings.get());
-        await this.settings.setResolvedBinaryPath(resolved);
-      } catch {
-        // ensureDaemon already succeeded; cache miss is silent.
-      }
+  private refreshSurfacesForState(): void {
+    const status = this.daemonStatus;
+    if (this.ribbonEl) {
+      setIcon(this.ribbonEl, iconFor(status));
+      this.ribbonEl.setAttribute("aria-label", tooltipFor(status));
     }
+    if (status.state === "running") {
+      this.ribbonHandler = () => { void this.activateChatView(); };
+      this.statusBar?.setMode("fsm");
+      // FSM, when started by registerHealthyRuntime, will push the correct label.
+    } else {
+      this.ribbonHandler = () => new DegradedHelpModal(this.app, this).open();
+      this.statusBar?.setMode("degraded");
+      this.statusBar?.setStateText(statusBarTextFor(status));
+    }
+  }
+
+  private registerHealthyRuntime(attachment: DaemonAttachment): void {
+    if (this.healthyRuntimeRegistered) return;
+    this.healthyRuntimeRegistered = true;
 
     const urls = urlsFromAttachment(attachment, this.settings.get().daemonUrl);
     this.bus = new FrameBus();
@@ -199,9 +262,6 @@ export default class VoidOsPlugin extends Plugin {
         onError: defaultOnError,
       });
 
-    // Single WebSocket — FSM owns reconnect, FrameBus piggybacks on frames.
-    // Held on the instance so restartDaemon() can swap it if the post-restart
-    // daemon comes up on a different port.
     this.wsClient = new WsClient(urls.ws);
     this.wsUrl = urls.ws;
     const tapped = tapFrames(this.wsClient, this.bus);
@@ -221,12 +281,9 @@ export default class VoidOsPlugin extends Plugin {
       })),
     );
 
-    const statusBarEl = this.addStatusBarItem();
-    statusBarEl.setAttribute("data-testid", "vos-status-bar");
-    const statusBar = new StatusBar(statusBarEl);
     this.fsm = new ReconnectFSM({
       client: tapped,
-      onState: (s) => statusBar.update(s),
+      onState: (s) => this.statusBar!.update(s),
       retryMs: DEFAULT_RETRY_MS,
       pingMs: DEFAULT_PING_MS,
       pongTimeoutMs: DEFAULT_PONG_TIMEOUT_MS,
@@ -237,10 +294,6 @@ export default class VoidOsPlugin extends Plugin {
       respawn: () => this.restartDaemon(),
     });
     this.fsm.start();
-
-    this.addRibbonIcon("circle-dot", "void-os chat", () => {
-      void this.activateChatView();
-    });
 
     this.addCommand({
       id: "open-chat-view",
@@ -262,17 +315,6 @@ export default class VoidOsPlugin extends Plugin {
         await this.activateChatView(created.id);
       },
     });
-  }
-
-  async onunload() {
-    this.fsm?.stop();
-    this.fsm = null;
-    this.bus = null;
-  }
-
-  /** Stub — T5 replaces with the real retry/attach implementation. */
-  public attemptDaemon(): Promise<void> {
-    return Promise.resolve();
   }
 
   /**
