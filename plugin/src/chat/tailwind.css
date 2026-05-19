@@ -134,4 +134,26 @@
     border-top: 1px solid var(--background-modifier-border);
     margin: 0.8em 0;
   }
+
+  /* VOS-153 T5: Draft pane "Starting chat with X" pill. The --agent-color
+     custom property is set inline from agent.md frontmatter (T3). Falls
+     back to --text-muted when the agent doesn't define one. color-mix
+     is required (no rgba fallback) — Obsidian Electron 28+ supports it. */
+  .void-os-draft-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    margin: 8px 12px;
+    font-size: 12px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--agent-color) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--agent-color) 35%, transparent);
+    color: var(--text-normal);
+    width: fit-content;
+  }
+  .void-os-draft-avatar {
+    font-size: 14px;
+    line-height: 1;
+  }
 }
