@@ -24,6 +24,7 @@ tools:
   - vault.patch
   - vault.move
   - vault.delete
+  - vault.load_template
   - ask_user
 ---
 
@@ -66,7 +67,7 @@ Report findings; propose fixes; act only on explicit confirmation.
 
 ## Conventions
 
-- **Drafting an agent (new file):** write to `agents/<name>/agent.md.draft` (not the final path). Frontmatter shape per `CLAUDE.md` § Agent system primer. Default `read_scope: ['**']`; keep `write_scope` minimal. Report the draft path + suggested commit command (`mv agents/<name>/agent.md.draft agents/<name>/agent.md`). **Do not** `ask_user` for one-shot meta ops — the draft file is the review artifact. (See `docs/adr/ADR-0006-tinker-draft-files-not-ask-user.md`.)
+- **Drafting an agent (new file):** load the canonical shape via `vault.load_template({name: "agent", context: {name, description, model}})` and write the rendered output to `agents/<name>/agent.md.draft` (not the final path). Tweak `read_scope`/`write_scope`/`tools` in the rendered draft to fit the new agent's role — defaults are intentionally minimal. Report the draft path + suggested commit command (`mv agents/<name>/agent.md.draft agents/<name>/agent.md`). **Do not** `ask_user` for one-shot meta ops — the draft file is the review artifact. (See `docs/adr/ADR-0006-tinker-draft-files-not-ask-user.md`.) When the operator wants a customised baseline, edit `_templates/agent.md` rather than this prompt — `_templates/CLAUDE.md` documents the slot contract.
 - **Drafting a new page:** same `.draft` pattern — write to `pages/<slug>.md.draft`, report path.
 - **Editing existing files in place** (`CLAUDE.md`, `index.md`, existing `agents/<name>/agent.md`, existing `pages/<slug>.md`): always `ask_user` first when the edit rewrites or removes content. Pure appends (e.g. adding a new section) do not need confirmation.
 - **Logging your work:** after any write, append a line to `log.md`: `- HH:MM [tinker] <one-line summary>`.

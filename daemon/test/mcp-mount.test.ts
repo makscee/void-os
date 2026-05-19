@@ -57,12 +57,14 @@ describe("mountMcp /mcp", () => {
     // VOS-89 T10: ask_agent registered alongside.
     // VOS-108 T10: 7 vault.* write tools (create/append/replace_section/
     // set_property/patch/delete/move) registered alongside vault.read.
+    // VOS-131: vault.load_template joins the registry.
     expect(tools.map((t) => t.name).sort()).toEqual([
       "ask_agent",
       "ask_user",
       "vault.append",
       "vault.create",
       "vault.delete",
+      "vault.load_template",
       "vault.move",
       "vault.patch",
       "vault.read",
