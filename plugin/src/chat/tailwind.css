@@ -251,4 +251,29 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* VOS-153 T8: ChatList row enrichment — agent color stripe + emoji.
+     The row's `--agent-color` CSS var is injected per-row via inline
+     style; the stripe consumes it directly while the row itself keeps
+     its Tailwind utility classes for layout. Mirrors the
+     .void-os-agent-row treatment from T6 so the agent rail and chat
+     rail read as the same visual family. */
+  .void-os-chat-stripe {
+    flex: 0 0 2px;
+    align-self: stretch;
+    min-height: 24px;
+    background: var(--agent-color, var(--text-muted));
+    border-radius: 1px;
+  }
+  .void-os-chat-emoji {
+    flex: 0 0 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .void-os-chat-row[data-active="true"] .void-os-chat-stripe {
+    background: var(--agent-color, var(--interactive-accent));
+  }
 }

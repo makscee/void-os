@@ -651,6 +651,7 @@ export function ChatRoot(props: ChatRootProps) {
             onSelect={onSelect}
             onNewChat={onNewChat}
             refreshKey={refreshKey}
+            agents={agentsCache}
           />
           <CostMeter api={props.api} refreshKey={refreshKey} />
         </div>
