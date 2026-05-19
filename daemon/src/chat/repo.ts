@@ -85,6 +85,15 @@ export interface ChatRepo {
   setLastMsg(id: string, lastMsg: string): void;
   setCurrentRun(id: string, runId: string | null): void;
   setSession(id: string, sessionId: string): void;
+  /** Delete a chat (context) and its dependent rows. VOS-153: backs the
+   *  plugin's Send-failure rollback by removing a freshly-minted chat when
+   *  the first message fails. Returns true if a row was removed.
+   *
+   *  Defensively clears `messages` first (the FK has ON DELETE CASCADE,
+   *  but `PRAGMA foreign_keys` is not asserted on at the test bootstrap
+   *  layer, so we do not rely on cascade for the user-visible cleanup).
+   *  `tasks` cascade is also covered by ON DELETE CASCADE on contexts.id. */
+  delete(id: string): boolean;
 }
 
 /** Idempotent open-task lookup. Returns the oldest non-child task for a
@@ -276,6 +285,17 @@ export function makeChatRepo(db: Database): ChatRepo {
         "UPDATE contexts SET session_id = ?, updated_at = ? WHERE id = ?",
         [sessionId, Date.now(), id],
       );
+    },
+    delete(id) {
+      // Defensive cleanup so the delete works even when foreign_keys is OFF.
+      // With foreign_keys=ON these would also cascade automatically.
+      const tx = db.transaction(() => {
+        db.run("DELETE FROM messages WHERE context_id = ?", [id]);
+        db.run("DELETE FROM tasks WHERE context_id = ?", [id]);
+        return db.run("DELETE FROM contexts WHERE id = ?", [id]);
+      });
+      const r = tx();
+      return r.changes >= 1;
     },
   };
 }
