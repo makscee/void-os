@@ -3,7 +3,7 @@
 // Obsidian renderer would then crash on `homedir()` / `spawn()` undefined.
 import { nodeFs, nodePath, nodeOs, nodeCp } from "./node-runtime";
 const { statSync, constants, accessSync, readFileSync } = nodeFs;
-const { join } = nodePath;
+const { join, dirname } = nodePath;
 const pathResolve = nodePath.resolve;
 const { homedir } = nodeOs;
 const { spawn } = nodeCp;
@@ -46,6 +46,29 @@ const WELL_KNOWN_ABSOLUTE = [
   "/opt/homebrew/bin/void-os",
   "/usr/local/bin/void-os",
 ];
+
+// VOS-143: bin/void-os has `#!/usr/bin/env bun` shebang. Obsidian launches
+// with PATH=/usr/bin:/bin (LaunchServices restriction), so `env bun` cannot
+// resolve. We find bun via well-known paths and prepend its dir onto the
+// spawn env.PATH so the shebang resolves.
+const WELL_KNOWN_BUN_SUBPATHS = [".bun/bin/bun"];
+const WELL_KNOWN_BUN_ABSOLUTE = [
+  "/opt/homebrew/bin/bun",
+  "/usr/local/bin/bun",
+];
+
+export function resolveBunDir(
+  env: Env = { home: homedir(), pathDirs: [] },
+): string | null {
+  for (const sub of WELL_KNOWN_BUN_SUBPATHS) {
+    const p = join(env.home, sub);
+    if (isExecutable(p)) return dirname(p);
+  }
+  for (const p of WELL_KNOWN_BUN_ABSOLUTE) {
+    if (isExecutable(p)) return dirname(p);
+  }
+  return null;
+}
 
 async function loginShellWhich(timeoutMs = 2000): Promise<string | null> {
   return new Promise((resolve) => {
@@ -262,7 +285,16 @@ export function makeProductionSpawn(): (
   args: string[],
 ) => Promise<void> {
   return async (bin, args) => {
-    const child = spawn(bin, args, { detached: true, stdio: "ignore" });
+    // VOS-143: Obsidian inherits LaunchServices PATH=/usr/bin:/bin, so the
+    // shebang `#!/usr/bin/env bun` in bin/void-os fails ("env: bun: No such
+    // file or directory"). Prepend bun's containing dir to env.PATH so the
+    // shebang resolves under the spawned process.
+    const bunDir = resolveBunDir({ home: homedir(), pathDirs: [] });
+    const env = { ...process.env };
+    if (bunDir) {
+      env.PATH = `${bunDir}:${env.PATH ?? "/usr/bin:/bin"}`;
+    }
+    const child = spawn(bin, args, { detached: true, stdio: "ignore", env });
     child.unref();
   };
 }

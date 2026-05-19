@@ -35,6 +35,7 @@ type CpLike = {
 type PathLike = {
   join: (...p: string[]) => string;
   resolve: (...p: string[]) => string;
+  dirname: (p: string) => string;
 };
 
 function load<T>(name: string): T {
