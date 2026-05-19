@@ -28,6 +28,7 @@ import {
   type DaemonAttachment,
 } from "./daemon-lifecycle";
 import { getVaultRoot } from "./vault-root";
+import { urlsFromAttachment } from "./daemon-urls";
 
 /** Lifecycle-phase status published on the Plugin instance. Surfaced by the
  *  settings tab (T8) and by E2E specs (T9) so they can assert the plugin's
@@ -85,16 +86,8 @@ function requestUrlAsFetch(): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-/** Build the http+ws origins the plugin talks to from a successful daemon
- *  attachment. The attachment's port wins over `settings.daemonUrl` — the
- *  ensureDaemon contract is that whatever it returned is what's actually
- *  listening locally. The legacy `daemonUrl` setting remains in the schema
- *  for migration, but is no longer consulted at the wire layer. */
-function urlsFromAttachment(att: DaemonAttachment): { http: string; ws: string } {
-  const http = `http://127.0.0.1:${att.port}`;
-  const ws = `ws://127.0.0.1:${att.port}/events`;
-  return { http, ws };
-}
+// urlsFromAttachment moved to ./daemon-urls.ts so it can be unit-tested
+// without dragging in the obsidian / node-runtime imports this module needs.
 
 /** Wraps a WsPort so a single underlying handler is multiplexed:
  *  - the original consumer (ReconnectFSM) sees every event verbatim;
@@ -201,7 +194,7 @@ export default class VoidOsPlugin extends Plugin {
       }
     }
 
-    const urls = urlsFromAttachment(attachment);
+    const urls = urlsFromAttachment(attachment, this.settings.get().daemonUrl);
     this.bus = new FrameBus();
     const api = makeChatApi(urls.http, requestUrlAsFetch());
     const agentsApi = makeAgentsApi(urls.http, requestUrlAsFetch());
@@ -366,7 +359,7 @@ export default class VoidOsPlugin extends Plugin {
 
     // 4. Wire up WS against the (possibly new) port. If a previous successful
     //    onload built a wsClient against a different URL, rebuild it now.
-    const urls = urlsFromAttachment(attachment);
+    const urls = urlsFromAttachment(attachment, this.settings.get().daemonUrl);
     if (this.wsClient && this.wsUrl !== urls.ws) {
       try { this.wsClient.close(); } catch { /* ignore */ }
       this.wsClient = null;
