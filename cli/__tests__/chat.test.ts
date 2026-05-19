@@ -315,6 +315,56 @@ test("missing daemon token surfaces NoTokenError message and exits 3", async () 
   }
 });
 
+test("run_end with status=error writes error to stderr and REPL continues", async () => {
+  // Mirror of cli/ask.ts VOS-122 F8 handling: when the daemon emits
+  // run_end with {status:"error", error:"…"}, chat must surface the
+  // message to stderr — but unlike ask (which exits 7), the REPL must
+  // resume the prompt so the user can retry/fix.
+  frameQueues = {
+    c1: [
+      [
+        { event: "text", data: { text: "before failure " } },
+        { event: "run_end", data: { status: "error", error: "tool exploded" } },
+      ],
+      [
+        { event: "text", data: { text: "recovered" } },
+        { event: "run_end", data: {} },
+      ],
+    ],
+  };
+  const out = collectStream();
+  const err = collectStream();
+  const code = await chat(["stub"], {
+    stdin: withStdin(["first", "second"]),
+    stdout: out.stream,
+    stderr: err.stream,
+  });
+  // Two messages both flowed → REPL did NOT exit on the errored run.
+  expect(code).toBe(0);
+  expect(err.chunks.join("")).toContain("tool exploded");
+  const joined = out.chunks.join("");
+  expect(joined).toContain("before failure");
+  expect(joined).toContain("recovered");
+});
+
+test("run_end with status=error and no error field falls back to 'run failed'", async () => {
+  frameQueues = {
+    c1: [
+      [
+        { event: "run_end", data: { status: "error" } },
+      ],
+    ],
+  };
+  const err = collectStream();
+  const code = await chat(["stub"], {
+    stdin: withStdin(["go"]),
+    stdout: collectStream().stream,
+    stderr: err.stream,
+  });
+  expect(code).toBe(0);
+  expect(err.chunks.join("")).toContain("run failed");
+});
+
 test("stream ends without run_end surfaces clear error and exits 3", async () => {
   // Daemon's SSE stream closes mid-run (no run_end, no error frame). This
   // means the daemon died or the connection dropped — REPL is unusable.

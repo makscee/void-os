@@ -279,6 +279,17 @@ export default async function chat(args: string[], _opts: { prefix?: string } = 
           renderer.handle(frame);
           if (frame.event === "run_end") {
             sawRunEnd = true;
+            // VOS-135: mirror cli/ask.ts F8. Daemon emits
+            // {status:"ok"|"error", error?:string} on run_end when the
+            // orchestrator aborted (tool error, model exception, etc.).
+            // Surface the error to stderr but stay in the REPL so the
+            // user can retry — chat is interactive, unlike ask.
+            const data = frame.data as { status?: unknown; error?: unknown };
+            if (data.status === "error") {
+              const msg =
+                (typeof data.error === "string" && data.error) || "run failed";
+              stderr.write(`${msg}\n`);
+            }
             break;
           }
         }
