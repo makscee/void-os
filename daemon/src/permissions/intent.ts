@@ -22,15 +22,23 @@ export interface AgentPermissionIntent {
   systemDenyPaths: string[];
 }
 
+const GLOB_META = /[*?[{]/;
+
+function literalHead(p: string): string {
+  const m = p.search(GLOB_META);
+  return m === -1 ? p : p.slice(0, m);
+}
+
 function isCoveredBy(writePath: string, readPaths: string[]): boolean {
-  // Coverage = string-prefix containment on normalized paths. This matches the
-  // existing additionalDirectories semantics in spawn-settings.ts (CC treats
-  // a directory grant as recursive). Glob authoring is out of scope here; if
-  // future agents use globs, this check tightens with minimatch.
+  // Coverage compares the literal-prefix of each pattern (everything before the
+  // first glob meta char). resolveScopes emits paths like '/vault/**' for read
+  // and '/vault/agents/**' for write — both reduce to literal heads '/vault/'
+  // and '/vault/agents/' which prefix-compare cleanly. For non-glob writePaths
+  // (e.g. '/vault/CLAUDE.md') the literal head is the full path.
   const norm = (p: string) => p.endsWith("/") ? p : p + "/";
-  const wp = norm(writePath);
+  const wp = norm(literalHead(writePath));
   return readPaths.some((rp) => {
-    const r = norm(rp);
+    const r = norm(literalHead(rp));
     return wp === r || wp.startsWith(r);
   });
 }

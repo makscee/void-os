@@ -155,4 +155,21 @@ describe("toIntent — writePaths subset invariant", () => {
   test("read-only scopes (empty writePaths) always passes", () => {
     expect(() => toIntent({ name: "x" }, SCOPES_RO, SYS_DENY)).not.toThrow();
   });
+
+  test("real resolveScopes glob shape — read='/vault/**', write='/vault/agents/**' passes", () => {
+    // Regression: literal-prefix coverage previously rejected '/vault/agents/**'
+    // because '/vault/agents/**/' doesn't start with '/vault/**/'. Tinker uses
+    // exactly this shape from day one — caught by smoke against tinker-chat-open.
+    const scopes = {
+      readPaths: ["/vault/**"],
+      writePaths: ["/vault/agents/**", "/vault/CLAUDE.md", "/vault/pages/**"],
+    };
+    expect(() => toIntent({ name: "tinker" }, scopes, SYS_DENY)).not.toThrow();
+  });
+
+  test("glob writePath outside glob readPath still throws", () => {
+    const scopes = { readPaths: ["/vault/**"], writePaths: ["/etc/**"] };
+    expect(() => toIntent({ name: "x" }, scopes, SYS_DENY))
+      .toThrow(/writePath \/etc\/\*\* not covered by any readPath/);
+  });
 });
