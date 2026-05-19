@@ -16,6 +16,10 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { EventBus, DaemonEvent } from "../../../events";
 import type { AgentDefn } from "../../../permissions/engine";
+import {
+  NULL_HANDOFF_LOG,
+  type HandoffLog,
+} from "../../../agents/handoff-log";
 
 // -----------------------------------------------------------------------------
 // Tool def (Zod raw shape).
@@ -247,9 +251,31 @@ export interface AskAgentDeps {
   now: () => number;
   /** WS fan-out helper. Defaults to broadcast() in buildApp; overridable from tests. */
   emit?: (type: string, payload: Record<string, unknown>) => void;
+  /** VOS-154: provenance trail to hub-side handoff-log. Defaults to a no-op
+   *  adapter; production wiring (app.ts) constructs from VOID_OS_HL_PATH +
+   *  VOID_OS_HL_HUB_ROOT env so smoke/test layouts without a hub clone
+   *  silently no-op. */
+  handoffLog?: HandoffLog;
+  /** Stable id for the orchestrator session, threaded into handoff entries
+   *  so cross-task chains can be reconstructed. Optional; null permitted. */
+  sessionId?: string | null;
+  /** Milestone slug threaded into handoff entries. Optional. */
+  milestone?: string | null;
+}
+
+// VOS-154: map A2A terminal state -> 8-status enum understood by the handoff
+// log. (See hub/tools/handoff-log/README.md §"return_status".)
+function terminalToHandoffStatus(state: string): string {
+  switch (state) {
+    case "TASK_STATE_COMPLETED": return "DONE";
+    case "TASK_STATE_FAILED":    return "BLOCKED";
+    case "TASK_STATE_CANCELED":  return "PAUSED";
+    default:                     return "NEEDS_REVIEW";
+  }
 }
 
 export function makeAskAgent(deps: AskAgentDeps) {
+  const handoffLog = deps.handoffLog ?? NULL_HANDOFF_LOG;
   return async (
     args: z.objectOutputType<typeof askAgentInput, z.ZodTypeAny>,
     extra: RequestHandlerExtra<any, any>,
@@ -346,6 +372,23 @@ export function makeAskAgent(deps: AskAgentDeps) {
         agent: args.target_agent_id,
       });
 
+      // VOS-154: append provenance entry to handoff log. Best-effort: a
+      // NULL_HANDOFF_LOG no-ops; a real writer that errors logs a warning
+      // and returns null. Either way, dispatch proceeds.
+      const dispatchStart = deps.now();
+      const fromAgent = `${callerRow.agent_name}:${taskId}`;
+      const toAgent = `${args.target_agent_id}:${childTaskId}`;
+      const handoffId = await handoffLog.dispatch({
+        fromAgentId: fromAgent,
+        toAgentId: toAgent,
+        taskId: taskId,
+        milestone: deps.milestone ?? null,
+        session: deps.sessionId ?? null,
+        bundleText: args.message,
+        expectedContract: "ask_agent: final assistant text on COMPLETED",
+        notes: args.system_message ? "system_message present" : null,
+      });
+
       // 8. Dispatch child task.
       await deps.dispatchChildTask(childTaskId, {
         agentName: args.target_agent_id,
@@ -362,6 +405,33 @@ export function makeAskAgent(deps: AskAgentDeps) {
         postRow && TERMINALS.has(postRow.state)
           ? (postRow.state as TerminalState)
           : await waitP;
+
+      // VOS-154: emit return entry pairing with the dispatch id. Bundle =
+      // final assistant text on COMPLETED, none otherwise.
+      try {
+        const summaryRow = deps.db
+          .query(
+            `SELECT parts_text FROM messages
+             WHERE task_id = ? AND role = 'ROLE_AGENT' AND parts_text != ''
+             ORDER BY ts DESC, ord DESC LIMIT 1`,
+          )
+          .get(childTaskId) as { parts_text: string | null } | undefined;
+        const finalText = summaryRow?.parts_text ?? null;
+        await handoffLog.return({
+          fromAgentId: toAgent,
+          toAgentId: fromAgent,
+          taskId: taskId,
+          milestone: deps.milestone ?? null,
+          session: deps.sessionId ?? null,
+          status: terminalToHandoffStatus(state),
+          summary: finalText ? finalText.slice(0, 200) : null,
+          bundleText: finalText ?? undefined,
+          durationMs: Math.max(0, deps.now() - dispatchStart),
+          parentHandoffId: handoffId,
+        });
+      } catch {
+        // Log writer is best-effort; never block the tool return on it.
+      }
 
       // 11. Translate terminal -> tool result (or throw -> mcp error).
       const result = translateChildResult(deps.db, childTaskId, state);
