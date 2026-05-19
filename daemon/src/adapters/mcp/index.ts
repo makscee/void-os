@@ -37,6 +37,7 @@ import { vaultSetPropertyDef, makeVaultSetProperty } from "./tools/vault-set-pro
 import { vaultPatchDef, makeVaultPatch } from "./tools/vault-patch.ts";
 import { vaultDeleteDef, makeVaultDelete } from "./tools/vault-delete.ts";
 import { vaultMoveDef, makeVaultMove } from "./tools/vault-move.ts";
+import { vaultLoadTemplateDef, makeVaultLoadTemplate } from "./tools/vault-load-template.ts";
 import { askUserDef, makeAskUser } from "./tools/ask-user.ts";
 import { askAgentDef, makeAskAgent } from "./tools/ask-agent.ts";
 
@@ -203,6 +204,15 @@ export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Mcp
   mcp.registerTool("vault.patch",           vaultPatchDef,          makeVaultPatch(writeDeps) as never);
   mcp.registerTool("vault.delete",          vaultDeleteDef,         makeVaultDelete(writeDeps) as never);
   mcp.registerTool("vault.move",            vaultMoveDef,           makeVaultMove(writeDeps) as never);
+
+  // VOS-131: read-only template loader. No scope gate — templates are
+  // intentionally world-readable inside the vault; the gate that matters is
+  // on the subsequent vault.create the agent issues with the rendered output.
+  mcp.registerTool(
+    "vault.load_template",
+    vaultLoadTemplateDef,
+    makeVaultLoadTemplate({ vaultRoot }) as never,
+  );
 
   mcp.registerTool(
     "ask_user",

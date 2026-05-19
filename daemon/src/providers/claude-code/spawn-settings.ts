@@ -69,6 +69,7 @@ export const ALLOWED_MCP_TOOLS_VOID_OS: readonly string[] = Object.freeze([
   "vault.patch",
   "vault.delete",
   "vault.move",
+  "vault.load_template",
   "ask_user",
   "ask_agent",
 ]);
