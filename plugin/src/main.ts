@@ -266,20 +266,31 @@ export default class VoidOsPlugin extends Plugin {
     this.wsUrl = urls.ws;
     const tapped = tapFrames(this.wsClient, this.bus);
 
-    this.registerView(CHAT_VIEW_TYPE, (leaf: WorkspaceLeaf) =>
-      new ChatView(leaf, () => ({
-        bus: this.bus!,
-        api,
-        agentsApi,
-        chatId: this.settings!.get().chatId,
-        onChatIdMinted: (id) => this.settings!.setChatId(id),
-        // defaultAgent intentionally omitted — callers must pick an agent
-        // explicitly. T3 (VOS-124) rejects unknown agents at the daemon
-        // boundary; a silent "maya" fallback here would silently route to
-        // the wrong agent if the user never opened the picker.
-        openPicker,
-      })),
-    );
+    // Hot Reload disable/enable cycles can leave a prior registerView entry
+    // in Obsidian's global view registry. registerView throws in that case,
+    // which would derail the rest of registerHealthyRuntime. Swallow the
+    // dup-registration error — the existing entry stays live; we lose this
+    // instance's closure but openChatView still resolves the view via the
+    // registry. Production (fresh Obsidian launch) never hits this branch.
+    try {
+      this.registerView(CHAT_VIEW_TYPE, (leaf: WorkspaceLeaf) =>
+        new ChatView(leaf, () => ({
+          bus: this.bus!,
+          api,
+          agentsApi,
+          chatId: this.settings!.get().chatId,
+          onChatIdMinted: (id) => this.settings!.setChatId(id),
+          // defaultAgent intentionally omitted — callers must pick an agent
+          // explicitly. T3 (VOS-124) rejects unknown agents at the daemon
+          // boundary; a silent "maya" fallback here would silently route to
+          // the wrong agent if the user never opened the picker.
+          openPicker,
+        })),
+      );
+    } catch (e) {
+      if (!(e instanceof Error) || !/existing view type/i.test(e.message)) throw e;
+      console.warn("void-os: view type already registered (Hot Reload artifact), reusing existing");
+    }
 
     this.fsm = new ReconnectFSM({
       client: tapped,
