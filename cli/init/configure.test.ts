@@ -17,21 +17,20 @@ const baseReport: PreflightReport = {
 const noRepoDeps = { isInsideVoidOsRepo: () => false }
 
 describe("configure()", () => {
-  it("collects vault path, gh repo, and obsidian name when all detected", async () => {
+  it("collects vault path and gh repo when all detected", async () => {
     const p = new ScriptedPrompter({
-      text: ["vault", "void"],
+      text: ["vault"],
       confirm: [true, true], // push to gh, proceed
       select: ["/Users/x/vault"],
     })
     const d = await configure(baseReport, p, noRepoDeps)
     expect(d.vaultPath).toBe("/Users/x/vault")
     expect(d.gh).toEqual({ push: true, repoName: "vault" })
-    expect(d.obsidianVaultName).toBe("void")
   })
 
   it("skips gh prompts when gh not authed", async () => {
     const p = new ScriptedPrompter({
-      text: ["void"],
+      text: [],
       confirm: [true],
       select: ["/Users/x/vault"],
     })
@@ -40,20 +39,9 @@ describe("configure()", () => {
     expect(d.gh).toEqual({ push: false })
   })
 
-  it("skips obsidian prompt when not found", async () => {
-    const p = new ScriptedPrompter({
-      text: ["vault"],
-      confirm: [true, true],
-      select: ["/Users/x/vault"],
-    })
-    const r = { ...baseReport, obsidian: { found: false } }
-    const d = await configure(r, p, noRepoDeps)
-    expect(d.obsidianVaultName).toBeUndefined()
-  })
-
   it("returns cancelled=true when user declines outro confirm", async () => {
     const p = new ScriptedPrompter({
-      text: ["vault", "void"],
+      text: ["vault"],
       confirm: [true, false], // push yes, proceed NO
       select: ["/Users/x/vault"],
     })
@@ -63,7 +51,7 @@ describe("configure()", () => {
 
   it("expands ~ in vault path (via custom)", async () => {
     const p = new ScriptedPrompter({
-      text: ["~/vault", "vault", "void"],
+      text: ["~/vault", "vault"],
       confirm: [true, true],
       select: ["__custom__"],
     })
@@ -140,7 +128,6 @@ describe("configure picker", () => {
           nonInteractive: true,
           vault: "/path/to/void-os-repo",
           skipGh: true,
-          skipObsidian: true,
         },
         { isInsideVoidOsRepo: (p) => p === "/path/to/void-os-repo" },
       ),
@@ -160,7 +147,7 @@ describe("decideFromFlags", () => {
   it("vault path expansion (~/foo → home)", () => {
     const d = decideFromFlags(niBaseReport, {
       nonInteractive: true, vault: "~/foo",
-      skipGh: false, skipObsidian: false,
+      skipGh: false,
     })
     expect(d.vaultPath).toBe(homedir() + "/foo")
     expect(d.gh.push).toBe(false)
@@ -171,7 +158,7 @@ describe("decideFromFlags", () => {
     const r = { ...niBaseReport, gh: { found: true, authed: true } }
     const d = decideFromFlags(r, {
       nonInteractive: true, vault: "/v", ghRepo: "myrepo",
-      skipGh: false, skipObsidian: false,
+      skipGh: false,
     })
     expect(d.gh).toEqual({ push: true, repoName: "myrepo" })
   })
@@ -180,35 +167,8 @@ describe("decideFromFlags", () => {
     const r = { ...niBaseReport, gh: { found: false, authed: false } }
     expect(() => decideFromFlags(r, {
       nonInteractive: true, vault: "/v", ghRepo: "myrepo",
-      skipGh: false, skipObsidian: false,
-    })).toThrow(/gh not available/)
-  })
-
-  it("--skip-obsidian → undefined obsidianVaultName even if obsidian detected", () => {
-    const r = { ...niBaseReport, obsidian: { found: true } }
-    const d = decideFromFlags(r, {
-      nonInteractive: true, vault: "/v", skipObsidian: true,
       skipGh: false,
-    })
-    expect(d.obsidianVaultName).toBeUndefined()
-  })
-
-  it("obsidian detected + no skip + no override → default \"void\"", () => {
-    const r = { ...niBaseReport, obsidian: { found: true } }
-    const d = decideFromFlags(r, {
-      nonInteractive: true, vault: "/v",
-      skipGh: false, skipObsidian: false,
-    })
-    expect(d.obsidianVaultName).toBe("void")
-  })
-
-  it("--obsidian-vault X overrides default", () => {
-    const r = { ...niBaseReport, obsidian: { found: true } }
-    const d = decideFromFlags(r, {
-      nonInteractive: true, vault: "/v", obsidianVault: "custom",
-      skipGh: false, skipObsidian: false,
-    })
-    expect(d.obsidianVaultName).toBe("custom")
+    })).toThrow(/gh not available/)
   })
 
   it("skipGh wins over ghRepo when both reach decideFromFlags", () => {
@@ -218,7 +178,6 @@ describe("decideFromFlags", () => {
       vault: "/tmp/v",
       ghRepo: "x",
       skipGh: true,
-      skipObsidian: true,
     })
     expect(d.gh).toEqual({ push: false })
   })
@@ -228,7 +187,7 @@ describe("configure gh push gate", () => {
   it("interactive: gh push defaults to false (initialValue), not true", async () => {
     const reportWithGh = { ...baseReport, gh: { found: true, authed: true } }
     const p = new ScriptedPrompter({
-      text: ["void"],
+      text: [],
       confirm: [false, true], // gh push: accept default (false); proceed: yes
       select: [join(homedir(), "vault")],
     })
@@ -243,7 +202,6 @@ describe("configure gh push gate", () => {
       nonInteractive: true,
       vault: "/tmp/v",
       skipGh: false,
-      skipObsidian: true,
     })
     expect(d.gh.push).toBe(false)
   })
@@ -255,7 +213,6 @@ describe("configure gh push gate", () => {
       vault: "/tmp/v",
       skipGh: false,
       ghRepo: "my-vault",
-      skipObsidian: true,
     })
     expect(d.gh).toEqual({ push: true, repoName: "my-vault" })
   })

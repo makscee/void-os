@@ -14,7 +14,6 @@ export interface GhDecision {
 export interface Decisions {
   vaultPath: string
   gh: GhDecision
-  obsidianVaultName?: string
   cancelled: boolean
 }
 
@@ -111,19 +110,9 @@ export async function configure(
     }
   }
 
-  let obsidianVaultName: string | undefined
-  if (report.obsidian.found) {
-    obsidianVaultName = await prompter.text({
-      message: "obsidian vault display name?",
-      defaultValue: "void",
-      placeholder: "void",
-    })
-  }
-
   prompter.outro(
     `vault: ${vaultPath}` +
-    (gh.push ? ` · gh: ${gh.repoName}` : "") +
-    (obsidianVaultName ? ` · obsidian: ${obsidianVaultName}` : ""),
+    (gh.push ? ` · gh: ${gh.repoName}` : ""),
   )
 
   const proceed = await prompter.confirm({ message: "proceed with these settings?", initialValue: true })
@@ -131,7 +120,6 @@ export async function configure(
   return {
     vaultPath,
     gh,
-    obsidianVaultName,
     cancelled: !proceed,
   }
 }
@@ -141,8 +129,6 @@ export interface NonInteractiveFlags {
   vault?: string
   ghRepo?: string
   skipGh: boolean
-  skipObsidian: boolean
-  obsidianVault?: string
 }
 
 export function decideFromFlags(
@@ -173,11 +159,5 @@ export function decideFromFlags(
     gh = { push: true, repoName: flags.ghRepo }
   }
 
-  let obsidianVaultName: string | undefined
-  if (!flags.skipObsidian) {
-    obsidianVaultName = flags.obsidianVault
-      ?? (report.obsidian.found ? "void" : undefined)
-  }
-
-  return { vaultPath, gh, obsidianVaultName, cancelled: false }
+  return { vaultPath, gh, cancelled: false }
 }

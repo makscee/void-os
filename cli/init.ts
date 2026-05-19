@@ -27,8 +27,6 @@ export interface Flags {
   vault?: string
   ghRepo?: string
   skipGh: boolean
-  skipObsidian: boolean
-  obsidianVault?: string
 }
 
 export class FlagsError extends Error {
@@ -42,15 +40,12 @@ export function validateFlags(f: Flags): void {
   if (f.ghRepo && f.skipGh) {
     throw new FlagsError("--gh-repo and --skip-gh are mutually exclusive", 64)
   }
-  if (f.obsidianVault && f.skipObsidian) {
-    throw new FlagsError("--obsidian-vault and --skip-obsidian are mutually exclusive", 64)
-  }
 }
 
 export function parseFlags(args: string[]): Flags {
   const out: Flags = {
     dryRun: false, force: false, skipBuild: false,
-    nonInteractive: false, skipGh: false, skipObsidian: false,
+    nonInteractive: false, skipGh: false,
   }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -62,8 +57,6 @@ export function parseFlags(args: string[]): Flags {
     else if (a === "--vault") out.vault = args[++i]
     else if (a === "--gh-repo") out.ghRepo = args[++i]
     else if (a === "--skip-gh") out.skipGh = true
-    else if (a === "--skip-obsidian") out.skipObsidian = true
-    else if (a === "--obsidian-vault") out.obsidianVault = args[++i]
     else throw new Error(`unknown flag: ${a}`)
   }
   return out

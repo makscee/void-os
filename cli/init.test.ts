@@ -132,17 +132,6 @@ describe("parseFlags non-interactive", () => {
     expect(f.skipGh).toBe(true)
   })
 
-  it("--skip-obsidian and --obsidian-vault parsed", () => {
-    const f = parseFlags([
-      "--non-interactive", "--vault", "/tmp/v",
-      "--obsidian-vault", "myvault",
-    ])
-    expect(f.obsidianVault).toBe("myvault")
-    expect(f.skipObsidian).toBe(false)
-
-    const g = parseFlags(["--non-interactive", "--vault", "/tmp/v", "--skip-obsidian"])
-    expect(g.skipObsidian).toBe(true)
-  })
 })
 
 describe("validateFlags", () => {
@@ -162,20 +151,6 @@ describe("validateFlags", () => {
       validateFlags(parseFlags([
         "--non-interactive", "--vault", "/tmp/v",
         "--gh-repo", "x", "--skip-gh",
-      ]))
-      throw new Error("should have thrown")
-    } catch (e) {
-      expect(e).toBeInstanceOf(FlagsError)
-      expect((e as FlagsError).exitCode).toBe(64)
-      expect((e as FlagsError).message).toMatch(/mutually exclusive/)
-    }
-  })
-
-  it("--obsidian-vault + --skip-obsidian mutually exclusive (exit 64)", () => {
-    try {
-      validateFlags(parseFlags([
-        "--non-interactive", "--vault", "/tmp/v",
-        "--obsidian-vault", "myvault", "--skip-obsidian",
       ]))
       throw new Error("should have thrown")
     } catch (e) {

@@ -181,10 +181,9 @@ describe("initCommand() — end-to-end against real fs", () => {
     // Prompt order under VOS-143:
     //   select: vault location → "__custom__"
     //   text:   custom vault path → home
-    //   text:   obsidian display name → "voidvault"
     //   confirm: proceed → true
     const prompter = new ScriptedPrompter({
-      text: [home, "voidvault"],
+      text: [home],
       confirm: [true],
       select: ["__custom__"],
     })
@@ -302,7 +301,7 @@ describe("initCommand() --non-interactive", () => {
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
     try {
       await initCommand({
-        args: ["--non-interactive", "--vault", home, "--skip-gh", "--skip-obsidian"],
+        args: ["--non-interactive", "--vault", home, "--skip-gh"],
         prefix,
         prompter,
         preflight: fakePreflight,
