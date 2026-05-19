@@ -23,6 +23,7 @@ import {
 import { ChatList } from "./ChatList";
 import { AgentList } from "./AgentList";
 import { CostMeter } from "./CostMeter";
+import { focusComposerInputSafely } from "./focus-composer";
 import { BashTool } from "./tools/BashTool";
 import { GenericTool } from "./tools/GenericTool";
 import { AskUserTool } from "./tools/AskUserTool";
@@ -309,6 +310,16 @@ export function ChatRoot(props: ChatRootProps) {
   const [activeAgent, setActiveAgent] = React.useState<string | null>(null);
   React.useEffect(() => { setActiveChatId(props.chatId); }, [props.chatId]);
 
+  // VOS-151: ref pinned to the composer textarea. Filled by ComposerPrimitive.Input
+  // (which forwards to HTMLTextAreaElement). onSelect / onPickAgent call
+  // focusComposerInputSafely so a chat-switch or agent-pick lands the cursor
+  // in the message input without an extra click. Guard inside the helper
+  // skips focus when an Obsidian modal/popover is open.
+  const composerInputRef = React.useRef<HTMLTextAreaElement>(null);
+  const focusComposer = React.useCallback(() => {
+    focusComposerInputSafely(composerInputRef.current, document);
+  }, []);
+
   // Expose an imperative setter so the host (ChatView / Obsidian command)
   // can push a freshly-minted chat id into this tree without remounting or
   // relying on prop diffing (props are computed once at mount via the deps
@@ -443,7 +454,8 @@ export function ChatRoot(props: ChatRootProps) {
   const onSelect = React.useCallback((id: string, agent: string) => {
     setActiveChatId(id);
     setActiveAgent(agent);
-  }, []);
+    focusComposer();
+  }, [focusComposer]);
 
   const onPickAgent = React.useCallback(async (name: string) => {
     let prev: string | null = null;
@@ -453,11 +465,12 @@ export function ChatRoot(props: ChatRootProps) {
       setActiveChatId(created.id);
       await props.onChatIdMinted?.(created.id);
       bumpRefresh();
+      focusComposer();
     } catch (e) {
       setActiveAgent(prev);
       showToast(`Could not create chat: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [props.api, props.onChatIdMinted, bumpRefresh, showToast]);
+  }, [props.api, props.onChatIdMinted, bumpRefresh, showToast, focusComposer]);
 
   const childTaskCtx = React.useMemo(
     () => ({ chatState: handle.chatState, dispatch: handle.dispatch }),
@@ -541,6 +554,7 @@ export function ChatRoot(props: ChatRootProps) {
                 className="vos:flex vos:items-end vos:gap-[var(--size-4-2)] vos:my-[var(--size-4-3)] vos:p-[var(--size-4-2)] vos:rounded-[var(--radius-m)] vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:shadow-[0_0_0_1px_var(--interactive-accent)]"
               >
                 <ComposerPrimitive.Input
+                  ref={composerInputRef}
                   rows={1}
                   autoFocus
                   placeholder={
