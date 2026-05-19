@@ -40,6 +40,7 @@ import { vaultMoveDef, makeVaultMove } from "./tools/vault-move.ts";
 import { vaultLoadTemplateDef, makeVaultLoadTemplate } from "./tools/vault-load-template.ts";
 import { askUserDef, makeAskUser } from "./tools/ask-user.ts";
 import { askAgentDef, makeAskAgent } from "./tools/ask-agent.ts";
+import type { HandoffLog } from "../../agents/handoff-log.ts";
 
 export interface McpDeps {
   vaultRoot: string;
@@ -81,6 +82,17 @@ export interface McpDeps {
    * is per-instance, so all tools MUST share one instance).
    */
   writer: VaultWriter;
+  /**
+   * VOS-154: optional handoff-log adapter. Production app.ts builds from env
+   * (VOID_OS_HL_PATH + VOID_OS_HL_HUB_ROOT) so every ask_agent dispatch leaves
+   * a provenance entry. Tests/smoke omit this and ask_agent falls back to the
+   * NULL_HANDOFF_LOG no-op.
+   */
+  handoffLog?: HandoffLog;
+  /** VOS-154: orchestrator session id threaded into handoff entries. */
+  sessionId?: string | null;
+  /** VOS-154: milestone slug threaded into handoff entries. */
+  milestone?: string | null;
 }
 
 /**
@@ -229,6 +241,9 @@ export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Mcp
       dispatchChildTask,
       now: () => Date.now(),
       emit,
+      handoffLog: deps.handoffLog,
+      sessionId: deps.sessionId,
+      milestone: deps.milestone,
     }) as never,
   );
 

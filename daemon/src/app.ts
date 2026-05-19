@@ -26,6 +26,7 @@ import { chatsApi } from "./api/chats.ts";
 import { agentsApi } from "./api/agents.ts";
 import { chatApi, mountChatTaskStateFanout } from "./api/chat.ts";
 import { mountMcp, defaultLoadAgentDefn } from "./adapters/mcp/index.ts";
+import { makeHandoffLogFromEnv } from "./agents/handoff-log.ts";
 import { mountAnswerRoute } from "./api/answer.ts";
 import { createEventBus, type EventBus } from "./events/index.ts";
 import { mountChatStream } from "./api/chat-stream.ts";
@@ -290,6 +291,11 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     hookScriptPath,
     loadAgentDefn: (name) => defaultLoadAgentDefn(deps.db, name),
   });
+  // VOS-154: build env-driven handoff-log adapter. NULL when VOID_OS_HL_PATH
+  // is unset (smoke harness, tests). Threaded into ask_agent so every
+  // sibling-dispatch leaves a provenance entry in the hub-side log.
+  const handoffLog = makeHandoffLogFromEnv(process.env);
+
   mountMcp(app, {
     vaultRoot: deps.vaultRoot,
     db: deps.db,
@@ -302,6 +308,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     // ?agent=<name> and pairs it with this engine inside buildMcpServer.
     engine,
     writer,
+    // VOS-154: provenance adapter + identity threading.
+    handoffLog,
+    sessionId: process.env.VOID_OS_SESSION_ID ?? null,
+    milestone: process.env.VOID_OS_MILESTONE ?? null,
   });
   // VOS-100: user-facing answer route. Shares the SAME `bridge` instance
   // with mountMcp so the MCP tool handler (which awaits via bridge.open)
