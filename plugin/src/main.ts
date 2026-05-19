@@ -270,6 +270,11 @@ export default class VoidOsPlugin extends Plugin {
     this.bus = null;
   }
 
+  /** Stub — T5 replaces with the real retry/attach implementation. */
+  public attemptDaemon(): Promise<void> {
+    return Promise.resolve();
+  }
+
   /**
    * User-initiated daemon restart (Settings → Restart) AND the FSM's
    * auto-respawn callback when probeHealth confirms the process is dead.
