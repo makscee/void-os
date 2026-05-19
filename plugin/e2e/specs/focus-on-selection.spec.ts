@@ -63,13 +63,17 @@ test("focus-on-selection: clicking agent row + chat row focuses the composer tex
       const { chatId } = await mintChat(api, "maya");
       await sendMessage(api, chatId, "ping");
 
-      // ChatList row should appear once the run lands.
-      const chatRow = page.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
+      // ChatList row should appear once the run lands. VOS-153 T8 renamed
+      // the row testid from bare `chat-row` to `chat-row-${id}`.
+      const chatRow = page.locator(`[data-testid='chat-row-${chatId}']`);
       await expect(chatRow).toBeVisible({ timeout: 30_000 });
 
-      // The composer textarea (ComposerPrimitive.Input, placeholder="Message").
-      const composer = chatRoot.getByPlaceholder("Message");
-      await expect(composer).toBeVisible({ timeout: 5_000 });
+      // VOS-153 T5: ChatRoot boots in "idle" pane mode — no composer is
+      // mounted until the user picks an agent (Draft pane) or selects a
+      // chat (Active pane). The pre-T5 spec asserted composer visibility
+      // up front; that's no longer a valid precondition. The composer
+      // binding moves to the body of each bullet below, where each
+      // selection click is what brings it into being.
 
       // --- Bullet 1: clicking an agent row focuses the composer ---------
       //
