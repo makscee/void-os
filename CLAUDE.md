@@ -17,6 +17,25 @@ Do not use:
 
 First-time vault may require a one-time manual Enable in Obsidian (Settings → Community plugins → void-os); the enabled state persists in `<vault>/.obsidian/community-plugins.json` across subsequent smoke-up runs.
 
+# Dogfood workflow (VOS-149)
+
+`~/void-os-vault` is the operator's main vault. Every void-os task tab can deploy a fix into it in seconds and the operator reloads + verifies — no Obsidian restart.
+
+Pieces:
+
+- **`VOID_OS_PLUGIN_OUT` in shell rc.** Operator exports `VOID_OS_PLUGIN_OUT="$HOME/void-os-vault/.obsidian/plugins/void-os"` in `~/.zshrc`. Bare `bun run build` from any worktree then lands the plugin into the dogfood vault. `cli/init/plugin.ts:pluginBuildEnv` still pins its own `VOID_OS_PLUGIN_OUT` to `<prefix>/plugin/dist`, so init's plugin install ignores the exported value and won't pollute the dogfood vault.
+- **Hot Reload sentinel.** `plugin/build.ts` ends by touching `<out>/.hotreload`. The Obsidian "Hot Reload" community plugin (https://github.com/pjeby/hot-reload, installed in `~/void-os-vault`) watches that filename and reloads void-os automatically — typically within ~1s of the build finishing.
+- **`void-os daemon restart`.** Atomic stop + start. Cheaper than `stop && start` because it's one CLI call; the plugin reconnects automatically on the next health probe. Use after daemon/cli/protocol changes. Skip when only plugin code changed (a restart drops in-flight chats for no behavioural gain).
+- **`/deploy-dogfood` skill.** Hub-level skill at `~/hub/.claude/skills/deploy-dogfood/`. After a fix commit, invoke "deploy to dogfood" / "/deploy-dogfood" — the skill runs `VOID_OS_PLUGIN_OUT=… bun run build` and conditionally restarts the daemon based on the diff.
+
+Coexists with smoke harness: dogfood Obsidian and `scripts/smoke-up.sh <ID>` use disjoint `VOID_OS_HOME` and ports (smoke draws 78XX, dogfood uses 7777), so concurrent smoke + dogfood iterations don't collide. If `launchctl setenv VOID_OS_HOME` from a smoke run somehow leaks into an already-running dogfood Obsidian, `smoke-down.sh` clears it; otherwise launch dogfood Obsidian BEFORE smoke so it inherits a clean env.
+
+One-time operator setup (NOT auto-bootstrapped by any skill):
+
+1. `export VOID_OS_PLUGIN_OUT="$HOME/void-os-vault/.obsidian/plugins/void-os"` in `~/.zshrc`.
+2. `git clone https://github.com/pjeby/hot-reload ~/void-os-vault/.obsidian/plugins/hot-reload && jq '. + ["hot-reload"]' ~/void-os-vault/.obsidian/community-plugins.json > /tmp/cp && mv /tmp/cp ~/void-os-vault/.obsidian/community-plugins.json` (idempotent edit). Enable in Settings → Community plugins.
+3. Install void-os into the dogfood vault once: `void-os plugin install --vault ~/void-os-vault`.
+
 # E2E gotchas (plugin/e2e) — READ BEFORE WRITING SPECS
 
 E2E loop is heavy: ~60-90s per run (daemon + Playwright + Obsidian + scripted LLM). Mistakes burn hours. Lessons from VOS-104 T8:
