@@ -27,6 +27,11 @@ const PLUGIN_ROOT = path.resolve(HERE, "..");
 const DAEMON_ROOT = path.resolve(HERE, "..", "..", "daemon");
 const FIXTURE_VAULT = path.join(HERE, "fixtures", "vault");
 const DAEMON_FIXTURE_VAULT = path.join(HERE, "fixtures", "daemon-vault");
+// VOS-153 T9: rich-frontmatter maya source (color/avatar/tagline). Loaded by
+// the boot-time `scanVaultAgents` so GET /agents projects the optional
+// presentation fields, and the new chat-list-identity + no-empty-chats
+// e2e specs can assert on a known avatar / colour.
+const AGENTS_RICH_MAYA = path.join(HERE, "fixtures", "agents-rich", "maya", "agent.md");
 const FAKE_SCRIPT = path.join(HERE, "fixtures", "cc", "hello.jsonl");
 // VOS-89 T16: per-agent fake-provider scripts for the ask_agent E2E.
 // These are forwarded to the daemon as VOS_FAKE_SCRIPT_<agent> env vars
@@ -161,9 +166,15 @@ export async function setupE2E(opts: SetupE2EOpts = {}) {
   fs.mkdirSync(path.join(daemonAgentsDir, "journaler"), { recursive: true });
   // VOS-91 T19: seed `deep` for the nested-spec depth-2 chain.
   fs.mkdirSync(path.join(daemonAgentsDir, "deep"), { recursive: true });
-  fs.writeFileSync(
+  // VOS-153 T9: maya now ships the rich frontmatter (color/avatar/tagline)
+  // so the chat-list-identity spec can assert on a known emoji + colour
+  // and the ChatHeader banner renders with a real agent identity.
+  // Sourced from fixtures/agents-rich/maya/agent.md to keep the canonical
+  // frontmatter in a checked-in file (one source of truth) rather than a
+  // brittle inline string here.
+  fs.copyFileSync(
+    AGENTS_RICH_MAYA,
     path.join(daemonAgentsDir, "maya", "agent.md"),
-    "---\nname: maya\ndescription: front desk\nmodel: opus\n---\n",
   );
   fs.writeFileSync(
     path.join(daemonAgentsDir, "journaler", "agent.md"),
