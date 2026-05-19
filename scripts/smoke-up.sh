@@ -63,6 +63,18 @@ fi
 
 mkdir -p "$SMOKE_HOME" "$SMOKE_USERDATA"
 
+# Bridge Claude auth into the smoke HOME: claudev (the daemon's claude-code
+# child) reads `~/.claudev/config` for the access code and `~/.claude` for
+# Anthropic OAuth credentials. With HOME overridden to $SMOKE_HOME, the child
+# can't find either. Symlink both from the operator's real home so chat runs
+# can actually call the API. These dirs are mostly read; minor writes
+# (cache, last-used-key) are acceptable spillover.
+for d in .claude .claudev; do
+  if [ -e "$HOME/$d" ] && [ ! -e "$SMOKE_HOME/$d" ]; then
+    ln -sfn "$HOME/$d" "$SMOKE_HOME/$d"
+  fi
+done
+
 # Vault provisioning.
 PLUGIN_DIR="$WORKTREE/workspace/void-os/plugin"
 PLUGIN_DIST="$PLUGIN_DIR/dist"

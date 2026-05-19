@@ -76,6 +76,10 @@ smoke-up writes the plugin id into `<vault>/.obsidian/community-plugins.json` so
 
 Reuses existing vault and daemon (if alive). Always rebuilds the plugin so the per-file-symlinked dist tracks the worktree's HEAD. The `data.json` daemonUrl is re-seeded each run (cheap, idempotent). Pass `--reset` for a clean wipe.
 
+### Pre-built smoke states
+
+`scripts/scenarios/` holds scripts that drive smoke Obsidian into specific UI states (chat panel open on a seeded conversation, etc.) via raw-WebSocket CDP. See `scripts/scenarios/README.md` for the catalogue and the recipe each script follows. Operator's main Obsidian is never touched.
+
 ### Known limitations
 
 - **Port-collision rollover is racy.** The port for `<ID>` is `7800 + cksum(<ID>) % 100`, with a probe-and-bump fallback when the base port is already bound. The probe (`lsof`) and the daemon's actual `bind()` happen in separate processes, so two concurrent `smoke-up` invocations whose base ports collide may both pick the same free port and one of them will fail to bind. If you see a bind failure on a concurrent run, just rerun `smoke-up.sh <ID>` — the sticky `daemon.port` file written by the winning run will cause the second invocation to pick the next free port via the same probe.
