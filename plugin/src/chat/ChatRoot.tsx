@@ -637,7 +637,7 @@ export function ChatRoot(props: ChatRootProps) {
       <AskUserTool />
       <AskAgentTool />
       <div className="vos:flex vos:flex-row vos:h-full vos:w-full">
-        <div className="vos:flex vos:flex-col vos:h-full vos:w-[260px] vos:shrink-0 vos:bg-[var(--background-secondary)]">
+        <div className="vos:flex vos:flex-col vos:h-full vos:w-[280px] vos:shrink-0 vos:bg-[var(--background-secondary)]">
           <AgentList
             agentsApi={props.agentsApi}
             activeAgent={activeAgent}
