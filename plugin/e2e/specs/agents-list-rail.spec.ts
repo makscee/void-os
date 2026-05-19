@@ -1,11 +1,19 @@
 // VOS-113 E2E: AgentList rail surface.
 //
-// Asserts:
-//   1. Rail renders the AGENTS segment with both fixture agents (maya +
+// VOS-153 T10 rebase: clicking an agent row no longer eagerly mints a chat
+// (that was the pre-T5 contract). The rail click now transitions the pane
+// to Draft state — the daemon does not know about this conversation until
+// the operator sends the first message (see no-empty-chats.spec.ts for the
+// full Draft → first-send → Active path). This spec was updated to assert
+// the new contract:
+//   1. Rail renders AGENTS segment with both fixture agents (maya +
 //      journaler) sorted alphabetically.
-//   2. Clicking an agent row mints a new chat with that agent (no modal
-//      appears) and the row gains data-active="true".
-//   3. The existing modal `+ New` flow is untouched (we don't re-cover it
+//   2. Clicking an agent row opens the Draft pane (`draft-label` testid,
+//      data-agent matches the clicked row) and the row gains
+//      data-active="true".
+//   3. No new chat row appears in the daemon's /chats list as a result
+//      of the click — the conversation is still drafting locally.
+//   4. The existing modal `+ New` flow is untouched (we don't re-cover it
 //      here; agent-picker.spec.ts owns that).
 //
 // Selectors mirror AgentList.tsx: data-testid="agent-row" with
@@ -24,7 +32,7 @@ interface E2EState {
   fakeScriptPath: string;
 }
 
-test("agents list rail: lists agents alphabetically, click mints chat with that agent", async ({ request }) => {
+test("agents list rail: lists agents alphabetically, click opens Draft pane (no chat row)", async ({ request }) => {
   test.setTimeout(120_000);
   const state = JSON.parse(readFileSync(process.env.VOS_E2E_STATE!, "utf8")) as E2EState;
   const { browser, page } = await getVaultPage(state.cdpPort);
@@ -78,20 +86,28 @@ test("agents list rail: lists agents alphabetically, click mints chat with that 
     await page.waitForTimeout(300); // settle frame
     await expect(page.locator(".prompt input.prompt-input")).toHaveCount(0);
 
-    // 4. Daemon API assertion: new chat with agent=journaler.
-    let newChat: { id: string; agent?: string } | undefined;
-    const deadline = Date.now() + 10_000;
+    // 4. VOS-153 T5: Draft pane is mounted with the picked agent. The
+    //    chat-active branch must NOT be mounted — the conversation lives
+    //    purely in plugin state until the first send.
+    const draftLabel = page.getByTestId("draft-label");
+    await expect(draftLabel).toBeVisible({ timeout: 5_000 });
+    await expect(draftLabel).toHaveAttribute("data-agent", "journaler");
+    await expect(page.getByTestId("chat-active")).toHaveCount(0);
+
+    // 5. Daemon /chats must NOT have grown — no row materialised by the
+    //    rail click. Poll briefly to catch any erroneously-async create
+    //    side-effect that would arrive on the next tick.
+    const deadline = Date.now() + 2_000;
     while (Date.now() < deadline) {
       const res = await request.get(`http://127.0.0.1:${state.port}/chats`);
       expect(res.status()).toBe(200);
-      const body = (await res.json()) as Array<{ id: string; agent?: string }>;
-      newChat = body.find((c) => !beforeIds.has(c.id) && c.agent === "journaler");
-      if (newChat) break;
+      const body = (await res.json()) as Array<{ id: string }>;
+      const newRows = body.filter((c) => !beforeIds.has(c.id));
+      expect(newRows, "rail click must not create a chat row pre-send").toEqual([]);
       await page.waitForTimeout(200);
     }
-    expect(newChat, "new chat with agent=journaler should appear after rail click").toBeDefined();
 
-    // 5. Rail active marker tracks the click optimistically.
+    // 6. Rail active marker tracks the click optimistically.
     await expect(journalerRow).toHaveAttribute("data-active", "true", { timeout: 5_000 });
     const mayaRow = page.locator("[data-testid='agent-row'][data-agent-name='maya']");
     await expect(mayaRow).toHaveAttribute("data-active", "false");

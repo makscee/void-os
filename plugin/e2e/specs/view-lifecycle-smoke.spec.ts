@@ -16,12 +16,14 @@ import {
  *   - closeChatView() removes every chat leaf.
  *   - isChatViewOpen() reports leaf-count correctly.
  *
- * Deviation from the plan's literal Step 2 spec: the plan assumed the
- * vault fixture has the chat view open at boot. It does not — boot
- * state is 0 chat leaves (verified in ribbon-open.spec.ts, which asserts
- * `countChatLeaves() === 0` before clicking the ribbon). The smoke
- * therefore drives the lifecycle from the real boot state: closed →
- * open → closed → open. All three helpers are still exercised.
+ * Boot state caveat: with `workers: 1` (playwright.config.ts) all `main`
+ * specs share a single Obsidian instance. By the time this spec runs
+ * (alphabetically last) earlier specs have left a chat leaf open.
+ * Rather than asserting boot=closed (which depends on global ordering),
+ * the smoke drives the lifecycle from a *known-closed* state: it calls
+ * closeChatView() first as a setup step, then exercises closed → open
+ * → closed → open. All three helpers are still exercised, and the
+ * close→reopen invariant is preserved exactly.
  */
 interface E2EState {
   port: number;
@@ -46,7 +48,11 @@ test("view-lifecycle helpers close and reopen ChatView leaf cleanly", async () =
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
-    // Boot state: no chat leaves.
+    // Setup: drive to a known-closed state. Earlier specs in the worker
+    // may have left a chat leaf open; closeChatView() must idempotently
+    // drain it. This is the FIRST assertion the helper contract makes:
+    // calling close from any state lands at 0 leaves.
+    await closeChatView(page);
     expect(await isChatViewOpen(page)).toBe(false);
 
     // reopenChatView() must transition closed → open and wait for the
