@@ -8,6 +8,7 @@ import sharedTeardown from "./globalTeardown.ts";
 import askUserTeardown from "./globalTeardown-ask-user.ts";
 import permissionDenyUiTeardown from "./globalTeardown-permission-deny-ui.ts";
 import autospawnTeardown from "./globalTeardown-autospawn.ts";
+import binaryMissingTeardown from "./globalTeardown-binary-missing.ts";
 
 // Mirror of globalSetup-all selection: parse --project from argv (FullConfig
 // gives the declared list, not the filter). Empty filter = default to "main"
@@ -26,6 +27,9 @@ function selectedProjects(allNames: string[]): Set<string> {
 export default async function globalTeardownAll(config: FullConfig) {
   const selected = selectedProjects(config.projects.map((p) => p.name));
   // Tear down in reverse setup order (last-started first).
+  if (selected.has("binary-missing")) {
+    try { await binaryMissingTeardown(); } catch (err) { console.error("[teardown] binary-missing:", err); }
+  }
   if (selected.has("autospawn")) {
     try { await autospawnTeardown(); } catch (err) { console.error("[teardown] autospawn:", err); }
   }

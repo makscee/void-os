@@ -51,6 +51,16 @@ export default defineConfig({
       name: "autospawn",
       testMatch: ["**/daemon-autospawn.spec.ts"],
     },
+    // VOS-150 T6: binary-missing project asserts the degraded-state UI
+    // (ribbon alert icon + DegradedHelpModal) when ensureDaemon fails
+    // because voidOsBinaryPath points at a nonexistent path. Its
+    // globalSetup writes data.json BEFORE Obsidian launches and uses a
+    // distinct CDP port + state file (VOS_E2E_STATE_BINARY_MISSING) so it
+    // can run in parallel with `main` / `autospawn` without collision.
+    {
+      name: "binary-missing",
+      testMatch: ["**/ribbon-degraded.spec.ts"],
+    },
   ],
   use: {
     headless: false,
