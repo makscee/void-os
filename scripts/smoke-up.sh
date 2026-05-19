@@ -341,6 +341,17 @@ else
   # which silently keeps the plugin from running its renderer code. The `-n`
   # forces a new instance even if one is running; `-a` picks the .app
   # bundle by name; `--args` passes argv to the child.
+  #
+  # VOS-145: HOME=$SMOKE_HOME only affects `open` itself, NOT the spawned
+  # Obsidian. macOS LaunchServices uses the user's launchd session env, not
+  # the caller's env. So Obsidian (and the plugin inside it) runs with the
+  # real /Users/admin HOME — its homedir()-based pidfile reads miss the
+  # smoke daemon under $SMOKE_HOME/.void-os/ and the plugin spawns its own
+  # daemon on default port 7777, polluting real-home state and blocking
+  # other tabs. Fix: inject VOID_OS_HOME into the launchd session env so
+  # the spawned Obsidian inherits it. The plugin (VOS-143) reads
+  # VOID_OS_HOME first and falls back to homedir() otherwise.
+  launchctl setenv VOID_OS_HOME "$SMOKE_HOME"
   HOME="$SMOKE_HOME" open -na "Obsidian" --args \
     "--user-data-dir=$SMOKE_USERDATA" "$SMOKE_VAULT"
   # `open` returns immediately; resolve the spawned pid by finding the

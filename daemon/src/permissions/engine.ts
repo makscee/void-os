@@ -105,6 +105,21 @@ export interface AgentDefn {
    * NOT the CC-emitted `mcp__void-os__vault_read` form.
    */
   tools?: string[];
+
+  /**
+   * VOS-145: optional network posture from agent.md frontmatter `network:`.
+   * `undefined` ⇒ defaulted by toIntent based on posture (least-privilege for
+   * read-only agents). `'none'` = no outbound; `'allow'` = unrestricted.
+   * CC adapter currently ignores this; Codex adapter (when added) uses it.
+   */
+  network?: "none" | "allow";
+
+  /**
+   * VOS-145: optional explicit posture from agent.md frontmatter `posture:`.
+   * `undefined` ⇒ defaulted by toIntent from write_scope (empty ⇒ 'read-only';
+   * non-empty ⇒ 'workspace-write'). Explicit `'open'` only via this field.
+   */
+  posture?: "read-only" | "workspace-write" | "open";
 }
 
 export interface ResolvedScopes {
