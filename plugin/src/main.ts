@@ -1,8 +1,7 @@
 import { Notice, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
 // VOS-120 T9-fix-A: lazy-require node built-ins (browser-target bundler
 // strips static `import "node:os" / "node:child_process"`).
-import { nodeOs, nodeCp } from "./node-runtime";
-const { homedir } = nodeOs;
+import { nodeCp } from "./node-runtime";
 const { spawn } = nodeCp;
 import { ChatView, CHAT_VIEW_TYPE } from "./view";
 import { WsClient, type WsEvent, type WsPort } from "./ws-client";
@@ -21,6 +20,7 @@ import {
   makeProductionProbe,
   makeProductionSpawn,
   resolveBinary,
+  resolveHome,
   BinaryNotFoundError,
   VaultMismatchError,
   SpawnError,
@@ -155,7 +155,7 @@ export default class VoidOsPlugin extends Plugin {
       attachment = await ensureDaemon({
         vaultRoot,
         settings: this.settings.get(),
-        probeHealth: makeProductionProbe(homedir(), requestUrlAsFetch()),
+        probeHealth: makeProductionProbe(resolveHome(), requestUrlAsFetch()),
         spawnCli: makeProductionSpawn(),
       });
     } catch (e) {
@@ -248,7 +248,7 @@ export default class VoidOsPlugin extends Plugin {
       // T8 wiring: probeHealth distinguishes "ws dropped" from "daemon died",
       // and respawn lets the FSM spend its one auto-restart budget without a
       // user click. Arrow keeps `this` bound to the plugin instance.
-      probeHealth: makeProductionProbe(homedir(), requestUrlAsFetch()),
+      probeHealth: makeProductionProbe(resolveHome(), requestUrlAsFetch()),
       respawn: () => this.restartDaemon(),
     });
     this.fsm.start();
@@ -328,7 +328,7 @@ export default class VoidOsPlugin extends Plugin {
       attachment = await ensureDaemon({
         vaultRoot: getVaultRoot(this.app),
         settings: this.settings.get(),
-        probeHealth: makeProductionProbe(homedir(), requestUrlAsFetch()),
+        probeHealth: makeProductionProbe(resolveHome(), requestUrlAsFetch()),
         spawnCli: makeProductionSpawn(),
       });
     } catch (e) {

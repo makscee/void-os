@@ -8,6 +8,21 @@ const pathResolve = nodePath.resolve;
 const { homedir } = nodeOs;
 const { spawn } = nodeCp;
 
+/**
+ * Honor VOID_OS_HOME env var for test/smoke isolation; fall back to OS homedir.
+ *
+ * VOS-143: macOS `open -na` (used by the smoke harness to launch Obsidian)
+ * does NOT propagate HOME from the launching shell — LaunchServices routes
+ * through launchd's session env. The smoke harness publishes VOID_OS_HOME via
+ * `launchctl setenv` so it survives into Obsidian's process env; the plugin
+ * reads VOID_OS_HOME first to find `~/.void-os/{daemon.json,token,...}`,
+ * preventing a smoke-spawned plugin from polluting the operator's real
+ * `~/.void-os/` state.
+ */
+export function resolveHome(): string {
+  return process.env.VOID_OS_HOME || homedir();
+}
+
 export class BinaryNotFoundError extends Error {
   constructor() {
     super("void-os binary not found on PATH or well-known dirs");
@@ -58,7 +73,7 @@ const WELL_KNOWN_BUN_ABSOLUTE = [
 ];
 
 export function resolveBunDir(
-  env: Env = { home: homedir(), pathDirs: [] },
+  env: Env = { home: resolveHome(), pathDirs: [] },
 ): string | null {
   for (const sub of WELL_KNOWN_BUN_SUBPATHS) {
     const p = join(env.home, sub);
@@ -100,7 +115,7 @@ async function loginShellWhich(timeoutMs = 2000): Promise<string | null> {
 
 export async function resolveBinary(
   settings: LifecycleSettings,
-  env: Env = { home: homedir(), pathDirs: [] },
+  env: Env = { home: resolveHome(), pathDirs: [] },
 ): Promise<string> {
   // 1. settings override
   if (
@@ -289,7 +304,7 @@ export function makeProductionSpawn(): (
     // shebang `#!/usr/bin/env bun` in bin/void-os fails ("env: bun: No such
     // file or directory"). Prepend bun's containing dir to env.PATH so the
     // shebang resolves under the spawned process.
-    const bunDir = resolveBunDir({ home: homedir(), pathDirs: [] });
+    const bunDir = resolveBunDir({ home: resolveHome(), pathDirs: [] });
     const env = { ...process.env };
     if (bunDir) {
       env.PATH = `${bunDir}:${env.PATH ?? "/usr/bin:/bin"}`;

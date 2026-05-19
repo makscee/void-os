@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveBinary, BinaryNotFoundError, ensureDaemon, VaultMismatchError, resolveBunDir } from "../src/daemon-lifecycle";
+import { homedir } from "node:os";
+import { resolveBinary, BinaryNotFoundError, ensureDaemon, VaultMismatchError, resolveBunDir, resolveHome } from "../src/daemon-lifecycle";
 
 let dir: string;
 beforeEach(() => {
@@ -49,6 +50,40 @@ describe("resolveBinary", () => {
     await expect(
       resolveBinary({}, { home: dir, pathDirs: [] }),
     ).rejects.toThrow(BinaryNotFoundError);
+  });
+});
+
+describe("resolveHome (VOS-143)", () => {
+  it("returns process.env.VOID_OS_HOME when set", () => {
+    const prev = process.env.VOID_OS_HOME;
+    try {
+      process.env.VOID_OS_HOME = "/tmp/vos-smoke-home";
+      expect(resolveHome()).toBe("/tmp/vos-smoke-home");
+    } finally {
+      if (prev === undefined) delete process.env.VOID_OS_HOME;
+      else process.env.VOID_OS_HOME = prev;
+    }
+  });
+
+  it("falls back to OS homedir() when VOID_OS_HOME is unset", () => {
+    const prev = process.env.VOID_OS_HOME;
+    try {
+      delete process.env.VOID_OS_HOME;
+      expect(resolveHome()).toBe(homedir());
+    } finally {
+      if (prev !== undefined) process.env.VOID_OS_HOME = prev;
+    }
+  });
+
+  it("falls back to OS homedir() when VOID_OS_HOME is empty string", () => {
+    const prev = process.env.VOID_OS_HOME;
+    try {
+      process.env.VOID_OS_HOME = "";
+      expect(resolveHome()).toBe(homedir());
+    } finally {
+      if (prev === undefined) delete process.env.VOID_OS_HOME;
+      else process.env.VOID_OS_HOME = prev;
+    }
   });
 });
 
