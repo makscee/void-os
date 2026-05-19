@@ -189,6 +189,31 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     expect(lastReq.value!.agent).toBe("maya");
   });
 
+  test("VOS-152: throws E_NO_CALLING_AGENT when both args.agent and deps.agent are unset", async () => {
+    const bus = makeBus();
+    const { cc } = stubSpawner(bus, (runId, b) => {
+      b.emit({ type: "run.end", runId, payload: { exitCode: 0, reason: "exited" } });
+    });
+    // No deps.agent — emulates a daemon built without a `defaultAgent`.
+    const spawner = makeCcSpawnerIter({ cc, bus, cwd: "/work" });
+    let caught: Error | undefined;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _ of spawner.spawn({
+        chat_id: "c1",
+        task_id: "t1",
+        resume: null,
+        prompt: "x",
+      })) {
+        /* drain */
+      }
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toContain("E_NO_CALLING_AGENT");
+  });
+
   test("unsubscribes after iterator completes (no leaked listeners)", async () => {
     const bus = makeBus();
     const { cc } = stubSpawner(bus, (runId, b) => {

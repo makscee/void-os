@@ -38,9 +38,16 @@ import type { EventBus, UsageTurn } from "../../events/index.ts";
  *   2. `VOS_FAKE_SCRIPT` (global)
  *   3. undefined
  */
-export function resolveFakeScript(agentName: string): string | undefined {
-  const k = `VOS_FAKE_SCRIPT_${agentName}`;
-  return process.env[k] ?? process.env.VOS_FAKE_SCRIPT;
+export function resolveFakeScript(agentName: string | undefined): string | undefined {
+  // VOS-152: agentName may be undefined when no default-agent is wired
+  // (e.g. fresh starter vault). Skip the per-agent lookup and fall through
+  // to the global env var.
+  if (agentName) {
+    const k = `VOS_FAKE_SCRIPT_${agentName}`;
+    const perAgent = process.env[k];
+    if (perAgent) return perAgent;
+  }
+  return process.env.VOS_FAKE_SCRIPT;
 }
 
 /**
@@ -54,9 +61,14 @@ export function resolveFakeScript(agentName: string): string | undefined {
  * Used by ask_agent E2E so a parent's run does not drain before the
  * test bridge can react to a tool_use frame and call MCP.
  */
-export function resolveFakePerEventDelayMs(agentName: string): number | undefined {
-  const k = `VOS_FAKE_PER_EVENT_DELAY_MS_${agentName}`;
-  const raw = process.env[k] ?? process.env.VOS_FAKE_PER_EVENT_DELAY_MS;
+export function resolveFakePerEventDelayMs(agentName: string | undefined): number | undefined {
+  // VOS-152: agentName may be undefined; fall through to the global env var.
+  let raw: string | undefined;
+  if (agentName) {
+    const k = `VOS_FAKE_PER_EVENT_DELAY_MS_${agentName}`;
+    raw = process.env[k];
+  }
+  raw = raw ?? process.env.VOS_FAKE_PER_EVENT_DELAY_MS;
   if (raw == null) return undefined;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : undefined;
@@ -153,20 +165,18 @@ export function makeFakeProvider(opts: FakeProviderOpts): Provider {
         // resolution (mirrors the spawn-settings URL the real CC adapter
         // writes into mcp.json). `ProviderSpawnRequest` (ADR-0001) does
         // NOT carry `agent` — the calling agent identity is set on the
-        // provider instance via `opts.agent` by the factory
-        // (daemon/src/providers/factory.ts → app.ts wires
-        // `agent: deps.defaultAgent ?? "maya"`; VOS-124 removed the
-        // silent-default from chat *creation* (chats.ts) but this
-        // spawner-level identity fallback is intentional for the
-        // subprocess harness — the daemon seeds "maya" as a known agent).
+        // provider instance via `opts.agent` by the factory.
         //
         // Precedence: `req.agent` (legacy test extension hack — some
         // unit tests cast `ProviderSpawnRequest & { agent: string }` so
         // they can vary the calling agent per call without rebuilding
         // the provider) > `opts.agent` (production wiring) > "fake"
-        // (legacy default; will surface UNKNOWN_AGENT cleanly rather
-        // than the truthy literal string "undefined" that the previous
-        // code emitted when `req.agent` was missing).
+        // (sentinel for the fake provider only — the daemon's
+        // fake-driven e2e harness accepts this literal as a known
+        // calling-agent identity; production CC path NEVER hits this
+        // module). VOS-152: the production "maya" persona fallback is
+        // gone — `opts.agent` may now be undefined when the operator's
+        // vault ships no default agent.
         const callingAgent =
           (req as ProviderSpawnRequest & { agent?: string }).agent ??
           opts.agent ??

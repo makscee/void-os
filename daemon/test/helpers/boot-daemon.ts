@@ -101,12 +101,23 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
   // Seed agent_cards rows so the ask_agent handler's existence check passes. No
   // per-agent allowlist is set unless the caller injects one — the
   // permission gate treats absent `ask_agent_allow` as permissive.
+  //
+  // VOS-152: ALSO seed the `agents` table. POST /chats (chats.ts, VOS-124
+  // strict-registry gate) consults `agentRepo.list()` and 404s any agent
+  // not present. Prior to migration 0014 the 0008 maya seed implicitly
+  // satisfied this check for tests using agent:"maya"; with the seed
+  // dropped, tests must seed their own agents. Mirror the agent_cards
+  // loop so the same identities populate both tables.
   const agentNames = Object.keys(opts.agentScripts);
   for (const name of agentNames) {
     const card = JSON.stringify({ name });
     db.run(
       "INSERT INTO agent_cards (agent_name, card_json, source_mtime) VALUES (?, ?, 0)",
       [name, card],
+    );
+    db.run(
+      "INSERT INTO agents (name, description, model, vault_path, updated_at) VALUES (?, ?, ?, ?, ?)",
+      [name, null, null, `agents/${name}/agent.md`, 0],
     );
   }
 
