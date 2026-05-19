@@ -1,5 +1,5 @@
-import { existsSync, cpSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join, dirname } from "node:path"
 import { spawnSync } from "node:child_process"
 
 export interface PluginOpts {
@@ -69,10 +69,6 @@ export function ensurePluginBuilt(opts: {
 }): EnsureBuiltResult {
   const { cmd, args, cwd, env, distDir } = pluginBuildEnv(opts.prefix)
   const pluginDir = cwd
-  // Already built? Trust dist only if the key artifacts are present.
-  if (existsSync(distDir) && PLUGIN_DIST_FILES.every((f) => existsSync(join(distDir, f)))) {
-    return { built: true, ran: false }
-  }
   if (!existsSync(pluginDir)) return { built: false, ran: false }
   if (opts.dryRun) return { built: false, ran: false }
 
@@ -110,7 +106,49 @@ export function installPlugin(opts: PluginOpts): PluginResult {
 
   if (!opts.dryRun) {
     cpSync(src, target, { recursive: true, force: true })
+    const enableWarn = enablePluginInVault(opts.home)
+    if (enableWarn) r.warnings.push(enableWarn)
   }
   r.installed = true
   return r
+}
+
+/**
+ * Seed `<vault>/.obsidian/community-plugins.json` so Obsidian auto-enables
+ * the void-os plugin on first vault open. Without this, fresh-installed
+ * vaults require the operator to walk Settings → Community plugins →
+ * Enable "void-os" by hand.
+ *
+ * Idempotent merge:
+ *   - missing file or malformed JSON → write `["void-os"]`
+ *   - existing JSON array without "void-os" → append
+ *   - existing JSON array with "void-os" → no-op
+ *
+ * Safe-on-error: returns a warning string instead of throwing, so a
+ * disk-full / permission-denied case doesn't abort init.
+ */
+export function enablePluginInVault(vaultPath: string): string | undefined {
+  const dir = join(vaultPath, ".obsidian")
+  const file = join(dir, "community-plugins.json")
+  try {
+    mkdirSync(dir, { recursive: true })
+    let plugins: string[] = ["void-os"]
+    if (existsSync(file)) {
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(file, "utf8"))
+        if (Array.isArray(parsed) && parsed.every((p) => typeof p === "string")) {
+          const arr = parsed as string[]
+          if (arr.includes("void-os")) return undefined // no-op
+          plugins = [...arr, "void-os"]
+        }
+        // else: malformed (not an array of strings) → overwrite below
+      } catch {
+        // malformed JSON → overwrite below
+      }
+    }
+    writeFileSync(file, JSON.stringify(plugins, null, 2))
+    return undefined
+  } catch (e) {
+    return `could not write ${file}: ${(e as Error).message}; enable void-os manually via Settings → Community plugins`
+  }
 }

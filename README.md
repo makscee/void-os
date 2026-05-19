@@ -33,45 +33,61 @@ Tinker is the seed agent — a meta / curator role who helps you bootstrap the r
 
 ## 3. Mac install (the verified path)
 
-```sh
-# 1. Clone
-git clone https://github.com/makscee/void-os.git ~/scratch/void-os
-cd ~/scratch/void-os
-
-# 2. Install deps
+```bash
+git clone https://github.com/<your-fork>/void-os
+cd void-os
 bun install
-
-# 3. Register CLI globally
-bun link
-# void-os is now on PATH at ~/.bun/bin/void-os
-# Make sure ~/.bun/bin is on your PATH (most bun installers do this).
-
-# 4. Seed a vault (interactive — accept defaults with Enter)
-void-os init
-# Prompts: vault location (default ~/vault), GitHub push, Obsidian vault name.
-# init will: copy starter-vault content into ~/vault, build the Obsidian plugin,
-# install it into <vault>/.obsidian/plugins/void-os, and auto-start the daemon.
-
-# 5. Verify
-void-os daemon status      # running + your vault path
-void-os ask tinker "hi"    # one-line greeting from Tinker
+bun link                # `void-os` now on PATH
+void-os init            # interactive picker
 ```
 
-## 4. Linux / LXC install (non-interactive)
+`void-os init` walks you through:
 
-```sh
-git clone https://github.com/makscee/void-os.git /opt/void-os
-cd /opt/void-os
-bun install && bun link
-void-os init --non-interactive --vault $HOME/vault --skip-gh
-void-os daemon status
+1. **Preflight** — confirms `bun` and `claudev` are resolvable. Set `VOID_OS_CC_BIN=/abs/path/to/claudev` if claudev isn't on PATH.
+2. **Pick a vault location** — current folder, `~/void-os-vault`, `~/vault`, or a custom path. The picker refuses paths inside the void-os clone itself.
+3. **Seed** — `git init` in the vault, starter-vault tree, `.claude/skills` symlink, initial commit. Idempotent.
+4. **Build + install plugin** — `bun install` + `bun run build` inside the repo's `plugin/`, then **copy** the built artifacts into `<vault>/.obsidian/plugins/void-os/`. Always rebuilds on each init — pass `--skip-build` if you've just built.
+5. **Open in Obsidian?** (y/N) — answer `y` to launch Obsidian against the new vault.
+
+The plugin auto-spawns the daemon on Obsidian load. **`void-os init` does NOT start the daemon itself.** If you prefer CLI:
+
+```bash
+void-os daemon start --vault <path>
 void-os ask tinker "hi"
 ```
 
-Notes:
-- `--skip-gh` skips remote repo creation. Drop it (and ensure `gh auth status` is green) if you want `init` to create a private GitHub repo for the vault.
-- `--non-interactive` requires `--vault <path>` — `init` refuses to guess.
-- Other useful flags: `--force` (overwrite a non-void dir or re-seed), `--dry-run` (print actions, write nothing), `--skip-build` (dev-loop iteration), `--skip-obsidian` (don't install the plugin), `--gh-repo <name>` (explicit repo name).
+`daemon start` is single-instance: if Obsidian already spawned a daemon for that vault, you get `already running (pid=… port=… vault=…)` and exit 0. Stale pidfiles (daemon crashed) are cleaned up automatically.
+
+To create a GitHub repo and push the initial commit, pass `--gh-repo <name>` explicitly. Default is no push.
+
+## 4. Linux / LXC install (non-interactive)
+
+```bash
+git clone https://github.com/<your-fork>/void-os
+cd void-os
+bun install
+bun link
+
+# claudev must be resolvable. Either on PATH or via env:
+export VOID_OS_CC_BIN=/usr/local/bin/claudev
+
+void-os init --non-interactive --vault /srv/void-os-vault
+```
+
+`--non-interactive` requires `--vault <path>`. No picker, no Obsidian prompt — init prints the `obsidian://open?path=…` URL at the end if you want to open it from a desktop.
+
+Flags:
+- `--vault <path>` — vault location (required in non-interactive mode)
+- `--skip-build` — skip `bun install` + plugin build (dev iteration)
+- `--force` — overwrite a non-empty target dir
+- `--gh-repo <name>` — opt in to creating a private GitHub repo + pushing initial commit
+
+Then start the daemon explicitly:
+
+```bash
+void-os daemon start --vault /srv/void-os-vault
+void-os ask tinker "hi"
+```
 
 ## 5. Open the vault in Obsidian
 
@@ -106,7 +122,7 @@ The plugin and the CLI both talk to the same daemon on `127.0.0.1:7777`, so plug
 | `void-os ask` exits 6 saying "agent asked for input; this requires interactive mode" | agent invoked `ask_user` mid-run, which `ask` can't satisfy | re-run with `void-os chat <agent>` |
 | `void-os ask` exits 4 saying "agent '<name>' not found" | agent not registered in vault | `void-os agents list` to see what's there; ask Tinker to draft the missing agent |
 | `void-os ask` exits 5 saying "vault not configured" | `VOID_OS_VAULT_ROOT` unset and `~/Library/Application Support/void-os/vault` missing | run `void-os init`, or `export VOID_OS_VAULT_ROOT=<path>` before `daemon start` |
-| `void-os ask` exits 3 saying "daemon not running" | daemon down or unreachable | `void-os daemon start` (auto-restarts on `init` too); check `void-os daemon logs --tail 40` |
+| `void-os ask` exits 3 saying "daemon not running" | daemon down or unreachable | `void-os daemon start --vault <path>` (or open Obsidian, which spawns the daemon); check `void-os daemon logs --tail 40` |
 
 ## 8. Known limitations (current state)
 

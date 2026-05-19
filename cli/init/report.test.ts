@@ -15,7 +15,6 @@ const basePreflight: PreflightReport = {
 const baseDecisions: Decisions = {
   vaultPath: "/Users/u/vault",
   gh: { push: true, repoName: "u/vault" },
-  obsidianVaultName: "vault",
   cancelled: false,
 }
 

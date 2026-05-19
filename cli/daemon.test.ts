@@ -1,4 +1,4 @@
-import { test, describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { test, describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -198,8 +198,17 @@ describe("cmdStart vault awareness (VOS-120)", () => {
       version: "0.0.0",
       started_at: new Date().toISOString(),
     });
-    const result = await cmdStart({ vault: "/vault/A", dryRun: true });
-    expect(result.status).toBe("already-running");
+    // VOS-143: cmdStart now also probes /health before attaching. Stub
+    // globalThis.fetch so the probe returns 200.
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ version: "x" }), { status: 200 })) as typeof globalThis.fetch;
+    try {
+      const result = await cmdStart({ vault: "/vault/A", dryRun: true });
+      expect(result.status).toBe("already-running");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
   it("treats dead-pid pidfile as stale and proceeds", async () => {
@@ -218,5 +227,122 @@ describe("cmdStart vault awareness (VOS-120)", () => {
   it("isPidAlive returns true for current process and false for sentinel", () => {
     expect(isPidAlive(process.pid)).toBe(true);
     expect(isPidAlive(999999)).toBe(false);
+  });
+});
+
+// VOS-143 T5: liveness now goes through /health, not just isPidAlive. A pid
+// that's alive but bound to no port (or to a non-void-os process) must be
+// treated as stale so the plugin can recover from a crashed-but-pidfile-left
+// daemon. Vault-mismatch still wins precedence over health probe.
+describe("cmdStart liveness via /health (VOS-143)", () => {
+  let origFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    origFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+  });
+
+  it("treats pid-alive but health-failing daemon as stale", async () => {
+    writePidJson({
+      pid: process.pid,         // alive
+      port: 7777,
+      vault_root: "/vault/A",
+      version: "0.0.0",
+      started_at: new Date().toISOString(),
+    });
+    // /health unreachable → fetch throws.
+    globalThis.fetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as typeof globalThis.fetch;
+
+    const result = await cmdStart({ vault: "/vault/A", dryRun: true });
+    // pid alive + unhealthy → cleared pidfile + would-spawn (dryRun).
+    expect(result.status).toBe("would-spawn");
+    expect(readPidJson()).toBeNull();
+  });
+
+  it("attaches when /health returns 200 + same vault", async () => {
+    writePidJson({
+      pid: process.pid,
+      port: 7777,
+      vault_root: "/vault/A",
+      version: "0.0.0",
+      started_at: new Date().toISOString(),
+    });
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ version: "x" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof globalThis.fetch;
+
+    const result = await cmdStart({ vault: "/vault/A", dryRun: true });
+    expect(result.status).toBe("already-running");
+    if (result.status === "already-running") {
+      expect(result.vault).toBe("/vault/A");
+      expect(result.pid).toBe(process.pid);
+      expect(result.port).toBe(7777);
+    }
+  });
+
+  it("vault-mismatch precedence: different vault wins over health probe", async () => {
+    writePidJson({
+      pid: process.pid,
+      port: 7777,
+      vault_root: "/vault/A",
+      version: "0.0.0",
+      started_at: new Date().toISOString(),
+    });
+    let fetched = false;
+    globalThis.fetch = (async () => {
+      fetched = true;
+      return new Response(JSON.stringify({ version: "x" }), { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    const result = await cmdStart({ vault: "/vault/B", dryRun: true });
+    expect(result.status).toBe("vault-mismatch");
+    if (result.status === "vault-mismatch") {
+      expect(result.activeVault).toBe("/vault/A");
+      expect(result.requestedVault).toBe("/vault/B");
+    }
+    // Health probe must run before vault check OR not at all — either way
+    // the outcome is vault-mismatch when vaults differ.
+    void fetched;
+  });
+});
+
+describe("cmdStartCli message includes vault (VOS-143)", () => {
+  it("already-running stdout has vault path", async () => {
+    // Drive the structured already-running shape through cmdStart by writing a
+    // pidfile + stubbing fetch to /health 200. Then invoke the top-level
+    // dispatcher and capture stdout.
+    writePidJson({
+      pid: process.pid,
+      port: 7777,
+      vault_root: "/vault/X",
+      version: "0.0.0",
+      started_at: new Date().toISOString(),
+    });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ version: "x" }), { status: 200 })) as typeof globalThis.fetch;
+    const logs: string[] = [];
+    const logSpy = spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+      logs.push(a.map(String).join(" "));
+    });
+    try {
+      const mod = await import("./daemon.ts");
+      const rc = await mod.default(
+        ["start", "--port", "7777", "--vault", "/vault/X"],
+        { prefix: VOS_ROOT },
+      );
+      expect(rc).toBe(0);
+      const joined = logs.join("\n");
+      expect(joined).toMatch(/already running/);
+      expect(joined).toMatch(/vault=\/vault\/X/);
+    } finally {
+      logSpy.mockRestore();
+      globalThis.fetch = origFetch;
+    }
   });
 });

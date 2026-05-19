@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveBinary, BinaryNotFoundError, ensureDaemon, VaultMismatchError } from "../src/daemon-lifecycle";
+import { homedir } from "node:os";
+import { resolveBinary, BinaryNotFoundError, ensureDaemon, VaultMismatchError, resolveBunDir, resolveHome } from "../src/daemon-lifecycle";
 
 let dir: string;
 beforeEach(() => {
@@ -49,6 +50,70 @@ describe("resolveBinary", () => {
     await expect(
       resolveBinary({}, { home: dir, pathDirs: [] }),
     ).rejects.toThrow(BinaryNotFoundError);
+  });
+});
+
+describe("resolveHome (VOS-143)", () => {
+  it("returns process.env.VOID_OS_HOME when set", () => {
+    const prev = process.env.VOID_OS_HOME;
+    try {
+      process.env.VOID_OS_HOME = "/tmp/vos-smoke-home";
+      expect(resolveHome()).toBe("/tmp/vos-smoke-home");
+    } finally {
+      if (prev === undefined) delete process.env.VOID_OS_HOME;
+      else process.env.VOID_OS_HOME = prev;
+    }
+  });
+
+  it("falls back to OS homedir() when VOID_OS_HOME is unset", () => {
+    const prev = process.env.VOID_OS_HOME;
+    try {
+      delete process.env.VOID_OS_HOME;
+      expect(resolveHome()).toBe(homedir());
+    } finally {
+      if (prev !== undefined) process.env.VOID_OS_HOME = prev;
+    }
+  });
+
+  it("falls back to OS homedir() when VOID_OS_HOME is empty string", () => {
+    const prev = process.env.VOID_OS_HOME;
+    try {
+      process.env.VOID_OS_HOME = "";
+      expect(resolveHome()).toBe(homedir());
+    } finally {
+      if (prev === undefined) delete process.env.VOID_OS_HOME;
+      else process.env.VOID_OS_HOME = prev;
+    }
+  });
+});
+
+describe("resolveBunDir (VOS-143)", () => {
+  it("returns ~/.bun/bin when bun is executable there", () => {
+    const bunBin = join(dir, ".bun", "bin");
+    mkdirSync(bunBin, { recursive: true });
+    const p = join(bunBin, "bun");
+    makeExe(p);
+    const got = resolveBunDir({ home: dir, pathDirs: [] });
+    expect(got).toBe(bunBin);
+  });
+
+  it("returns null when bun is not found in any well-known location", () => {
+    // dir is empty. The well-known absolutes (/opt/homebrew/bin/bun,
+    // /usr/local/bin/bun) may exist on a dev host. Skip the assertion when
+    // they do — the contract is "well-known fallback works", which the
+    // previous test already covers via $HOME-based discovery.
+    const homebrewBun = "/opt/homebrew/bin/bun";
+    const usrLocalBun = "/usr/local/bin/bun";
+    let realBunPresent = false;
+    try {
+      if (statSync(homebrewBun).isFile()) realBunPresent = true;
+    } catch {}
+    try {
+      if (statSync(usrLocalBun).isFile()) realBunPresent = true;
+    } catch {}
+    if (realBunPresent) return;
+    const got = resolveBunDir({ home: dir, pathDirs: [] });
+    expect(got).toBeNull();
   });
 });
 

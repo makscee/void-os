@@ -54,7 +54,10 @@ function setupPrefixWithRealStarter(): void {
   // Deliberately omit plugin/dist to exercise installPlugin() skip branch.
 }
 
-function runInit(args: string[], answers: { text: string[]; confirm: boolean[] }) {
+function runInit(
+  args: string[],
+  answers: { text: string[]; confirm: boolean[]; select?: unknown[] },
+) {
   const prompter = new ScriptedPrompter(answers)
   const logs: string[] = []
   const warns: string[] = []
@@ -74,7 +77,10 @@ function runInit(args: string[], answers: { text: string[]; confirm: boolean[] }
       prompter,
       preflight: fakePreflight,
       skipBuild: true,
-      skipDaemonStart: true,
+      // VOS-143: init no longer auto-starts the daemon; suppress the post-report
+      // hooks so we don't depend on the real obsidian/next-steps helpers here.
+      promptObsidian: async () => {},
+      printNextSteps: () => {},
     })
       .finally(() => {
         logSpy.mockRestore()
@@ -96,7 +102,13 @@ afterEach(() => {
 
 describe("initCommand() — end-to-end against real fs", () => {
   it("fresh install: copies starter verbatim, writes marker, runs git init + commit, skips plugin, reports next steps", async () => {
-    const run = runInit([], { text: [home], confirm: [true] })
+    // configure() now picks the vault via select (T2) — "enter custom path"
+    // → then text-prompt for the path. confirm = [proceed].
+    const run = runInit([], {
+      text: [home],
+      confirm: [true],
+      select: ["__custom__"],
+    })
     await run.promise
 
     // 1. Vault dir created at the prompted location.
@@ -137,6 +149,18 @@ describe("initCommand() — end-to-end against real fs", () => {
     // 5. Plugin install skipped (no plugin/dist in prefix). Verify the skip
     //    branch is exercised: no plugin files at .obsidian/plugins/void-os/.
     expect(existsSync(join(home, ".obsidian/plugins/void-os/main.js"))).toBe(false)
+    expect(existsSync(join(home, ".obsidian/plugins/void-os/manifest.json"))).toBe(false)
+    expect(existsSync(join(home, ".obsidian/plugins/void-os/styles.css"))).toBe(false)
+
+    // 5b. VOS-143: init no longer auto-starts the daemon. No daemon.json should
+    //     have been written under either the vault dir or the test prefix.
+    expect(existsSync(join(home, ".void-os/daemon.json"))).toBe(false)
+    expect(existsSync(join(prefix, ".void-os/daemon.json"))).toBe(false)
+
+    // 5c. VOS-143: with no --gh-repo (and gh.found=false in fakePreflight),
+    //     init must NOT attempt a gh push — no "pushed to" line in the report.
+    const stdoutEarly = run.logs.join("\n")
+    expect(stdoutEarly).not.toContain("pushed to")
 
     // 6. Report includes next-step CLI cue. Obsidian was NOT detected, so
     //    the report uses the "install Obsidian" branch.
@@ -146,14 +170,22 @@ describe("initCommand() — end-to-end against real fs", () => {
     expect(stdout).toContain("void-os ask <agent>")
     expect(stdout).toContain("install Obsidian")
     expect(stdout).toContain("plugin: not installed (build artifact missing)")
+    // No daemon-start side effects surfaced in stdout.
+    expect(stdout).not.toContain("daemon started")
   })
 
   it("fresh install with Obsidian detected: report includes Obsidian-specific next steps", async () => {
     // Swap preflight to obsidian-found for THIS test only by going through
     // a fresh prompter and a one-off preflight override.
+    //
+    // Prompt order under VOS-143:
+    //   select: vault location → "__custom__"
+    //   text:   custom vault path → home
+    //   confirm: proceed → true
     const prompter = new ScriptedPrompter({
-      text: [home, "voidvault"], // vault path, obsidian display name
+      text: [home],
       confirm: [true],
+      select: ["__custom__"],
     })
     const logs: string[] = []
     const logSpy = spyOn(console, "log").mockImplementation((...a: unknown[]) => {
@@ -170,7 +202,10 @@ describe("initCommand() — end-to-end against real fs", () => {
           obsidian: { found: true, paths: ["/fake/path"] },
         },
         skipBuild: true,
-        skipDaemonStart: true,
+        // VOS-143: stub post-report hooks to avoid the darwin-interactive
+        // "Open in Obsidian now?" confirm prompt that the real helper raises.
+        promptObsidian: async () => {},
+        printNextSteps: () => {},
       })
     } finally {
       logSpy.mockRestore()
@@ -180,11 +215,14 @@ describe("initCommand() — end-to-end against real fs", () => {
     expect(stdout).toContain(`open Obsidian, "Open vault" → ${home}`)
     expect(stdout).toContain('enable "void-os"')
     expect(stdout).toContain("void-os ask <agent>")
+    // No daemon side-effect at end of init.
+    expect(existsSync(join(home, ".void-os/daemon.json"))).toBe(false)
+    expect(stdout).not.toContain("daemon started")
   })
 
   it("re-run without --force: no overwrites, marker not rewritten, report says already initialized", async () => {
     // First run: fresh seed
-    await runInit([], { text: [home], confirm: [true] }).promise
+    await runInit([], { text: [home], confirm: [true], select: ["__custom__"] }).promise
 
     // Capture pre-rerun mtimes for starter files + marker.
     const before: Record<string, number> = {}
@@ -197,7 +235,7 @@ describe("initCommand() — end-to-end against real fs", () => {
     await new Promise((r) => setTimeout(r, 50))
 
     // Second run, no --force.
-    const rerun = runInit([], { text: [home], confirm: [true] })
+    const rerun = runInit([], { text: [home], confirm: [true], select: ["__custom__"] })
     await rerun.promise
 
     // mtime-stable: nothing overwritten.
@@ -214,7 +252,7 @@ describe("initCommand() — end-to-end against real fs", () => {
 
   it("re-run with --force: starter files re-copied (mtime bumped) but git history preserved", async () => {
     // First run: fresh seed
-    await runInit([], { text: [home], confirm: [true] }).promise
+    await runInit([], { text: [home], confirm: [true], select: ["__custom__"] }).promise
 
     // Capture pre-rerun mtimes + initial commit SHA.
     const beforeMtimes: Record<string, number> = {}
@@ -233,7 +271,7 @@ describe("initCommand() — end-to-end against real fs", () => {
     await new Promise((r) => setTimeout(r, 50))
 
     // Second run, with --force.
-    await runInit(["--force"], { text: [home], confirm: [true] }).promise
+    await runInit(["--force"], { text: [home], confirm: [true], select: ["__custom__"] }).promise
 
     // Starter files re-copied: mtime advanced.
     for (const rel of STARTER_FILES) {
@@ -263,12 +301,13 @@ describe("initCommand() --non-interactive", () => {
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
     try {
       await initCommand({
-        args: ["--non-interactive", "--vault", home, "--skip-gh", "--skip-obsidian"],
+        args: ["--non-interactive", "--vault", home, "--skip-gh"],
         prefix,
         prompter,
         preflight: fakePreflight,
         skipBuild: true,
-        skipDaemonStart: true,
+        promptObsidian: async () => {},
+        printNextSteps: () => {},
       })
     } finally {
       logSpy.mockRestore()

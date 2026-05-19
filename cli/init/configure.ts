@@ -1,6 +1,8 @@
 import { homedir } from "node:os"
-import { join, isAbsolute } from "node:path"
-import type { Prompter } from "./prompter"
+import { join, isAbsolute, dirname } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
+import { cwd } from "node:process"
+import type { Prompter, SelectOption } from "./prompter"
 import type { PreflightReport } from "./preflight"
 import { FlagsError } from "../init"
 
@@ -12,8 +14,11 @@ export interface GhDecision {
 export interface Decisions {
   vaultPath: string
   gh: GhDecision
-  obsidianVaultName?: string
   cancelled: boolean
+}
+
+export interface ConfigureDeps {
+  isInsideVoidOsRepo?: (path: string) => boolean
 }
 
 function expandHome(p: string): string {
@@ -22,25 +27,77 @@ function expandHome(p: string): string {
   return p
 }
 
-export async function configure(report: PreflightReport, prompter: Prompter): Promise<Decisions> {
+function defaultIsInsideVoidOsRepo(path: string): boolean {
+  let dir = path
+  while (true) {
+    const pkgPath = join(dir, "package.json")
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf8"))
+        if (pkg.name === "void-os") return true
+      } catch {
+        /* malformed; ignore */
+      }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) return false
+    dir = parent
+  }
+}
+
+export async function configure(
+  report: PreflightReport,
+  prompter: Prompter,
+  deps: ConfigureDeps = {},
+): Promise<Decisions> {
+  const isInsideVoidOsRepo = deps.isInsideVoidOsRepo ?? defaultIsInsideVoidOsRepo
   prompter.intro("void-os init")
 
-  const rawPath = await prompter.text({
-    message: "vault location?",
-    defaultValue: "~/vault",
-    placeholder: "~/vault",
-    validate: (v) => {
-      if (!v) return "required"
-      if (!v.startsWith("~") && !isAbsolute(v)) return "must be absolute or ~-prefixed"
+  const pwdInRepo = isInsideVoidOsRepo(cwd())
+  const candidates: SelectOption<string>[] = [
+    {
+      value: cwd(),
+      label: pwdInRepo
+        ? `current folder (${cwd()}) — inside void-os clone, not allowed`
+        : `current folder (${cwd()})`,
     },
+    { value: join(homedir(), "void-os-vault"), label: "~/void-os-vault" },
+    { value: join(homedir(), "vault"), label: "~/vault" },
+    { value: "__custom__", label: "enter custom path" },
+  ]
+
+  const picked = await prompter.select<string>({
+    message: "vault location?",
+    options: candidates,
+    initialValue: pwdInRepo ? candidates[1].value : candidates[0].value,
   })
-  const vaultPath = expandHome(rawPath)
+
+  if (picked === cwd() && pwdInRepo) {
+    throw new FlagsError(`Refusing to seed inside the void-os clone at ${cwd()}.`, 2)
+  }
+
+  let vaultPath: string
+  if (picked === "__custom__") {
+    const raw = await prompter.text({
+      message: "vault path?",
+      placeholder: "~/some/dir",
+      validate: (v) => {
+        if (!v) return "required"
+        if (!v.startsWith("~") && !isAbsolute(v)) return "must be absolute or ~-prefixed"
+        const expanded = expandHome(v)
+        if (isInsideVoidOsRepo(expanded)) return "cannot seed inside the void-os clone"
+      },
+    })
+    vaultPath = expandHome(raw)
+  } else {
+    vaultPath = picked
+  }
 
   let gh: GhDecision = { push: false }
   if (report.gh.found && report.gh.authed) {
     const push = await prompter.confirm({
       message: "create private GitHub repo and push initial commit?",
-      initialValue: true,
+      initialValue: false,
     })
     if (push) {
       const repoName = await prompter.text({
@@ -53,19 +110,9 @@ export async function configure(report: PreflightReport, prompter: Prompter): Pr
     }
   }
 
-  let obsidianVaultName: string | undefined
-  if (report.obsidian.found) {
-    obsidianVaultName = await prompter.text({
-      message: "obsidian vault display name?",
-      defaultValue: "void",
-      placeholder: "void",
-    })
-  }
-
   prompter.outro(
     `vault: ${vaultPath}` +
-    (gh.push ? ` · gh: ${gh.repoName}` : "") +
-    (obsidianVaultName ? ` · obsidian: ${obsidianVaultName}` : ""),
+    (gh.push ? ` · gh: ${gh.repoName}` : ""),
   )
 
   const proceed = await prompter.confirm({ message: "proceed with these settings?", initialValue: true })
@@ -73,7 +120,6 @@ export async function configure(report: PreflightReport, prompter: Prompter): Pr
   return {
     vaultPath,
     gh,
-    obsidianVaultName,
     cancelled: !proceed,
   }
 }
@@ -83,18 +129,22 @@ export interface NonInteractiveFlags {
   vault?: string
   ghRepo?: string
   skipGh: boolean
-  skipObsidian: boolean
-  obsidianVault?: string
 }
 
 export function decideFromFlags(
   report: PreflightReport,
   flags: NonInteractiveFlags,
+  deps: ConfigureDeps = {},
 ): Decisions {
+  const isInsideVoidOsRepo = deps.isInsideVoidOsRepo ?? defaultIsInsideVoidOsRepo
   if (!flags.vault) {
     throw new FlagsError("--non-interactive requires --vault <path>", 64)
   }
   const vaultPath = expandHome(flags.vault)
+
+  if (isInsideVoidOsRepo(vaultPath)) {
+    throw new FlagsError(`Refusing to seed inside the void-os clone at ${vaultPath}.`, 2)
+  }
 
   let gh: GhDecision = { push: false }
   if (flags.skipGh) {
@@ -109,11 +159,5 @@ export function decideFromFlags(
     gh = { push: true, repoName: flags.ghRepo }
   }
 
-  let obsidianVaultName: string | undefined
-  if (!flags.skipObsidian) {
-    obsidianVaultName = flags.obsidianVault
-      ?? (report.obsidian.found ? "void" : undefined)
-  }
-
-  return { vaultPath, gh, obsidianVaultName, cancelled: false }
+  return { vaultPath, gh, cancelled: false }
 }

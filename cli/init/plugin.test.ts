@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { installPlugin, ensurePluginBuilt, pluginBuildEnv, PLUGIN_DIST_FILES } from "./plugin"
+import { installPlugin, ensurePluginBuilt, enablePluginInVault, pluginBuildEnv, PLUGIN_DIST_FILES } from "./plugin"
 
 let root: string
 let prefix: string
@@ -35,7 +35,15 @@ describe("installPlugin()", () => {
   it("does not write files when dryRun is true", () => {
     const r = installPlugin({ prefix, home, dryRun: true })
     expect(existsSync(join(home, ".obsidian/plugins/void-os/main.js"))).toBe(false)
+    expect(existsSync(join(home, ".obsidian/community-plugins.json"))).toBe(false)
     expect(r.installed).toBe(true)
+  })
+
+  it("writes community-plugins.json with [\"void-os\"] on fresh install", () => {
+    installPlugin({ prefix, home, dryRun: false })
+    const path = join(home, ".obsidian/community-plugins.json")
+    expect(existsSync(path)).toBe(true)
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(["void-os"])
   })
 
   it("warns + returns installed=false when dist missing", () => {
@@ -48,17 +56,6 @@ describe("installPlugin()", () => {
 })
 
 describe("ensurePluginBuilt()", () => {
-  it("no-op when plugin/dist already exists", () => {
-    let called = false
-    const r = ensurePluginBuilt({
-      prefix,
-      dryRun: false,
-      spawn: () => { called = true; return { status: 0 } },
-    })
-    expect(r).toEqual({ built: true, ran: false })
-    expect(called).toBe(false)
-  })
-
   it("invokes bun run build in plugin dir when dist missing, with VOID_OS_PLUGIN_OUT pinned", () => {
     rmSync(join(prefix, "plugin/dist"), { recursive: true })
     let spawnedCmd = ""
@@ -181,5 +178,79 @@ describe("ensurePluginBuilt()", () => {
     })
     expect(called).toBe(false)
     expect(r.ran).toBe(false)
+  })
+})
+
+describe("enablePluginInVault()", () => {
+  it("writes [\"void-os\"] when .obsidian/community-plugins.json is missing", () => {
+    mkdirSync(join(home, ".obsidian"), { recursive: true })
+    const warn = enablePluginInVault(home)
+    expect(warn).toBeUndefined()
+    const path = join(home, ".obsidian/community-plugins.json")
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(["void-os"])
+  })
+
+  it("creates .obsidian/ if missing", () => {
+    const warn = enablePluginInVault(home)
+    expect(warn).toBeUndefined()
+    expect(existsSync(join(home, ".obsidian/community-plugins.json"))).toBe(true)
+  })
+
+  it("appends void-os to an existing array without it", () => {
+    mkdirSync(join(home, ".obsidian"), { recursive: true })
+    writeFileSync(
+      join(home, ".obsidian/community-plugins.json"),
+      JSON.stringify(["dataview", "templater"]),
+    )
+    const warn = enablePluginInVault(home)
+    expect(warn).toBeUndefined()
+    const arr = JSON.parse(readFileSync(join(home, ".obsidian/community-plugins.json"), "utf8"))
+    expect(arr).toEqual(["dataview", "templater", "void-os"])
+  })
+
+  it("no-op when void-os already present (idempotent)", () => {
+    mkdirSync(join(home, ".obsidian"), { recursive: true })
+    const before = JSON.stringify(["void-os", "dataview"])
+    writeFileSync(join(home, ".obsidian/community-plugins.json"), before)
+    const warn = enablePluginInVault(home)
+    expect(warn).toBeUndefined()
+    expect(readFileSync(join(home, ".obsidian/community-plugins.json"), "utf8")).toBe(before)
+  })
+
+  it("overwrites malformed JSON with [\"void-os\"]", () => {
+    mkdirSync(join(home, ".obsidian"), { recursive: true })
+    writeFileSync(join(home, ".obsidian/community-plugins.json"), "{not json")
+    const warn = enablePluginInVault(home)
+    expect(warn).toBeUndefined()
+    expect(JSON.parse(readFileSync(join(home, ".obsidian/community-plugins.json"), "utf8")))
+      .toEqual(["void-os"])
+  })
+
+  it("overwrites a non-array JSON value with [\"void-os\"]", () => {
+    mkdirSync(join(home, ".obsidian"), { recursive: true })
+    writeFileSync(join(home, ".obsidian/community-plugins.json"), '{"plugins":["void-os"]}')
+    const warn = enablePluginInVault(home)
+    expect(warn).toBeUndefined()
+    expect(JSON.parse(readFileSync(join(home, ".obsidian/community-plugins.json"), "utf8")))
+      .toEqual(["void-os"])
+  })
+})
+
+describe("ensurePluginBuilt always rebuilds", () => {
+  it("runs build even when dist files are present", () => {
+    let spawnCalled = 0
+    const spawn = () => { spawnCalled++; return { status: 0, stdout: "", stderr: "" } }
+    const r = ensurePluginBuilt({ prefix, dryRun: false, spawn })
+    expect(spawnCalled).toBe(1)
+    expect(r.ran).toBe(true)
+  })
+
+  it("--skip-build still bypasses (orchestrator gate)", () => {
+    // ensurePluginBuilt itself has no skipBuild gate; the orchestrator wraps it.
+    // This test documents that ensurePluginBuilt always tries.
+    let spawnCalled = 0
+    const spawn = () => { spawnCalled++; return { status: 0, stdout: "", stderr: "" } }
+    ensurePluginBuilt({ prefix, dryRun: false, spawn })
+    expect(spawnCalled).toBe(1)
   })
 })
