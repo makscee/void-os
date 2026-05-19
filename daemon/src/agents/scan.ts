@@ -67,13 +67,33 @@ export function scanVaultAgents(vaultRoot: string): AgentRow[] {
       continue;
     }
 
-    rows.push({
+    // VOS-153: optional presentation fields. Validated as non-empty strings
+    // — anything else (numbers, objects, empty string) is treated as absent
+    // and the field is omitted on the wire.
+    const color =
+      typeof fm.color === "string" && fm.color.length > 0
+        ? fm.color
+        : undefined;
+    const avatar =
+      typeof fm.avatar === "string" && fm.avatar.length > 0
+        ? fm.avatar
+        : undefined;
+    const tagline =
+      typeof fm.tagline === "string" && fm.tagline.length > 0
+        ? fm.tagline
+        : undefined;
+
+    const row: AgentRow = {
       name: fm.name as string,
       description: fm.description as string,
       model: fm.model as string,
       vault_path: filePath,
       updated_at: now,
-    });
+    };
+    if (color !== undefined) row.color = color;
+    if (avatar !== undefined) row.avatar = avatar;
+    if (tagline !== undefined) row.tagline = tagline;
+    rows.push(row);
   }
 
   if (rows.length === 0) {

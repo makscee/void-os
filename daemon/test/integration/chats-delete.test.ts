@@ -34,6 +34,7 @@ async function bootstrap() {
     "0006_costs_chat_id.sql",
     "0007_a2a_tables.sql",
     "0008_agents_recreate.sql",
+    "0015_agents_rich_fields.sql", // VOS-153 Task 3: adds color/avatar/tagline columns (selected by repo.list)
   ]) {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }

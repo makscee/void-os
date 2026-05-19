@@ -18,10 +18,20 @@ export function agentsApi(db: Database): Hono {
   app.get("/agents", (c) => {
     const rows = repo.list();
     rows.sort((a, b) => a.name.localeCompare(b.name));
-    const agents: AgentListEntry[] = rows.map((r) => ({
-      name: r.name,
-      description: r.description,
-    }));
+    // VOS-153: project optional presentation fields. `undefined` values
+    // are stripped by JSON.stringify, so consumers on older protocol
+    // versions (without color/avatar/tagline) keep seeing the original
+    // {name, description} shape and never observe a null field.
+    const agents: AgentListEntry[] = rows.map((r) => {
+      const entry: AgentListEntry = {
+        name: r.name,
+        description: r.description,
+      };
+      if (r.color !== undefined) entry.color = r.color;
+      if (r.avatar !== undefined) entry.avatar = r.avatar;
+      if (r.tagline !== undefined) entry.tagline = r.tagline;
+      return entry;
+    });
     return c.json({ agents });
   });
 

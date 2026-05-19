@@ -45,6 +45,7 @@ async function bootstrap(opts: BootstrapOpts = {}) {
     "0006_costs_chat_id.sql",
     "0007_a2a_tables.sql",
     "0008_agents_recreate.sql", // VOS-124: agents table required for strict agent validation
+    "0015_agents_rich_fields.sql", // VOS-153: adds color/avatar/tagline columns (selected by repo.list)
   ]) {
     db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
   }
