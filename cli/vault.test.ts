@@ -34,6 +34,9 @@ afterEach(() => {
 test("vault read writes content byte-exact (with trailing newline)", () => {
   const vault = join(tmp, "vault");
   mkdirSync(vault, { recursive: true });
+  // VOS-137: `daemon start --vault` requires marker.json.
+  mkdirSync(join(vault, ".void"), { recursive: true });
+  writeFileSync(join(vault, ".void/marker.json"), JSON.stringify({ version: 1 }));
   writeFileSync(join(vault, "notes.md"), "hello\n");
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
   const r = spawnSync(BIN, ["vault", "read", "notes.md"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "buffer", timeout: 10000 });
@@ -44,6 +47,9 @@ test("vault read writes content byte-exact (with trailing newline)", () => {
 test("vault read byte-exact (no trailing newline)", () => {
   const vault = join(tmp, "vault");
   mkdirSync(vault, { recursive: true });
+  // VOS-137: `daemon start --vault` requires marker.json.
+  mkdirSync(join(vault, ".void"), { recursive: true });
+  writeFileSync(join(vault, ".void/marker.json"), JSON.stringify({ version: 1 }));
   writeFileSync(join(vault, "raw.txt"), "hi");
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
   const r = spawnSync(BIN, ["vault", "read", "raw.txt"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "buffer", timeout: 10000 });
@@ -54,6 +60,9 @@ test("vault read byte-exact (no trailing newline)", () => {
 test("vault write --content writes file", () => {
   const vault = join(tmp, "vault");
   mkdirSync(vault, { recursive: true });
+  // VOS-137: `daemon start --vault` requires marker.json.
+  mkdirSync(join(vault, ".void"), { recursive: true });
+  writeFileSync(join(vault, ".void/marker.json"), JSON.stringify({ version: 1 }));
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
   const r = spawnSync(BIN, ["vault", "write", "out.md", "--content", "world"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 10000 });
   expect(r.status).toBe(0);
@@ -64,6 +73,9 @@ test("vault write --content writes file", () => {
 test("vault write rejects multiple sources", () => {
   const vault = join(tmp, "vault");
   mkdirSync(vault, { recursive: true });
+  // VOS-137: `daemon start --vault` requires marker.json.
+  mkdirSync(join(vault, ".void"), { recursive: true });
+  writeFileSync(join(vault, ".void/marker.json"), JSON.stringify({ version: 1 }));
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
   const r = spawnSync(BIN, ["vault", "write", "x.md", "--content", "a", "--stdin"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(2);
@@ -73,6 +85,9 @@ test("vault write rejects multiple sources", () => {
 test("vault write rejects zero sources", () => {
   const vault = join(tmp, "vault");
   mkdirSync(vault, { recursive: true });
+  // VOS-137: `daemon start --vault` requires marker.json.
+  mkdirSync(join(vault, ".void"), { recursive: true });
+  writeFileSync(join(vault, ".void/marker.json"), JSON.stringify({ version: 1 }));
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
   const r = spawnSync(BIN, ["vault", "write", "x.md"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(2);
@@ -82,6 +97,9 @@ test("vault write rejects zero sources", () => {
 test("vault list prints one path per line", () => {
   const vault = join(tmp, "vault");
   mkdirSync(vault, { recursive: true });
+  // VOS-137: `daemon start --vault` requires marker.json.
+  mkdirSync(join(vault, ".void"), { recursive: true });
+  writeFileSync(join(vault, ".void/marker.json"), JSON.stringify({ version: 1 }));
   writeFileSync(join(vault, "a.md"), "a");
   writeFileSync(join(vault, "b.md"), "b");
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });

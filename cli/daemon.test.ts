@@ -26,6 +26,14 @@ function pickPort(): number {
   return 18000 + Math.floor(Math.random() * 1000);
 }
 
+// VOS-137: `daemon start --vault PATH` now requires PATH to be an initialized
+// vault (marker.json present). Tests that drive a successful start must seed
+// the marker first.
+function seedVaultMarker(vault: string): void {
+  mkdirSync(join(vault, ".void"), { recursive: true });
+  writeFileSync(join(vault, ".void/marker.json"), JSON.stringify({ version: 1 }));
+}
+
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "vos117-daemon-"));
   origHome = process.env.HOME;
@@ -47,7 +55,7 @@ afterEach(() => {
 
 test("start writes pid + port and /health returns ready", async () => {
   const vault = join(tmp, "vault");
-  // intentionally do NOT mkdir vault — start must create it.
+  seedVaultMarker(vault);
   const r = spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], {
     env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN },
     encoding: "utf8",
@@ -62,6 +70,7 @@ test("start writes pid + port and /health returns ready", async () => {
 
 test("second start prints already running", async () => {
   const vault = join(tmp, "vault");
+  seedVaultMarker(vault);
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
   const r = spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 10000 });
   expect(r.status).toBe(0);
@@ -70,6 +79,7 @@ test("second start prints already running", async () => {
 
 test("start with port already in use exits 1 quickly (child-exit race)", async () => {
   const vault = join(tmp, "vault");
+  seedVaultMarker(vault);
   // Occupy the chosen port with a tiny non-/health listener running in a
   // *separate* bun process. Doing this in-process via Bun.serve causes any
   // subsequently spawned `bin/void-os` to hang for unknown reasons (parent
@@ -96,6 +106,7 @@ test("start with port already in use exits 1 quickly (child-exit race)", async (
 
 test("stop removes pid/port files and exits 0", async () => {
   const vault = join(tmp, "vault");
+  seedVaultMarker(vault);
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
   const r = spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 10000 });
   expect(r.status).toBe(0);
@@ -136,6 +147,7 @@ test("status when stopped --json", async () => {
 
 test("status when running prints pid/port/vault/version", async () => {
   const vault = join(tmp, "vault");
+  seedVaultMarker(vault);
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 30000 });
   const r = spawnSync(BIN, ["daemon", "status"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(0);
@@ -168,6 +180,24 @@ test("unknown flag exits 2 with clean stderr (no stacktrace)", () => {
   expect(r.stderr).toContain("unknown flag");
   // No raw Bun/Node stacktrace.
   expect(r.stderr).not.toContain("at ");
+});
+
+// VOS-137: explicit `--vault PATH` must reject paths that aren't initialized
+// vaults (no `.void/marker.json`). Caller should run `void-os init` first.
+test("start --vault rejects path without .void/marker.json", () => {
+  const bogusVault = join(tmp, "not-a-vault");
+  // Intentionally do NOT seed marker — directory may not even exist.
+  const r = spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", bogusVault], {
+    env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN },
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("not an initialized vault");
+  expect(r.stderr).toContain("void-os init");
+  expect(r.stderr).toContain(bogusVault);
+  // No daemon spawned → no pid/port files written.
+  expect(existsSync(join(tmp, ".void-os/daemon.pid"))).toBe(false);
 });
 
 // VOS-120 T2: vault-awareness unit tests for cmdStart's early-exit branches.
@@ -316,10 +346,14 @@ describe("cmdStartCli message includes vault (VOS-143)", () => {
     // Drive the structured already-running shape through cmdStart by writing a
     // pidfile + stubbing fetch to /health 200. Then invoke the top-level
     // dispatcher and capture stdout.
+    // VOS-137: --vault now requires an initialized vault, so seed a real
+    // temp path with .void/marker.json before invoking the dispatcher.
+    const vaultX = join(tmp, "vault-x");
+    seedVaultMarker(vaultX);
     writePidJson({
       pid: process.pid,
       port: 7777,
-      vault_root: "/vault/X",
+      vault_root: vaultX,
       version: "0.0.0",
       started_at: new Date().toISOString(),
     });
@@ -333,13 +367,13 @@ describe("cmdStartCli message includes vault (VOS-143)", () => {
     try {
       const mod = await import("./daemon.ts");
       const rc = await mod.default(
-        ["start", "--port", "7777", "--vault", "/vault/X"],
+        ["start", "--port", "7777", "--vault", vaultX],
         { prefix: VOS_ROOT },
       );
       expect(rc).toBe(0);
       const joined = logs.join("\n");
       expect(joined).toMatch(/already running/);
-      expect(joined).toMatch(/vault=\/vault\/X/);
+      expect(joined).toContain(`vault=${vaultX}`);
     } finally {
       logSpy.mockRestore();
       globalThis.fetch = origFetch;

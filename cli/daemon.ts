@@ -79,6 +79,21 @@ async function cmdStartCli(args: string[], ctx: { prefix: string }): Promise<num
   const vaultArg = parsed.values.vault ?? process.env.VOID_OS_VAULT_ROOT;
   const resolvedVault = vaultArg ?? join(process.env.HOME ?? "", "Library/Application Support/void-os/vault");
 
+  // VOS-137: when the operator explicitly passes --vault, require the path to
+  // be an initialized vault (`.void/marker.json` written by `void-os init`).
+  // Env-var / default fallback intentionally skips this check — daemon will
+  // mkdir the default vault on first run, matching pre-VOS-137 behavior.
+  if (parsed.values.vault !== undefined) {
+    const markerPath = join(resolvedVault, ".void/marker.json");
+    if (!existsSync(markerPath)) {
+      console.error(
+        `void-os daemon: --vault ${resolvedVault} is not an initialized vault (missing ${markerPath}).\n` +
+        `Run \`void-os init --vault ${resolvedVault}\` first, or point --vault at an existing initialized vault.`,
+      );
+      return 1;
+    }
+  }
+
   const result = await cmdStart({ vault: resolvedVault, port, prefix: ctx.prefix });
   switch (result.status) {
     case "already-running":
