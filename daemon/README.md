@@ -19,7 +19,7 @@ const cc   = createCcSpawner({ bus, db, tracesDir: "/path/to/traces" });
 
 const proc = await cc.spawn({
   prompt: "do the thing",
-  agent: "maya",
+  agent: "tinker",        // name of an agent that exists in agents/<name>/agent.md
   cwd: "/some/dir",
   chatId: "chat-123",
   // resumeFrom: <prior session_id>,

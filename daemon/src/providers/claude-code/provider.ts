@@ -24,9 +24,11 @@ export interface CcIter {
     prompt: string;
     /** VOS-122 F9: per-call agent overrides the spawner's static deps.agent
      *  fallback. When set, the underlying cc.spawn receives this name so the
-     *  CC subprocess loads the requested agent's card + scopes — not the
-     *  daemon-wide `defaultAgent` (which previously pinned every chat to
-     *  "maya" regardless of `chat.agent`). */
+     *  CC subprocess loads the requested agent's card + scopes. VOS-152:
+     *  pre-fix, this slot fell through to `defaultAgent ?? "maya"` and
+     *  pinned every chat to a hardcoded persona that doesn't exist in
+     *  starter vaults; the literal-"maya" fallback is gone, so a missing
+     *  agent surfaces a clean agent_cards-lookup failure. */
     agent?: string;
   }): AsyncIterable<RawCcEvent>;
   cancel?(runId: string): Promise<boolean>;
@@ -65,9 +67,10 @@ export function makeClaudeCodeProvider(
         resume: req.resumeFrom ?? null,
         prompt: req.prompt,
         // VOS-122 F9: forward the requested agent so the CC subprocess loads
-        // the right card. Without this every chat span resolved to the
-        // daemon-wide `defaultAgent` ("maya"), which doesn't exist in starter
-        // vaults → "unknown agent: maya" at agent_cards lookup.
+        // the right card. VOS-152: the daemon-wide `defaultAgent ?? "maya"`
+        // fallback was removed at app.ts — if req.agent is undefined here,
+        // the spawner forwards undefined and agent_cards lookup fails
+        // explicitly instead of silently impersonating "maya".
         agent: req.agent,
       });
 

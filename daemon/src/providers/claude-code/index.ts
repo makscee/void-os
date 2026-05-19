@@ -385,7 +385,7 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
       // and append it to CC's default system prompt via
       // `--append-system-prompt`. Without this the model never sees the
       // routing/voice/hard-rule instructions from agent.md — scope-gating
-      // alone is not enough to make e.g. maya emit `ask_agent(...)`. We
+      // alone is not enough to make an agent emit `ask_agent(...)`. We
       // tolerate missing/empty/malformed agent.md by skipping the flag and
       // tracing the reason so operators can distinguish "no persona" from
       // "persona broken".
@@ -689,7 +689,14 @@ export interface ClaudeCodeProviderDeps {
   bus: Parameters<typeof createCcSpawner>[0]["bus"];
   db: Parameters<typeof createCcSpawner>[0]["db"];
   tracesDir: string;
-  agent: string;
+  /** VOS-152: optional. Static-fallback calling-agent identity for runs
+   *  that don't supply a per-chat agent (chat creation enforces a valid
+   *  agent in chats.ts, so production runs always set ProviderSpawnRequest.agent
+   *  per-call). When unset and a run also lacks req.agent, the spawner
+   *  forwards `undefined` and the CC subprocess fails fast at
+   *  agent_cards lookup — surfacing a clean error rather than
+   *  impersonating a hardcoded persona. */
+  agent?: string;
   cwd: string;
   // VOS-106
   engine: PermissionEngine;

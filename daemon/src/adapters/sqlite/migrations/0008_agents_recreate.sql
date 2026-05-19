@@ -24,6 +24,14 @@
 -- seed remains intact (upsertAll never deletes — confirmed in agents/repo.ts).
 -- vault_path is the conventional folder location; it is informational here
 -- and not asserted by any caller (only the file scanner produces real paths).
+--
+-- VOS-152 (2026-05-19): this seed turned out to leak a phantom "maya" into
+-- vaults that ship a different starter agent set (e.g. starter-vault/
+-- ships agents/tinker/, not maya/). Migration 0014_drop_maya_seed deletes
+-- the placeholder row immediately after this one runs, so fresh DBs end
+-- 0008+0014 with an empty `agents` table (the scanner then populates from
+-- vaultRoot). The seed is kept here, then dropped, rather than removed in
+-- place, because migrations should never be edited after they've shipped.
 
 CREATE TABLE agents (
   name         TEXT PRIMARY KEY,

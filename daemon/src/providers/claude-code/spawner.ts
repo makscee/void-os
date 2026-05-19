@@ -39,9 +39,17 @@ export interface SpawnerIterDeps {
   /** Same bus the underlying spawner emits into. */
   bus: EventBus;
   /** Static fields the underlying spawner needs that the orchestrator does
-   *  not supply (agent name, cwd). Per-dispatch values (prompt, chat_id,
-   *  resumeFrom) come from `SpawnArgs`. */
-  agent: string;
+   *  not supply. Per-dispatch values (prompt, chat_id, resumeFrom) come
+   *  from `SpawnArgs`.
+   *
+   *  VOS-152: `agent` is optional — it's a backstop for legacy dispatch
+   *  paths that don't carry a per-call agent. Every chat-shaped run
+   *  built through the orchestrator already supplies `args.agent` (from
+   *  chat.agent, validated in chats.ts per VOS-124), so the backstop is
+   *  rarely needed. When both are undefined the underlying `cc.spawn`
+   *  receives `req.agent = undefined` and fails fast at agent_cards
+   *  lookup — a clean error, not a silent persona impersonation. */
+  agent?: string;
   cwd: string;
 }
 
@@ -161,14 +169,27 @@ async function* iterate(
   const unsubErr = deps.bus.subscribe("run.error", onRunError);
 
   try {
+    // VOS-152: precedence is args.agent (per-call, from
+    // ProviderSpawnRequest.agent → chat.agent, validated at chat creation
+    // by chats.ts in VOS-124) over deps.agent (daemon-wide static fallback,
+    // previously hardcoded to "maya" in app.ts — that fallback is now gone).
+    // When both are undefined we throw E_NO_CALLING_AGENT here rather than
+    // letting `undefined` flow into cc.spawn and produce an opaque
+    // `unknown agent: undefined` error at agent_cards lookup.
+    const callingAgent = args.agent ?? deps.agent;
+    if (!callingAgent) {
+      throw new Error(
+        "E_NO_CALLING_AGENT: no calling-agent identity for spawn — " +
+          "args.agent and provider deps.agent are both unset. " +
+          "Set chat.agent at creation (POST /chats) or wire defaultAgent " +
+          "into buildApp().",
+      );
+    }
     // Translate orchestrator SpawnArgs → CcSpawnRequest. Note: orchestrator
     // passes `resume` (string | null); cc wants `resumeFrom` (string | undef).
     const proc = await deps.cc.spawn({
       prompt: args.prompt,
-      // VOS-122 F9: per-call args.agent (from ProviderSpawnRequest.agent →
-      // chat.agent) wins over deps.agent (daemon-wide `defaultAgent` static
-      // fallback). Without this every chat resolved to "maya".
-      agent: args.agent ?? deps.agent,
+      agent: callingAgent,
       cwd: deps.cwd,
       chatId: args.chat_id,
       taskId: args.task_id,

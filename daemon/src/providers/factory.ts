@@ -25,7 +25,12 @@ export interface ProviderDeps {
   bus: EventBus;
   db: Database;
   tracesDir: string;
-  agent: string;
+  /** VOS-152: optional static-fallback calling-agent identity. Per-chat runs
+   *  pass `ProviderSpawnRequest.agent` (validated at chat creation) which
+   *  takes precedence. When unset and no per-call agent is supplied either,
+   *  the cc spawner throws E_NO_CALLING_AGENT instead of impersonating a
+   *  hardcoded persona name (was "maya"). */
+  agent?: string;
   cwd: string;
   // VOS-106
   engine: PermissionEngine;

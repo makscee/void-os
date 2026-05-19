@@ -238,7 +238,15 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
         bus,
         db: deps.db,
         tracesDir,
-        agent: deps.defaultAgent ?? "maya",
+        // VOS-152: no hardcoded persona fallback. The provider-instance
+        // `agent` is the calling-agent identity used in MCP loopback
+        // (`/mcp?agent=...`) when a CC run dispatches ask_agent. Per-chat
+        // runs override it via ProviderSpawnRequest.agent (VOS-122 F9);
+        // chat creation already validates the agent name strictly
+        // (chats.ts, VOS-124). If `deps.defaultAgent` is unset and no
+        // chat-level agent is supplied, downstream surfaces an explicit
+        // E_NO_CALLING_AGENT rather than silently impersonating "maya".
+        agent: deps.defaultAgent,
         cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? deps.vaultRoot,
         engine,
         daemonBase,
