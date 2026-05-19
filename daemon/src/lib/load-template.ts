@@ -144,7 +144,9 @@ function extractSlots(raw: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const m of raw.matchAll(SLOT_RE)) {
-    const slot = m[1];
+    // m[1] is always defined here — the regex has a single capture group and
+    // matchAll only yields successful matches. Cast satisfies tsc strict.
+    const slot = m[1] as string;
     if (!seen.has(slot)) {
       seen.add(slot);
       out.push(slot);
