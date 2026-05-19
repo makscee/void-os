@@ -24,6 +24,7 @@ import {
 } from "./runtime";
 import { ChatList } from "./ChatList";
 import { AgentList } from "./AgentList";
+import { ChatHeader } from "./ChatHeader";
 import { CostMeter } from "./CostMeter";
 import { focusComposerInputSafely } from "./focus-composer";
 import { BashTool } from "./tools/BashTool";
@@ -699,26 +700,10 @@ export function ChatRoot(props: ChatRootProps) {
             data-agent={pane.agent.name}
             className="void-os-chat-active vos:flex vos:flex-col vos:flex-1 vos:min-h-0"
           >
-          {/* VOS-153 T5: minimal inline ChatHeader placeholder.
-              T7 replaces this with a real component without
-              changing the testid contract. */}
-          <div
-            data-testid="chat-header"
-            data-agent={pane.agent.name}
-            className="vos:shrink-0 vos:flex vos:items-center vos:gap-[var(--size-4-2)] vos:px-[var(--size-4-4)] vos:py-[var(--size-4-2)] vos:border-b vos:border-[var(--background-modifier-border)] vos:text-[13px] vos:text-[var(--text-normal)]"
-          >
-            {pane.agent.avatar && (
-              <span className="vos:text-[14px] vos:leading-none">
-                {pane.agent.avatar}
-              </span>
-            )}
-            <span className="vos:font-semibold">{pane.agent.name}</span>
-            {pane.agent.description && (
-              <span className="vos:text-[var(--text-muted)] vos:text-[12px]">
-                — {pane.agent.description}
-              </span>
-            )}
-          </div>
+          {/* VOS-153 T7: agent-identity banner. Sticky-top within the
+              Active pane's scroll container. data-testid contract
+              preserved from the T5 inline placeholder. */}
+          <ChatHeader agent={pane.agent} />
           <ThreadPrimitive.Root className="vos:contents">
             <ThreadPrimitive.Viewport className="vos:flex-1 vos:overflow-y-auto vos:min-h-0 vos:flex vos:flex-col">
               <div className="vos:mt-auto vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)] vos:py-[var(--size-4-3)] vos:flex vos:flex-col">

@@ -157,6 +157,44 @@
     line-height: 1;
   }
 
+  /* VOS-153 T7: chat header banner — agent identity at the top of an
+     active chat. --agent-color is set inline by ChatHeader.tsx from
+     agent.md frontmatter (falls back to --text-muted). color-mix is
+     required (no rgba fallback) — Obsidian Electron 28+ supports it.
+
+     Note on `position: sticky; top: 0`: the header is a sibling of the
+     ThreadPrimitive.Viewport (not a child of it), so it sits above the
+     scroll container in the flex column rather than sticking inside it.
+     The sticky declaration is retained for forward-compat in case the
+     layout is later flattened to put both inside a single scroll parent. */
+  .void-os-chat-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: color-mix(in srgb, var(--agent-color) 15%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--agent-color) 60%, transparent);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .void-os-chat-header-avatar {
+    font-size: 14px;
+    line-height: 1;
+  }
+  .void-os-chat-header-name {
+    color: var(--text-normal);
+    font-weight: 600;
+  }
+  .void-os-chat-header-sep {
+    color: var(--text-muted);
+  }
+  .void-os-chat-header-desc {
+    color: var(--text-muted);
+  }
+
   /* VOS-153 T6: two-line agent row with avatar + tagline + left-border
      color accent. --agent-color is set inline by AgentList.tsx from
      agent.md frontmatter (falls back to --text-muted). color-mix is
