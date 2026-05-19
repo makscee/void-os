@@ -1,4 +1,4 @@
-import { mkdirSync, copyFileSync, watch as fsWatch } from "node:fs";
+import { mkdirSync, copyFileSync, writeFileSync, watch as fsWatch } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -43,6 +43,12 @@ async function buildOnce() {
     if (!watch) process.exit(tw.exitCode ?? 1);
     return;
   }
+
+  // VOS-149 T2: sentinel for Obsidian's "Hot Reload" community plugin. It
+  // watches plugin dirs for `.hotreload` mtime bumps and reloads on change —
+  // no Obsidian restart needed during the dogfood loop. Content is irrelevant;
+  // mtime is the signal.
+  writeFileSync(join(out, ".hotreload"), "");
 
   console.log(`[void-os/plugin] built → ${out}`);
 }
