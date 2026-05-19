@@ -120,12 +120,16 @@ async function main(): Promise<void> {
 
   // 4. seed obsidian.json so the smoke vault is registered + trusted +
   //    auto-open, otherwise Obsidian shows the starter screen instead.
+  //    Use the realpath'd vault path so Obsidian's basePath matches the
+  //    daemon's vault_root (both end up under /private/tmp on macOS).
+  //    Otherwise plugin compares /tmp/... vs /private/tmp/... → mismatch.
   const userData = `${ROOT}/obsidian-user-data`;
   fs.mkdirSync(userData, { recursive: true });
-  const vaultId = String(cksum(`${ROOT}/vault`));
+  const vaultPath = fs.realpathSync(`${ROOT}/vault`);
+  const vaultId = String(cksum(vaultPath));
   const obsidianJson = {
     vaults: {
-      [vaultId]: { path: `${ROOT}/vault`, ts: Date.now(), open: true, trusted: true },
+      [vaultId]: { path: vaultPath, ts: Date.now(), open: true, trusted: true },
     },
     updateDisabled: true,
   };
@@ -163,7 +167,7 @@ async function main(): Promise<void> {
     "-na", "Obsidian", "--args",
     `--remote-debugging-port=${CDP_PORT}`,
     `--user-data-dir=${userData}`,
-    `${ROOT}/vault`,
+    vaultPath,
   ], {
     stdio: "ignore",
     detached: true,
@@ -245,22 +249,60 @@ async function main(): Promise<void> {
   }
   if (!connected) console.log(`[scenario] WARN: status-bar didn't reach "connected" — plugin may still be initialising`);
 
-  // 11. open chat view
+  // 11. Obsidian likes to pop the Community-plugins Settings tab open after
+  //     a fresh enablePlugin. Close any visible modal first, otherwise the
+  //     chat view opens behind it and the operator lands on Settings.
+  await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const close = () => {
+        const btn = document.querySelector('.modal-close-button');
+        if (btn) { btn.click(); return true; }
+        return false;
+      };
+      let closed = 0;
+      for (let i = 0; i < 3; i++) {
+        if (close()) closed++;
+      }
+      return closed;
+    })()`,
+    returnByValue: true,
+  }).then((r: any) => console.log(`[scenario] dismissed ${r?.result?.value} modal(s)`));
+
+  await sleep(400);
+
+  // 12. open chat view (and verify the leaf actually becomes active)
   await cdp.send("Runtime.evaluate", {
     expression: `window.app.commands.executeCommandById('void-os:open-chat-view')`,
     awaitPromise: true,
     returnByValue: true,
   });
-  console.log(`[scenario] chat view opened`);
 
-  // 12. dismiss any pop-up modals (community-plugins notice etc.)
-  await cdp.send("Runtime.evaluate", {
-    expression: `(() => {
-      const modal = document.querySelector('.modal-close-button');
-      if (modal) (modal as HTMLElement).click();
-    })()`,
-    returnByValue: true,
-  }).catch(() => { /* noop */ });
+  // Re-close any Settings modal Obsidian may have re-opened, then re-issue
+  // the chat-view command if the leaf isn't visible yet.
+  for (let i = 0; i < 6; i++) {
+    await sleep(400);
+    const check: any = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const close = document.querySelector('.modal-close-button');
+        if (close) close.click();
+        return {
+          modalOpen: !!document.querySelector('.modal-container'),
+          chatRoot: !!document.querySelector('[data-testid="vos-chat-root"]'),
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const { modalOpen, chatRoot } = check.result.value;
+    if (chatRoot && !modalOpen) { console.log(`[scenario] chat view visible (no modal)`); break; }
+    if (!chatRoot) {
+      await cdp.send("Runtime.evaluate", {
+        expression: `window.app.commands.executeCommandById('void-os:open-chat-view')`,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+    }
+    if (i === 5) console.log(`[scenario] WARN: chat view not visible after retries (modal=${modalOpen}, root=${chatRoot})`);
+  }
 
   cdp.close();
 

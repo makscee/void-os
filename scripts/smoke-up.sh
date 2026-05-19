@@ -49,6 +49,19 @@ WORKTREE="/Users/admin/hub-wt/$ID"
 
 eval "$(resolve_paths "$ID")"
 
+# Resolve /tmp → /private/tmp once up front (macOS symlink). The daemon's
+# vault_root, Obsidian's basePath, and the bash pre-tool-use hook's path
+# canonicalization must all agree on a single namespace, otherwise:
+#   - daemon vault_root  = /tmp/...
+#   - bash hook realpath = /private/tmp/...
+# turns every `ls`/`cat` inside the vault into "outside read_scope".
+# Compute on the parent SMOKE_ROOT (which always exists at this point)
+# and append /vault, so we don't need the vault dir to exist yet.
+SMOKE_VAULT_REAL_PARENT="$(/usr/bin/python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$SMOKE_ROOT" 2>/dev/null || echo "$SMOKE_ROOT")"
+mkdir -p "$SMOKE_ROOT"
+SMOKE_VAULT_REAL_PARENT="$(/usr/bin/python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$SMOKE_ROOT")"
+SMOKE_VAULT_REAL="$SMOKE_VAULT_REAL_PARENT/vault"
+
 # Reset on demand (kill anything alive first).
 if [ "$FLAG_RESET" -eq 1 ] && [ -d "$SMOKE_ROOT" ]; then
   echo "smoke-up: --reset → tearing down existing $SMOKE_ROOT"
@@ -85,14 +98,14 @@ if [ ! -x "$VOID_OS_BIN" ]; then
   exit 2
 fi
 
-if [ -d "$SMOKE_VAULT" ]; then
+if [ -d "$SMOKE_VAULT_REAL" ]; then
   echo "smoke-up: vault exists at $SMOKE_VAULT — reusing"
   echo "smoke-up: rebuilding plugin so per-file-symlinked dist tracks HEAD"
   ( cd "$PLUGIN_DIR" && VOID_OS_PLUGIN_OUT="$PLUGIN_DIST" bun run build )
 else
   echo "smoke-up: seeding fresh vault at $SMOKE_VAULT"
   ( cd "$PLUGIN_DIR" && VOID_OS_PLUGIN_OUT="$PLUGIN_DIST" bun run build )
-  "$VOID_OS_BIN" init --non-interactive --vault "$SMOKE_VAULT" --skip-gh
+  "$VOID_OS_BIN" init --non-interactive --vault "$SMOKE_VAULT_REAL" --skip-gh
 fi
 
 # Plugin layout: a REAL directory (not a symlink to plugin/dist) with each
@@ -214,10 +227,10 @@ else
   # of which a stale file would satisfy even though the recorded pid no
   # longer maps to a live process.
   rm -f -- "$SMOKE_HOME/.void-os/daemon.json"
-  echo "smoke-up: spawning daemon HOME=$SMOKE_HOME PORT=$PORT vault=$SMOKE_VAULT"
+  echo "smoke-up: spawning daemon HOME=$SMOKE_HOME PORT=$PORT vault=$SMOKE_VAULT_REAL"
   # nohup + & detaches; redirect both streams to the smoke log.
   HOME="$SMOKE_HOME" VOID_OS_PORT="$PORT" \
-    nohup "$VOID_OS_BIN" daemon start --vault "$SMOKE_VAULT" \
+    nohup "$VOID_OS_BIN" daemon start --vault "$SMOKE_VAULT_REAL" \
       >"$SMOKE_LOG" 2>&1 &
   echo $! > "$SMOKE_PIDFILE"
 
@@ -292,13 +305,13 @@ fi
 # `trusted: true` skips the "Trust author" modal on Obsidian 1.8+.
 # `updateDisabled: true` prevents Obsidian from hot-swapping obsidian.asar
 # and unloading the plugin underneath you.
-VAULT_ID="$(printf '%s' "$SMOKE_VAULT" | cksum | awk '{print $1}')"
+VAULT_ID="$(printf '%s' "$SMOKE_VAULT_REAL" | cksum | awk '{print $1}')"
 NOW_MS="$(date +%s)000"
 cat > "$SMOKE_USERDATA/obsidian.json" <<EOF
 {
   "vaults": {
     "$VAULT_ID": {
-      "path": "$SMOKE_VAULT",
+      "path": "$SMOKE_VAULT_REAL",
       "ts": $NOW_MS,
       "open": true,
       "trusted": true
@@ -322,7 +335,7 @@ else
   # forces a new instance even if one is running; `-a` picks the .app
   # bundle by name; `--args` passes argv to the child.
   HOME="$SMOKE_HOME" open -na "Obsidian" --args \
-    "--user-data-dir=$SMOKE_USERDATA" "$SMOKE_VAULT"
+    "--user-data-dir=$SMOKE_USERDATA" "$SMOKE_VAULT_REAL"
   # `open` returns immediately; resolve the spawned pid by finding the
   # newest /Applications/Obsidian.app/Contents/MacOS/Obsidian process with
   # our SMOKE_USERDATA in its command line.
