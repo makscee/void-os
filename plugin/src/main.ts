@@ -30,15 +30,7 @@ import {
 import { getVaultRoot } from "./vault-root";
 import { urlsFromAttachment } from "./daemon-urls";
 
-/** Lifecycle-phase status published on the Plugin instance. Surfaced by the
- *  settings tab (T8) and by E2E specs (T9) so they can assert the plugin's
- *  view of the daemon without polling the HTTP layer directly. */
-export type DaemonStatus =
-  | { state: "running"; port: number; vault: string; version: string }
-  | { state: "binary-missing" }
-  | { state: "vault-mismatch"; activeVault: string }
-  | { state: "spawn-failed"; error: string }
-  | { state: "daemon-died" };
+export type { DaemonStatus } from "./daemon-status";
 
 /** Adapt Obsidian's `requestUrl` (Electron main-process HTTP, no CORS) to the
  *  `fetch`-shaped seam consumed by makeChatApi.
