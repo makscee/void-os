@@ -43,6 +43,7 @@ const DAEMON_USAGE = `usage: void-os daemon <subcommand>
 subcommands:
   start [--port N] [--vault PATH]   start the daemon (detached, blocks until /health 200, 10s timeout)
   stop                              SIGTERM then SIGKILL the daemon
+  restart [--port N] [--vault PATH] stop (if running) then start; same flags as start
   status [--json]                   running/stopped + health info
   logs [-f|--follow] [--tail N]     print or tail ~/.void-os/daemon.log
 `;
@@ -57,10 +58,11 @@ export default async function daemon(args: string[], ctx: { prefix: string }): P
     return sub ? 0 : 2;
   }
   switch (sub) {
-    case "start":  return cmdStartCli(rest, ctx);
-    case "stop":   return cmdStop(rest);
-    case "status": return cmdStatus(rest);
-    case "logs":   return cmdLogs(rest);
+    case "start":   return cmdStartCli(rest, ctx);
+    case "stop":    return cmdStop(rest);
+    case "restart": return cmdRestart(rest, ctx);
+    case "status":  return cmdStatus(rest);
+    case "logs":    return cmdLogs(rest);
     default:
       console.error(`void-os daemon: unknown subcommand "${sub}"`);
       console.error(DAEMON_USAGE);
@@ -334,6 +336,15 @@ function cleanupFiles(): void {
   if (existsSync(pidPath())) unlinkSync(pidPath());
   if (existsSync(portPath())) unlinkSync(portPath());
   removePidJson();
+}
+
+// VOS-149 T1: atomic stop + start. Used by the dogfood loop after daemon code
+// changes (plugin reconnects automatically). cmdStop already no-ops cleanly
+// when nothing is running, so restart-on-stopped degrades to a plain start.
+async function cmdRestart(args: string[], ctx: { prefix: string }): Promise<number> {
+  const stopCode = await cmdStop([]);
+  if (stopCode !== 0) return stopCode;
+  return cmdStartCli(args, ctx);
 }
 
 async function cmdStatus(args: string[]): Promise<number> {

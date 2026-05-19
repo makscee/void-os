@@ -346,3 +346,47 @@ describe("cmdStartCli message includes vault (VOS-143)", () => {
     }
   });
 });
+
+// VOS-149 T1: atomic stop+start. On a stopped daemon, restart degrades to a
+// plain start (cmdStop logs "not running" and returns 0). On a running daemon,
+// restart issues SIGTERM, waits for exit, then spawns a fresh process — new
+// pid is the marker the test asserts on.
+describe("daemon restart (VOS-149)", () => {
+  test("restart on stopped daemon prints not running + ready, exits 0", async () => {
+    const vault = join(tmp, "vault");
+    const r = spawnSync(BIN, ["daemon", "restart", "--port", String(port), "--vault", vault], {
+      env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN },
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("not running");
+    expect(r.stdout).toContain("void-os daemon ready");
+    expect(existsSync(join(tmp, ".void-os/daemon.pid"))).toBe(true);
+    // Tear down so afterEach doesn't have to nuke a live process.
+    spawnSync(BIN, ["daemon", "stop"], { env: { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN }, encoding: "utf8", timeout: 10000 });
+  }, 60000);
+
+  test("restart on running daemon yields new pid", async () => {
+    const vault = join(tmp, "vault");
+    const startEnv = { ...process.env, HOME: tmp, VOID_OS_CC_BIN: CC_BIN };
+    spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: startEnv, encoding: "utf8", timeout: 30000 });
+    const pid1 = parseInt(readFileSync(join(tmp, ".void-os/daemon.pid"), "utf8"), 10);
+    expect(Number.isFinite(pid1)).toBe(true);
+
+    const r = spawnSync(BIN, ["daemon", "restart", "--port", String(port), "--vault", vault], {
+      env: startEnv,
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("stopped");
+    expect(r.stdout).toContain("void-os daemon ready");
+
+    const pid2 = parseInt(readFileSync(join(tmp, ".void-os/daemon.pid"), "utf8"), 10);
+    expect(Number.isFinite(pid2)).toBe(true);
+    expect(pid2).not.toBe(pid1);
+
+    spawnSync(BIN, ["daemon", "stop"], { env: startEnv, encoding: "utf8", timeout: 10000 });
+  }, 60000);
+});
