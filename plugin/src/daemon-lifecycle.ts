@@ -72,6 +72,16 @@ const WELL_KNOWN_BUN_ABSOLUTE = [
   "/usr/local/bin/bun",
 ];
 
+// VOS-150: daemon needs `claudev` on PATH or VOID_OS_CC_BIN set. Obsidian's
+// PATH (/usr/bin:/bin via LaunchServices) excludes ~/.claudev/bin where the
+// CLI wrapper lives, so the spawned daemon exits with "CC wrapper not found".
+// Mirror the bun-resolution pattern.
+const WELL_KNOWN_CLAUDEV_SUBPATHS = [".claudev/bin/claudev"];
+const WELL_KNOWN_CLAUDEV_ABSOLUTE = [
+  "/opt/homebrew/bin/claudev",
+  "/usr/local/bin/claudev",
+];
+
 export function resolveBunDir(
   env: Env = { home: resolveHome(), pathDirs: [] },
 ): string | null {
@@ -80,6 +90,19 @@ export function resolveBunDir(
     if (isExecutable(p)) return dirname(p);
   }
   for (const p of WELL_KNOWN_BUN_ABSOLUTE) {
+    if (isExecutable(p)) return dirname(p);
+  }
+  return null;
+}
+
+export function resolveClaudevDir(
+  env: Env = { home: resolveHome(), pathDirs: [] },
+): string | null {
+  for (const sub of WELL_KNOWN_CLAUDEV_SUBPATHS) {
+    const p = join(env.home, sub);
+    if (isExecutable(p)) return dirname(p);
+  }
+  for (const p of WELL_KNOWN_CLAUDEV_ABSOLUTE) {
     if (isExecutable(p)) return dirname(p);
   }
   return null;
@@ -304,10 +327,13 @@ export function makeProductionSpawn(): (
     // shebang `#!/usr/bin/env bun` in bin/void-os fails ("env: bun: No such
     // file or directory"). Prepend bun's containing dir to env.PATH so the
     // shebang resolves under the spawned process.
-    const bunDir = resolveBunDir({ home: resolveHome(), pathDirs: [] });
+    const home = resolveHome();
+    const bunDir = resolveBunDir({ home, pathDirs: [] });
+    const claudevDir = resolveClaudevDir({ home, pathDirs: [] });
     const env = { ...process.env };
-    if (bunDir) {
-      env.PATH = `${bunDir}:${env.PATH ?? "/usr/bin:/bin"}`;
+    const prefix = [bunDir, claudevDir].filter((d): d is string => !!d).join(":");
+    if (prefix) {
+      env.PATH = `${prefix}:${env.PATH ?? "/usr/bin:/bin"}`;
     }
     const child = spawn(bin, args, { detached: true, stdio: "ignore", env });
     child.unref();
