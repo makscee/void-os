@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -26,6 +26,9 @@ afterEach(() => {
 
 test("agents list against running daemon (--json)", async () => {
   const vault = join(tmp, "vault");
+  // VOS-137: `daemon start --vault` requires marker.json.
+  mkdirSync(join(vault, ".void"), { recursive: true });
+  writeFileSync(join(vault, ".void/marker.json"), JSON.stringify({ version: 1 }));
   spawnSync(BIN, ["daemon", "start", "--port", String(port), "--vault", vault], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 30000 });
   const r = spawnSync(BIN, ["agents", "list", "--json"], { env: { ...process.env, HOME: tmp }, encoding: "utf8", timeout: 10000 });
   expect(r.status).toBe(0);

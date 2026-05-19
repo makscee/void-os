@@ -105,7 +105,7 @@ The plugin and the CLI both talk to the same daemon on `127.0.0.1:7777`, so plug
 - Interactive REPL: `void-os chat <agent>` — type `exit`, `/exit`, or Ctrl-D to leave. Ctrl-C cancels the active run; a second Ctrl-C while idle exits 130.
 - Plugin chat: same conversations, in Obsidian.
 - Tinker drafts new agents: ask "create eva to handle my journal" and Tinker will draft `agents/eva/agent.md` for your review.
-- Daemon: `void-os daemon {start|stop|status|logs}`. `logs` supports `--tail N` and `-f`/`--follow`.
+- Daemon: `void-os daemon {start|stop|status|logs}`. `logs` supports `--tail N` and `-f`/`--follow`. `daemon start --vault <abs-path>` points the daemon at a specific initialized vault (overrides `VOID_OS_VAULT_ROOT`); the path must already contain `.void/marker.json` (run `void-os init --vault <path>` first).
 - List agents: `void-os agents list`.
 
 ## 7. Troubleshooting
@@ -123,6 +123,7 @@ The plugin and the CLI both talk to the same daemon on `127.0.0.1:7777`, so plug
 | `void-os ask` exits 4 saying "agent '<name>' not found" | agent not registered in vault | `void-os agents list` to see what's there; ask Tinker to draft the missing agent |
 | `void-os ask` exits 5 saying "vault not configured" | `VOID_OS_VAULT_ROOT` unset and `~/Library/Application Support/void-os/vault` missing | run `void-os init`, or `export VOID_OS_VAULT_ROOT=<path>` before `daemon start` |
 | `void-os ask` exits 3 saying "daemon not running" | daemon down or unreachable | `void-os daemon start --vault <path>` (or open Obsidian, which spawns the daemon); check `void-os daemon logs --tail 40` |
+| `daemon start --vault <path>` exits 1 with "not an initialized vault (missing `<path>/.void/marker.json`)" | `--vault` pointed at a directory that was never seeded by `void-os init` | run `void-os init --vault <path>` first, or point `--vault` at an existing initialized vault (look for `<path>/.void/marker.json`) |
 
 ## 8. Known limitations (current state)
 
