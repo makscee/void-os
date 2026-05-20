@@ -51,6 +51,37 @@ export interface ChatSummary {
   context_cache_read_tokens: number | null;
 }
 
+/**
+ * VOS-172: one row of the global activity list — a Task across any Context,
+ * as returned by the daemon's `GET /tasks` route (backed by nav-repo's
+ * `listTasks`). Sorted by `last_event` DESC; terminal Tasks age out unless
+ * `include_terminal` is requested.
+ */
+export interface TaskActivityItem {
+  id: string;
+  context_id: string;
+  /** Owning Context's title — the perpetual grouping label. */
+  context_title: string | null;
+  parent_task_id: string | null;
+  agent: string | null;
+  state: string;
+  /** Epoch ms of the most recent activity; null if none recorded yet. */
+  last_event: number | null;
+  created_at: number;
+  updated_at: number;
+  /** Short preview of the Task's most recent message; null when none. */
+  last_msg: string | null;
+}
+
+export interface ListTasksOpts {
+  /** Keep terminal Tasks regardless of recency. */
+  includeTerminal?: boolean;
+  /** Recency window (hours) for terminal Tasks. */
+  recencyHours?: number;
+  /** Cap rows returned. */
+  limit?: number;
+}
+
 export interface ChatApi {
   createChat(agent?: string): Promise<{ id: string; title: string; created_at: number }>;
   /** DELETE /chats/:id. Used by the send-rollback path to discard a chat that
@@ -75,6 +106,10 @@ export interface ChatApi {
     | { ok: false; status: 400 | 404 | 409; error: string }
   >;
   listChats(): Promise<ChatSummary[]>;
+  /** GET /tasks. VOS-172 — the global activity list: every Task across every
+   *  Context, sorted by last activity. Terminal Tasks age out unless
+   *  `includeTerminal` is set. */
+  listTasks(opts?: ListTasksOpts): Promise<TaskActivityItem[]>;
   getMessages(chatId: string): Promise<ReplayMessage[]>;
   /** GET /cost/today. Returns the 4-token-split daily total with non-neg integer
    *  coercion per field (else 0). VOS-110 T5 — backs the live CostMeter widget. */
@@ -231,6 +266,38 @@ function normalizeChats(raw: unknown): ChatSummary[] {
   return out;
 }
 
+/** VOS-172: defensively normalize the daemon's `GET /tasks` payload into
+ *  `TaskActivityItem[]`. Skips rows missing the required id/context_id
+ *  string keys; coerces optional fields to their typed null. */
+export function normalizeTasks(raw: unknown): TaskActivityItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TaskActivityItem[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    if (typeof o.id !== "string") continue;
+    if (typeof o.context_id !== "string") continue;
+    if (typeof o.state !== "string") continue;
+    out.push({
+      id: o.id,
+      context_id: o.context_id,
+      context_title: typeof o.context_title === "string" ? o.context_title : null,
+      parent_task_id:
+        typeof o.parent_task_id === "string" ? o.parent_task_id : null,
+      agent: typeof o.agent === "string" ? o.agent : null,
+      state: o.state,
+      last_event:
+        typeof o.last_event === "number" && Number.isFinite(o.last_event)
+          ? o.last_event
+          : null,
+      created_at: typeof o.created_at === "number" ? o.created_at : 0,
+      updated_at: typeof o.updated_at === "number" ? o.updated_at : 0,
+      last_msg: typeof o.last_msg === "string" ? o.last_msg : null,
+    });
+  }
+  return out;
+}
+
 export function makeChatApi(
   base: string = DEFAULT_DAEMON_HTTP,
   fetchImpl: typeof fetch = fetch,
@@ -319,6 +386,22 @@ export function makeChatApi(
       const res = await fetchImpl(`${base}/chats`, { method: "GET" });
       const body = await jsonOrThrow(res);
       return normalizeChats(body);
+    },
+    async listTasks(opts?: ListTasksOpts) {
+      const params = new URLSearchParams();
+      if (opts?.includeTerminal) params.set("include_terminal", "1");
+      if (typeof opts?.recencyHours === "number" && opts.recencyHours > 0) {
+        params.set("recency_hours", String(opts.recencyHours));
+      }
+      if (typeof opts?.limit === "number" && opts.limit > 0) {
+        params.set("limit", String(Math.trunc(opts.limit)));
+      }
+      const qs = params.toString();
+      const res = await fetchImpl(`${base}/tasks${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+      });
+      const body = await jsonOrThrow(res);
+      return normalizeTasks(body);
     },
     async getMessages(chatId) {
       const res = await fetchImpl(

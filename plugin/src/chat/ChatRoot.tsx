@@ -23,6 +23,8 @@ import {
   ERROR_MARKER,
 } from "./runtime";
 import { ChatList } from "./ChatList";
+import { ActivityList } from "./ActivityList";
+import type { TaskActivityItem } from "./api";
 import { AgentList } from "./AgentList";
 import { ChatHeader } from "./ChatHeader";
 import { CostMeter } from "./CostMeter";
@@ -408,6 +410,10 @@ export function ChatRoot(props: ChatRootProps) {
   const [refreshKey, setRefreshKey] = React.useState(0);
   const bumpRefresh = React.useCallback(() => setRefreshKey((n) => n + 1), []);
 
+  // VOS-172: which Task is currently open via the global activity list.
+  // null when the active pane was reached through a chat row instead.
+  const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
+
   const [toast, setToast] = React.useState<{ id: number; text: string } | null>(null);
   const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = React.useCallback((text: string) => {
@@ -597,9 +603,29 @@ export function ChatRoot(props: ChatRootProps) {
     const agent: ProtocolAgentListEntry =
       agentsCache.find((a) => a.name === agentName) ||
       { name: agentName || "", description: "" };
+    // Clear the activity-list highlight — selection moved to a chat row.
+    setActiveTaskId(null);
     setPane({ kind: "active", chatId: id, agent });
     focusComposer();
   }, [focusComposer, agentsCache]);
+
+  // VOS-172: opening a Task from the global activity list. A Task belongs to
+  // a Context; the timeline pane keys on the Context id (post-0016 a
+  // Context resolves its root Task via `openTaskFor`). So we transition the
+  // pane to Active with the Task's `context_id`. The agent is resolved from
+  // the row's `agent` field (falling back to a placeholder the
+  // refine-on-active effect below will fill once /chats loads).
+  const onOpenTask = React.useCallback(
+    (item: TaskActivityItem) => {
+      const agent: ProtocolAgentListEntry =
+        agentsCache.find((a) => a.name === item.agent) ||
+        { name: item.agent || "", description: "" };
+      setActiveTaskId(item.id);
+      setPane({ kind: "active", chatId: item.context_id, agent });
+      focusComposer();
+    },
+    [agentsCache, focusComposer],
+  );
 
   // VOS-153 T5: agent-pick is a pure UI transition into Draft. No
   // daemon call, no chat row materialised. The chat is created on the
@@ -704,6 +730,15 @@ export function ChatRoot(props: ChatRootProps) {
             agentsApi={props.agentsApi}
             activeAgent={activeAgent}
             onPickAgent={onPickAgent}
+            refreshKey={refreshKey}
+          />
+          {/* VOS-172: global activity list — every Task across every
+              Context, sorted by last activity. Click opens the Task's
+              Context in the timeline pane. */}
+          <ActivityList
+            api={props.api}
+            activeTaskId={activeTaskId}
+            onOpenTask={onOpenTask}
             refreshKey={refreshKey}
           />
           <ChatList

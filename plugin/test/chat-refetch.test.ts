@@ -61,6 +61,7 @@ describe("ChatRoot refetch on run.end (VOS-80 part 2)", () => {
         if (calls === 1) return [];
         return [{ role: "assistant" as const, content: "canonical reply" }];
       },
+      async listTasks() { return []; },
       async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
       async deleteChat() {},
       async answer() { return { ok: true as const }; },
@@ -111,6 +112,7 @@ describe("ChatRoot refetch on run.end (VOS-80 part 2)", () => {
         }
         throw new Error("network down");
       },
+      async listTasks() { return []; },
       async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
       async deleteChat() {},
       async answer() { return { ok: true as const }; },
@@ -161,6 +163,7 @@ describe("ChatRoot refetch on run.end (VOS-80 part 2)", () => {
         calls += 1;
         return [];
       },
+      async listTasks() { return []; },
       async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
       async deleteChat() {},
       async answer() { return { ok: true as const }; },

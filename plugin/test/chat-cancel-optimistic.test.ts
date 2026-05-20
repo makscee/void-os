@@ -69,6 +69,7 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
         if (getCalls === 1) return [];
         return [{ role: "assistant" as const, content: "partial reply" }];
       },
+      async listTasks() { return []; },
       async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
       async deleteChat() {},
       async answer() { return { ok: true as const }; },
@@ -152,6 +153,7 @@ describe("ChatRoot ESC optimistic cancel (VOS-80)", () => {
         if (getCalls === 1) return [];
         return [{ role: "assistant" as const, content: "done answer" }];
       },
+      async listTasks() { return []; },
       async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
       async deleteChat() {},
       async answer() { return { ok: true as const }; },
