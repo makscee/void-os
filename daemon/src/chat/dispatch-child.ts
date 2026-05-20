@@ -44,6 +44,7 @@ import type { AgentDefn, PermissionEngine } from "../permissions/engine.ts";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo.ts";
 import { drainRun } from "./run-driver.ts";
 import type { TextPart, DataPart } from "../types/a2a.ts";
+import type { AgentControlRegistry } from "../agents/control.ts";
 
 export interface DispatchChildDeps {
   db: Database;
@@ -69,6 +70,11 @@ export interface DispatchChildDeps {
   daemonBase?: string;
   hookScriptPath?: string;
   loadAgentDefn?: (name: string) => AgentDefn;
+  /** VOS-161: control registry for the inspector pause/kill/resume verbs.
+   *  When set, each child registers a control handle on spawn (keyed by
+   *  childTaskId = agent_id) and deregisters it on terminal. Optional so
+   *  tests that don't exercise verbs can omit it. */
+  control?: AgentControlRegistry;
 }
 
 export type DispatchChildFn = (
@@ -134,6 +140,7 @@ export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn 
           message: args.message,
           cwd: deps.cwd,
           emit,
+          control: deps.control,
         }).catch((err) => {
           // The runner already flips the child to FAILED + emits
           // task.state_changed in its catch path. This outer catch is a
@@ -170,10 +177,12 @@ interface RunChildArgs {
   /** WS fan-out helper threaded from DispatchChildDeps. Used to emit
    *  chat.token / chat.tool_use / chat.tool_result frames per provider part. */
   emit: (type: string, payload: Record<string, unknown>) => void;
+  /** VOS-161: optional control registry for pause/kill/resume verbs. */
+  control?: AgentControlRegistry;
 }
 
 async function runChildOnProvider(args: RunChildArgs): Promise<void> {
-  const { db, bus, messages, provider, agentName, childTaskId, message, cwd, emit } = args;
+  const { db, bus, messages, provider, agentName, childTaskId, message, cwd, emit, control } = args;
   const childRunId = "child-" + childTaskId;
 
   const ctxRow = db
@@ -212,6 +221,16 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
   let errorMessage: string | null = null;
   let outcome: Awaited<ReturnType<typeof drainRun>> | undefined;
 
+  // VOS-161: hard-kill plumbing. The control handle's onKill aborts this
+  // controller; drainRun forwards `signal` abort to `handle.cancel()` →
+  // SIGINT to the CC subprocess. Registered keyed by childTaskId (= the
+  // inspector's agent_id). Always deregistered in the finally below so a
+  // terminated agent's id can't accept a stale verb.
+  const killController = new AbortController();
+  const controlHandle = control?.register(childTaskId, () => {
+    killController.abort();
+  });
+
   try {
     handle = provider.spawn({
       runId: childTaskId, // child has no run row; reuse id for prompt/logs only
@@ -241,6 +260,15 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
     outcome = await drainRun({
       handle,
       agentName,
+      // VOS-161: hard-kill — abort forwards to handle.cancel() (SIGINT).
+      signal: killController.signal,
+      // VOS-161: soft-pause checkpoint. drainRun calls onCheckpoint at each
+      // frame boundary (between provider frames). When the operator has
+      // paused this agent, awaitCheckpoint() returns a promise that parks
+      // the run until resume — no torn tool call, no SIGINT.
+      onCheckpoint: controlHandle
+        ? () => controlHandle.awaitCheckpoint()
+        : undefined,
       onPart: (frame) => {
         for (const p of frame.parts) {
           if (typeof (p as TextPart).text === "string") continue;
@@ -285,6 +313,30 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
       payload: {
         child_task_id: childTaskId,
         error: errorMessage,
+      },
+    });
+  } finally {
+    // VOS-161: deregister the control handle the moment the run leaves the
+    // provider loop. After this point a verb against childTaskId is a
+    // clean 404 — the agent is terminal.
+    control?.deregister(childTaskId);
+  }
+
+  // VOS-161: a hard kill ends as FAILED with an explicit abort reason. The
+  // drain either threw (abort raced an in-flight frame) or returned with
+  // reason "cancel"; either way the operator-initiated kill is the cause.
+  if (killController.signal.aborted) {
+    terminalState = "TASK_STATE_FAILED";
+    if (!errorMessage) errorMessage = "agent killed by operator (hard kill)";
+    bus.emit({
+      type: "agent.event",
+      payload: {
+        ts: new Date().toISOString(),
+        agent_id: childTaskId,
+        parent_id: ctxRow.parent_task_id ?? null,
+        kind: "status",
+        summary: "agent run aborted (hard kill)",
+        state: "killed",
       },
     });
   }

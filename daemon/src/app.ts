@@ -31,6 +31,8 @@ import { mountAnswerRoute } from "./api/answer.ts";
 import { createEventBus, type EventBus } from "./events/index.ts";
 import { mountChatStream } from "./api/chat-stream.ts";
 import { mountAgentsInflight } from "./api/agents-inflight.ts";
+import { mountAgentsControl } from "./api/agents-control.ts";
+import { createAgentControlRegistry } from "./agents/control.ts";
 import {
   createInflightBridge,
   createInflightRegistry,
@@ -288,6 +290,12 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // finishes — required for ask_user flows where dispatch parks indefinitely
   // waiting for /answer.
   app.route("/", chatApi(deps.db, { orchestrator, bus }));
+  // VOS-161: agent control registry — the two-verb (pause/kill) + resume
+  // intervention plane. dispatch-child registers a control handle per child
+  // (keyed by childTaskId = the inspector's agent_id); the verb routes below
+  // resolve handles from it. Created before dispatchChildTask so the
+  // dispatcher can be wired with it.
+  const agentControl = createAgentControlRegistry();
   // VOS-89 T15.5: real production dispatcher for ask_agent children. Per-
   // agent Provider memoisation lives inside the dispatcher; cwd +
   // tracesDir mirror the orchestrator wiring above so child runs share
@@ -304,6 +312,9 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     daemonBase,
     hookScriptPath,
     loadAgentDefn: (name) => defaultLoadAgentDefn(deps.db, name),
+    // VOS-161: each child registers a control handle on spawn so the
+    // inspector pause/kill/resume verbs can address it mid-flight.
+    control: agentControl,
   });
   // VOS-154: build env-driven handoff-log adapter. NULL when VOID_OS_HL_PATH
   // is unset (smoke harness, tests). Threaded into ask_agent so every
@@ -345,7 +356,9 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   //   - JSONL writer persists each event to a per-session log file.
   //   - GET /agents/inflight returns snapshot + SSE delta stream.
   createInflightBridge({ bus, db: deps.db });
-  const inflightRegistry = createInflightRegistry({ bus });
+  // VOS-161: thread the control registry so /agents/inflight snapshots
+  // carry each agent's live control_state (running/paused/killed).
+  const inflightRegistry = createInflightRegistry({ bus, control: agentControl });
   if (!deps.disableInflightJsonl) {
     const sessionId =
       deps.sessionId ?? process.env.VOID_OS_SESSION_ID ?? "default";
@@ -361,6 +374,14 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   }
   app.use("/agents/inflight", makeRequireAuth(token));
   mountAgentsInflight(app, { bus, registry: inflightRegistry, version: VERSION });
+  // VOS-161: pause/kill/resume verb routes — bearer-auth gated like
+  // /agents/inflight. Hono matches the more specific /agents/:id/* paths
+  // before the /agents/inflight prefix, so the two auth middlewares don't
+  // collide.
+  app.use("/agents/:id/pause", makeRequireAuth(token));
+  app.use("/agents/:id/resume", makeRequireAuth(token));
+  app.use("/agents/:id/kill", makeRequireAuth(token));
+  mountAgentsControl(app, { bus, control: agentControl });
   return app;
 };
 

@@ -21,6 +21,15 @@ export interface DrainRunArgs {
    * production callers (orchestrator, dispatch-child) MUST pass it.
    */
   agentName?: string;
+  /**
+   * VOS-161: soft-pause checkpoint. Awaited at each frame boundary (before
+   * the next provider frame is processed). Resolves immediately when the
+   * run is not paused; when paused it returns a promise that parks the run
+   * until resume — the "wait-for-checkpoint" half of the two-verb model.
+   * The await is raced against `signal` so a hard kill while parked still
+   * exits promptly. Optional; omit for non-controllable runs.
+   */
+  onCheckpoint?: () => Promise<void>;
 }
 
 export interface TerminalOutcome {
@@ -49,7 +58,7 @@ export function mergeAdjacentText(parts: Part[]): Part[] {
 }
 
 export async function drainRun(args: DrainRunArgs): Promise<TerminalOutcome> {
-  const { handle, signal, onSession, onPart, agentName } = args;
+  const { handle, signal, onSession, onPart, agentName, onCheckpoint } = args;
 
   const agentParts: Part[] = [];
   let firstAssistantSeen = false;
@@ -73,6 +82,20 @@ export async function drainRun(args: DrainRunArgs): Promise<TerminalOutcome> {
   const iter = handle.events[Symbol.asyncIterator]();
   try {
     while (true) {
+      // VOS-161: soft-pause checkpoint. A clean frame boundary — no torn
+      // tool call. If the operator paused this agent, `onCheckpoint`
+      // returns a promise that parks here until resume; raced against the
+      // abort signal so a hard kill while parked exits promptly.
+      if (onCheckpoint && !signal?.aborted) {
+        const cp = onCheckpoint();
+        if (abortPromise) {
+          await Promise.race([cp, abortPromise]);
+        } else {
+          await cp;
+        }
+        if (signal?.aborted) break;
+      }
+
       const step: IteratorResult<any> | null = abortPromise
         ? await Promise.race([
             iter.next(),

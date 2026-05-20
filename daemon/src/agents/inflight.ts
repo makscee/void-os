@@ -30,6 +30,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Database } from "bun:sqlite";
 import type { DaemonEvent, EventBus } from "../events/index.ts";
+import type { AgentControlState, AgentControlRegistry } from "./control.ts";
 
 // ---------------------------------------------------------------------------
 // Schema v1
@@ -96,6 +97,14 @@ export interface InflightAgent {
   ended: boolean;
   /** Epoch ms the terminal event landed; null while still running. */
   ended_at_ms: number | null;
+  /**
+   * VOS-161: operator control state for the pause/kill/resume verbs.
+   * `running` = no intervention; `paused` = soft-paused at a checkpoint;
+   * `killed` = hard-killed. `null` when no live control handle exists
+   * (e.g. an ended agent, or a run that pre-dates the control registry).
+   * The inspector uses this to gate which verb buttons are shown.
+   */
+  control_state: AgentControlState | null;
 }
 
 const TERMINAL_KINDS: ReadonlySet<AgentEventKind> = new Set(["end"]);
@@ -117,6 +126,13 @@ export interface InflightRegistryDeps {
   bus: EventBus;
   /** Override clock for tests; defaults to Date.now. */
   now?: () => number;
+  /**
+   * VOS-161: optional control registry. When set, `list()`/`get()` stamp
+   * each row's `control_state` from the live control handle so the
+   * inspector can render verb availability. Omitted by Phase-1 tests that
+   * don't exercise verbs — those rows carry `control_state: null`.
+   */
+  control?: AgentControlRegistry;
 }
 
 /**
@@ -170,6 +186,7 @@ export function createInflightRegistry(deps: InflightRegistryDeps): InflightRegi
         trace: [],
         ended: false,
         ended_at_ms: null,
+        control_state: null,
       };
       rows.set(p.agent_id, row);
     } else {
@@ -186,14 +203,26 @@ export function createInflightRegistry(deps: InflightRegistryDeps): InflightRegi
     }
   });
 
+  // VOS-161: stamp the live control_state onto a row at read time. Kept
+  // out of the event handler because the verb routes mutate control state
+  // directly on the control registry — reading it lazily keeps the snapshot
+  // current without coupling the two registries through the bus.
+  const withControlState = (row: InflightAgent): InflightAgent => ({
+    ...row,
+    control_state: deps.control?.stateOf(row.agent_id) ?? null,
+  });
+
   return {
     list() {
       purgeExpired();
-      return Array.from(rows.values()).sort((a, b) => a.started_at.localeCompare(b.started_at));
+      return Array.from(rows.values())
+        .sort((a, b) => a.started_at.localeCompare(b.started_at))
+        .map(withControlState);
     },
     get(id) {
       purgeExpired();
-      return rows.get(id) ?? null;
+      const row = rows.get(id);
+      return row ? withControlState(row) : null;
     },
     _reset() {
       rows.clear();
