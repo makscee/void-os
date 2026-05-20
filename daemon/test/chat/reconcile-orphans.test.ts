@@ -1,21 +1,14 @@
-// VOS-89 T13: startup reconciler.
+// VOS-89 T13 / VOS-170: startup reconciler — cancel-cascade orphan cleanup.
 //
 // Exercises `reconcileOrphans(db)` directly at the DB layer — no bus, no
-// Provider, no spawn. Two orphan classes after a daemon mid-flight crash:
+// Provider, no spawn. After a daemon mid-flight crash a non-terminal
+// descendant of any TASK_STATE_CANCELED ancestor must be flipped to CANCELED
+// (the runtime cascade had not finished walking the tree).
 //
-//   (a) Parent parked TASK_STATE_WAITING_ON_AGENT whose dispatched child
-//       already reached terminal → parent flips back to WORKING (the
-//       runtime resume listener was not running to do it inline).
-//
-//   (b) Non-terminal descendant of any TASK_STATE_CANCELED ancestor →
-//       descendant flips to CANCELED (cascade orphan cleanup, since the
-//       runtime cascade had not finished walking the tree).
-//
-// Schema deviations vs plan §T13 seed (consistent with T11/T12 tests):
-//   - `tasks` has no `agent_name` column. Bind real NOT NULL columns:
-//     state, cost_usd, tokens_in, tokens_out, metadata, created_at, updated_at.
-//   - `contexts` requires (id, agent_name, archived, created_at, updated_at).
-//   - Use `runMigrationsFromDir` (canonical helper).
+// VOS-170: the WAITING_ON_AGENT parent-resume class moved OUT of
+// `reconcileOrphans` (a bare flip is not a resume — the parent's CC
+// subprocess died with the daemon). That class is now covered by
+// `reconcile-waiting-parents.test.ts`.
 import { describe, test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
@@ -66,48 +59,8 @@ const stateOf = (db: Database, id: string): string => {
   return row.state;
 };
 
-describe("reconcileOrphans", () => {
-  test("(a) WAITING_ON_AGENT parent with terminal child → parent WORKING", () => {
-    const db = freshDb();
-    seedContext(db);
-    // Parent parked waiting on its dispatched child; child already finished
-    // (e.g. crashed after the child terminated but before the resume
-    // listener flipped the parent).
-    seedTask(db, "p", "TASK_STATE_WAITING_ON_AGENT");
-    seedTask(db, "ch", "TASK_STATE_COMPLETED", "p");
-
-    reconcileOrphans(db);
-
-    expect(stateOf(db, "p")).toBe("TASK_STATE_WORKING");
-    expect(stateOf(db, "ch")).toBe("TASK_STATE_COMPLETED");
-  });
-
-  test("(a) WAITING_ON_AGENT parent with FAILED child → parent WORKING", () => {
-    const db = freshDb();
-    seedContext(db);
-    seedTask(db, "p", "TASK_STATE_WAITING_ON_AGENT");
-    seedTask(db, "ch", "TASK_STATE_FAILED", "p");
-
-    reconcileOrphans(db);
-
-    expect(stateOf(db, "p")).toBe("TASK_STATE_WORKING");
-  });
-
-  test("(a) WAITING_ON_AGENT parent with non-terminal child → parent untouched", () => {
-    const db = freshDb();
-    seedContext(db);
-    seedTask(db, "p", "TASK_STATE_WAITING_ON_AGENT");
-    seedTask(db, "ch", "TASK_STATE_WORKING", "p");
-
-    reconcileOrphans(db);
-
-    // Child is still alive — daemon-restarted runtime listeners will flip
-    // the parent when the child eventually terminates. Reconciler must
-    // NOT pre-empt that.
-    expect(stateOf(db, "p")).toBe("TASK_STATE_WAITING_ON_AGENT");
-  });
-
-  test("(b) CANCELED ancestor with WORKING descendant → descendant CANCELED", () => {
+describe("reconcileOrphans (cancel cascade)", () => {
+  test("CANCELED ancestor with WORKING descendant → descendant CANCELED", () => {
     const db = freshDb();
     seedContext(db);
     // Tree:
@@ -125,7 +78,7 @@ describe("reconcileOrphans", () => {
     expect(stateOf(db, "gc1")).toBe("TASK_STATE_CANCELED");
   });
 
-  test("(b) CANCELED ancestor with COMPLETED descendant → preserved", () => {
+  test("CANCELED ancestor with COMPLETED descendant → preserved", () => {
     const db = freshDb();
     seedContext(db);
     // Sibling that finished cleanly before the cancel — never overwrite.
@@ -137,32 +90,33 @@ describe("reconcileOrphans", () => {
     expect(stateOf(db, "c1")).toBe("TASK_STATE_COMPLETED");
   });
 
+  test("VOS-170: WAITING_ON_AGENT parent is NOT touched by reconcileOrphans", () => {
+    const db = freshDb();
+    seedContext(db);
+    // A parked parent whose child finished. reconcileOrphans must leave it
+    // alone — the durable resume is reconcileWaitingParents' job now (it
+    // needs a provider to re-drive, which reconcileOrphans does not have).
+    seedTask(db, "p", "TASK_STATE_WAITING_ON_AGENT");
+    seedTask(db, "ch", "TASK_STATE_COMPLETED", "p");
+
+    reconcileOrphans(db);
+
+    expect(stateOf(db, "p")).toBe("TASK_STATE_WAITING_ON_AGENT");
+  });
+
   test("idempotent: second call is a no-op", () => {
     const db = freshDb();
     seedContext(db);
-    seedTask(db, "p", "TASK_STATE_WAITING_ON_AGENT");
-    seedTask(db, "ch", "TASK_STATE_COMPLETED", "p");
     seedTask(db, "cp", "TASK_STATE_CANCELED");
     seedTask(db, "cc", "TASK_STATE_WORKING", "cp");
 
     reconcileOrphans(db);
-    const after1 = {
-      p: stateOf(db, "p"),
-      ch: stateOf(db, "ch"),
-      cp: stateOf(db, "cp"),
-      cc: stateOf(db, "cc"),
-    };
+    const after1 = { cp: stateOf(db, "cp"), cc: stateOf(db, "cc") };
 
     reconcileOrphans(db);
-    const after2 = {
-      p: stateOf(db, "p"),
-      ch: stateOf(db, "ch"),
-      cp: stateOf(db, "cp"),
-      cc: stateOf(db, "cc"),
-    };
+    const after2 = { cp: stateOf(db, "cp"), cc: stateOf(db, "cc") };
 
     expect(after2).toEqual(after1);
-    expect(after1.p).toBe("TASK_STATE_WORKING");
     expect(after1.cc).toBe("TASK_STATE_CANCELED");
   });
 

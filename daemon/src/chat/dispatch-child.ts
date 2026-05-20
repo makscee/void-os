@@ -88,19 +88,19 @@ export type DispatchChildFn = (
   args: { agentName: string; message: string; systemMessage?: string },
 ) => Promise<void>;
 
-/**
- * Build the production dispatcher. Memoises one Provider per agentName for
- * the lifetime of the daemon process; the Provider's spawn() returns a
- * fresh ProviderHandle per child invocation.
- */
-export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn {
-  const messages = makeMessagesRepo(deps.db);
-  const providerByAgent = new Map<string, Provider>();
-  // Default to no-op so tests that don't inject emit still work.
-  // In production, buildApp always passes its local `emit` (= broadcast)
-  // explicitly to avoid a circular import between dispatch-child ↔ app.
-  const emit = deps.emit ?? ((_type: string, _payload: Record<string, unknown>) => {});
+// VOS-170: re-drive a parked parent Task. Same shape as DispatchChildFn but
+// carries `resumeFrom` (the parent's persisted Claude session id) so the
+// re-spawned session continues rather than starting cold.
+export type RedriveParentFn = (
+  parentTaskId: string,
+  args: { agentName: string; message: string; resumeFrom?: string },
+) => Promise<void>;
 
+// VOS-170: per-agent Provider memoisation, shared by makeDispatchChildTask
+// and makeRedriveParentTask. One Provider per agentName for the daemon's
+// lifetime; the Provider's spawn() returns a fresh ProviderHandle per call.
+function makeProviderFor(deps: DispatchChildDeps): (agentName: string) => Provider {
+  const providerByAgent = new Map<string, Provider>();
   const buildProvider =
     deps.buildProvider ??
     ((agentName: string): Provider =>
@@ -119,14 +119,28 @@ export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn 
         loadAgentDefn: deps.loadAgentDefn!,
         liveAgents: deps.liveAgents,
       }));
-
-  const providerFor = (agentName: string): Provider => {
+  return (agentName: string): Provider => {
     let p = providerByAgent.get(agentName);
     if (p) return p;
     p = buildProvider(agentName);
     providerByAgent.set(agentName, p);
     return p;
   };
+}
+
+/**
+ * Build the production dispatcher. Memoises one Provider per agentName for
+ * the lifetime of the daemon process; the Provider's spawn() returns a
+ * fresh ProviderHandle per child invocation.
+ */
+export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn {
+  const messages = makeMessagesRepo(deps.db);
+  // Default to no-op so tests that don't inject emit still work.
+  // In production, buildApp always passes its local `emit` (= broadcast)
+  // explicitly to avoid a circular import between dispatch-child ↔ app.
+  const emit = deps.emit ?? ((_type: string, _payload: Record<string, unknown>) => {});
+
+  const providerFor = makeProviderFor(deps);
 
   return (childTaskId, args) =>
     new Promise<void>((resolve) => {
@@ -177,6 +191,16 @@ interface RunChildArgs {
   agentName: string;
   childTaskId: string;
   message: string;
+  /** VOS-170: optional Claude session id for `--resume`. Set when re-driving
+   *  a parked parent Task so its session continues; unset for fresh child
+   *  dispatch (a child task always starts a new session). */
+  resumeFrom?: string;
+  /** VOS-170: when true, the terminal-state flip is CAS-guarded to rows still
+   *  in WORKING. Set for a re-driven parent: if its resumed turn fired a fresh
+   *  ask_agent it has already self-flipped to WAITING_ON_AGENT, and the drain
+   *  must NOT clobber that with COMPLETED. Unset for child dispatch (the child
+   *  owns its own row outright). */
+  terminalGuard?: boolean;
   /** Vault-aware cwd threaded from DispatchChildDeps. Passed to
    *  provider.spawn so the child runs in the same working directory as
    *  the parent (mirrors orchestrator wiring), NOT a hardcoded "/tmp". */
@@ -189,7 +213,12 @@ interface RunChildArgs {
 }
 
 async function runChildOnProvider(args: RunChildArgs): Promise<void> {
-  const { db, bus, messages, provider, agentName, childTaskId, message, cwd, emit, control } = args;
+  const { db, bus, messages, provider, agentName, childTaskId, message, cwd, emit, control, resumeFrom, terminalGuard } = args;
+  // VOS-170: re-driven parent may self-park on a fresh ask_agent during its
+  // resumed turn — guard the terminal flip so it doesn't clobber that.
+  const terminalWhere = terminalGuard
+    ? "WHERE id = ? AND state = 'TASK_STATE_WORKING'"
+    : "WHERE id = ?";
   const childRunId = "child-" + childTaskId;
 
   const ctxRow = db
@@ -251,6 +280,9 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
       // VOS-124: forward the agent name so providers write the correct
       // identity into turn.start.payload.agent.
       agent: agentName,
+      // VOS-170: resume the parent's persisted Claude session when re-driving
+      // a parked parent. Unset for fresh child dispatch.
+      resumeFrom,
     });
 
     // VOS-96 T6: canonical event loop per ADR-0001 §Decision. Provider
@@ -387,18 +419,82 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
     const truncated = (errorMessage ?? "unknown").slice(0, 200);
     meta.errorMessage = `${providerName}: ${truncated}`;
     db.run(
-      "UPDATE tasks SET state = ?, metadata = ?, updated_at = ? WHERE id = ?",
+      `UPDATE tasks SET state = ?, metadata = ?, updated_at = ? ${terminalWhere}`,
       [terminalState, JSON.stringify(meta), Date.now(), childTaskId],
     );
   } else {
     db.run(
-      "UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?",
+      `UPDATE tasks SET state = ?, updated_at = ? ${terminalWhere}`,
       [terminalState, Date.now(), childTaskId],
     );
   }
 
+  // VOS-170: under terminalGuard the flip may have been a no-op (the task
+  // self-re-parked on a fresh ask_agent). Emit the row's ACTUAL state so the
+  // bus never carries a COMPLETED for a task that is really WAITING_ON_AGENT.
+  const emittedState = terminalGuard
+    ? ((
+        db
+          .query("SELECT state FROM tasks WHERE id = ?")
+          .get(childTaskId) as { state: string } | undefined
+      )?.state ?? terminalState)
+    : terminalState;
   bus.emit({
     type: "task.state_changed",
-    payload: { taskId: childTaskId, state: terminalState },
+    payload: { taskId: childTaskId, state: emittedState },
   });
+}
+
+/**
+ * VOS-170: build the parent re-driver used by `reconcileWaitingParents`.
+ *
+ * A parked parent whose children all reached terminal must be re-driven after
+ * a daemon restart — its in-process resume hint (the event bus) is gone and
+ * its CC subprocess died with the daemon. This dispatcher re-spawns the
+ * parent's Claude session (`resumeFrom`) with the composed child output as
+ * the next prompt, drains it into the canonical `messages` table against the
+ * parent's own row, and flips the parent to a terminal state on drain.
+ *
+ * Reuses `runChildOnProvider` with `terminalGuard: true`: if the resumed
+ * parent fires a fresh ask_agent it self-parks in WAITING_ON_AGENT, and the
+ * CAS-guarded terminal flip must not clobber that.
+ *
+ * Like `makeDispatchChildTask`, fires the work on the next microtask and
+ * resolves immediately so the caller (the boot sweep) does not block on the
+ * full parent run.
+ */
+export function makeRedriveParentTask(deps: DispatchChildDeps): RedriveParentFn {
+  const messages = makeMessagesRepo(deps.db);
+  const emit = deps.emit ?? ((_type: string, _payload: Record<string, unknown>) => {});
+  const providerFor = makeProviderFor(deps);
+
+  return (parentTaskId, args) =>
+    new Promise<void>((resolve) => {
+      queueMicrotask(() => {
+        runChildOnProvider({
+          db: deps.db,
+          bus: deps.bus,
+          messages,
+          provider: providerFor(args.agentName),
+          agentName: args.agentName,
+          childTaskId: parentTaskId,
+          message: args.message,
+          cwd: deps.cwd,
+          emit,
+          control: deps.control,
+          resumeFrom: args.resumeFrom,
+          terminalGuard: true,
+        }).catch((err) => {
+          deps.bus.emit({
+            type: "parent.redrive_error",
+            payload: {
+              parent_task_id: parentTaskId,
+              agent_name: args.agentName,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        });
+      });
+      resolve();
+    });
 }

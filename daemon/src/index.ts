@@ -109,6 +109,10 @@ const app = await buildApp({
   db,
   vaultRoot,
   runBootProbe: true,
+  // VOS-170: re-drive parked WAITING_ON_AGENT parents whose children all
+  // finished while a previous daemon was down. Off by default in buildApp
+  // (tests); the production entrypoint opts in.
+  runReconcileSweep: true,
   token: TOKEN,
   bootTime: BOOT_TIME,
   // Pin daemonBase to the actual listening port. Without this app.ts falls
