@@ -40,6 +40,9 @@ import { vaultMoveDef, makeVaultMove } from "./tools/vault-move.ts";
 import { vaultLoadTemplateDef, makeVaultLoadTemplate } from "./tools/vault-load-template.ts";
 import { askUserDef, makeAskUser } from "./tools/ask-user.ts";
 import { askAgentDef, makeAskAgent } from "./tools/ask-agent.ts";
+import { listTasksDef, makeListTasks } from "./tools/list-tasks.ts";
+import { listChildrenDef, makeListChildren } from "./tools/list-children.ts";
+import { getTaskDef, makeGetTask } from "./tools/get-task.ts";
 import type { HandoffLog } from "../../agents/handoff-log.ts";
 
 export interface McpDeps {
@@ -257,6 +260,13 @@ export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Mcp
       milestone: deps.milestone,
     }) as never,
   );
+
+  // VOS-169: navigation queries. Read-only walks over the perpetual tree of
+  // Tasks — the managing agent and the activity-list UI consume the same
+  // primitives, so navigation never drifts from a bespoke API.
+  registerTool("list_tasks",    listTasksDef,    makeListTasks({ db }) as never);
+  registerTool("list_children", listChildrenDef, makeListChildren({ db }) as never);
+  registerTool("get_task",      getTaskDef,      makeGetTask({ db }) as never);
 
   return mcp;
 }
