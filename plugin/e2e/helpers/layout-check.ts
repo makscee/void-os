@@ -36,15 +36,21 @@ export async function assertBox(
 /**
  * Screenshot-diff regression gate. On the first run Playwright writes the
  * baseline (and throws "A snapshot doesn't exist" — the caller treats that
- * as a first-run verdict, not a failure). Thereafter it pixel-diffs with a
- * tolerance that absorbs Obsidian font / anti-aliasing noise.
+ * as a first-run verdict, not a failure). Thereafter it pixel-diffs.
+ *
+ * `maxDiffPixelRatio` defaults to 0.02 — enough to absorb Obsidian font /
+ * anti-aliasing noise. Surfaces whose CONTENT legitimately varies run to
+ * run (e.g. the inspector trace, whose width tracks variable-length agent
+ * / task ids) pass a looser ratio: the goal is to catch LAYOUT drift —
+ * collapsed panes, mis-stacked chrome — not pixel-identical content.
  */
 export async function layoutShot(
   locator: Locator,
   name: string,
+  maxDiffPixelRatio = 0.02,
 ): Promise<void> {
   await expect(locator).toHaveScreenshot(`${name}.png`, {
-    maxDiffPixelRatio: 0.02,
+    maxDiffPixelRatio,
     animations: "disabled",
   });
 }
