@@ -285,7 +285,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // VOS-79: chat-lifecycle HTTP surface. `chatsApi` owns list/create;
   // `chatApi` owns per-chat routes (GET /chat/:id, /messages, POST /message).
   app.route("/", chatsApi(deps.db));
-  app.route("/", agentsApi(deps.db));
+  app.route("/", agentsApi(deps.db, deps.vaultRoot));
   // VOS-118: pass the shared bus so POST /chat/:id/message can return early
   // (with {run_id, status:"running"}) instead of blocking until dispatch
   // finishes — required for ask_user flows where dispatch parks indefinitely
