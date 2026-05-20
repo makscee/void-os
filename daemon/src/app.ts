@@ -385,6 +385,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // VOS-162: branch verb — auth-gated like the control verbs. Forks the
   // agent's repo (= the daemon's chat cwd) into a new worktree from HEAD.
   app.use("/agents/:id/branch", makeRequireAuth(token));
+  // VOS-165: branch-worktree prune — auth-gated. Removes the `branch/*`
+  // worktrees the branch verb accumulates. Static path, so it does not
+  // collide with the `/agents/:id/*` param middlewares.
+  app.use("/agents/branch/prune", makeRequireAuth(token));
   mountAgentsControl(app, {
     bus,
     control: agentControl,

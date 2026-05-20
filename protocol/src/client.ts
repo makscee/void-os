@@ -38,6 +38,16 @@ export type ChatSendResp = z.infer<typeof ChatSendResp>;
 export type ChatAnswerResp = z.infer<typeof ChatAnswerResp>;
 export type ChatCancelResp = z.infer<typeof ChatCancelResp>;
 
+// Verified against daemon/src/api/agents-control.ts POST /agents/branch/prune
+// — returns { pruned, kept, failed } from pruneBranchWorktrees.
+const BranchWorktree = z.object({ path: z.string(), branch: z.string() });
+const PruneBranchesResp = z.object({
+  pruned: z.array(BranchWorktree),
+  kept: z.array(BranchWorktree),
+  failed: z.array(BranchWorktree.extend({ error: z.string() })),
+}).passthrough();
+export type PruneBranchesResp = z.infer<typeof PruneBranchesResp>;
+
 export class ApiError extends Error {
   readonly name = "ApiError" as const;
   constructor(public readonly code: string, message: string, public readonly status: number) {
@@ -65,7 +75,10 @@ export interface ClientOpts {
 
 export interface Client {
   health(): Promise<HealthResp>;
-  agents: { list(): Promise<AgentsListResp> };
+  agents: {
+    list(): Promise<AgentsListResp>;
+    pruneBranches(opts?: { olderThanMinutes?: number }): Promise<PruneBranchesResp>;
+  };
   vault: {
     read(path: string): Promise<VaultFileResp>;
     write(path: string, content: string): Promise<VaultWriteResp>;
@@ -144,7 +157,22 @@ export function makeClient(opts: ClientOpts): Client {
 
   return {
     health: () => call("/health", { method: "GET" }, HealthResp),
-    agents: { list: () => call("/agents", { method: "GET" }, AgentsListResp) },
+    agents: {
+      list: () => call("/agents", { method: "GET" }, AgentsListResp),
+      pruneBranches: (popts) =>
+        call(
+          "/agents/branch/prune",
+          {
+            method: "POST",
+            body: JSON.stringify(
+              popts?.olderThanMinutes != null
+                ? { older_than_minutes: popts.olderThanMinutes }
+                : {},
+            ),
+          },
+          PruneBranchesResp,
+        ),
+    },
     vault: {
       read: (path) => call(`/vault/file?path=${encodeURIComponent(path)}`, { method: "GET" }, VaultFileResp),
       write: (path, content) =>

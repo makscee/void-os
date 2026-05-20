@@ -40,3 +40,15 @@ test("agents list against no daemon exits 3", () => {
   const r = spawnSync(BIN, ["agents", "list"], { env: { ...process.env, HOME: tmp, VOID_OS_BASE: `http://127.0.0.1:${port}`, VOID_OS_TOKEN: "x" }, encoding: "utf8", timeout: 5000 });
   expect(r.status).toBe(3);
 });
+
+// VOS-165: prune-branches subcommand.
+test("agents prune-branches rejects a negative --older-than (exit 2)", () => {
+  const r = spawnSync(BIN, ["agents", "prune-branches", "--older-than", "-5"], { env: { ...process.env, HOME: tmp, VOID_OS_BASE: `http://127.0.0.1:${port}`, VOID_OS_TOKEN: "x" }, encoding: "utf8", timeout: 5000 });
+  expect(r.status).toBe(2);
+  expect(r.stderr).toContain("--older-than");
+});
+
+test("agents prune-branches against no daemon exits 3", () => {
+  const r = spawnSync(BIN, ["agents", "prune-branches"], { env: { ...process.env, HOME: tmp, VOID_OS_BASE: `http://127.0.0.1:${port}`, VOID_OS_TOKEN: "x" }, encoding: "utf8", timeout: 5000 });
+  expect(r.status).toBe(3);
+});

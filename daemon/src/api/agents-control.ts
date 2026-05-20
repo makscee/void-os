@@ -27,7 +27,12 @@ import type { Hono } from "hono";
 import type { EventBus } from "../events/index.ts";
 import type { AgentControlRegistry } from "../agents/control.ts";
 import type { InflightRegistry } from "../agents/inflight.ts";
-import { branchAgent, type BranchAgentDeps } from "../agents/branch.ts";
+import {
+  branchAgent,
+  pruneBranchWorktrees,
+  type BranchAgentDeps,
+  type PruneBranchWorktreesDeps,
+} from "../agents/branch.ts";
 
 export interface MountAgentsControlDeps {
   bus: EventBus;
@@ -39,6 +44,8 @@ export interface MountAgentsControlDeps {
   repoRoot: string;
   /** VOS-162: test seam — overrides for branchAgent's git spawn + paths. */
   branchOverrides?: Partial<Pick<BranchAgentDeps, "runGit" | "worktreeParent" | "nonce">>;
+  /** VOS-165: test seam — overrides for pruneBranchWorktrees' git spawn + clock. */
+  pruneOverrides?: Partial<Pick<PruneBranchWorktreesDeps, "runGit" | "mtimeOf" | "now">>;
 }
 
 type Verb = "pause" | "resume" | "kill";
@@ -83,6 +90,66 @@ export function mountAgentsControl(app: Hono, deps: MountAgentsControlDeps): voi
   app.post("/agents/:id/pause", handle("pause"));
   app.post("/agents/:id/resume", handle("resume"));
   app.post("/agents/:id/kill", handle("kill"));
+
+  // VOS-165: branch-worktree prune. Removes the worktrees the branch verb
+  // has accumulated (`branch/*` namespace only). Operator-driven GC —
+  // there is no agent lifecycle hook to clean these on completion (the
+  // branched checkout outlives the agent), so the operator sweeps. An
+  // optional `older_than_minutes` keeps worktrees touched recently.
+  //
+  // Registered before `/agents/:id/branch` so the static `branch` segment
+  // is never captured as an `:id`.
+  app.post("/agents/branch/prune", async (c) => {
+    let olderThanMs: number | undefined;
+    try {
+      const body = (await c.req.json().catch(() => ({}))) as {
+        older_than_minutes?: unknown;
+      };
+      if (body.older_than_minutes != null) {
+        const m = Number(body.older_than_minutes);
+        if (!Number.isFinite(m) || m < 0) {
+          return c.json(
+            { error: "bad_request", detail: "older_than_minutes must be a non-negative number" },
+            400,
+          );
+        }
+        olderThanMs = m * 60_000;
+      }
+    } catch {
+      // No body / unparseable — prune everything.
+    }
+
+    let report;
+    try {
+      report = await pruneBranchWorktrees({
+        repoRoot: deps.repoRoot,
+        olderThanMs,
+        runGit: deps.pruneOverrides?.runGit,
+        mtimeOf: deps.pruneOverrides?.mtimeOf,
+        now: deps.pruneOverrides?.now,
+      });
+    } catch (e) {
+      return c.json(
+        { error: "prune_failed", detail: e instanceof Error ? e.message : String(e) },
+        500,
+      );
+    }
+
+    // Record the sweep on the event substrate so the trace shows it.
+    deps.bus.emit({
+      type: "agent.event",
+      payload: {
+        ts: new Date().toISOString(),
+        agent_id: "daemon",
+        parent_id: null,
+        kind: "status",
+        summary: `operator pruned ${report.pruned.length} branch worktree(s) (${report.kept.length} kept, ${report.failed.length} failed)`,
+        source: "daemon",
+      },
+    });
+
+    return c.json(report);
+  });
 
   // VOS-162: branch verb. Forks the agent's repo at HEAD into a new
   // worktree. Unlike the control verbs, it does not need a live run
