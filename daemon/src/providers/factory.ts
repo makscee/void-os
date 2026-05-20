@@ -13,6 +13,7 @@ import {
 import type { Database } from "bun:sqlite";
 import type { EventBus } from "../events/index.ts";
 import type { PermissionEngine, AgentDefn } from "../permissions/engine.ts";
+import type { LiveAgentRegistry } from "../agents/live-agents.ts";
 
 export interface ProviderEnv {
   VOS_PROVIDER?: string;
@@ -37,6 +38,9 @@ export interface ProviderDeps {
   daemonBase: string;
   hookScriptPath: string;
   loadAgentDefn: (name: string) => AgentDefn;
+  /** VOS-164: live-agent registry — only the claude-code provider uses it
+   *  (the fake provider spawns no CC subprocess and posts no harness hooks). */
+  liveAgents?: LiveAgentRegistry;
 }
 
 export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
@@ -52,6 +56,7 @@ export function makeProvider(env: ProviderEnv, deps: ProviderDeps): Provider {
       daemonBase: deps.daemonBase,
       hookScriptPath: deps.hookScriptPath,
       loadAgentDefn: deps.loadAgentDefn,
+      liveAgents: deps.liveAgents,
     });
   }
   if (kind === "fake") {

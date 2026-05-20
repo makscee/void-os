@@ -12,6 +12,7 @@ import { parseUsageFromAssistantEvent } from "./usage-extract.js";
 import { TraceWriter } from "../../trace/writer";
 import type { AgentDefn, PermissionEngine } from "../../permissions/engine.js";
 import { resolveSystemDeny } from "../../permissions/engine.js";
+import type { LiveAgentRegistry } from "../../agents/live-agents.ts";
 import { toIntent } from "../../permissions/intent";
 import {
   buildSpawnSettings,
@@ -288,6 +289,15 @@ interface CcSpawnerDeps {
   daemonBase: string;
   hookScriptPath: string;
   loadAgentDefn: (name: string) => AgentDefn;
+  /**
+   * VOS-164: live-agent registry. The spawner registers each run's
+   * `req.taskId` (= the `VOS_HOOK_AGENT_ID` the CC subprocess's hook scripts
+   * post under) the moment the subprocess starts, and unregisters it when
+   * the run finalizes. POST /agents/hook-event reads this to reject forged
+   * events for agent_ids the daemon never spawned. Optional so unit tests
+   * that exercise the spawner in isolation need not wire it.
+   */
+  liveAgents?: LiveAgentRegistry;
   /** Test seam: override `Bun.spawn`. Defaults to the real Bun.spawn. */
   spawnFn?: (cmd: string[], opts: Parameters<typeof Bun.spawn>[1]) => ReturnType<typeof Bun.spawn>;
 }
@@ -445,6 +455,13 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         trace.close();
         throw err;
       }
+
+      // VOS-164: the subprocess is now live — record its agent_id so the
+      // un-authed POST /agents/hook-event route accepts the harness hook
+      // events this subprocess's PreToolUse/PostToolUse scripts will POST.
+      // `req.taskId` is the exact value spawn-settings.ts wrote into the
+      // subprocess env as `VOS_HOOK_AGENT_ID`. Unregistered in `finalize`.
+      deps.liveAgents?.register(req.taskId);
 
       // sessionId promise — resolves on first system event with session_id;
       // rejects (NoSessionError) if wait() resolves before capture.
@@ -631,6 +648,9 @@ export const createCcSpawner = (deps: CcSpawnerDeps): CcSpawner => {
         if (sessionId === undefined && rejectSid) {
           rejectSid(new NoSessionError(runId));
         }
+        // VOS-164: the run is over — drop its agent_id from the live set so
+        // a late/forged hook event for a finished run is no longer accepted.
+        deps.liveAgents?.unregister(req.taskId);
       };
 
       const exitPromise = (async () => {
@@ -703,6 +723,10 @@ export interface ClaudeCodeProviderDeps {
   daemonBase: string;
   hookScriptPath: string;
   loadAgentDefn: (name: string) => AgentDefn;
+  /** VOS-164: live-agent registry, forwarded to the CC spawner so it can
+   *  register/unregister each run's agent_id for the hook-event correlation
+   *  gate. See `createCcSpawner` deps. */
+  liveAgents?: LiveAgentRegistry;
 }
 
 export function makeClaudeCodeProviderComposed(
@@ -716,6 +740,7 @@ export function makeClaudeCodeProviderComposed(
     daemonBase: deps.daemonBase,
     hookScriptPath: deps.hookScriptPath,
     loadAgentDefn: deps.loadAgentDefn,
+    liveAgents: deps.liveAgents,
   });
   const iter = makeCcSpawnerIter({
     cc,

@@ -34,6 +34,7 @@ import { mountAgentsInflight } from "./api/agents-inflight.ts";
 import { mountAgentsControl } from "./api/agents-control.ts";
 import { mountAgentsHookEvent } from "./api/agents-hook-event.ts";
 import { createAgentControlRegistry } from "./agents/control.ts";
+import { createLiveAgentRegistry } from "./agents/live-agents.ts";
 import {
   createInflightBridge,
   createInflightRegistry,
@@ -213,6 +214,13 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     "pre-tool-use.ts",
   );
 
+  // VOS-164: live-agent registry — the correlation source for the un-authed
+  // POST /agents/hook-event ingest. The CC spawner (reached via makeProvider
+  // for both the orchestrator's provider and the child dispatcher) registers
+  // each run's agent_id on spawn and drops it on finalize. Hoisted here so
+  // both the provider wire-up and dispatchChildTask share the same instance.
+  const liveAgents = createLiveAgentRegistry();
+
   // VOS-106 ADR-0003: daemon currently runs from source tree; the hook
   // script must be present on disk. If it isn't, fail loudly with a
   // pointer to the ADR rather than letting the spawned CC discover it
@@ -256,6 +264,7 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
         bus,
         db: deps.db,
         tracesDir,
+        liveAgents,
         // VOS-152: no hardcoded persona fallback. The provider-instance
         // `agent` is the calling-agent identity used in MCP loopback
         // (`/mcp?agent=...`) when a CC run dispatches ask_agent. Per-chat
@@ -316,6 +325,9 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     // VOS-161: each child registers a control handle on spawn so the
     // inspector pause/kill/resume verbs can address it mid-flight.
     control: agentControl,
+    // VOS-164: forward the live-agent registry so a dispatched child's CC
+    // spawner registers the child's agent_id for the hook-event gate.
+    liveAgents,
   });
   // VOS-154: build env-driven handoff-log adapter. NULL when VOID_OS_HL_PATH
   // is unset (smoke harness, tests). Threaded into ask_agent so every
@@ -396,7 +408,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // daemon, only reach it over 127.0.0.1, and carry no bearer token). It
   // completes the union event view: PreToolUse/PostToolUse hook events
   // land here and re-enter the same `agent.event` bus Source B feeds.
-  mountAgentsHookEvent(app, { bus });
+  // VOS-164: because the route is un-authed, it gates each event on the
+  // live-agent registry — an event for an agent_id the daemon never
+  // spawned is rejected with 403, blocking forged-event injection.
+  mountAgentsHookEvent(app, { bus, liveAgents });
   return app;
 };
 

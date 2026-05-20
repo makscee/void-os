@@ -19,15 +19,28 @@
 // `AgentEvent` with `source: "cc-hook"`, and emits it on the bus. The
 // inflight registry then treats it exactly like a Source-B event.
 //
-// Auth: mounted behind `makeRequireAuth` in app.ts. The hook scripts read
-// the same daemon bearer token Source B's MCP surface uses.
+// Auth: this route is un-authed loopback-only (same trust posture as /mcp).
+// VOS-164: because there is no bearer token, the route MUST verify the posted
+// `agent_id` correlates to an agent the daemon actually spawned — otherwise
+// any host-local process could POST forged `agent.event` rows onto an
+// arbitrary agent_id trace. The `LiveAgentRegistry` (populated by the CC
+// spawner on every spawn, drained on run finalize) is that correlation
+// source; an event for an unknown agent_id is rejected with 403.
 
 import type { Hono } from "hono";
 import type { EventBus } from "../events/index.ts";
 import type { AgentEvent, AgentEventKind } from "../agents/inflight.ts";
+import type { LiveAgentRegistry } from "../agents/live-agents.ts";
 
 export interface MountHookEventDeps {
   bus: EventBus;
+  /**
+   * VOS-164: the set of agent_ids the daemon has actually spawned. A hook
+   * event whose `agent_id` is not live is rejected with 403. Required — the
+   * correlation gate is the whole point of the route's hardening, so it
+   * cannot be silently skipped by a wiring mistake.
+   */
+  liveAgents: LiveAgentRegistry;
 }
 
 /** The hook-event kinds Source A produces. A strict subset of AgentEventKind. */
@@ -61,6 +74,15 @@ export function mountAgentsHookEvent(app: Hono, deps: MountHookEventDeps): void 
     // (the registry keys every row on agent_id).
     if (typeof body.agent_id !== "string" || body.agent_id.length === 0) {
       return c.json({ error: "missing_agent_id" }, 400);
+    }
+    // VOS-164: correlation gate. The route is un-authed loopback-only, so the
+    // agent_id is the only thing distinguishing a genuine harness hook from a
+    // forged POST. Accept the event only if the daemon currently has a live
+    // run for this agent_id — i.e. it spawned the CC subprocess whose hook
+    // scripts are POSTing here. An unknown id is rejected with 403 so a
+    // host-local process cannot inject events onto an arbitrary trace.
+    if (!deps.liveAgents.has(body.agent_id)) {
+      return c.json({ error: "unknown_agent" }, 403);
     }
     if (typeof body.kind !== "string" || !HOOK_KINDS.has(body.kind)) {
       return c.json({ error: "bad_kind" }, 400);
