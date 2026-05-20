@@ -177,10 +177,25 @@ async function runChildOnProvider(args: RunChildArgs): Promise<void> {
   const childRunId = "child-" + childTaskId;
 
   const ctxRow = db
-    .query("SELECT context_id FROM tasks WHERE id = ?")
-    .get(childTaskId) as { context_id: string } | undefined;
+    .query("SELECT context_id, parent_task_id FROM tasks WHERE id = ?")
+    .get(childTaskId) as { context_id: string; parent_task_id: string | null } | undefined;
   if (!ctxRow) throw new Error(`child task not found: ${childTaskId}`);
   const contextId = ctxRow.context_id;
+
+  // VOS-155: explicit spawn bookend on the bus. The bridge in
+  // agents/inflight.ts subscribes to `child.spawn` and translates this to
+  // an `agent.event` of kind=spawn — first observation of the child for
+  // the inspector registry. Existing chat.tool_use / chat.tool_result /
+  // task.state_changed frames cover the rest of the lifecycle.
+  bus.emit({
+    type: "child.spawn",
+    payload: {
+      child_task_id: childTaskId,
+      parent_task_id: ctxRow.parent_task_id,
+      agent_name: agentName,
+      context_id: contextId,
+    },
+  });
 
   // Flip SUBMITTED → WORKING. The mint inserted with SUBMITTED so the
   // pre-dispatch state is observable; flipping to WORKING here marks the
