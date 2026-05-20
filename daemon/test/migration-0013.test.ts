@@ -25,8 +25,8 @@ describe("migration 0013 — tasks.parent_tool_call_id", () => {
     runMigrationsFromDir(db, MIGRATIONS_DIR);
     const now = Date.now();
     db.run(
-      `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at) VALUES (?, ?, 0, ?, ?)`,
-      ["ctx-1", "maya", now, now],
+      `INSERT INTO contexts (id, title, created_at) VALUES (?, NULL, ?)`,
+      ["ctx-1", now],
     );
     db.run(
       `INSERT INTO tasks (id, context_id, state, cost_usd, tokens_in, tokens_out, metadata, created_at, updated_at)

@@ -87,9 +87,13 @@ test("list returns contexts sorted updated_at desc with last_run_status", () => 
   const repo = makeChatRepo(db);
   const a = repo.create({ agent: "maya" });
   const b = repo.create({ agent: "maya" });
-  // Touch a so its updated_at is strictly greater than b's.
+  // Touch a so its activity timestamp is strictly greater than b's.
+  // Post-0016 chat-list ordering keys off the root Task's `last_event`.
   const future = Date.now() + 60_000;
-  db.run("UPDATE contexts SET updated_at = ? WHERE id = ?", [future, a.id]);
+  db.run(
+    "UPDATE tasks SET last_event = ? WHERE context_id = ? AND parent_task_id IS NULL",
+    [future, a.id],
+  );
   // Insert a 'done' run tied to chat a.
   db.run(
     "INSERT INTO runs (id, chat_id, agent, kind, status, started_at) VALUES (?,?,?,?,?,?)",

@@ -173,11 +173,19 @@ function tryCompleteParentTaskIfRunEnded(
   db: Database,
   parentTaskId: string,
 ): boolean {
+  // Post-0016 `current_run_id` lives on the root Task of the context, not on
+  // `contexts`. "Chat has an active run" = the context's root Task holds a
+  // current_run_id pointer.
   const ctx = db
     .query(
-      `SELECT c.current_run_id AS current_run_id
+      `SELECT root.current_run_id AS current_run_id
          FROM tasks t
-         JOIN contexts c ON t.context_id = c.id
+         JOIN tasks root
+           ON root.id = (
+                SELECT id FROM tasks
+                 WHERE context_id = t.context_id AND parent_task_id IS NULL
+                 ORDER BY created_at ASC LIMIT 1
+              )
         WHERE t.id = ?`,
     )
     .get(parentTaskId) as { current_run_id: string | null } | undefined;
