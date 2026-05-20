@@ -264,13 +264,15 @@ describe("ask_agent integration (maya -> journaler via fake providers)", () => {
     expect(child!.state).toBe("TASK_STATE_COMPLETED");
     expect(child!.parent_task_id).toBe(parent!.id);
     expect(child!.context_id).toBe(parent!.context_id);
-    // Child's target_agent column carries journaler (parent's agent lives
-    // on contexts.agent_name).
+    // Child's target_agent column carries journaler. Post-0016 the parent's
+    // agent lives on `tasks.agent` (the Context is a thin grouping).
     expect(child!.target_agent).toBe("journaler");
-    const ctxRow = booted.db
-      .query("SELECT agent_name FROM contexts WHERE id=?")
-      .get(chatId) as { agent_name: string };
-    expect(ctxRow.agent_name).toBe("maya");
+    const rootRow = booted.db
+      .query(
+        "SELECT agent FROM tasks WHERE context_id=? AND parent_task_id IS NULL",
+      )
+      .get(chatId) as { agent: string };
+    expect(rootRow.agent).toBe("maya");
   }, 15_000);
 });
 

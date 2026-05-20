@@ -14,8 +14,8 @@ describe("session-replay synthetic child_task_started", () => {
     const now = Date.now();
 
     db.run(
-      `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at) VALUES (?, ?, 0, ?, ?)`,
-      ["ctx", "maya", now, now],
+      `INSERT INTO contexts (id, title, created_at) VALUES (?, NULL, ?)`,
+      ["ctx", now],
     );
     db.run(
       `INSERT INTO tasks (id, context_id, parent_task_id, parent_tool_call_id, state, cost_usd, tokens_in, tokens_out, metadata, target_agent, created_at, updated_at)
@@ -101,8 +101,8 @@ describe("session-replay synthetic child_task_started", () => {
     const now = Date.now();
 
     db.run(
-      `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at) VALUES (?, ?, 0, ?, ?)`,
-      ["ctx", "maya", now, now],
+      `INSERT INTO contexts (id, title, created_at) VALUES (?, NULL, ?)`,
+      ["ctx", now],
     );
     db.run(
       `INSERT INTO tasks (id, context_id, parent_task_id, parent_tool_call_id, state, cost_usd, tokens_in, tokens_out, metadata, target_agent, created_at, updated_at)

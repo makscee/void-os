@@ -14,9 +14,10 @@ const freshDb = (): Database => {
 };
 
 const seedContext = (db: Database, id = "c1"): void => {
+  // Post-0016 `contexts` is thin (id/title/created_at).
   db.run(
-    `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-     VALUES (?, 'maya', 0, strftime('%s','now'), strftime('%s','now'))`,
+    `INSERT INTO contexts (id, title, created_at)
+     VALUES (?, NULL, strftime('%s','now'))`,
     [id],
   );
 };

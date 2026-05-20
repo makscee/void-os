@@ -7,11 +7,17 @@
 // column on `contexts` — it is derived from `messages.parts_text` (latest
 // ROLE_AGENT row) via a correlated subquery in list().
 //
-// Schema notes (post 0007):
-//   - chats → contexts (renamed by 0007).
-//   - contexts.agent_name replaces chats.agent.
-//   - contexts.last_msg dropped; derive on read.
-//   - tasks row is minted on context creation with state='TASK_STATE_WORKING'.
+// Schema notes (post 0016 — VOS-168):
+//   - `contexts` is a thin perpetual grouping: id, title, created_at only.
+//   - `agent`, `session_id`, `current_run_id` moved off `contexts` and onto
+//     the `tasks` table (one Session per Task). A Context may hold N root
+//     Tasks (parent_task_id IS NULL); the daemon still mints one root Task
+//     per Context on create() and the legacy `ChatRow` surface projects
+//     that root Task's agent/session/run for back-compat.
+//   - `tasks.last_event` (epoch-ms) is a denormalised activity timestamp —
+//     it backs the chat-list ordering that `contexts.updated_at` gave before.
+//   - `openTaskFor` still resolves "the chat's root Task" — the oldest
+//     parent_task_id IS NULL row for the context.
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -109,6 +115,23 @@ export function openTaskFor(db: Database, contextId: string): string {
   return row.id;
 }
 
+/** Bump the root Task's `last_event` (epoch-ms) for a context. Post-0016 this
+ *  is what powers chat-list recency ordering — it replaces the
+ *  `contexts.updated_at` bump the 1:1 era used. No-op if the context has no
+ *  root Task (should never happen — create() always mints one). */
+export function touchRootTask(db: Database, contextId: string): void {
+  const now = Date.now();
+  db.run(
+    `UPDATE tasks SET last_event = ?, updated_at = ?
+       WHERE id = (
+         SELECT id FROM tasks
+          WHERE context_id = ? AND parent_task_id IS NULL
+          ORDER BY created_at ASC LIMIT 1
+       )`,
+    [now, now, contextId],
+  );
+}
+
 /** Flip `tasks.state` for the WORKING ↔ INPUT_REQUIRED handshake. Constrained
  *  to the two non-terminal states that the orchestrator legitimately toggles;
  *  terminal states (COMPLETED/FAILED/CANCELED) are NOT in the 0007 CHECK
@@ -132,23 +155,30 @@ export function makeChatRepo(db: Database): ChatRepo {
       const taskId = randomUUID();
       const now = Date.now();
       const insertBoth = db.transaction(() => {
+        // Context is thin (id/title/created_at); the root Task carries agent,
+        // session, run state, and the `last_event` activity timestamp.
         db.run(
-          "INSERT INTO contexts (id, agent_name, title, created_at, updated_at) VALUES (?,?,?,?,?)",
-          [id, agent, null, now, now],
+          "INSERT INTO contexts (id, title, created_at) VALUES (?,?,?)",
+          [id, null, now],
         );
         db.run(
-          "INSERT INTO tasks (id, context_id, state, created_at, updated_at) VALUES (?, ?, 'TASK_STATE_WORKING', ?, ?)",
-          [taskId, id, now, now],
+          "INSERT INTO tasks (id, context_id, state, agent, last_event, created_at, updated_at) VALUES (?, ?, 'TASK_STATE_WORKING', ?, ?, ?, ?)",
+          [taskId, id, agent, now, now, now],
         );
       });
       insertBoth();
       const row = db
         .query(
-          // Surface `agent` alias for back-compat with downstream consumers
-          // and inject a NULL last_msg for the same reason.
-          "SELECT id, agent_name AS agent, title, session_id, current_run_id, NULL AS last_msg, created_at, updated_at FROM contexts WHERE id = ?",
+          // Project the root Task's agent/session/run onto the legacy
+          // `ChatRow` surface; `updated_at` is the root Task's last_event.
+          `SELECT c.id, t.agent AS agent, c.title, t.session_id, t.current_run_id,
+                  NULL AS last_msg, c.created_at,
+                  COALESCE(t.last_event, c.created_at) AS updated_at
+             FROM contexts c
+             JOIN tasks t ON t.id = ?
+            WHERE c.id = ?`,
         )
-        .get(id) as ChatRow;
+        .get(taskId, id) as ChatRow;
       return { ...row, task_id: taskId };
     },
     list() {
@@ -165,16 +195,20 @@ export function makeChatRepo(db: Database): ChatRepo {
       // VOS-110: surface the latest costs row per chat for the context-window
       // meter. Tiebreak on equal `ts` by highest `id` so a same-ts replay
       // deterministically picks the most-recently-inserted row.
+      // `root` is the chat's root Task (oldest parent_task_id IS NULL row) —
+      // it carries agent + the `last_event` activity timestamp the list is
+      // ordered by. The 1:1 era stored these on the context; post-0016 the
+      // chat-list view still projects the root Task.
       const rows = db
         .query(
-          `SELECT c.id, c.agent_name AS agent, c.title,
+          `SELECT c.id, root.agent AS agent, c.title,
                   (SELECT substr(m.parts_text, 1, 200)
                      FROM messages m
                     WHERE m.context_id = c.id AND m.role = 'ROLE_AGENT'
                       AND m.parts_text != ''
                     ORDER BY m.ts DESC, m.ord DESC
                     LIMIT 1) AS last_msg,
-                  c.updated_at,
+                  COALESCE(root.last_event, c.created_at) AS updated_at,
                   (SELECT r.status
                      FROM runs r
                     WHERE r.chat_id = c.id
@@ -198,6 +232,13 @@ export function makeChatRepo(db: Database): ChatRepo {
                    + latest.cache_create_tokens
                    + latest.cache_read_tokens) AS context_tokens
              FROM contexts c
+             JOIN tasks root
+               ON root.id = (
+                    SELECT id FROM tasks
+                     WHERE context_id = c.id AND parent_task_id IS NULL
+                     ORDER BY created_at ASC
+                     LIMIT 1
+                  )
         LEFT JOIN costs latest
                ON latest.id = (
                     SELECT id FROM costs
@@ -205,7 +246,7 @@ export function makeChatRepo(db: Database): ChatRepo {
                      ORDER BY ts DESC, id DESC
                      LIMIT 1
                   )
-            ORDER BY c.updated_at DESC`,
+            ORDER BY updated_at DESC`,
         )
         .all() as Array<
           Omit<
@@ -250,40 +291,64 @@ export function makeChatRepo(db: Database): ChatRepo {
       }));
     },
     get(id) {
+      // Project the root Task's agent/session/run onto the legacy ChatRow.
       return (
         (db
           .query(
-            "SELECT id, agent_name AS agent, title, session_id, current_run_id, NULL AS last_msg, created_at, updated_at FROM contexts WHERE id = ?",
+            `SELECT c.id, root.agent AS agent, c.title,
+                    root.session_id, root.current_run_id,
+                    NULL AS last_msg, c.created_at,
+                    COALESCE(root.last_event, c.created_at) AS updated_at
+               FROM contexts c
+               JOIN tasks root
+                 ON root.id = (
+                      SELECT id FROM tasks
+                       WHERE context_id = c.id AND parent_task_id IS NULL
+                       ORDER BY created_at ASC
+                       LIMIT 1
+                    )
+              WHERE c.id = ?`,
           )
           .get(id) as ChatRow | null) ?? null
       );
     },
     setTitle(id, title) {
       const r = db.run(
-        "UPDATE contexts SET title = ?, updated_at = ? WHERE id = ? AND title IS NULL",
-        [title, Date.now(), id],
+        "UPDATE contexts SET title = ? WHERE id = ? AND title IS NULL",
+        [title, id],
       );
+      if (r.changes === 1) touchRootTask(db, id);
       return r.changes === 1;
     },
     setLastMsg(id, _lastMsg) {
-      // last_msg column dropped in 0007. We only bump updated_at so list
-      // ordering and "touched" semantics stay intact. The actual preview
-      // text now comes from messages.parts_text via the list() subquery.
-      db.run("UPDATE contexts SET updated_at = ? WHERE id = ?", [
-        Date.now(),
-        id,
-      ]);
+      // last_msg column dropped in 0007; the preview text now comes from
+      // messages.parts_text via the list() subquery. We only bump the root
+      // Task's `last_event` so list ordering / "touched" semantics hold.
+      touchRootTask(db, id);
     },
     setCurrentRun(id, runId) {
-      db.run("UPDATE contexts SET current_run_id = ? WHERE id = ?", [
-        runId,
-        id,
-      ]);
+      // current_run_id moved off `contexts` onto the root Task (0016).
+      db.run(
+        `UPDATE tasks SET current_run_id = ?
+           WHERE id = (
+             SELECT id FROM tasks
+              WHERE context_id = ? AND parent_task_id IS NULL
+              ORDER BY created_at ASC LIMIT 1
+           )`,
+        [runId, id],
+      );
     },
     setSession(id, sessionId) {
+      // session_id moved off `contexts` onto the root Task (0016).
+      const now = Date.now();
       db.run(
-        "UPDATE contexts SET session_id = ?, updated_at = ? WHERE id = ?",
-        [sessionId, Date.now(), id],
+        `UPDATE tasks SET session_id = ?, last_event = ?, updated_at = ?
+           WHERE id = (
+             SELECT id FROM tasks
+              WHERE context_id = ? AND parent_task_id IS NULL
+              ORDER BY created_at ASC LIMIT 1
+           )`,
+        [sessionId, now, now, id],
       );
     },
     delete(id) {

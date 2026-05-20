@@ -30,8 +30,8 @@ const freshDb = (): Database => {
 
 const seedContext = (db: Database, id = "c"): void => {
   db.run(
-    `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-     VALUES (?, 'maya', 0, strftime('%s','now'), strftime('%s','now'))`,
+    `INSERT INTO contexts (id, title, created_at)
+     VALUES (?, NULL, strftime('%s','now'))`,
     [id],
   );
 };
@@ -60,13 +60,14 @@ describe("resumeParentOnChildTerminal", () => {
     // own stream drains.
     const db = freshDb();
     seedContext(db);
-    // Seed a runs row so the FK on contexts.current_run_id is satisfied.
+    // Seed a runs row so the FK on tasks.current_run_id is satisfied.
     db.run(
       `INSERT INTO runs (id, chat_id, agent, kind, status, started_at)
        VALUES ('r1', 'c', 'maya', 'chat', 'running', strftime('%s','now'))`,
     );
-    db.run("UPDATE contexts SET current_run_id='r1' WHERE id='c'");
+    // Post-0016 current_run_id lives on the root Task (`p`), not the context.
     seedTask(db, "p", "TASK_STATE_WAITING_ON_AGENT");
+    db.run("UPDATE tasks SET current_run_id='r1' WHERE id='p'");
     seedTask(db, "ch", "TASK_STATE_COMPLETED", {
       target_agent: "journaler",
       parent_task_id: "p",

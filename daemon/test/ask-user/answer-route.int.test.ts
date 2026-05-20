@@ -31,7 +31,7 @@ function fixture() {
   db.exec("PRAGMA foreign_keys = ON");
   runMigrationsFromDir(db, MIGRATIONS);
   db.run(
-    "INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived) VALUES ('ctx', 'maya', NULL, 0, 0, 0)",
+    "INSERT INTO contexts (id, title, created_at) VALUES ('ctx', NULL, 0)",
   );
   db.run(
     "INSERT INTO tasks (id, context_id, state, cost_usd, tokens_in, tokens_out, metadata, created_at, updated_at) " +

@@ -19,7 +19,7 @@ function seedContextAndTask(db: Database) {
   // pattern in providers/fake/__tests__/ask-user.test.ts. The plan's literal
   // seed referenced stale columns (agent_id, separate agents row).
   db.exec(
-    `INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived) VALUES ('${contextId}', 'maya', NULL, 1, 1, 0)`,
+    `INSERT INTO contexts (id, title, created_at) VALUES ('${contextId}', NULL, 1)`,
   );
   db.exec(
     `INSERT INTO tasks (id, context_id, state, cost_usd, tokens_in, tokens_out, metadata, created_at, updated_at) VALUES ('${taskId}', '${contextId}', 'TASK_STATE_WORKING', 0, 0, 0, '{}', 1, 1)`,

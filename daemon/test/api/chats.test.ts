@@ -10,9 +10,12 @@
 import { test, describe, expect } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
 import { Hono } from "hono";
 import { chatsApi } from "../../src/api/chats.ts";
+import {
+  applyMigrations,
+  loadMigrations,
+} from "../../src/adapters/sqlite/migrations.ts";
 
 const MIGRATIONS_DIR = join(
   import.meta.dir,
@@ -24,24 +27,20 @@ const MIGRATIONS_DIR = join(
   "migrations",
 );
 
-// Load migrations through 0008 so both `agents` + `contexts`/`chats` tables exist.
-const MIGRATIONS = [
-  "0001_init.sql",
-  "0002_runs_columns.sql",
-  "0003_chat_lifecycle.sql",
-  "0004_messages.sql",
-  "0005_costs_cache.sql",
-  "0006_costs_chat_id.sql",
-  "0007_a2a_tables.sql",
-  "0008_agents_recreate.sql",
-  "0015_agents_rich_fields.sql", // VOS-153 Task 3: adds color/avatar/tagline columns (selected by repo.list)
-];
-
 function makeDb(): Database {
   const db = new Database(":memory:");
-  for (const m of MIGRATIONS) {
-    db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
-  }
+  // VOS-168: apply the full ordered migration chain through 0016 (thin
+  // Context). Migration 0014 drops the placeholder `maya` seed, so re-seed
+  // it for the strict POST /chats agent validation.
+  applyMigrations(
+    db,
+    loadMigrations(MIGRATIONS_DIR).filter(
+      (mg) => mg.version.slice(0, 4) <= "0016",
+    ),
+  );
+  db.run(
+    "INSERT INTO agents (name, description, model, vault_path, updated_at) VALUES ('maya','Default void-os agent.','opus','agents/maya/agent.md',0)",
+  );
   return db;
 }
 

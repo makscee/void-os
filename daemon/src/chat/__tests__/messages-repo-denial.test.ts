@@ -30,8 +30,8 @@ function seed(db: Database): { contextId: string; taskId: string; runId: string 
   const now = Date.now();
   db.exec("PRAGMA foreign_keys = ON");
   db.run(
-    "INSERT INTO contexts (id, agent_name, created_at, updated_at) VALUES (?, ?, ?, ?)",
-    [contextId, "maya", now, now],
+    "INSERT INTO contexts (id, title, created_at) VALUES (?, NULL, ?)",
+    [contextId, now],
   );
   db.run(
     "INSERT INTO tasks (id, context_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",

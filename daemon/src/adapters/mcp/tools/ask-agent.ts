@@ -111,14 +111,23 @@ export function mintChildAndFlipParent(db: Database, a: MintArgs): void {
   if (!a.parentToolCallId) throw new Error("parentToolCallId required");
   const now = Math.floor(Date.now() / 1000);
   const tx = db.transaction(() => {
+    // Post-0016: `tasks.agent` names the agent that runs the Task. A child
+    // minted by ask_agent runs as `targetAgent`, so `agent` == `target_agent`
+    // here. `last_event` seeds at mint time for activity-list ordering.
     db.run(
       `INSERT INTO tasks
          (id, context_id, parent_task_id, parent_tool_call_id, state,
+          agent, last_event,
           cost_usd, tokens_in, tokens_out, metadata,
           created_at, updated_at, target_agent)
        VALUES (?, ?, ?, ?, 'TASK_STATE_SUBMITTED',
+               ?, ?,
                0, 0, 0, '{}', ?, ?, ?)`,
-      [a.childId, a.contextId, a.parentId, a.parentToolCallId, now, now, a.targetAgent],
+      [
+        a.childId, a.contextId, a.parentId, a.parentToolCallId,
+        a.targetAgent, now,
+        now, now, a.targetAgent,
+      ],
     );
     const res = db.run(
       `UPDATE tasks
@@ -302,20 +311,15 @@ export function makeAskAgent(deps: AskAgentDeps) {
         throw new AskAgentError(`unknown agent: ${args.target_agent_id}`);
       }
 
-      // 2. Caller identity. tasks has no agent_name column; the caller agent is
-      // the context's agent_name.
+      // 2. Caller identity. Post-0016 the agent lives directly on the Task
+      // (`tasks.agent`) — the Context no longer carries an agent.
       const callerRow = deps.db
-        .query(
-          `SELECT c.agent_name AS agent_name
-             FROM tasks t
-             JOIN contexts c ON t.context_id = c.id
-            WHERE t.id = ?`,
-        )
-        .get(taskId) as { agent_name: string } | undefined;
-      if (!callerRow) {
+        .query("SELECT agent FROM tasks WHERE id = ?")
+        .get(taskId) as { agent: string | null } | undefined;
+      if (!callerRow || !callerRow.agent) {
         throw new AskAgentError("caller task missing");
       }
-      const caller = deps.loadAgentDefn(callerRow.agent_name);
+      const caller = deps.loadAgentDefn(callerRow.agent);
 
       // 3. Permission — empty/undefined ask_agent_allow is permissive at the
       // agent level; an explicit array is an allowlist.
@@ -378,7 +382,7 @@ export function makeAskAgent(deps: AskAgentDeps) {
       // NULL_HANDOFF_LOG no-ops; a real writer that errors logs a warning
       // and returns null. Either way, dispatch proceeds.
       const dispatchStart = deps.now();
-      const fromAgent = `${callerRow.agent_name}:${taskId}`;
+      const fromAgent = `${callerRow.agent}:${taskId}`;
       const toAgent = `${args.target_agent_id}:${childTaskId}`;
       const handoffId = await handoffLog.dispatch({
         fromAgentId: fromAgent,

@@ -127,15 +127,15 @@ describe("VOS-89 T15.5: production buildApp wires dispatchChildTask", () => {
     const parentTaskId = "task-parent-1";
     const now = Math.floor(Date.now() / 1000);
     db.run(
-      `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-       VALUES (?, 'maya', 0, ?, ?)`,
-      [contextId, now, now],
+      `INSERT INTO contexts (id, title, created_at)
+       VALUES (?, NULL, ?)`,
+      [contextId, now],
     );
     db.run(
-      `INSERT INTO tasks (id, context_id, parent_task_id, state,
+      `INSERT INTO tasks (id, context_id, parent_task_id, state, agent,
                           cost_usd, tokens_in, tokens_out, metadata,
                           created_at, updated_at)
-       VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 0, 0, 0, '{}', ?, ?)`,
+       VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 'maya', 0, 0, 0, '{}', ?, ?)`,
       [parentTaskId, contextId, now, now],
     );
 

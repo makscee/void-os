@@ -1,8 +1,9 @@
 # ADR-0009 — The agent tree is a tree of Tasks
 
-- **Status:** Accepted
+- **Status:** Accepted — implemented by VOS-168 (migration 0016)
 - **Date:** 2026-05-20
-- **Related:** `CONTEXT.md`, ADR-0008, milestone `dogfood-void-os-workflow`
+- **Related:** `vault/projects/void-os/CONTEXT.md` (canonical glossary),
+  ADR-0008, ADR-0010, milestone `vos-agent-tree`
 
 ## Context
 
@@ -70,9 +71,23 @@ the orchestration node.
 - Perpetual topics fall out for free from a lifecycle-less Context.
 
 **Costs**
-- A schema migration: `contexts` sheds `agent`/`session_id`/`current_run_id`,
-  `tasks` gains them. Existing rows must be migrated.
+- A schema migration — shipped as **migration 0016** (VOS-168): `contexts`
+  sheds `agent`/`session_id`/`current_run_id`/`updated_at`/`archived` and is
+  now `id` + `title` + `created_at`; `tasks` gains `agent`, `session_id`,
+  `current_run_id`, and a denormalised `last_event` (epoch-ms activity stamp,
+  which replaces `contexts.updated_at` for chat-list ordering). The rebuild
+  backfills each Task's agent/session/run from its owning Context.
 - "Task" can read as fire-and-forget to newcomers. Mitigation: `CONTEXT.md`
   states explicitly that a Task is multi-turn (A2A `input-required`).
 - `run` is demoted to a turn-marker tag on messages, not a tree entity. Anyone
   expecting a first-class Run must consult `CONTEXT.md`.
+
+## Implementation note (VOS-168)
+
+The "1:1 Chat↔Task" the codebase carried was **never a DB constraint** — it
+lived in daemon code (`openTaskFor` picks the single oldest root Task).
+Migration 0016 adds no `UNIQUE` index: a Context may hold N rows with
+`parent_task_id IS NULL`. The daemon still mints exactly one root Task per
+Context on creation and the legacy `ChatRow` API surface projects that root
+Task's agent/session/run for back-compat; multi-root-Task creation is the
+follow-on capability the rest of `vos-agent-tree` builds on.

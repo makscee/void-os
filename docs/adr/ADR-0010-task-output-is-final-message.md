@@ -1,8 +1,17 @@
-# ADR-0010 — A Task's output is its final message; no Artifact entity in v1
+# ADR-0010 — A Task's output is its final message; the Artifact entity stays dormant in v1
 
-- **Status:** Accepted
+- **Status:** Accepted (premise corrected by VOS-168)
 - **Date:** 2026-05-20
-- **Related:** `CONTEXT.md`, ADR-0009
+- **Related:** `vault/projects/void-os/CONTEXT.md` (canonical glossary), ADR-0009
+
+> **Correction (VOS-168, 2026-05-20).** This ADR originally claimed "no
+> Artifact entity in v1". That was inaccurate: migration 0007 already created
+> an `artifacts` table and `daemon/src/types/a2a.ts` already defines the A2A
+> `Artifact` zod schema. The accurate statement — and the decision that still
+> holds — is that **no runtime code reads or writes artifacts**: the table and
+> the type are dormant scaffolding. A Task's *effective* output in v1 is its
+> final message. The ADR title and body below are corrected accordingly; the
+> decision itself is unchanged.
 
 ## Context
 
@@ -18,18 +27,26 @@ selecting artifacts by id instead of copying prose).
 
 But void-os already has a durable, shared, addressable result store: the
 **Obsidian vault**. A child agent that produces a real result writes a file
-into the vault; its final message names the path. A separate Artifact table
-would duplicate the vault for the result types void-os actually produces today
-(prose + vault edits).
+into the vault; its final message names the path. Actively using an Artifact
+table would duplicate the vault for the result types void-os actually produces
+today (prose + vault edits).
+
+An `artifacts` table and an A2A `Artifact` zod type **already exist** in the
+codebase (migration 0007, `daemon/src/types/a2a.ts`) — they were scaffolded
+when the A2A schema landed. The question this ADR settles is not whether the
+entity *exists* but whether v1 *uses* it.
 
 ## Decision
 
-**For v1, a Task's output is its final message. No Artifact entity.**
+**For v1, a Task's output is its final message. The `artifacts` table and the
+`Artifact` type stay dormant — no runtime code reads or writes them.**
 
 - A parent resuming reads the child's final message as a Brief message.
 - A sibling Task referencing a prior Task resolves the reference to that Task's
   final message.
 - Real results live in the vault; the final message names them.
+- The dormant `artifacts` table is left in place (removing it is churn for no
+  gain); it is simply not wired into any read or write path.
 
 **One forward-compatibility guard is mandatory in v1:** a Task's messages must
 be **individually addressable** — every message has an id, history is
@@ -43,7 +60,8 @@ once that engine exists.
 ## Consequences
 
 **Wins**
-- No entity duplicating the vault; no Artifact table to keep consistent.
+- No artifact rows duplicating the vault; the existing `artifacts` table is
+  not maintained as live state.
 - v1 stays small — output is just "the last message."
 - The messages-addressable guard keeps the door open at near-zero cost.
 

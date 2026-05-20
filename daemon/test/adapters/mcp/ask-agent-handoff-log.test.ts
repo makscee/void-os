@@ -68,16 +68,16 @@ function seedSchema(db: Database): void {
   // WORKING, and the child agent (`journaler`) registered in agent_cards.
   const now = Math.floor(Date.now() / 1000);
   db.run(
-    `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-     VALUES ('ctx-1', 'maya', 0, ?, ?)`,
-    [now, now],
+    `INSERT INTO contexts (id, title, created_at)
+     VALUES ('ctx-1', NULL, ?)`,
+    [now],
   );
   db.run(
     `INSERT INTO tasks
-       (id, context_id, parent_task_id, parent_tool_call_id, state,
+       (id, context_id, parent_task_id, parent_tool_call_id, state, agent,
         cost_usd, tokens_in, tokens_out, metadata,
         created_at, updated_at, target_agent)
-     VALUES ('task-parent', 'ctx-1', NULL, NULL, 'TASK_STATE_WORKING',
+     VALUES ('task-parent', 'ctx-1', NULL, NULL, 'TASK_STATE_WORKING', 'maya',
              0, 0, 0, '{}', ?, ?, 'maya')`,
     [now, now],
   );

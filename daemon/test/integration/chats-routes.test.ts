@@ -9,8 +9,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  applyMigrations,
+  loadMigrations,
+} from "../../src/adapters/sqlite/migrations.ts";
 import { buildApp } from "../../src/app.ts";
 import type {
   Orchestrator,
@@ -36,19 +39,23 @@ interface BootstrapOpts {
 
 async function bootstrap(opts: BootstrapOpts = {}) {
   const db = new Database(":memory:");
-  for (const m of [
-    "0001_init.sql",
-    "0002_runs_columns.sql",
-    "0003_chat_lifecycle.sql",
-    "0004_messages.sql",
-    "0005_costs_cache.sql",
-    "0006_costs_chat_id.sql",
-    "0007_a2a_tables.sql",
-    "0008_agents_recreate.sql", // VOS-124: agents table required for strict agent validation
-    "0015_agents_rich_fields.sql", // VOS-153: adds color/avatar/tagline columns (selected by repo.list)
-  ]) {
-    db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
-  }
+  // VOS-168: migration 0016 makes Context thin and moves agent/session/run
+  // onto the Task — its rebuild SELECTs `tasks.target_agent` (0011) and
+  // `tasks.parent_tool_call_id` (0013), so the full ordered chain through
+  // 0016 is now required. Apply via the migration runner so the
+  // "void-os:fk-rebuild" marker is honoured.
+  applyMigrations(
+    db,
+    loadMigrations(MIGRATIONS_DIR).filter(
+      (mg) => mg.version.slice(0, 4) <= "0016",
+    ),
+  );
+  // Migration 0014 drops the placeholder `maya` seed; the strict POST /chats
+  // validation needs an agent row. Re-seed `maya` directly (the prior
+  // cherry-picked migration list stopped before 0014 to keep this seed).
+  db.run(
+    "INSERT INTO agents (name, description, model, vault_path, updated_at) VALUES ('maya','Default void-os agent.','opus','agents/maya/agent.md',0)",
+  );
   const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vault-"));
   // Inject a no-op titler by default so buildApp doesn't try fetchAnthropicKey.
   const titler: Titler = opts.titler ?? { title: async () => {} };

@@ -35,9 +35,9 @@ function seedChild(
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.run(
-    `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-     VALUES (?, 'journaler', 0, ?, ?)`,
-    [opts.contextId, now, now],
+    `INSERT INTO contexts (id, title, created_at)
+     VALUES (?, NULL, ?)`,
+    [opts.contextId, now],
   );
   db.run(
     `INSERT INTO tasks
