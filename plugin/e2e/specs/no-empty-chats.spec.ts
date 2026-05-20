@@ -140,4 +140,56 @@ test.describe("VOS-153 T9: no empty chats", () => {
       await browser.close();
     }
   });
+
+  // FOLLOWUP-A: rapid double-Enter from Draft used to fire createChat
+  // twice (Send button disabled only on !text.trim(); pane stayed
+  // "draft" between the two awaits in onDraftSend). The inflight gate
+  // in ChatRoot must drop the second invocation so only one chat row
+  // is minted.
+  test("rapid double-Enter from Draft mints only one chat", async () => {
+    const state = loadState();
+    const { browser, page } = await getVaultPage(state.cdpPort);
+    const api = await request.newContext({
+      baseURL: `http://127.0.0.1:${state.port}`,
+    });
+    try {
+      await expect(page.getByTestId("vos-status-bar"))
+        .toHaveText("void-os: connected", { timeout: 20_000 });
+
+      await page.evaluate(() => {
+        // @ts-ignore
+        window.app.commands.executeCommandById("void-os:open-chat-view");
+      });
+      await expect(page.getByTestId("vos-chat-root")).toBeVisible({ timeout: 10_000 });
+      await page.keyboard.press("Escape");
+      await page.keyboard.press("Escape");
+
+      const before = await listChats(api);
+
+      const mayaRow = page.locator("[data-testid='agent-row'][data-agent-name='maya']");
+      await expect(mayaRow).toBeVisible({ timeout: 10_000 });
+      await mayaRow.click({ force: true, timeout: 5_000 });
+      await expect(page.getByTestId("draft-label")).toBeVisible({ timeout: 5_000 });
+
+      const composer = page.getByTestId("draft-composer");
+      await composer.fill("hello maya");
+      // Two Enter presses back-to-back with no awaited settle in between.
+      // Without the inflight gate the second press re-enters
+      // onDraftSend while pane.kind is still "draft" and mints a
+      // second chat row.
+      await composer.focus();
+      await page.keyboard.press("Enter");
+      await page.keyboard.press("Enter");
+
+      // Wait for transition to Active so we know the first send landed.
+      const header = page.getByTestId("chat-header");
+      await expect(header).toBeVisible({ timeout: 30_000 });
+
+      const after = await listChats(api);
+      expect(after.length).toBe(before.length + 1);
+    } finally {
+      await api.dispose();
+      await browser.close();
+    }
+  });
 });

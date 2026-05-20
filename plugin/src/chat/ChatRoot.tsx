@@ -571,6 +571,15 @@ export function ChatRoot(props: ChatRootProps) {
 
   const [composerError, setComposerError] = React.useState<string | null>(null);
 
+  // VOS-153 FOLLOWUP-A: in-flight gate for Draft send. A double-click
+  // or rapid double-Enter would otherwise re-enter onDraftSend before
+  // setPane({kind:"active",...}) lands, calling createChat twice and
+  // minting two chat rows. The ref gives a synchronous check-and-set
+  // (React state updates are batched and would still race); the state
+  // mirror drives the Send button's disabled UI.
+  const inflightRef = React.useRef(false);
+  const [draftSubmitting, setDraftSubmitting] = React.useState(false);
+
   // VOS-153 T5: atomic create-then-send with rollback. The composer
   // text is held in the assistant-ui store (clear closure passed in)
   // and only cleared on success. On createChat success but
@@ -583,6 +592,12 @@ export function ChatRoot(props: ChatRootProps) {
       // Snapshot the agent so concurrent setPane during the in-flight
       // call cannot stomp the rollback target.
       if (pane.kind !== "draft") return;
+      // FOLLOWUP-A: drop re-entrant calls. The ref flip is synchronous
+      // so a second Enter dispatched in the same task frame will see
+      // true here and bail before touching createChat.
+      if (inflightRef.current) return;
+      inflightRef.current = true;
+      setDraftSubmitting(true);
       const agent: ProtocolAgentListEntry = pane.agent;
       setComposerError(null);
       let chatId: string | undefined;
@@ -611,6 +626,9 @@ export function ChatRoot(props: ChatRootProps) {
         setComposerError(msg);
         showToast(msg);
         // Stay in Draft; do NOT clear the composer so the user can retry.
+      } finally {
+        inflightRef.current = false;
+        setDraftSubmitting(false);
       }
     },
     [pane, props.api, props.onChatIdMinted, bumpRefresh, showToast, focusComposer],
@@ -691,6 +709,7 @@ export function ChatRoot(props: ChatRootProps) {
                 <DraftComposer
                   composerInputRef={composerInputRef}
                   onSend={onDraftSend}
+                  submitting={draftSubmitting}
                 />
               </div>
             </div>
@@ -824,9 +843,14 @@ export function ChatRoot(props: ChatRootProps) {
 function DraftComposer(props: {
   composerInputRef: React.RefObject<HTMLTextAreaElement | null>;
   onSend: (text: string, clear: () => void) => Promise<void> | void;
+  submitting: boolean;
 }) {
   const [text, setText] = React.useState("");
   const clear = React.useCallback(() => setText(""), []);
+  // VOS-153 FOLLOWUP-A: belt + suspenders. ChatRoot's inflightRef is
+  // the source of truth for the race; the prop here drives UI affordance
+  // (Send disabled, Enter ignored) so the user doesn't see a "clickable"
+  // button that does nothing while the first send is in flight.
   const onKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (
@@ -838,6 +862,10 @@ function DraftComposer(props: {
         e.nativeEvent.isComposing !== true
       ) {
         if (!text.trim()) return;
+        if (props.submitting) {
+          e.preventDefault();
+          return;
+        }
         e.preventDefault();
         void props.onSend(text, clear);
       }
@@ -846,6 +874,7 @@ function DraftComposer(props: {
   );
   const onClickSend = React.useCallback(() => {
     if (!text.trim()) return;
+    if (props.submitting) return;
     void props.onSend(text, clear);
   }, [text, clear, props]);
   return (
@@ -867,7 +896,7 @@ function DraftComposer(props: {
         type="button"
         data-testid="draft-send"
         onClick={onClickSend}
-        disabled={!text.trim()}
+        disabled={!text.trim() || props.submitting}
         className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)] disabled:vos:bg-[var(--background-modifier-form-field)] disabled:vos:text-[var(--text-faint)] disabled:vos:cursor-not-allowed"
       >
         Send
