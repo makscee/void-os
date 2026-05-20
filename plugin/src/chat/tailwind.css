@@ -134,4 +134,187 @@
     border-top: 1px solid var(--background-modifier-border);
     margin: 0.8em 0;
   }
+
+  /* VOS-153 T5: Draft pane "Starting chat with X" pill. The --agent-color
+     custom property is set inline from agent.md frontmatter (T3). Falls
+     back to --text-muted when the agent doesn't define one. color-mix
+     is required (no rgba fallback) — Obsidian Electron 28+ supports it. */
+  .void-os-draft-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    margin: 8px 12px;
+    font-size: 12px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--agent-color) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--agent-color) 35%, transparent);
+    color: var(--text-normal);
+    width: fit-content;
+  }
+  .void-os-draft-avatar {
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  /* VOS-153 T7: chat header banner — agent identity at the top of an
+     active chat. --agent-color is set inline by ChatHeader.tsx from
+     agent.md frontmatter (falls back to --text-muted). color-mix is
+     required (no rgba fallback) — Obsidian Electron 28+ supports it.
+
+     Note on `position: sticky; top: 0`: the header is a sibling of the
+     ThreadPrimitive.Viewport (not a child of it), so it sits above the
+     scroll container in the flex column rather than sticking inside it.
+     The sticky declaration is retained for forward-compat in case the
+     layout is later flattened to put both inside a single scroll parent. */
+  .void-os-chat-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    background: color-mix(in srgb, var(--agent-color) 15%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--agent-color) 60%, transparent);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  /* FOLLOWUP (smoke 2026-05-20): bumped to 24px circle. The earlier 20px
+     felt cramped versus the 28px agent-row avatars in the sidebar; this
+     keeps the chat header visually a touch lighter than a sidebar row
+     while still giving the badge enough mass to read as an avatar. */
+  .void-os-chat-header-avatar {
+    box-sizing: border-box;
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+    aspect-ratio: 1 / 1;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--agent-color) 25%, transparent);
+    font-size: 13px;
+    line-height: 1;
+  }
+  .void-os-chat-header-name {
+    color: var(--text-normal);
+    font-weight: 600;
+  }
+  .void-os-chat-header-sep {
+    color: var(--text-muted);
+  }
+  .void-os-chat-header-desc {
+    color: var(--text-muted);
+  }
+
+  /* VOS-153 T6: two-line agent row with avatar + tagline + left-border
+     color accent. --agent-color is set inline by AgentList.tsx from
+     agent.md frontmatter (falls back to --text-muted). color-mix is
+     required (no rgba fallback) — Obsidian Electron 28+ supports it.
+
+     FOLLOWUP (smoke): avatar was rendering as a tall ellipse because grid
+     item `<span>` defaulted to `justify-self/align-self: stretch` and
+     `display: flex` allowed the height to stretch with the two-line meta
+     column. Lock the avatar to a 28px square via explicit min/max width,
+     height, and aspect-ratio; pin grid cell alignment with `place-self`. */
+  /* `!important` on layout properties because Obsidian's unlayered
+     `button` defaults beat any rule in @layer components (CSS cascade:
+     unlayered rules win over layered, regardless of specificity).
+     Without it the row computes display:flex padding:4px 12px and the
+     avatar lands in column 2 instead of column 1. */
+  .void-os-agent-row {
+    display: grid !important;
+    grid-template-columns: 32px 1fr !important;
+    align-items: center !important;
+    gap: 10px !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 48px !important;
+    padding: 8px 12px !important;
+    margin-bottom: 2px;
+    flex-shrink: 0;
+    background: color-mix(in srgb, var(--agent-color) 6%, transparent);
+    border: none;
+    border-left: 2px solid color-mix(in srgb, var(--agent-color) 40%, transparent);
+    border-radius: 4px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .void-os-agent-row:hover {
+    background: color-mix(in srgb, var(--agent-color) 10%, transparent);
+  }
+  .void-os-agent-row[data-active="true"] {
+    background: color-mix(in srgb, var(--agent-color) 16%, transparent);
+    border-left-color: var(--agent-color);
+  }
+  .void-os-agent-avatar {
+    box-sizing: border-box;
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    min-height: 28px !important;
+    max-width: 28px !important;
+    max-height: 28px !important;
+    aspect-ratio: 1 / 1;
+    flex-shrink: 0;
+    place-self: center;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--agent-color) 20%, transparent);
+    font-size: 14px;
+    line-height: 1;
+    overflow: hidden;
+  }
+  .void-os-agent-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  .void-os-agent-name {
+    font-size: 13px;
+    color: var(--text-normal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .void-os-agent-tagline {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* VOS-153 T8: ChatList row enrichment — agent color stripe + emoji.
+     The row's `--agent-color` CSS var is injected per-row via inline
+     style; the stripe consumes it directly while the row itself keeps
+     its Tailwind utility classes for layout. Mirrors the
+     .void-os-agent-row treatment from T6 so the agent rail and chat
+     rail read as the same visual family. */
+  .void-os-chat-stripe {
+    flex: 0 0 2px;
+    align-self: stretch;
+    min-height: 24px;
+    background: var(--agent-color, var(--text-muted));
+    border-radius: 1px;
+  }
+  .void-os-chat-emoji {
+    flex: 0 0 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .void-os-chat-row[data-active="true"] .void-os-chat-stripe {
+    background: var(--agent-color, var(--interactive-accent));
+  }
 }

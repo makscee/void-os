@@ -41,6 +41,22 @@ export async function mintChat(
 }
 
 /**
+ * GET /chats → returns the raw chat-list array as the daemon serves it.
+ *
+ * Used by VOS-153 T9 specs (no-empty-chats) to assert that picking an
+ * agent without sending does NOT mint a row. Loose typing — the spec
+ * only inspects the array length; the full shape lives in the daemon's
+ * repo.ts and would be a second source of truth here.
+ */
+export async function listChats(
+  api: APIRequestContext,
+): Promise<Array<{ id: string; agent?: string }>> {
+  const res = await api.get("/chats");
+  expect(res.status()).toBe(200);
+  return (await res.json()) as Array<{ id: string; agent?: string }>;
+}
+
+/**
  * POST /chat/:id/message with `{text}` body. Accepts 200/201/202.
  *
  * Awaiting blocks until the orchestrator's `dispatch` drains `run.end` —

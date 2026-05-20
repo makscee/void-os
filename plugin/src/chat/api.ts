@@ -53,6 +53,10 @@ export interface ChatSummary {
 
 export interface ChatApi {
   createChat(agent?: string): Promise<{ id: string; title: string; created_at: number }>;
+  /** DELETE /chats/:id. Used by the send-rollback path to discard a chat that
+   *  was created but whose first message failed to post. 404 is non-fatal
+   *  (already gone) — resolves void. Other non-2xx statuses throw ApiError. */
+  deleteChat(id: string): Promise<void>;
   postMessage(chatId: string, text: string): Promise<{ run_id: string; status: string }>;
   /** POST /chat/:id/cancel. Resolves with the cancel body on 200. Throws
    *  ApiError on 404/500. For the 409 "no_active_run" case the caller usually
@@ -239,6 +243,29 @@ export function makeChatApi(
         body: JSON.stringify({ agent }),
       });
       return jsonOrThrow(res) as Promise<{ id: string; title: string; created_at: number }>;
+    },
+    async deleteChat(id: string) {
+      const res = await fetchImpl(
+        `${base}/chats/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+      );
+      // 404 is non-fatal during send-rollback (chat already gone).
+      if (res.status === 404) {
+        try { await res.text(); } catch { /* ignore */ }
+        return;
+      }
+      if (!res.ok) {
+        let body: unknown = null;
+        try {
+          const text = await res.text();
+          if (text) {
+            try { body = JSON.parse(text); } catch { body = text; }
+          }
+        } catch { /* ignore */ }
+        throw new ApiError(res.status, body);
+      }
+      // Drain body for parity with jsonOrThrow's body-read.
+      try { await res.text(); } catch { /* ignore */ }
     },
     async postMessage(chatId, text) {
       const res = await fetchImpl(`${base}/chat/${encodeURIComponent(chatId)}/message`, {

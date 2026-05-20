@@ -1,7 +1,8 @@
 // HTTP routes for the chat registry (VOS-79 Task 3).
 //
-// - POST /chats { agent }          → create a chat, return {id, title, created_at}
-// - GET  /chats                    → list chats, recent-first, with last_msg preview
+// - POST   /chats { agent }        → create a chat, return {id, title, created_at}
+// - GET    /chats                  → list chats, recent-first, with last_msg preview
+// - DELETE /chats/:id              → remove a chat + its dependent rows (VOS-153)
 //
 // The router accepts a `Database` and constructs a `makeChatRepo(db)` once.
 // Mounted in `daemon/src/app.ts` via `app.route("/", chatsApi(db))`.
@@ -54,6 +55,23 @@ export function chatsApi(db: Database): Hono {
   });
 
   app.get("/chats", (c) => c.json(repo.list()));
+
+  // VOS-153: DELETE /chats/:id — backs the plugin's Send-failure rollback
+  // by removing a freshly-minted chat when the first message fails. Also
+  // useful for operator-initiated cleanup. Returns {id} on success, or
+  // {error:{code:"E_NOT_FOUND",...}} 404 when the chat is unknown.
+  app.delete("/chats/:id", (c) => {
+    const id = c.req.param("id");
+    const chat = repo.get(id);
+    if (!chat) {
+      return c.json(
+        { error: { code: "E_NOT_FOUND", message: "chat not found" } },
+        404,
+      );
+    }
+    repo.delete(id);
+    return c.json({ id }, 200);
+  });
 
   return app;
 }

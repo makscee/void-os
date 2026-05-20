@@ -11,8 +11,10 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 
 import type { FrameBus } from "./bus";
 import type { ChatApi } from "./api";
+import type { AgentListEntry as ProtocolAgentListEntry } from "@voidos/protocol";
 import type { AgentListEntry } from "../agents/types";
 import type { AgentsApi } from "../agents/api";
+import { DraftLabel } from "./DraftLabel";
 import {
   useChatRuntime,
   QUEUED_MARKER,
@@ -22,6 +24,7 @@ import {
 } from "./runtime";
 import { ChatList } from "./ChatList";
 import { AgentList } from "./AgentList";
+import { ChatHeader } from "./ChatHeader";
 import { CostMeter } from "./CostMeter";
 import { focusComposerInputSafely } from "./focus-composer";
 import { BashTool } from "./tools/BashTool";
@@ -52,6 +55,12 @@ export interface ChatRootProps {
 // - Opens the agent picker; awaits its resolution.
 // - On pick, mints a chat via api.createChat(agent.name) and refreshes.
 // - On null (user dismissed), no-op.
+//
+// VOS-153 T5: superseded by the Draft pane for in-pane agent picks (no chat
+// row materialises until first send). The "+ New chat" sidebar button still
+// uses this wire — it opens the modal picker and creates a row immediately,
+// matching its eager-creation semantics. The agent-list rail goes through
+// the state machine instead.
 export interface WireOnNewChatDeps {
   api: { createChat(agent?: string): Promise<{ id: string; title: string; created_at: number }> };
   openPicker: () => Promise<AgentListEntry | null>;
@@ -68,6 +77,33 @@ export function wireOnNewChat(deps: WireOnNewChatDeps): () => Promise<void> {
     const created = await deps.api.createChat(agentName);
     await deps.onChatIdMinted?.(created.id, agentName);
     deps.bumpRefresh();
+  };
+}
+
+// VOS-153 T5: explicit chat-pane state machine.
+//   idle   — no agent picked, no chat selected. Empty hint visible.
+//   draft  — agent picked from the rail, but the daemon does not yet know
+//            about this conversation. No chat id, no chat row in the list.
+//            First send transitions to active (with rollback on failure).
+//   active — chat exists on the daemon (id known). Standard runtime path.
+export type PaneState =
+  | { kind: "idle" }
+  | { kind: "draft"; agent: ProtocolAgentListEntry }
+  | { kind: "active"; chatId: string; agent: ProtocolAgentListEntry };
+
+// Cheap helper to widen the plugin-local AgentListEntry (a minimal
+// name/description subset) to the protocol shape (with optional
+// color/avatar/tagline). The daemon serialises the rich fields whenever
+// the agent.md frontmatter supplies them — the plugin type is a
+// pre-VOS-153 narrowing kept for backwards compat with sibling callers.
+function widenAgent(entry: AgentListEntry): ProtocolAgentListEntry {
+  const e = entry as ProtocolAgentListEntry;
+  return {
+    name: e.name,
+    description: e.description,
+    color: e.color,
+    avatar: e.avatar,
+    tagline: e.tagline,
   };
 }
 
@@ -302,13 +338,50 @@ function ComposerKeyboardHandler(props: {
 }
 
 export function ChatRoot(props: ChatRootProps) {
-  // Lift active chat into local state so the list can switch chats without
-  // a remount of the leaf. Initial value comes from the persisted setting
-  // (props.chatId). When the parent later passes a different `props.chatId`
-  // (e.g. fresh open after restart), we sync it down.
-  const [activeChatId, setActiveChatId] = React.useState<string | null>(props.chatId);
-  const [activeAgent, setActiveAgent] = React.useState<string | null>(null);
-  React.useEffect(() => { setActiveChatId(props.chatId); }, [props.chatId]);
+  // VOS-153 T5: explicit Idle / Draft / Active state machine. The
+  // pre-T5 shape (independent activeChatId + activeAgent strings) is
+  // derived from `pane` so existing hooks downstream — useChatRuntime,
+  // ChatList selection, AgentList active-marker — keep their contracts
+  // unchanged.
+  //
+  // FOLLOWUP (smoke 2026-05-20): always boot Idle regardless of
+  // props.chatId. Operator wants the chat screen to land on the agent +
+  // existing-chat pickers every time the view opens, per acceptance
+  // bullet 3 ("When no chat is active, the chat screen primarily shows:
+  // agent picker + existing-chat picker"). Host-pushed setActiveChatId
+  // calls (URI handlers, "open chat" commands) still flip to Active via
+  // the registerSetActiveChatId path below — only the INITIAL mount now
+  // ignores props.chatId. The placeholder-refinement useEffect below
+  // stays as defence-in-depth (it just won't fire on a clean Idle boot
+  // because there's nothing to refine).
+  const [pane, setPane] = React.useState<PaneState>(() => ({ kind: "idle" }));
+  const activeChatId = pane.kind === "active" ? pane.chatId : null;
+  const activeAgent =
+    pane.kind === "idle" ? null : pane.agent.name || null;
+  // Keep the local pane in sync if the host later pushes a new chatId
+  // through props (e.g. on a leaf re-open after a restart).
+  React.useEffect(() => {
+    const id = props.chatId;
+    if (!id) return;
+    setPane((cur) => {
+      if (cur.kind === "active" && cur.chatId === id) return cur;
+      const agent: ProtocolAgentListEntry =
+        cur.kind !== "idle" ? cur.agent : { name: "", description: "" };
+      return { kind: "active", chatId: id, agent };
+    });
+  }, [props.chatId]);
+  // Mirror of the older setActiveChatId imperative API so the host's
+  // registerSetActiveChatId callback (used by the "open + mint" command)
+  // keeps working. We don't know the agent here, so we carry whatever
+  // the current pane already has — onSelectChat will refine when the
+  // ChatList tells us the agent name.
+  const setActiveChatId = React.useCallback((id: string) => {
+    setPane((cur) => {
+      const agent: ProtocolAgentListEntry =
+        cur.kind !== "idle" ? cur.agent : { name: "", description: "" };
+      return { kind: "active", chatId: id, agent };
+    });
+  }, []);
 
   // VOS-151: ref pinned to the composer textarea. Filled by ComposerPrimitive.Input
   // (which forwards to HTMLTextAreaElement). onSelect / onPickAgent call
@@ -435,42 +508,174 @@ export function ChatRoot(props: ChatRootProps) {
     };
   }, [runtime]);
 
+  // VOS-153 T5: ChatRoot keeps its own snapshot of the agent list so
+  // it can resolve `name → AgentListEntry` synchronously when the rail
+  // calls onPickAgent (which only forwards the agent's name). The
+  // AgentList rail still does its own fetch with a refreshKey for
+  // rendering — duplicating the cheap GET /agents is preferable to
+  // changing the rail's prop contract in this task's scope.
+  const [agentsCache, setAgentsCache] = React.useState<ProtocolAgentListEntry[]>([]);
+  React.useEffect(() => {
+    let cancelled = false;
+    props.agentsApi
+      .listAgents()
+      .then((rows) => {
+        if (cancelled) return;
+        setAgentsCache(rows.map(widenAgent));
+      })
+      .catch(() => {
+        // Silent: rail surfaces the daemon-offline state already.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.agentsApi, refreshKey]);
+
+  // VOS-153 FOLLOWUP-2: when the host pushes a chatId into props (or via
+  // registerSetActiveChatId), the pane lands in Active with a placeholder
+  // agent ({name:"", description:""}) because we don't know which agent
+  // owns that chat yet. ChatList eventually fetches /chats and would call
+  // onSelect with the right name, but that only fires on user click —
+  // for a host-pushed chatId the placeholder sticks. Refine it here by
+  // fetching the chat list once both prerequisites land (agentsCache
+  // populated AND pane.agent.name still empty in active state), then
+  // looking up the agent by name. Idempotent: bails cleanly if anything
+  // is missing or the chat row isn't in the response.
+  React.useEffect(() => {
+    if (pane.kind !== "active") return;
+    if (pane.agent.name !== "") return;
+    if (agentsCache.length === 0) return;
+    let cancelled = false;
+    const targetChatId = pane.chatId;
+    props.api
+      .listChats()
+      .then((chats) => {
+        if (cancelled) return;
+        const row = chats.find((c) => c.id === targetChatId);
+        if (!row) return;
+        const agentName = row.agent;
+        if (!agentName) return;
+        const entry =
+          agentsCache.find((a) => a.name === agentName) ||
+          ({ name: agentName, description: "" } as ProtocolAgentListEntry);
+        setPane((cur) => {
+          if (cur.kind !== "active") return cur;
+          if (cur.chatId !== targetChatId) return cur;
+          if (cur.agent.name !== "") return cur;
+          return { kind: "active", chatId: targetChatId, agent: entry };
+        });
+      })
+      .catch(() => {
+        // Silent: ChatList renders its own daemon-offline state.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pane, agentsCache, props.api]);
+
   const onNewChat = React.useMemo(
     () =>
       wireOnNewChat({
         api: props.api,
         openPicker: props.openPicker,
         onChatIdMinted: async (id, agentName) => {
-          setActiveChatId(id);
-          if (agentName) setActiveAgent(agentName);
+          // Match pre-T5 behaviour: "+ New chat" sidebar button mints
+          // the chat row eagerly and transitions straight to Active.
+          const agent: ProtocolAgentListEntry =
+            agentsCache.find((a) => a.name === agentName) ||
+            { name: agentName || "", description: "" };
+          setPane({ kind: "active", chatId: id, agent });
           await props.onChatIdMinted?.(id);
         },
         bumpRefresh,
         fallbackAgent: props.defaultAgent,
       }),
-    [props.api, props.openPicker, props.onChatIdMinted, props.defaultAgent, bumpRefresh],
+    [props.api, props.openPicker, props.onChatIdMinted, props.defaultAgent, bumpRefresh, agentsCache],
   );
 
-  const onSelect = React.useCallback((id: string, agent: string) => {
-    setActiveChatId(id);
-    setActiveAgent(agent);
+  const onSelect = React.useCallback((id: string, agentName: string) => {
+    const agent: ProtocolAgentListEntry =
+      agentsCache.find((a) => a.name === agentName) ||
+      { name: agentName || "", description: "" };
+    setPane({ kind: "active", chatId: id, agent });
     focusComposer();
-  }, [focusComposer]);
+  }, [focusComposer, agentsCache]);
 
-  const onPickAgent = React.useCallback(async (name: string) => {
-    let prev: string | null = null;
-    setActiveAgent((current) => { prev = current; return name; });
-    try {
-      const created = await props.api.createChat(name);
-      setActiveChatId(created.id);
-      await props.onChatIdMinted?.(created.id);
-      bumpRefresh();
-      focusComposer();
-    } catch (e) {
-      setActiveAgent(prev);
-      showToast(`Could not create chat: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }, [props.api, props.onChatIdMinted, bumpRefresh, showToast, focusComposer]);
+  // VOS-153 T5: agent-pick is a pure UI transition into Draft. No
+  // daemon call, no chat row materialised. The chat is created on the
+  // first send (see onDraftSend); on send failure it is deleted again.
+  const onPickAgent = React.useCallback((name: string) => {
+    const agent: ProtocolAgentListEntry =
+      agentsCache.find((a) => a.name === name) ||
+      { name, description: "" };
+    setPane({ kind: "draft", agent });
+    focusComposer();
+  }, [agentsCache, focusComposer]);
+
+  const [composerError, setComposerError] = React.useState<string | null>(null);
+
+  // VOS-153 FOLLOWUP-A: in-flight gate for Draft send. A double-click
+  // or rapid double-Enter would otherwise re-enter onDraftSend before
+  // setPane({kind:"active",...}) lands, calling createChat twice and
+  // minting two chat rows. The ref gives a synchronous check-and-set
+  // (React state updates are batched and would still race); the state
+  // mirror drives the Send button's disabled UI.
+  const inflightRef = React.useRef(false);
+  const [draftSubmitting, setDraftSubmitting] = React.useState(false);
+
+  // VOS-153 T5: atomic create-then-send with rollback. The composer
+  // text is held in the assistant-ui store (clear closure passed in)
+  // and only cleared on success. On createChat success but
+  // postMessage failure, we DELETE the orphan chat row before
+  // surfacing the error so the sidebar list stays clean.
+  const onDraftSend = React.useCallback(
+    async (text: string, clear: () => void) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      // Snapshot the agent so concurrent setPane during the in-flight
+      // call cannot stomp the rollback target.
+      if (pane.kind !== "draft") return;
+      // FOLLOWUP-A: drop re-entrant calls. The ref flip is synchronous
+      // so a second Enter dispatched in the same task frame will see
+      // true here and bail before touching createChat.
+      if (inflightRef.current) return;
+      inflightRef.current = true;
+      setDraftSubmitting(true);
+      const agent: ProtocolAgentListEntry = pane.agent;
+      setComposerError(null);
+      let chatId: string | undefined;
+      try {
+        const created = await props.api.createChat(agent.name);
+        chatId = created.id;
+        await props.api.postMessage(chatId, text);
+        setPane({ kind: "active", chatId, agent });
+        await props.onChatIdMinted?.(chatId);
+        bumpRefresh();
+        clear();
+        focusComposer();
+      } catch (err) {
+        if (chatId) {
+          try {
+            await props.api.deleteChat(chatId);
+          } catch {
+            // Orphan row left behind; T6 ribbon would flag this. For
+            // T5 we just keep the operator in Draft with an error.
+          }
+        }
+        const msg =
+          err instanceof Error && err.message
+            ? err.message
+            : "couldn't send — retry";
+        setComposerError(msg);
+        showToast(msg);
+        // Stay in Draft; do NOT clear the composer so the user can retry.
+      } finally {
+        inflightRef.current = false;
+        setDraftSubmitting(false);
+      }
+    },
+    [pane, props.api, props.onChatIdMinted, bumpRefresh, showToast, focusComposer],
+  );
 
   const childTaskCtx = React.useMemo(
     () => ({ chatState: handle.chatState, dispatch: handle.dispatch }),
@@ -481,6 +686,11 @@ export function ChatRoot(props: ChatRootProps) {
     <AssistantRuntimeProvider runtime={runtime}>
       <AskUserContext.Provider value={askUserCtx}>
       <ChildTaskContext.Provider value={childTaskCtx}>
+      {/* VOS-153 T5: outer wrapper carries the new `chat-root` testid
+          while the inner `vos-chat-root` div keeps the legacy id for
+          existing specs and helpers. Both are display:contents so
+          neither participates in layout. */}
+      <div data-testid="chat-root" data-pane-kind={pane.kind} className="vos:contents">
       <div data-testid="vos-chat-root" className="vos:contents">
       {/* Tool UI registration. `BashTool` is from makeAssistantToolUI — it
           renders nothing visible itself; its mount side-effect registers a
@@ -489,7 +699,7 @@ export function ChatRoot(props: ChatRootProps) {
       <AskUserTool />
       <AskAgentTool />
       <div className="vos:flex vos:flex-row vos:h-full vos:w-full">
-        <div className="vos:flex vos:flex-col vos:h-full vos:w-[260px] vos:shrink-0 vos:bg-[var(--background-secondary)]">
+        <div className="vos:flex vos:flex-col vos:h-full vos:w-[280px] vos:shrink-0 vos:bg-[var(--background-secondary)]">
           <AgentList
             agentsApi={props.agentsApi}
             activeAgent={activeAgent}
@@ -502,18 +712,64 @@ export function ChatRoot(props: ChatRootProps) {
             onSelect={onSelect}
             onNewChat={onNewChat}
             refreshKey={refreshKey}
+            agents={agentsCache}
           />
           <CostMeter api={props.api} refreshKey={refreshKey} />
         </div>
         <div className="vos:flex vos:flex-col vos:flex-1 vos:min-w-0 vos:min-h-0 vos:h-full">
+          {/* VOS-153 T5: Idle and Draft branches. The Active branch
+              keeps the existing ThreadPrimitive.Root subtree below so
+              the runtime, ask_user wiring, queued-send button etc. all
+              remain wired exactly as before. */}
+          {pane.kind === "idle" && (
+            <div
+              data-testid="chat-empty"
+              className="void-os-chat-empty vos:flex vos:flex-1 vos:items-center vos:justify-center vos:text-sm vos:text-[var(--text-muted)] vos:p-[var(--size-4-4)]"
+            >
+              <p>← pick an agent or chat from the sidebar</p>
+            </div>
+          )}
+          {pane.kind === "draft" && (
+            <div
+              data-testid="chat-draft"
+              data-agent={pane.agent.name}
+              className="void-os-chat-draft vos:flex vos:flex-col vos:flex-1 vos:min-h-0"
+            >
+              <div className="vos:flex-1 vos:overflow-y-auto vos:flex vos:flex-col">
+                <div className="vos:mt-auto vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)] vos:py-[var(--size-4-3)] vos:flex vos:flex-col">
+                  <DraftLabel agent={pane.agent} />
+                </div>
+              </div>
+              <div className="vos:shrink-0 vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)]">
+                {composerError && (
+                  <div
+                    data-testid="composer-error"
+                    className="vos:mt-[var(--size-4-2)] vos:mb-[var(--size-4-1)] vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--background-modifier-error,#a0303d)] vos:text-[var(--text-on-accent)] vos:text-xs"
+                  >
+                    {composerError}
+                  </div>
+                )}
+                <DraftComposer
+                  composerInputRef={composerInputRef}
+                  onSend={onDraftSend}
+                  submitting={draftSubmitting}
+                />
+              </div>
+            </div>
+          )}
+          {pane.kind === "active" && (
+          <div
+            data-testid="chat-active"
+            data-agent={pane.agent.name}
+            className="void-os-chat-active vos:flex vos:flex-col vos:flex-1 vos:min-h-0"
+          >
+          {/* VOS-153 T7: agent-identity banner. Sticky-top within the
+              Active pane's scroll container. data-testid contract
+              preserved from the T5 inline placeholder. */}
+          <ChatHeader agent={pane.agent} />
           <ThreadPrimitive.Root className="vos:contents">
             <ThreadPrimitive.Viewport className="vos:flex-1 vos:overflow-y-auto vos:min-h-0 vos:flex vos:flex-col">
               <div className="vos:mt-auto vos:w-full vos:max-w-[760px] vos:mx-auto vos:px-[var(--size-4-4)] vos:py-[var(--size-4-3)] vos:flex vos:flex-col">
-                <ThreadPrimitive.Empty>
-                  <div className="vos:text-sm vos:text-[var(--text-muted)] vos:p-4">
-                    void-os chat — say hi.
-                  </div>
-                </ThreadPrimitive.Empty>
                 <ThreadPrimitive.Messages components={{ Message: MessageItem }} />
                 <ThinkingIndicator />
               </div>
@@ -609,11 +865,85 @@ export function ChatRoot(props: ChatRootProps) {
               )}
             </ComposerKeyboardHandler>
           </ThreadPrimitive.Root>
+          </div>
+          )}
         </div>
+      </div>
       </div>
       </div>
       </ChildTaskContext.Provider>
       </AskUserContext.Provider>
     </AssistantRuntimeProvider>
+  );
+}
+
+// VOS-153 T5: Draft-pane composer. Keeps the visual shape of the
+// Active composer (rounded card, focus ring) but does NOT consume the
+// assistant-ui thread — there is no chat row yet. Enter and the Send
+// button both call `onSend(text, clear)`; clearing the input is the
+// caller's responsibility on success only (so failed sends preserve
+// the user's text for retry).
+function DraftComposer(props: {
+  composerInputRef: React.RefObject<HTMLTextAreaElement | null>;
+  onSend: (text: string, clear: () => void) => Promise<void> | void;
+  submitting: boolean;
+}) {
+  const [text, setText] = React.useState("");
+  const clear = React.useCallback(() => setText(""), []);
+  // VOS-153 FOLLOWUP-A: belt + suspenders. ChatRoot's inflightRef is
+  // the source of truth for the race; the prop here drives UI affordance
+  // (Send disabled, Enter ignored) so the user doesn't see a "clickable"
+  // button that does nothing while the first send is in flight.
+  const onKeyDown = React.useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.nativeEvent.isComposing !== true
+      ) {
+        if (!text.trim()) return;
+        if (props.submitting) {
+          e.preventDefault();
+          return;
+        }
+        e.preventDefault();
+        void props.onSend(text, clear);
+      }
+    },
+    [text, clear, props],
+  );
+  const onClickSend = React.useCallback(() => {
+    if (!text.trim()) return;
+    if (props.submitting) return;
+    void props.onSend(text, clear);
+  }, [text, clear, props]);
+  return (
+    <div
+      className="vos:flex vos:items-end vos:gap-[var(--size-4-2)] vos:my-[var(--size-4-3)] vos:p-[var(--size-4-2)] vos:rounded-[var(--radius-m)] vos:border vos:border-[var(--background-modifier-border)] vos:bg-[var(--background-primary)] focus-within:vos:border-[var(--interactive-accent)] focus-within:vos:shadow-[0_0_0_1px_var(--interactive-accent)]"
+    >
+      <textarea
+        ref={props.composerInputRef}
+        rows={1}
+        autoFocus
+        placeholder="Message"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={onKeyDown}
+        data-testid="draft-composer"
+        className="vos:flex-1 vos:bg-transparent vos:resize-none vos:outline-none vos:px-[var(--size-4-2)] vos:py-[var(--size-4-1)] vos:text-[var(--text-normal)] placeholder:vos:text-[var(--text-muted)]"
+      />
+      <button
+        type="button"
+        data-testid="draft-send"
+        onClick={onClickSend}
+        disabled={!text.trim() || props.submitting}
+        className="vos:px-[var(--size-4-3)] vos:py-[var(--size-4-1)] vos:rounded-[var(--radius-s)] vos:bg-[var(--interactive-accent)] vos:text-[var(--text-on-accent)] vos:border vos:border-transparent hover:vos:bg-[var(--interactive-accent-hover)] disabled:vos:bg-[var(--background-modifier-form-field)] disabled:vos:text-[var(--text-faint)] disabled:vos:cursor-not-allowed"
+      >
+        Send
+      </button>
+    </div>
   );
 }

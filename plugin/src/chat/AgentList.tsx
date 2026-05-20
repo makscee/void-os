@@ -86,6 +86,14 @@ export function AgentList(props: AgentListProps) {
         )}
         {!loading && !error && sorted.map((a) => {
           const active = a.name === activeAgent;
+          // VOS-153 T6: --agent-color drives the row's left-border accent
+          // and the avatar bubble tint via color-mix in tailwind.css.
+          // Falls back to --text-muted so rows without an agent color
+          // still render a subtle border instead of nothing.
+          const style = {
+            ["--agent-color" as unknown as string]:
+              a.color || "var(--text-muted)",
+          } as React.CSSProperties;
           return (
             <button
               key={a.name}
@@ -95,23 +103,25 @@ export function AgentList(props: AgentListProps) {
               data-testid="agent-row"
               data-agent-name={a.name}
               data-active={active ? "true" : "false"}
-              className={
-                "vos:w-full vos:text-left vos:pl-[10px] vos:pr-[var(--size-4-2)] vos:py-[var(--size-4-2)] vos:min-h-[28px] vos:flex vos:items-center vos:rounded-[var(--radius-s)] vos:border-l-2 " +
-                (active
-                  ? "vos:border-[var(--interactive-accent)] vos:bg-[var(--background-modifier-active-hover)]"
-                  : "vos:border-transparent hover:vos:bg-[var(--background-modifier-hover)]")
-              }
+              className={"void-os-agent-row" + (active ? " vos:font-semibold" : "")}
+              style={style}
             >
-              <span
-                data-testid="agent-name"
-                className={
-                  "vos:flex-1 vos:min-w-0 vos:text-[13px] vos:leading-[1.4] vos:truncate " +
-                  (active
-                    ? "vos:text-[var(--text-normal)] vos:font-semibold"
-                    : "vos:text-[var(--text-muted)]")
-                }
-              >
-                {a.name}
+              <span className="void-os-agent-avatar" aria-hidden>
+                {a.avatar || "●"}
+              </span>
+              <span className="void-os-agent-meta">
+                <span
+                  data-testid="agent-name"
+                  className={
+                    "void-os-agent-name" +
+                    (active ? " vos:font-semibold" : "")
+                  }
+                >
+                  {a.name}
+                </span>
+                <span className="void-os-agent-tagline">
+                  {a.tagline || a.description}
+                </span>
               </span>
             </button>
           );

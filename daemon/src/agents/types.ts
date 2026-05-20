@@ -15,9 +15,18 @@ export interface AgentRow {
   vault_path: string;
   /** ms epoch — set at scan time (not file mtime). */
   updated_at: number;
+  // VOS-153: optional presentation fields from agent.md frontmatter.
+  // Absent (undefined) when the agent file does not set them. Persisted
+  // as nullable TEXT columns in the `agents` table (migration 0015).
+  color?: string;
+  avatar?: string;
+  tagline?: string;
 }
 
 export interface AgentListEntry {
   name: string;
   description: string;
+  color?: string;
+  avatar?: string;
+  tagline?: string;
 }

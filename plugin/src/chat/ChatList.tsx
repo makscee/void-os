@@ -21,6 +21,7 @@
 
 import * as React from "react";
 import type { ChatApi, ChatSummary } from "./api";
+import type { AgentListEntry } from "@voidos/protocol";
 import { formatTokens } from "./format-tokens";
 import { StatusDot } from "./StatusDot";
 import { AgentBadge } from "./AgentBadge";
@@ -33,6 +34,14 @@ export interface ChatListProps {
   onNewChat: () => void | Promise<void>;
   /** Bumping this triggers a re-fetch of /chats. */
   refreshKey?: number;
+  /**
+   * VOS-153 T8: per-row name → AgentListEntry lookup source. ChatRoot
+   * keeps this cache (its own GET /agents) and threads it down so we
+   * can render an agent-coloured stripe + emoji per row without an
+   * extra fetch here. Optional + defaults to empty so older callers
+   * keep working (rows fall back to muted stripe + bullet glyph).
+   */
+  agents?: AgentListEntry[];
 }
 
 /** Polling interval while any chat row reports running. Picked to be slow
@@ -61,6 +70,7 @@ function isEmpty(s: ChatSummary): boolean {
 
 export function ChatList(props: ChatListProps) {
   const { api, activeChatId, onSelect, onNewChat, refreshKey } = props;
+  const agents = props.agents ?? [];
   const [chats, setChats] = React.useState<ChatSummary[]>([]);
   const [loading, setLoading] = React.useState<boolean>(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -140,55 +150,86 @@ export function ChatList(props: ChatListProps) {
         )}
         {!loading && visible.map((c) => {
           const active = c.id === activeChatId;
+          // VOS-153 T8: per-row agent metadata lookup. The lookup is
+          // O(N) but `agents` is the daemon's full agent list (typically
+          // single-digit length), so this is fine. Fallbacks keep the
+          // row legible if the agent vanished from disk or the cache
+          // is still loading.
+          const agentEntry = agents.find((a) => a.name === c.agent);
+          const color = agentEntry?.color || "var(--text-muted)";
+          const avatar = agentEntry?.avatar || "●";
           return (
             <button
               key={c.id}
               type="button"
               onClick={() => onSelect(c.id, c.agent)}
-              data-testid="chat-row"
+              data-testid={`chat-row-${c.id}`}
               data-chat-id={c.id}
+              data-agent={c.agent}
               data-active={active ? "true" : "false"}
+              style={{ ["--agent-color" as unknown as string]: color }}
               className={
-                "vos:w-full vos:text-left vos:pl-[10px] vos:pr-[var(--size-4-2)] vos:py-[var(--size-4-2)] vos:min-h-[44px] vos:flex vos:flex-col vos:gap-[2px] vos:rounded-[var(--radius-s)] vos:border-l-2 " +
+                "void-os-chat-row vos:w-full vos:text-left vos:pl-[10px] vos:pr-[var(--size-4-2)] vos:py-[var(--size-4-2)] vos:min-h-[44px] vos:flex vos:flex-row vos:items-stretch vos:gap-[var(--size-4-2)] vos:rounded-[var(--radius-s)] " +
                 (active
-                  ? "vos:border-[var(--interactive-accent)] vos:bg-[var(--background-modifier-active-hover)]"
-                  : "vos:border-transparent hover:vos:bg-[var(--background-modifier-hover)]")
+                  ? "vos:bg-[var(--background-modifier-active-hover)]"
+                  : "hover:vos:bg-[var(--background-modifier-hover)]")
               }
             >
-              {/* Row 1: status dot + title (title takes full remaining width). */}
-              <span className="vos:flex vos:items-center vos:gap-[var(--size-4-2)] vos:w-full vos:min-w-0">
-                <StatusDot
-                  input_required={c.input_required}
-                  last_run_status={c.last_run_status}
-                />
-                <span
-                  data-testid="chat-row-title"
-                  className={
-                    "vos:flex-1 vos:min-w-0 vos:block vos:text-[13px] vos:leading-[1.4] vos:truncate " +
-                    (active ? "vos:text-[var(--text-normal)]" : "vos:text-[var(--text-muted)]")
-                  }
-                >
-                  {preview(c)}
-                </span>
+              {/* Agent colour stripe — pulled from agent.md frontmatter
+                  via the parent's agents cache. Falls back to muted. */}
+              <span
+                className="void-os-chat-stripe"
+                aria-hidden
+                data-testid="chat-row-stripe"
+              />
+              {/* Agent emoji avatar. Falls back to a bullet when the
+                  agent omits `avatar` in its frontmatter. */}
+              <span
+                className="void-os-chat-emoji"
+                aria-hidden
+                data-testid="chat-row-emoji"
+              >
+                {avatar}
               </span>
-
-              {/* Row 2: agent badge + relative time on the left, tokens on the right.
-                  pl-[14px] aligns under the title (dot ~6px + gap ~8px). */}
-              <span className="vos:flex vos:items-center vos:justify-between vos:w-full vos:pl-[14px]">
-                <span className="vos:flex vos:items-center vos:gap-[6px] vos:min-w-0">
-                  <AgentBadge agent={c.agent} />
+              <span className="vos:flex vos:flex-col vos:gap-[2px] vos:flex-1 vos:min-w-0">
+                {/* Row 1: status dot + title (title takes full remaining width). */}
+                <span className="vos:flex vos:items-center vos:gap-[var(--size-4-2)] vos:w-full vos:min-w-0">
+                  <StatusDot
+                    input_required={c.input_required}
+                    last_run_status={c.last_run_status}
+                  />
                   <span
-                    data-testid="chat-row-time"
-                    className="vos:text-[11px] vos:text-[var(--text-muted)] vos:truncate"
+                    data-testid="chat-row-title"
+                    className={
+                      "void-os-chat-title vos:flex-1 vos:min-w-0 vos:block vos:text-[13px] vos:leading-[1.4] vos:truncate " +
+                      (active ? "vos:text-[var(--text-normal)]" : "vos:text-[var(--text-muted)]")
+                    }
                   >
-                    {formatRelativeTime(c.updated_at)}
+                    {preview(c)}
                   </span>
                 </span>
+
+                {/* Row 2: agent badge + relative time on the left, tokens on the right.
+                    pl-[14px] aligns under the title (dot ~6px + gap ~8px). */}
                 <span
-                  data-testid="context-cell"
-                  className="vos:inline-block vos:min-w-[3.5rem] vos:text-right vos:text-[11px] vos:text-[var(--text-muted)] vos:tabular-nums vos:shrink-0"
+                  data-testid="chat-row-sub"
+                  className="void-os-chat-sub vos:flex vos:items-center vos:justify-between vos:w-full vos:pl-[14px]"
                 >
-                  {formatTokens(c.context_tokens)}
+                  <span className="vos:flex vos:items-center vos:gap-[6px] vos:min-w-0">
+                    <AgentBadge agent={c.agent} />
+                    <span
+                      data-testid="chat-row-time"
+                      className="vos:text-[11px] vos:text-[var(--text-muted)] vos:truncate"
+                    >
+                      {formatRelativeTime(c.updated_at)}
+                    </span>
+                  </span>
+                  <span
+                    data-testid="context-cell"
+                    className="vos:inline-block vos:min-w-[3.5rem] vos:text-right vos:text-[11px] vos:text-[var(--text-muted)] vos:tabular-nums vos:shrink-0"
+                  >
+                    {formatTokens(c.context_tokens)}
+                  </span>
                 </span>
               </span>
             </button>

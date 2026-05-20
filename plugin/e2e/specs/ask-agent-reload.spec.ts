@@ -179,7 +179,8 @@ test("reload replay: ask_agent card persists across page reload (T7+T15+T16)", a
     await page.keyboard.press("Escape");
 
     // Open the just-completed chat from the chat list (selected by chat id).
-    const chatRow = page.locator(`[data-testid="chat-row"][data-chat-id="${contextId}"]`);
+    // VOS-153 T8 renamed the row testid from bare `chat-row` to `chat-row-${id}`.
+    const chatRow = page.locator(`[data-testid="chat-row-${contextId}"]`);
     await expect(chatRow).toBeVisible({ timeout: 15_000 });
     await chatRow.click();
 

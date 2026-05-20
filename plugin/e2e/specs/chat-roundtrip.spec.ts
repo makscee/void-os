@@ -6,8 +6,19 @@ import { getVaultPage } from "../helpers/vault-page.ts";
 
 /**
  * Chat round-trip smoke. Drives the plugin from a connected state through
- * minting a chat, composing a message, sending, and asserting the fake
+ * picking an agent, composing a message, sending, and asserting the fake
  * provider's canned assistant reply renders in the thread.
+ *
+ * VOS-153 T10 update: the spec previously minted the chat by clicking
+ * `new-chat-btn` (which opens the legacy SuggestModal picker) and then
+ * the first suggestion. After T5+T6+T7 the canonical mint path is the
+ * AgentList rail row → Draft pane → first send (no chat row is created
+ * until send lands; cf. no-empty-chats.spec.ts). This spec now exercises
+ * that contract end-to-end:
+ *
+ *   click rail row → Draft → fill composer → Send → Active pane mounts
+ *     with the T7 ChatHeader → fake provider replies → DB row terminates
+ *     COMPLETED.
  *
  * Fake script (`fixtures/cc/hello.jsonl`) emits:
  *   {type:"system", subtype:"init", session_id:"e2e-hello"}
@@ -49,34 +60,35 @@ test("chat round-trip: user sends a message, fake provider replies", async () =>
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
-    // Mint a chat. Empty chats are hidden from the ChatList by design
-    // (isEmpty filter), so we don't try to wait for a chat-row — the
-    // activeChatId is set in React state right after createChat resolves.
-    await page.getByTestId("new-chat-btn").click({ force: true, timeout: 5_000 });
+    // VOS-153 T6: click the maya rail row. Selector pattern matches T9
+    // (no-empty-chats / agents-list-rail): `agent-row` testid with the
+    // `data-agent-name` attribute for per-agent disambiguation.
+    const mayaRow = page.locator("[data-testid='agent-row'][data-agent-name='maya']");
+    await expect(mayaRow).toBeVisible({ timeout: 10_000 });
+    await mayaRow.click({ force: true, timeout: 5_000 });
 
-    // VOS-92 wired new-chat-btn to open the agent picker (Obsidian
-    // SuggestModal). Daemon-vault fixture seeds the agents table with a
-    // `maya` row; click the first suggestion-item to confirm and wait for
-    // the picker to detach before driving the composer.
-    const pickerInput = page.locator(".prompt input.prompt-input");
-    await expect(pickerInput).toBeVisible({ timeout: 10_000 });
-    const firstSuggestion = page.locator(".suggestion-item").first();
-    await expect(firstSuggestion).toBeVisible({ timeout: 10_000 });
-    await firstSuggestion.click();
-    await expect(page.locator(".prompt")).toHaveCount(0, { timeout: 5_000 });
+    // VOS-153 T5: Draft pane is mounted. Use the dedicated draft composer
+    // testid — the active-pane composer has the same `Message` placeholder
+    // and would otherwise be ambiguous.
+    await expect(page.getByTestId("draft-label")).toBeVisible({ timeout: 5_000 });
+    const draftComposer = page.getByTestId("draft-composer");
+    await expect(draftComposer).toBeVisible({ timeout: 5_000 });
+    await expect(draftComposer).toBeEditable({ timeout: 5_000 });
+    await draftComposer.fill("ping");
 
-    // Composer textarea (ComposerPrimitive.Input, placeholder="Message").
-    const composer = chatRoot.getByPlaceholder("Message");
-    await expect(composer).toBeVisible({ timeout: 5_000 });
-    await expect(composer).toBeEditable({ timeout: 5_000 });
-    await composer.fill("ping");
+    // Send via Enter — DraftComposer wires Enter (no shift) to onDraftSend,
+    // which calls api.createChat({agent: "maya"}) then api.postMessage().
+    // The pane flips to Active on success.
+    await draftComposer.press("Enter");
 
-    // Send button: when no run is in flight, ChatRoot renders
-    // ComposerPrimitive.Send (not QueueSendButton). It's enabled once the
-    // composer has non-empty text. Find it by role + visible name.
-    const sendBtn = chatRoot.getByRole("button", { name: "Send" });
-    await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
-    await sendBtn.click();
+    // VOS-153 T7: ChatHeader (Active-pane banner) must mount with maya's
+    // identity from the rich-frontmatter fixture (description includes
+    // "researcher"). This proves both the Draft→Active transition AND
+    // that the agent-identity surface is wired.
+    const header = page.getByTestId("chat-header");
+    await expect(header).toBeVisible({ timeout: 15_000 });
+    await expect(header).toContainText("maya");
+    await expect(header).toContainText("researcher");
 
     // Daemon orchestrator runs the fake provider, streams chat.token frames;
     // plugin runtime appends to the thread; MarkdownText renders as a <p>.

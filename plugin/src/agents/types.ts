@@ -6,4 +6,10 @@
 export interface AgentListEntry {
   name: string;
   description: string;
+  // VOS-153: optional rich-presentation fields surfaced from agent.md
+  // frontmatter. Daemon strips undefined via JSON.stringify, so absence
+  // is normal (and indistinguishable from a pre-VOS-153 daemon).
+  color?: string;
+  avatar?: string;
+  tagline?: string;
 }

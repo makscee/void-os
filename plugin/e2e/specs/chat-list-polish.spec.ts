@@ -150,7 +150,11 @@ test.describe("VOS-114 chat list polish", () => {
         // the message POST here would deadlock the test.
         const messagePromise = fireMessageViaApi(api, chatId, "go");
 
-        const row = p.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
+        // VOS-153 T8: ChatList row testid is now `chat-row-${id}` (was
+        // bare `chat-row` keyed by `data-chat-id`). The `data-chat-id`
+        // attr is still emitted so the parent selector retains semantic
+        // anchoring; the testid is what's tightened.
+        const row = p.locator(`[data-testid='chat-row-${chatId}']`);
         await expect(row).toBeVisible({ timeout: 30_000 });
         const dot = row.locator(`[data-testid='chat-row-status']`);
 
@@ -227,7 +231,8 @@ test.describe("VOS-114 chat list polish", () => {
         const { chatId } = await mintChat(api, "maya");
         await sendMessage(api, chatId, "compute");
 
-        const row = p.locator(`[data-testid='chat-row'][data-chat-id='${chatId}']`);
+        // VOS-153 T8: see comment in the first test above.
+        const row = p.locator(`[data-testid='chat-row-${chatId}']`);
         await expect(row).toBeVisible({ timeout: 30_000 });
         const tokensCell = row.locator(`[data-testid='context-cell']`);
 
