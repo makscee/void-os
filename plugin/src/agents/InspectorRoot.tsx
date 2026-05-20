@@ -41,55 +41,78 @@ function relTime(iso: string): string {
   return `${Math.round(mins / 60)}h ago`;
 }
 
-// VOS-161: per-agent intervention verbs. The buttons are gated by the
-// agent's control_state — a killed or ended agent shows no verbs; a paused
-// agent swaps Pause for Resume. The verb POSTs are fire-and-forget from the
-// UI's perspective: the next poll tick reflects the new control_state, so
-// there is no optimistic local state to keep in sync.
+const VERB_BTN_CLS =
+  "vos:text-[10px] vos:uppercase vos:tracking-wider vos:px-[var(--size-4-2)] " +
+  "vos:py-[2px] vos:rounded-[var(--radius-s)] vos:cursor-pointer " +
+  "vos:border vos:border-[var(--background-modifier-border)] " +
+  "vos:bg-[var(--background-secondary)] " +
+  "vos:hover:bg-[var(--background-modifier-hover)] " +
+  "vos:disabled:opacity-50 vos:disabled:cursor-default";
+
+// VOS-161 + VOS-162: per-agent intervention verbs.
+//
+// Two classes of verb with different gating:
+//   - pause / resume / kill (VOS-161) need a LIVE control handle — they
+//     address a running run. Gated by control_state: hidden for an ended
+//     / handle-less / already-killed agent; a paused agent swaps
+//     Pause→Resume.
+//   - branch (VOS-162) operates on git state, not the live run, so it is
+//     shown for EVERY agent the inspector knows — running OR ended.
+//
+// The bar therefore always renders (so Branch is always reachable); the
+// control buttons inside it are conditionally present. Verb POSTs are
+// fire-and-forget: the next poll tick reflects the new control_state.
 function VerbBar(props: {
   agent: InflightAgent;
   onVerb: (verb: AgentVerb) => void;
+  onBranch: () => void;
   busy: boolean;
 }) {
-  const { agent, onVerb, busy } = props;
-  // No control handle (ended agent / pre-registry run) or already killed →
-  // nothing to intervene on.
-  if (agent.ended || agent.control_state === null || agent.control_state === "killed") {
-    return null;
-  }
+  const { agent, onVerb, onBranch, busy } = props;
+  // Control verbs require a live handle that is neither killed nor ended.
+  const showControl =
+    !agent.ended &&
+    agent.control_state !== null &&
+    agent.control_state !== "killed";
   const paused = agent.control_state === "paused";
-  const btnCls =
-    "vos:text-[10px] vos:uppercase vos:tracking-wider vos:px-[var(--size-4-2)] " +
-    "vos:py-[2px] vos:rounded-[var(--radius-s)] vos:cursor-pointer " +
-    "vos:border vos:border-[var(--background-modifier-border)] " +
-    "vos:bg-[var(--background-secondary)] " +
-    "vos:hover:bg-[var(--background-modifier-hover)] " +
-    "vos:disabled:opacity-50 vos:disabled:cursor-default";
   return (
     <div
       data-testid="inspector-verb-bar"
-      data-control-state={agent.control_state}
+      data-control-state={agent.control_state ?? "none"}
       className="vos:flex vos:gap-[var(--size-4-2)] vos:px-[var(--size-4-3)] vos:pb-[var(--size-4-2)]"
     >
+      {showControl && (
+        <>
+          <button
+            type="button"
+            data-testid={paused ? "inspector-verb-resume" : "inspector-verb-pause"}
+            disabled={busy}
+            onClick={() => onVerb(paused ? "resume" : "pause")}
+            className={VERB_BTN_CLS}
+          >
+            {paused ? "Resume" : "Pause"}
+          </button>
+          <button
+            type="button"
+            data-testid="inspector-verb-kill"
+            disabled={busy}
+            onClick={() => onVerb("kill")}
+            className={VERB_BTN_CLS + " vos:text-[var(--text-error,#e35a5a)]"}
+          >
+            Kill
+          </button>
+        </>
+      )}
+      {/* VOS-162: Branch — always shown; forks the agent's repo HEAD into
+          a fresh worktree. Independent of control_state. */}
       <button
         type="button"
-        data-testid={paused ? "inspector-verb-resume" : "inspector-verb-pause"}
+        data-testid="inspector-verb-branch"
         disabled={busy}
-        onClick={() => onVerb(paused ? "resume" : "pause")}
-        className={btnCls}
+        onClick={onBranch}
+        className={VERB_BTN_CLS}
       >
-        {paused ? "Resume" : "Pause"}
-      </button>
-      <button
-        type="button"
-        data-testid="inspector-verb-kill"
-        disabled={busy}
-        onClick={() => onVerb("kill")}
-        className={
-          btnCls + " vos:text-[var(--text-error,#e35a5a)]"
-        }
-      >
-        Kill
+        Branch
       </button>
     </div>
   );
@@ -144,6 +167,29 @@ export function InspectorRoot(props: InspectorRootProps) {
       } catch {
         // Verb failure is non-fatal; leave the snapshot untouched and let
         // the operator retry. The offline banner already covers daemon-down.
+      } finally {
+        setVerbBusy((prev) => {
+          const next = new Set(prev);
+          next.delete(agentId);
+          return next;
+        });
+      }
+    },
+    [inflightApi],
+  );
+
+  // VOS-162: Branch verb. Forks the agent's repo HEAD into a new worktree
+  // on the daemon side. Fire-and-forget like the control verbs — the
+  // daemon emits an `agent.event` recording the branch, which the next
+  // poll picks up into the trace.
+  const runBranch = React.useCallback(
+    async (agentId: string) => {
+      setVerbBusy((prev) => new Set(prev).add(agentId));
+      try {
+        await inflightApi.postBranch(agentId);
+      } catch {
+        // Non-fatal: a git failure on the host or daemon-down. The offline
+        // banner covers daemon-down; a git failure is left for the operator.
       } finally {
         setVerbBusy((prev) => {
           const next = new Set(prev);
@@ -270,6 +316,7 @@ export function InspectorRoot(props: InspectorRootProps) {
                 agent={a}
                 busy={verbBusy.has(a.agent_id)}
                 onVerb={(verb) => void runVerb(a.agent_id, verb)}
+                onBranch={() => void runBranch(a.agent_id)}
               />
 
               {expanded && (

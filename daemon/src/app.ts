@@ -32,6 +32,7 @@ import { createEventBus, type EventBus } from "./events/index.ts";
 import { mountChatStream } from "./api/chat-stream.ts";
 import { mountAgentsInflight } from "./api/agents-inflight.ts";
 import { mountAgentsControl } from "./api/agents-control.ts";
+import { mountAgentsHookEvent } from "./api/agents-hook-event.ts";
 import { createAgentControlRegistry } from "./agents/control.ts";
 import {
   createInflightBridge,
@@ -381,7 +382,21 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   app.use("/agents/:id/pause", makeRequireAuth(token));
   app.use("/agents/:id/resume", makeRequireAuth(token));
   app.use("/agents/:id/kill", makeRequireAuth(token));
-  mountAgentsControl(app, { bus, control: agentControl });
+  // VOS-162: branch verb — auth-gated like the control verbs. Forks the
+  // agent's repo (= the daemon's chat cwd) into a new worktree from HEAD.
+  app.use("/agents/:id/branch", makeRequireAuth(token));
+  mountAgentsControl(app, {
+    bus,
+    control: agentControl,
+    inflight: inflightRegistry,
+    repoRoot: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? deps.vaultRoot,
+  });
+  // VOS-162 Source A: CC harness hook ingest. Un-authed loopback route —
+  // same trust posture as /mcp (the hook scripts are spawned by this
+  // daemon, only reach it over 127.0.0.1, and carry no bearer token). It
+  // completes the union event view: PreToolUse/PostToolUse hook events
+  // land here and re-enter the same `agent.event` bus Source B feeds.
+  mountAgentsHookEvent(app, { bus });
   return app;
 };
 
