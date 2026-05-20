@@ -530,6 +530,48 @@ export function ChatRoot(props: ChatRootProps) {
     };
   }, [props.agentsApi, refreshKey]);
 
+  // VOS-153 FOLLOWUP-2: when the host pushes a chatId into props (or via
+  // registerSetActiveChatId), the pane lands in Active with a placeholder
+  // agent ({name:"", description:""}) because we don't know which agent
+  // owns that chat yet. ChatList eventually fetches /chats and would call
+  // onSelect with the right name, but that only fires on user click —
+  // for a host-pushed chatId the placeholder sticks. Refine it here by
+  // fetching the chat list once both prerequisites land (agentsCache
+  // populated AND pane.agent.name still empty in active state), then
+  // looking up the agent by name. Idempotent: bails cleanly if anything
+  // is missing or the chat row isn't in the response.
+  React.useEffect(() => {
+    if (pane.kind !== "active") return;
+    if (pane.agent.name !== "") return;
+    if (agentsCache.length === 0) return;
+    let cancelled = false;
+    const targetChatId = pane.chatId;
+    props.api
+      .listChats()
+      .then((chats) => {
+        if (cancelled) return;
+        const row = chats.find((c) => c.id === targetChatId);
+        if (!row) return;
+        const agentName = row.agent;
+        if (!agentName) return;
+        const entry =
+          agentsCache.find((a) => a.name === agentName) ||
+          ({ name: agentName, description: "" } as ProtocolAgentListEntry);
+        setPane((cur) => {
+          if (cur.kind !== "active") return cur;
+          if (cur.chatId !== targetChatId) return cur;
+          if (cur.agent.name !== "") return cur;
+          return { kind: "active", chatId: targetChatId, agent: entry };
+        });
+      })
+      .catch(() => {
+        // Silent: ChatList renders its own daemon-offline state.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pane, agentsCache, props.api]);
+
   const onNewChat = React.useMemo(
     () =>
       wireOnNewChat({

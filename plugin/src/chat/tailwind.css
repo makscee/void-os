@@ -170,8 +170,8 @@
   .void-os-chat-header {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
+    gap: 8px;
+    padding: 8px 14px;
     background: color-mix(in srgb, var(--agent-color) 15%, transparent);
     border-bottom: 1px solid color-mix(in srgb, var(--agent-color) 60%, transparent);
     position: sticky;
@@ -180,8 +180,24 @@
     font-size: 12px;
     flex-shrink: 0;
   }
+  /* FOLLOWUP (smoke): same squish problem as agent-row avatar — `<span>`
+     in a flex parent with empty agent name placeholder ("●") rendered as
+     a tiny vertical bullet. Pin a 20px circle so the badge is always
+     visible and round regardless of header height. */
   .void-os-chat-header-avatar {
-    font-size: 14px;
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    min-height: 20px;
+    aspect-ratio: 1 / 1;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--agent-color) 25%, transparent);
+    font-size: 12px;
     line-height: 1;
   }
   .void-os-chat-header-name {
@@ -198,14 +214,21 @@
   /* VOS-153 T6: two-line agent row with avatar + tagline + left-border
      color accent. --agent-color is set inline by AgentList.tsx from
      agent.md frontmatter (falls back to --text-muted). color-mix is
-     required (no rgba fallback) — Obsidian Electron 28+ supports it. */
+     required (no rgba fallback) — Obsidian Electron 28+ supports it.
+
+     FOLLOWUP (smoke): avatar was rendering as a tall ellipse because grid
+     item `<span>` defaulted to `justify-self/align-self: stretch` and
+     `display: flex` allowed the height to stretch with the two-line meta
+     column. Lock the avatar to a 28px square via explicit min/max width,
+     height, and aspect-ratio; pin grid cell alignment with `place-self`. */
   .void-os-agent-row {
     display: grid;
-    grid-template-columns: 28px 1fr;
+    grid-template-columns: 32px 1fr;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     width: 100%;
-    padding: 6px 10px;
+    padding: 8px 12px;
+    margin-bottom: 2px;
     background: color-mix(in srgb, var(--agent-color) 6%, transparent);
     border: none;
     border-left: 2px solid color-mix(in srgb, var(--agent-color) 40%, transparent);
@@ -221,14 +244,24 @@
     border-left-color: var(--agent-color);
   }
   .void-os-agent-avatar {
-    width: 24px;
-    height: 24px;
-    display: flex;
+    box-sizing: border-box;
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    max-width: 28px;
+    max-height: 28px;
+    aspect-ratio: 1 / 1;
+    flex-shrink: 0;
+    place-self: center;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     border-radius: 50%;
     background: color-mix(in srgb, var(--agent-color) 20%, transparent);
     font-size: 14px;
+    line-height: 1;
+    overflow: hidden;
   }
   .void-os-agent-meta {
     display: flex;
