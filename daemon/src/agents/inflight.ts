@@ -81,9 +81,30 @@ export interface InflightAgent {
   last_action: string;    // last summary
   last_summary: string;   // last text/end summary (separate from action)
   last_ts: string;        // most recent event timestamp
+  /**
+   * VOS-160: bounded ordered event history for this agent. Powers the
+   * inspector's click-to-expand "step-by-step trace". Capped at
+   * TRACE_CAP newest events — a long-running agent emits thousands of
+   * tool_call/tool_return frames and the snapshot must stay bounded.
+   */
+  trace: AgentEvent[];
+  /**
+   * VOS-160: true once a terminal (`kind=end`) event arrived. The row is
+   * retained for ENDED_GRACE_MS afterwards so the inspector shows the
+   * final state before fade-out, then dropped on the next event tick.
+   */
+  ended: boolean;
+  /** Epoch ms the terminal event landed; null while still running. */
+  ended_at_ms: number | null;
 }
 
 const TERMINAL_KINDS: ReadonlySet<AgentEventKind> = new Set(["end"]);
+
+/** Newest-N events retained per agent in the snapshot trace. */
+export const TRACE_CAP = 50;
+
+/** How long an ended agent stays visible in the snapshot before drop. */
+export const ENDED_GRACE_MS = 10_000;
 
 export interface InflightRegistry {
   list(): InflightAgent[];
@@ -94,29 +115,50 @@ export interface InflightRegistry {
 
 export interface InflightRegistryDeps {
   bus: EventBus;
+  /** Override clock for tests; defaults to Date.now. */
+  now?: () => number;
 }
 
 /**
  * Build a registry that updates itself from `agent.event` bus frames. The
- * registry holds an agent row from the first event observed for that id
- * until a terminal event (`kind=end`) arrives, after which the row is
- * dropped. Phase 2 (VOS-160) can extend this to keep recently-ended agents
- * for a grace window so the operator sees the final state before fade-out;
- * Phase 1 keeps it strict.
+ * registry holds an agent row from the first event observed for that id.
+ *
+ * VOS-160 extends Phase 1's strict drop-on-end behaviour:
+ *   - Each row carries a bounded `trace` (newest TRACE_CAP events) so the
+ *     inspector can render a step-by-step history per agent.
+ *   - A terminal (`kind=end`) event marks the row `ended` with a timestamp
+ *     instead of deleting it; the row is purged once it has been ended
+ *     longer than ENDED_GRACE_MS. The purge runs lazily on every event
+ *     tick (and on `list()`), so no timer is needed.
  */
 export function createInflightRegistry(deps: InflightRegistryDeps): InflightRegistry {
   const rows = new Map<string, InflightAgent>();
+  const now = deps.now ?? (() => Date.now());
+
+  /** Drop rows that ended longer than the grace window ago. */
+  const purgeExpired = (): void => {
+    const cutoff = now() - ENDED_GRACE_MS;
+    for (const [id, row] of rows) {
+      if (row.ended && row.ended_at_ms !== null && row.ended_at_ms < cutoff) {
+        rows.delete(id);
+      }
+    }
+  };
+
+  const pushTrace = (row: InflightAgent, ev: AgentEvent): void => {
+    row.trace.push(ev);
+    if (row.trace.length > TRACE_CAP) {
+      row.trace.splice(0, row.trace.length - TRACE_CAP);
+    }
+  };
 
   deps.bus.subscribe("agent.event", (ev: DaemonEvent) => {
     const p = ev.payload as AgentEvent | undefined;
     if (!p || typeof p.agent_id !== "string") return;
-    const existing = rows.get(p.agent_id);
-    if (TERMINAL_KINDS.has(p.kind)) {
-      rows.delete(p.agent_id);
-      return;
-    }
-    if (!existing) {
-      rows.set(p.agent_id, {
+    purgeExpired();
+    let row = rows.get(p.agent_id);
+    if (!row) {
+      row = {
         agent_id: p.agent_id,
         parent_id: p.parent_id ?? null,
         task_id: p.agent_id,
@@ -125,20 +167,32 @@ export function createInflightRegistry(deps: InflightRegistryDeps): InflightRegi
         last_action: p.summary,
         last_summary: p.summary,
         last_ts: p.ts,
-      });
-      return;
+        trace: [],
+        ended: false,
+        ended_at_ms: null,
+      };
+      rows.set(p.agent_id, row);
+    } else {
+      row.current_phase = p.kind;
+      row.last_action = p.summary;
+      row.last_ts = p.ts;
+      if (p.kind === "text") row.last_summary = p.summary;
     }
-    existing.current_phase = p.kind;
-    existing.last_action = p.summary;
-    existing.last_ts = p.ts;
-    if (p.kind === "text") existing.last_summary = p.summary;
+    pushTrace(row, p);
+    if (TERMINAL_KINDS.has(p.kind)) {
+      row.ended = true;
+      row.ended_at_ms = now();
+      row.last_summary = p.summary;
+    }
   });
 
   return {
     list() {
+      purgeExpired();
       return Array.from(rows.values()).sort((a, b) => a.started_at.localeCompare(b.started_at));
     },
     get(id) {
+      purgeExpired();
       return rows.get(id) ?? null;
     },
     _reset() {

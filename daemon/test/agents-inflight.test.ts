@@ -256,9 +256,10 @@ test("registry: spawn → tool_call updates current_phase + last_action", () => 
   });
 });
 
-test("registry: end kind removes the row", () => {
+test("registry: end kind marks the row ended but keeps it in the grace window (VOS-160)", () => {
   const bus = createEventBus();
-  const reg = createInflightRegistry({ bus });
+  let clock = 1_000;
+  const reg = createInflightRegistry({ bus, now: () => clock });
   bus.emit({
     type: "agent.event",
     payload: { ts: "t", agent_id: "t1", parent_id: null, kind: "spawn", summary: "s" } satisfies AgentEvent,
@@ -268,7 +269,46 @@ test("registry: end kind removes the row", () => {
     type: "agent.event",
     payload: { ts: "t", agent_id: "t1", parent_id: null, kind: "end", summary: "done" } satisfies AgentEvent,
   });
+  // Within the grace window the row is still visible, flagged ended.
+  const stillThere = reg.list();
+  expect(stillThere).toHaveLength(1);
+  expect(stillThere[0].ended).toBe(true);
+  expect(stillThere[0].last_summary).toBe("done");
+});
+
+test("registry: ended row is purged after the grace window elapses (VOS-160)", () => {
+  const bus = createEventBus();
+  let clock = 1_000;
+  const reg = createInflightRegistry({ bus, now: () => clock });
+  bus.emit({
+    type: "agent.event",
+    payload: { ts: "t", agent_id: "t1", parent_id: null, kind: "end", summary: "done" } satisfies AgentEvent,
+  });
+  expect(reg.list()).toHaveLength(1);
+  clock += 11_000; // past ENDED_GRACE_MS (10s)
   expect(reg.list()).toHaveLength(0);
+});
+
+test("registry: row carries an ordered, capped event trace (VOS-160)", () => {
+  const bus = createEventBus();
+  const reg = createInflightRegistry({ bus });
+  for (let i = 0; i < 60; i++) {
+    bus.emit({
+      type: "agent.event",
+      payload: {
+        ts: `2026-05-20T00:00:${String(i).padStart(2, "0")}.000Z`,
+        agent_id: "t1",
+        parent_id: null,
+        kind: "tool_call",
+        summary: `call ${i}`,
+      } satisfies AgentEvent,
+    });
+  }
+  const row = reg.get("t1")!;
+  expect(row.trace).toHaveLength(50); // TRACE_CAP
+  // Oldest 10 dropped — trace keeps the newest 50 in order.
+  expect(row.trace[0].summary).toBe("call 10");
+  expect(row.trace[49].summary).toBe("call 59");
 });
 
 // ---------------------------------------------------------------------------

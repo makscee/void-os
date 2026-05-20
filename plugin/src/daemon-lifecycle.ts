@@ -258,6 +258,26 @@ export function readDaemonPort(home: string): number | null {
 }
 
 /**
+ * VOS-160: read the daemon's shared bearer token from `~/.void-os/token`.
+ *
+ * The token is created by the daemon on first boot (see
+ * daemon/src/auth/token.ts). Auth-gated routes — `/health`, `/vault/*`,
+ * `/chat/:id/stream`, and `/agents/inflight` — require `Authorization:
+ * Bearer <token>`. The inspector's snapshot poll calls this on every tick
+ * so token rotation between daemon restarts is picked up without a plugin
+ * reload. Returns null if the file is missing (daemon not yet booted).
+ */
+export function readDaemonToken(home: string): string | null {
+  try {
+    const raw = readFileSync(join(home, ".void-os", "token"), "utf8") as string;
+    const t = raw.trim();
+    return t.length > 0 ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build a probeHealth callback bound to the user's home directory.
  *
  * /health is Bearer-auth gated (see daemon/src/auth/middleware.ts); the
