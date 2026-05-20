@@ -221,14 +221,22 @@
      `display: flex` allowed the height to stretch with the two-line meta
      column. Lock the avatar to a 28px square via explicit min/max width,
      height, and aspect-ratio; pin grid cell alignment with `place-self`. */
+  /* `!important` on layout properties because Obsidian's unlayered
+     `button` defaults beat any rule in @layer components (CSS cascade:
+     unlayered rules win over layered, regardless of specificity).
+     Without it the row computes display:flex padding:4px 12px and the
+     avatar lands in column 2 instead of column 1. */
   .void-os-agent-row {
-    display: grid;
-    grid-template-columns: 32px 1fr;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: 8px 12px;
+    display: grid !important;
+    grid-template-columns: 32px 1fr !important;
+    align-items: center !important;
+    gap: 10px !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 48px !important;
+    padding: 8px 12px !important;
     margin-bottom: 2px;
+    flex-shrink: 0;
     background: color-mix(in srgb, var(--agent-color) 6%, transparent);
     border: none;
     border-left: 2px solid color-mix(in srgb, var(--agent-color) 40%, transparent);
@@ -245,16 +253,16 @@
   }
   .void-os-agent-avatar {
     box-sizing: border-box;
-    width: 28px;
-    height: 28px;
-    min-width: 28px;
-    min-height: 28px;
-    max-width: 28px;
-    max-height: 28px;
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    min-height: 28px !important;
+    max-width: 28px !important;
+    max-height: 28px !important;
     aspect-ratio: 1 / 1;
     flex-shrink: 0;
     place-self: center;
-    display: inline-flex;
+    display: inline-flex !important;
     align-items: center;
     justify-content: center;
     border-radius: 50%;
