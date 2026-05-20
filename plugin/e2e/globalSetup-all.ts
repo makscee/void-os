@@ -14,6 +14,7 @@ import askUserSetup from "./globalSetup-ask-user.ts";
 import permissionDenyUiSetup from "./globalSetup-permission-deny-ui.ts";
 import autospawnSetup from "./globalSetup-autospawn.ts";
 import binaryMissingSetup from "./globalSetup-binary-missing.ts";
+import journeySetup from "./globalSetup-journey.ts";
 
 // Playwright's FullConfig.projects is the full declared list, NOT filtered
 // by --project. Parse argv directly. Empty filter = default to "main" only
@@ -36,4 +37,5 @@ export default async function globalSetupAll(config: FullConfig) {
   if (selected.has("permission-deny-ui")) await permissionDenyUiSetup();
   if (selected.has("autospawn")) await autospawnSetup();
   if (selected.has("binary-missing")) await binaryMissingSetup();
+  if (selected.has("journey")) await journeySetup();
 }
