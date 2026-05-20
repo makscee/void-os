@@ -7,6 +7,7 @@
     "build": "bun run build.ts",
     "dev": "bun run build.ts --watch",
     "test": "bun test --isolate",
+    "typecheck": "tsc --noEmit",
     "e2e": "bunx playwright test --config e2e/playwright.config.ts --project=main",
     "e2e:all": "bunx playwright test --config e2e/playwright.config.ts",
     "e2e:journey": "bunx playwright test --config e2e/playwright.config.ts --project=journey"

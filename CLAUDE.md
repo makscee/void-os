@@ -48,6 +48,32 @@ E2E loop is heavy: ~60-90s per run (daemon + Playwright + Obsidian + scripted LL
 - **Drive chats via REST when the picker isn't under test.** `POST /chats` + `POST /chat/:id/message` is faster and less flaky than UI picker. Save Playwright clicks for what the spec actually asserts.
 - **Ribbon icon clicks must use `vaultPage.evaluate(el => el.click())`, not `locator.click()`.** Obsidian renders ribbon items as bare `<div class="clickable-icon side-dock-ribbon-action" aria-label="…">` (not buttons). Playwright's actionability check hangs the full 60s test timeout even when the element is visible; `force: true` clicks but doesn't fire Obsidian's delegated handler. Dispatch the native click in-page. Caught VOS-139 2026-05-18.
 
+# Typecheck discipline — tsc is heavy, serialize it (HUB-36)
+
+void-os `tsc --noEmit` is a multi-minute job. Several task tabs running it
+concurrently pin every core, exhaust swap, and slow each run 9-12x. Under
+that pressure a subagent's 2-minute Bash timeout fires while tsc is merely
+slow, the subagent reads timeout as failure and retries — doubling the load.
+
+Rules for any agent typechecking void-os:
+
+- **Prefer `bun test`.** It is the verification gate. A scoped `bun test`
+  on the touched workspace catches the regressions you care about far
+  faster than a cold full-project `tsc --noEmit`. Only run tsc when a
+  change is type-shape-only (no runtime behaviour to test).
+- **Never launch parallel tsc.** Route every `tsc --noEmit` through the
+  hub serializer `/Users/admin/hub/tools/typecheck-lock/tc` — it holds a
+  machine-wide flock so at most one tsc runs at a time; others queue.
+- **Never retry tsc on a Bash timeout.** A timeout means "still running,"
+  not "failed." `tc` runs tsc detached and returns a status-file path; poll
+  that file instead of re-invoking tsc.
+- **Incremental is on.** All three tsconfigs set `incremental` +
+  `tsBuildInfoFile` (under each workspace's `node_modules/.cache/`, so
+  per-worktree, gitignored). A warm repeat run reuses the cache and is
+  near-instant — do not delete the cache "to be safe."
+
+`bun run typecheck` exists in `plugin`, `daemon`, and `protocol`.
+
 # context-mode — MANDATORY routing rules
 
 You have context-mode MCP tools available. These rules are NOT optional — they protect your context window from flooding. A single unrouted command can dump 56 KB into context and waste the entire session.
