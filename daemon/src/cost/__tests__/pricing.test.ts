@@ -44,13 +44,14 @@ describe("priceFor", () => {
     }, { warn });
     expect(usd).toBe(0);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toBe("cost.unknown_model");
-    expect(warn.mock.calls[0][1]).toEqual({ model: "claude-future-99" });
+    const firstCall = warn.mock.calls[0] as unknown as unknown[];
+    expect(firstCall[0]).toBe("cost.unknown_model");
+    expect(firstCall[1]).toEqual({ model: "claude-future-99" });
   });
 
   test("cache weighting distinct from input rate", () => {
     // Guard against accidental fold: cache_read should be cheaper than input.
-    const opus = PRICING["claude-opus-4-7"];
+    const opus = PRICING["claude-opus-4-7"]!;
     expect(opus.cacheRead).toBeLessThan(opus.input);
     expect(opus.cacheCreate).toBeGreaterThan(opus.input);
   });

@@ -153,7 +153,7 @@ describe("VOS-161: agent control verb routes", () => {
       expect(["running", "paused", "killed"]).toContain(p.state);
     }
     // The kill frame must report the killed state.
-    const last = events[2].payload as { state: string };
+    const last = events[2]!.payload as { state: string };
     expect(last.state).toBe("killed");
   });
 });
@@ -177,7 +177,7 @@ describe("VOS-162: branch verb route", () => {
     expect(body.worktree_path).toBe("/tmp/fake-repo-wt/agent1-n1");
     // git was driven: rev-parse HEAD, then worktree add.
     expect(git.calls[0]).toEqual(["rev-parse", "HEAD"]);
-    expect(git.calls[1][0]).toBe("worktree");
+    expect(git.calls[1]![0]).toBe("worktree");
     expect(git.calls[1]).toContain("b".repeat(40));
   });
 
@@ -212,7 +212,7 @@ describe("VOS-162: branch verb route", () => {
     await post(app, "agent-1", "branch");
     const branchEvents = events.slice(before);
     expect(branchEvents).toHaveLength(1);
-    const p = branchEvents[0].payload as { kind: string; summary: string };
+    const p = branchEvents[0]!.payload as { kind: string; summary: string };
     expect(p.kind).toBe("status");
     expect(p.summary).toContain("branched agent");
   });

@@ -55,7 +55,7 @@ export const createStreamParser = (h: ParserHandlers): StreamParser => {
 
     // session_id capture (first system event)
     if (event.type === "system" && typeof (event as { session_id?: unknown }).session_id === "string") {
-      const sid = (event as { session_id: string }).session_id;
+      const sid = (event as unknown as { session_id: string }).session_id;
       if (_sessionId === undefined) {
         _sessionId = sid;
         h.onSession(sid);

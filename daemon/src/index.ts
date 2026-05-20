@@ -129,7 +129,9 @@ const server = Bun.serve({
   fetch(req, srv) {
     const url = new URL(req.url);
     if (url.pathname === "/events") {
-      if (srv.upgrade(req)) return;
+      // wsHandler is WebSocketHandler<unknown>, so Bun's upgrade() requires an
+      // explicit `data` even though this socket carries none (VOS-167).
+      if (srv.upgrade(req, { data: undefined })) return;
       return new Response("expected WebSocket upgrade", { status: 426 });
     }
     return app.fetch(req);

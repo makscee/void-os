@@ -113,9 +113,9 @@ describe("scanAgentCards", () => {
     upsertAgentCards(db, scanAgentCards(vault));
     const before = readCards(db);
     expect(before.length).toBe(1);
-    const beforeCard = JSON.parse(before[0].card_json);
+    const beforeCard = JSON.parse(before[0]!.card_json);
     expect(beforeCard.read_scope).toEqual(["vault/journal/**"]);
-    const beforeMtime = before[0].source_mtime;
+    const beforeMtime = before[0]!.source_mtime;
 
     // Rewrite with different scope + bumped mtime.
     writeAgent(vault, "maya", {
@@ -129,9 +129,9 @@ describe("scanAgentCards", () => {
     upsertAgentCards(db, scanAgentCards(vault));
     const after = readCards(db);
     expect(after.length).toBe(1); // still one row — UPDATE not INSERT
-    const afterCard = JSON.parse(after[0].card_json);
+    const afterCard = JSON.parse(after[0]!.card_json);
     expect(afterCard.read_scope).toEqual(["vault/work/**", "vault/journal/**"]);
-    expect(after[0].source_mtime).toBeGreaterThan(beforeMtime);
+    expect(after[0]!.source_mtime).toBeGreaterThan(beforeMtime);
     db.close();
     rmSync(vault, { recursive: true, force: true });
   });
@@ -148,7 +148,7 @@ describe("scanAgentCards", () => {
     upsertAgentCards(db, scanAgentCards(vault));
     const cards = readCards(db);
     expect(cards.length).toBe(1);
-    const card = JSON.parse(cards[0].card_json);
+    const card = JSON.parse(cards[0]!.card_json);
     expect(card.tools).toEqual(["vault.read", "vault.create", "ask_user"]);
     db.close();
     rmSync(vault, { recursive: true, force: true });
@@ -164,7 +164,7 @@ describe("scanAgentCards", () => {
     const db = freshDb();
     upsertAgentCards(db, scanAgentCards(vault));
     const cards = readCards(db);
-    const card = JSON.parse(cards[0].card_json);
+    const card = JSON.parse(cards[0]!.card_json);
     expect(card.tools).toBeUndefined();
     db.close();
     rmSync(vault, { recursive: true, force: true });
@@ -184,7 +184,7 @@ describe("scanAgentCards", () => {
     upsertAgentCards(db, scanAgentCards(vault));
     const cards = readCards(db);
     expect(cards.length).toBe(1);
-    const card = JSON.parse(cards[0].card_json);
+    const card = JSON.parse(cards[0]!.card_json);
     expect(card.name).toBe("maya");
     expect(card.read_scope).toEqual(["vault/**", "workspace/void-os/**"]);
     expect(card.write_scope).toEqual(["vault/work/**"]);

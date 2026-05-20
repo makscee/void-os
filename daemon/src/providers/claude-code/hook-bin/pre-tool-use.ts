@@ -99,7 +99,10 @@ function gateWrite(
 
 async function readStdin(): Promise<string> {
   let data = "";
-  for await (const chunk of Bun.stdin.stream()) {
+  // Bun's ReadableStream is async-iterable at runtime; @types/bun types
+  // stdin.stream() as a plain web ReadableStream without the iterator (VOS-167).
+  const stream = Bun.stdin.stream() as unknown as AsyncIterable<Uint8Array>;
+  for await (const chunk of stream) {
     data += new TextDecoder().decode(chunk);
   }
   return data;

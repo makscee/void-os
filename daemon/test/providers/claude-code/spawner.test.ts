@@ -282,7 +282,7 @@ describe("VOS-79 cc spawner-iter adapter", () => {
     while (!(await it.next()).done) { /* drain */ }
 
     expect(killCalls).toHaveLength(1);
-    expect(killCalls[0].fast).toBe(true);
+    expect(killCalls[0]!.fast).toBe(true);
   });
 
   test("cancel(unknown-runId) returns false without invoking kill", async () => {

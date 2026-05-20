@@ -128,9 +128,9 @@ test("bridge: chat.tool_result emits tool_return with ok/error signal", () => {
   });
 
   expect(seen).toHaveLength(2);
-  expect(seen[0].kind).toBe("tool_return");
-  expect(seen[0].summary).toContain("ok");
-  expect(seen[1].summary).toContain("error");
+  expect(seen[0]!.kind).toBe("tool_return");
+  expect(seen[0]!.summary).toContain("ok");
+  expect(seen[1]!.summary).toContain("error");
 });
 
 test("bridge: task.state_changed emits status with state field", () => {
@@ -174,7 +174,7 @@ test("bridge: child.spawn emits spawn with parent_id", () => {
   });
   expect(seen).toHaveLength(1);
   expect(seen[0]).toMatchObject({ kind: "spawn", agent_id: "child1", parent_id: "parent1" });
-  expect(seen[0].summary).toContain("impl");
+  expect(seen[0]!.summary).toContain("impl");
 });
 
 test("bridge: child.dispatch_error emits end with reason=dispatch_error", () => {
@@ -213,8 +213,8 @@ test("bridge: summary caps at 200 chars (default)", () => {
 
   const big = "x".repeat(500);
   bus.emit({ type: "chat.token", payload: { task_id: "t1", delta: big } });
-  expect(seen[0].summary.length).toBeLessThanOrEqual(200);
-  expect(seen[0].summary.endsWith("…")).toBe(true);
+  expect(seen[0]!.summary.length).toBeLessThanOrEqual(200);
+  expect(seen[0]!.summary.endsWith("…")).toBe(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -272,8 +272,8 @@ test("registry: end kind marks the row ended but keeps it in the grace window (V
   // Within the grace window the row is still visible, flagged ended.
   const stillThere = reg.list();
   expect(stillThere).toHaveLength(1);
-  expect(stillThere[0].ended).toBe(true);
-  expect(stillThere[0].last_summary).toBe("done");
+  expect(stillThere[0]!.ended).toBe(true);
+  expect(stillThere[0]!.last_summary).toBe("done");
 });
 
 test("registry: ended row is purged after the grace window elapses (VOS-160)", () => {
@@ -307,8 +307,8 @@ test("registry: row carries an ordered, capped event trace (VOS-160)", () => {
   const row = reg.get("t1")!;
   expect(row.trace).toHaveLength(50); // TRACE_CAP
   // Oldest 10 dropped — trace keeps the newest 50 in order.
-  expect(row.trace[0].summary).toBe("call 10");
-  expect(row.trace[49].summary).toBe("call 59");
+  expect(row.trace[0]!.summary).toBe("call 10");
+  expect(row.trace[49]!.summary).toBe("call 59");
 });
 
 // ---------------------------------------------------------------------------
@@ -353,8 +353,8 @@ test("jsonl: persistence subscriber writes every agent.event", async () => {
     w.close();
     const raw = fs.readFileSync(w.path, "utf8").trim().split("\n");
     expect(raw).toHaveLength(2);
-    expect(JSON.parse(raw[0]).kind).toBe("spawn");
-    expect(JSON.parse(raw[1]).kind).toBe("end");
+    expect(JSON.parse(raw[0]!).kind).toBe("spawn");
+    expect(JSON.parse(raw[1]!).kind).toBe("end");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -409,10 +409,10 @@ test("GET /agents/inflight?stream=1 sends hello → snapshot → delta", async (
   expect(frames[1]).toContain("event: snapshot");
   expect(frames[2]).toContain("event: agent_event");
 
-  const snap = dataOf(frames[1]) as { agents: Array<{ agent_id: string }> };
+  const snap = dataOf(frames[1]!) as { agents: Array<{ agent_id: string }> };
   expect(snap.agents.find(a => a.agent_id === "t-pre")).toBeDefined();
 
-  const delta = dataOf(frames[2]) as AgentEvent;
+  const delta = dataOf(frames[2]!) as AgentEvent;
   expect(delta.agent_id).toBe("t-pre");
   expect(delta.kind).toBe("tool_call");
 });

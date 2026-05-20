@@ -18,6 +18,7 @@ describe("VOS-111: MCP tool allowlist drift guard", () => {
       engine: {} as never,
       bridge: {} as never,
       bus: { emit: () => {} } as never,
+      writer: {} as never,
       loadAgentDefn: () => ({ name: "test" }) as never,
       dispatchChildTask: async () => {},
       callingAgent: { name: "test" } as never,

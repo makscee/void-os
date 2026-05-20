@@ -109,7 +109,7 @@ describe("VOS-77 smoke: claudev → claude → MCP → daemon", () => {
 
       const exitCode = await new Promise<number>((resolve, reject) => {
         const t = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("claudev timeout")); }, 60_000);
-        child.on("close", (code) => { clearTimeout(t); resolve(code ?? -1); });
+        (child as unknown as import("node:events").EventEmitter).on("close", (code: number | null) => { clearTimeout(t); resolve(code ?? -1); });
       });
       expect(exitCode).toBe(0);
 

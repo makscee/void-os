@@ -56,7 +56,7 @@ export function honoBridge(c: Context): BridgeResult {
   // attach data/end listeners without crashing.
   const body = c.req.raw.body;
   const nodeReqStream = body
-    ? Readable.fromWeb(body as unknown as import("stream/web").ReadableStream)
+    ? Readable.fromWeb(body as unknown as import("node:stream/web").ReadableStream)
     : Readable.from(Buffer.alloc(0));
   const nodeReq = Object.assign(nodeReqStream as Readable, {
     headers,

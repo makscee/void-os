@@ -42,20 +42,22 @@ export type ChatAnswerResp = z.infer<typeof ChatAnswerResp>;
 export type ChatCancelResp = z.infer<typeof ChatCancelResp>;
 
 export class ApiError extends Error {
-  readonly name = "ApiError" as const;
+  // `override`: daemon/tsconfig.json sets noImplicitOverride; these shadow
+  // members of the base Error class and must be marked explicitly (VOS-167).
+  override readonly name = "ApiError" as const;
   constructor(public readonly code: string, message: string, public readonly status: number) {
     super(message);
   }
 }
 export class ServerError extends Error {
-  readonly name = "ServerError" as const;
+  override readonly name = "ServerError" as const;
   constructor(public readonly status: number, public readonly body: string) {
     super(`server error ${status}: ${body.slice(0, 200)}`);
   }
 }
 export class UnreachableError extends Error {
-  readonly name = "UnreachableError" as const;
-  constructor(public readonly cause: unknown) {
+  override readonly name = "UnreachableError" as const;
+  constructor(public override readonly cause: unknown) {
     super(`daemon unreachable: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
 }

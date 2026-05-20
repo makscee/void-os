@@ -50,11 +50,11 @@ function makeApp(db: Database): Hono {
 }
 
 function post(app: Hono, body?: unknown): Promise<Response> {
-  return app.request("/chats", {
+  return Promise.resolve(app.request("/chats", {
     method: "POST",
     headers: body !== undefined ? { "content-type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  }));
 }
 
 // ─── 400 E_INVALID_BODY cases ────────────────────────────────────────────────

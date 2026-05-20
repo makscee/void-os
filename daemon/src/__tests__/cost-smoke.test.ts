@@ -44,7 +44,7 @@ describe("cost smoke — end to end", () => {
     });
 
     const app = new Hono();
-    const ctx: ApiContext = { version: "test", db, tz: "UTC" };
+    const ctx: ApiContext = { version: "test", db, tz: "UTC", vaultRoot: "/tmp", token: "test-token", bootTime: 0 };
     mountCost(app, ctx);
 
     const res = await app.request("/cost/today");

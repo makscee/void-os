@@ -132,11 +132,15 @@ function runHl(
     child.stderr.on("data", (b: Buffer) => {
       stderr += b.toString("utf8");
     });
-    child.on("error", (err) => {
+    // `child` is typed by @types/bun, whose ChildProcessWithoutNullStreams
+    // omits the inherited EventEmitter surface; reach it via EventEmitter
+    // (the methods exist at runtime — bun spawns a real Node child) (VOS-167).
+    const childEvents = child as unknown as import("node:events").EventEmitter;
+    childEvents.on("error", (err: Error) => {
       warn(`hl spawn error: ${err.message}`);
       resolve(null);
     });
-    child.on("exit", (code) => {
+    childEvents.on("exit", (code: number | null) => {
       if (code === 0) {
         resolve(stdout.trim() || null);
       } else {

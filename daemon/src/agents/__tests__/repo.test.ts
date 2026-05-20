@@ -43,7 +43,7 @@ describe("makeAgentRepo", () => {
     repo.upsertAll([row("maya", "v2")]);
     const got = repo.list();
     expect(got.length).toBe(1);
-    expect(got[0].description).toBe("v2");
+    expect(got[0]!.description).toBe("v2");
     db.close();
   });
 

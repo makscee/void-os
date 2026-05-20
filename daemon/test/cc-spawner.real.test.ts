@@ -16,7 +16,15 @@ describe("CC spawner (real claudev)", () => {
       const bus = createEventBus({ db });
       const tracesDir = join(dir, "traces");
 
-      const spawner = createCcSpawner({ bus, db, tracesDir });
+      // CcSpawnerDeps grew engine/daemonBase/hookScriptPath/loadAgentDefn;
+      // this real-spawn probe does not exercise them (VOS-167).
+      const spawner = createCcSpawner({
+        bus, db, tracesDir,
+        engine: {} as never,
+        daemonBase: "http://localhost:0",
+        hookScriptPath: "/tmp/hook.ts",
+        loadAgentDefn: (() => ({})) as never,
+      });
       const events: DaemonEvent[] = [];
       const unsubscribe = bus.subscribe("cc.event", (e) => events.push(e));
       const t0 = Date.now();

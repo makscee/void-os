@@ -201,7 +201,18 @@ export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Mcp
 
   const mcp = new McpServer({ name: "void-os", version: pkg.version });
 
-  mcp.registerTool(
+  // VOS-167: McpServer.registerTool's generic inference over each tool's
+  // ZodRawShape `inputSchema` explodes into TS2589 ("excessively deep, possibly
+  // infinite") — which OOMs tsc outright. Bind the method through a loosened
+  // signature; the `*Def` + handler shapes are already validated at each tool
+  // module's own boundary (handlers were already passed `as never`).
+  const registerTool = mcp.registerTool.bind(mcp) as (
+    name: string,
+    def: unknown,
+    handler: unknown,
+  ) => void;
+
+  registerTool(
     "vault.read",
     vaultReadDef,
     makeVaultRead({ vaultRoot, db, engine, agent: callingAgent }) as never,
@@ -209,29 +220,29 @@ export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Mcp
 
   const writeDeps = { vaultRoot, db, engine, writer, agent: callingAgent };
 
-  mcp.registerTool("vault.create",          vaultCreateDef,         makeVaultCreate(writeDeps) as never);
-  mcp.registerTool("vault.append",          vaultAppendDef,         makeVaultAppend(writeDeps) as never);
-  mcp.registerTool("vault.replace_section", vaultReplaceSectionDef, makeVaultReplaceSection(writeDeps) as never);
-  mcp.registerTool("vault.set_property",    vaultSetPropertyDef,    makeVaultSetProperty(writeDeps) as never);
-  mcp.registerTool("vault.patch",           vaultPatchDef,          makeVaultPatch(writeDeps) as never);
-  mcp.registerTool("vault.delete",          vaultDeleteDef,         makeVaultDelete(writeDeps) as never);
-  mcp.registerTool("vault.move",            vaultMoveDef,           makeVaultMove(writeDeps) as never);
+  registerTool("vault.create",          vaultCreateDef,         makeVaultCreate(writeDeps) as never);
+  registerTool("vault.append",          vaultAppendDef,         makeVaultAppend(writeDeps) as never);
+  registerTool("vault.replace_section", vaultReplaceSectionDef, makeVaultReplaceSection(writeDeps) as never);
+  registerTool("vault.set_property",    vaultSetPropertyDef,    makeVaultSetProperty(writeDeps) as never);
+  registerTool("vault.patch",           vaultPatchDef,          makeVaultPatch(writeDeps) as never);
+  registerTool("vault.delete",          vaultDeleteDef,         makeVaultDelete(writeDeps) as never);
+  registerTool("vault.move",            vaultMoveDef,           makeVaultMove(writeDeps) as never);
 
   // VOS-131: read-only template loader. No scope gate — templates are
   // intentionally world-readable inside the vault; the gate that matters is
   // on the subsequent vault.create the agent issues with the rendered output.
-  mcp.registerTool(
+  registerTool(
     "vault.load_template",
     vaultLoadTemplateDef,
     makeVaultLoadTemplate({ vaultRoot }) as never,
   );
 
-  mcp.registerTool(
+  registerTool(
     "ask_user",
     askUserDef,
     makeAskUser({ bridge }) as never,
   );
-  mcp.registerTool(
+  registerTool(
     "ask_agent",
     askAgentDef,
     makeAskAgent({

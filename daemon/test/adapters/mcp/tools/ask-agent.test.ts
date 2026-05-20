@@ -301,7 +301,7 @@ describe("ask_agent handler (composition)", () => {
     const now = Math.floor(Date.now() / 1000);
     const ids = ["root", "g1", "g2", "g3", "g4"];
     for (let i = 0; i < ids.length; i++) {
-      const parent = i === 0 ? null : ids[i - 1];
+      const parent = i === 0 ? null : ids[i - 1]!;
       db.run(
         `INSERT INTO tasks
            (id, context_id, parent_task_id, state,
