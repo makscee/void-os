@@ -15,8 +15,11 @@ const VaultListEntry = z.object({
 });
 const VaultListResp = z.object({ path: z.string(), entries: z.array(VaultListEntry) }).passthrough();
 export type VaultFileResp = z.infer<typeof VaultFileResp>;
-export type VaultWriteResp = z.infer<typeof VaultWriteResp>;
-export type VaultListResp = z.infer<typeof VaultListResp>;
+// Not re-exported: vault.ts owns the canonical `VaultWriteResp` / `VaultListResp`
+// type names. These local aliases are the loose client-side envelopes and stay
+// module-private so `export *` from index.ts does not collide (VOS-167).
+type VaultWriteRespLocal = z.infer<typeof VaultWriteResp>;
+type VaultListRespLocal = z.infer<typeof VaultListResp>;
 
 // Verified against daemon/src/api/chats.ts POST /chats — returns {id, title, created_at}.
 // Note: response key is `id` (not `chat_id`).
@@ -49,20 +52,22 @@ const PruneBranchesResp = z.object({
 export type PruneBranchesResp = z.infer<typeof PruneBranchesResp>;
 
 export class ApiError extends Error {
-  readonly name = "ApiError" as const;
+  // `override`: daemon/tsconfig.json sets noImplicitOverride; these shadow
+  // members of the base Error class and must be marked explicitly (VOS-167).
+  override readonly name = "ApiError" as const;
   constructor(public readonly code: string, message: string, public readonly status: number) {
     super(message);
   }
 }
 export class ServerError extends Error {
-  readonly name = "ServerError" as const;
+  override readonly name = "ServerError" as const;
   constructor(public readonly status: number, public readonly body: string) {
     super(`server error ${status}: ${body.slice(0, 200)}`);
   }
 }
 export class UnreachableError extends Error {
-  readonly name = "UnreachableError" as const;
-  constructor(public readonly cause: unknown) {
+  override readonly name = "UnreachableError" as const;
+  constructor(public override readonly cause: unknown) {
     super(`daemon unreachable: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
 }
@@ -81,8 +86,8 @@ export interface Client {
   };
   vault: {
     read(path: string): Promise<VaultFileResp>;
-    write(path: string, content: string): Promise<VaultWriteResp>;
-    list(path?: string, opts?: { depth?: number }): Promise<VaultListResp>;
+    write(path: string, content: string): Promise<VaultWriteRespLocal>;
+    list(path?: string, opts?: { depth?: number }): Promise<VaultListRespLocal>;
   };
   chat: {
     create(opts?: { agent?: string }): Promise<ChatCreateResp>;

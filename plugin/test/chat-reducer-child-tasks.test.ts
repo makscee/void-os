@@ -114,7 +114,8 @@ describe("chatReducer — chat.task.state_changed", () => {
   }
 
   it("maps daemon states to ChildTaskStream.state", () => {
-    const cases: Array<[string, string]> = [
+    type UiState = "WORKING" | "INPUT_REQUIRED" | "COMPLETED" | "FAILED" | "CANCELED";
+    const cases: Array<[string, UiState]> = [
       ["SUBMITTED",        "WORKING"],
       ["WORKING",          "WORKING"],
       ["WAITING_ON_AGENT", "WORKING"],

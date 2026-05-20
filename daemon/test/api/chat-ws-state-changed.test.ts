@@ -92,7 +92,7 @@ describe("mountChatTaskStateFanout", () => {
     unsubscribe();
 
     expect(captured).toHaveLength(1);
-    const { chatId, frame } = captured[0];
+    const { chatId, frame } = captured[0]!;
     expect(chatId).toBe("ctx-1");
     expect(frame.type).toBe("chat.task.state_changed");
     const p = frame.payload;
@@ -135,7 +135,7 @@ describe("mountChatTaskStateFanout", () => {
     unsubscribe();
 
     expect(captured).toHaveLength(1);
-    const { chatId, frame } = captured[0];
+    const { chatId, frame } = captured[0]!;
     expect(chatId).toBe("ctx-2");
     expect(frame.type).toBe("chat.task.state_changed");
     const p = frame.payload;

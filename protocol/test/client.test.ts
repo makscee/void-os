@@ -2,10 +2,12 @@ import { test, expect } from "bun:test";
 import { makeClient, ApiError, ServerError, UnreachableError } from "../src/client.ts";
 
 function fakeFetch(handler: (req: Request) => Response | Promise<Response>): typeof fetch {
-  return (input: RequestInfo | URL, init?: RequestInit) => {
+  // Cast through unknown: the test double only needs to be call-compatible;
+  // Bun's `typeof fetch` also carries a `preconnect` member we do not stub.
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
     const req = input instanceof Request ? input : new Request(input as string, init);
     return Promise.resolve(handler(req));
-  };
+  }) as unknown as typeof fetch;
 }
 
 test("health() sends bearer + parses HealthResp", async () => {
@@ -39,8 +41,10 @@ test("agents.list() returns parsed list", async () => {
 
 test("vault.write() sends JSON body", async () => {
   let body: any = null;
-  let ct: string | null = null;
-  let method: string | null = null;
+  // Assigned inside the fakeFetch closure; the `as` keeps TS from narrowing
+  // these to the `null` literal at the later `expect()` assertion sites.
+  let ct: string | null = null as string | null;
+  let method: string | null = null as string | null;
   const client = makeClient({
     base: "http://x",
     token: "t",
@@ -80,7 +84,7 @@ test("network failure throws UnreachableError", async () => {
   const client = makeClient({
     base: "http://x",
     token: "t",
-    fetch: () => Promise.reject(new TypeError("fetch failed")),
+    fetch: (() => Promise.reject(new TypeError("fetch failed"))) as unknown as typeof fetch,
   });
   await expect(client.health()).rejects.toMatchObject({ name: "UnreachableError" });
 });

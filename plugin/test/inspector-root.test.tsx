@@ -22,6 +22,7 @@ function agent(over: Partial<InflightAgent> = {}): InflightAgent {
     trace: [],
     ended: false,
     ended_at_ms: null,
+    control_state: null,
     ...over,
   };
 }

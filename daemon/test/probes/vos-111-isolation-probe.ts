@@ -95,7 +95,7 @@ async function bootProbeDaemon(): Promise<ProbeDaemon> {
   });
 
   const app = new Hono();
-  mountMcp(app, { vaultRoot, db, bus, bridge, engine });
+  mountMcp(app, { vaultRoot, db, bus, bridge, engine, writer: {} as never });
 
   // idleTimeout: 0 — MCP SSE/stream connections from CC must not be killed
   // mid-flight (void-os CLAUDE.md gotcha #4).
@@ -228,7 +228,9 @@ exit 0
 
   let stdoutBuf = "";
   let stderrBuf = "";
-  let systemInit: SystemInit | null = null;
+  // `as` keeps TS from narrowing to the `null` literal — systemInit is assigned
+  // inside the stdout-data closure, which TS cannot prove runs (VOS-167).
+  let systemInit: SystemInit | null = null as SystemInit | null;
   const toolUses: Array<{ name?: unknown; input?: unknown }> = [];
   // Forensic log: full stream-json stdout, one line per event.
   const streamLogPath = join(probeDir, "stream-json.log");
@@ -288,7 +290,8 @@ exit 0
       console.error("[probe] timeout, killing child");
       child.kill("SIGKILL");
     }, 120_000);
-    child.on("exit", (code) => {
+    // @types/bun's ChildProcessByStdio omits the inherited EventEmitter surface.
+    (child as unknown as import("node:events").EventEmitter).on("exit", (code: number | null) => {
       clearTimeout(t);
       resolve(code ?? -1);
     });
@@ -309,7 +312,7 @@ exit 0
     console.log(JSON.stringify(mcpServers, null, 2));
     console.log("\ntools:");
     console.log(JSON.stringify(tools, null, 2));
-    const voidOsTools = tools.filter((t) => t.startsWith("mcp__void-os__"));
+    const voidOsTools = tools.filter((t: string) => t.startsWith("mcp__void-os__"));
     console.log("\nmcp__void-os__* tool names:");
     console.log(JSON.stringify(voidOsTools, null, 2));
   }

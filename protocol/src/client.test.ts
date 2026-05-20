@@ -2,10 +2,12 @@ import { test, expect } from "bun:test";
 import { makeClient } from "./client.ts";
 
 function fakeFetch(handler: (req: Request) => Response | Promise<Response>): typeof fetch {
-  return (input: RequestInfo | URL, init?: RequestInit) => {
+  // Cast through unknown: the test double only needs to be call-compatible;
+  // Bun's `typeof fetch` also carries a `preconnect` member we do not stub.
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
     const req = input instanceof Request ? input : new Request(input as string, init);
     return Promise.resolve(handler(req));
-  };
+  }) as unknown as typeof fetch;
 }
 
 test("chat.create posts to /chats with agent and returns {id, title, created_at}", async () => {

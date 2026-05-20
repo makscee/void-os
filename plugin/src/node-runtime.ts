@@ -20,7 +20,11 @@
 
 type OsLike = { homedir: () => string };
 type FsLike = {
-  readFileSync: (p: string, e?: string) => string | Buffer;
+  // Overloaded: an explicit encoding yields a string, no encoding yields a Buffer.
+  readFileSync: {
+    (p: string, e: string): string;
+    (p: string): Buffer;
+  };
   writeFileSync: (p: string, d: string | Buffer) => void;
   appendFileSync: (p: string, d: string | Buffer) => void;
   existsSync: (p: string) => boolean;

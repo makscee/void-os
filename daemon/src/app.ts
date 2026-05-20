@@ -42,7 +42,7 @@ import {
   attachJsonlPersistence,
 } from "./agents/inflight.ts";
 import { createAskUserBridge } from "./chat/ask-user-bridge.ts";
-import { makeProvider } from "./providers/factory.ts";
+import { makeProvider, type ProviderEnv } from "./providers/factory.ts";
 import { createPermissionEngine } from "./permissions/engine.ts";
 import { createVaultWriter } from "./vault/writer.ts";
 import { runBootDenyProbe } from "./providers/claude-code/boot-probe.ts";
@@ -260,7 +260,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
 
     if (!orchestrator) {
       const tracesDir = path.join(deps.vaultRoot, ".traces");
-      const provider = makeProvider(process.env, {
+      // process.env is an index-signatured ProcessEnv; ProviderEnv only names
+      // optional VOS_* keys, so TS flags no-overlap. The cast is safe — the
+      // provider factory just reads those keys when present (VOS-167).
+      const provider = makeProvider(process.env as unknown as ProviderEnv, {
         bus,
         db: deps.db,
         tracesDir,

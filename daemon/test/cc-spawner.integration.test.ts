@@ -219,7 +219,7 @@ describe("CC spawner (fake claudev)", () => {
       // finalize awaited stderrDone before emitting run.end.
       const endEvents = capturedEvents({ runId: proc.runId, type: "run.end" });
       expect(endEvents).toHaveLength(1);
-      const endTs = endEvents[0].ts ?? 0;
+      const endTs = endEvents[0]!.ts ?? 0;
       expect(stderr.every((e) => (e.ts ?? 0) <= endTs)).toBe(true);
     } finally {
       if (proc) { try { await proc.kill(); } catch { /* already dead */ } }

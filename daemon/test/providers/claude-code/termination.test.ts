@@ -150,7 +150,7 @@ test("VOS-122 F9: ProviderSpawnRequest.agent is forwarded into iter.spawn", asyn
   for await (const _ of h.events) {}
   await h.done;
   expect(captured).toHaveLength(1);
-  expect(captured[0].agent).toBe("tinker");
+  expect(captured[0]!.agent).toBe("tinker");
 });
 
 test("done resolves 'cancel' (not 'error') when cancel then iterator throws", async () => {

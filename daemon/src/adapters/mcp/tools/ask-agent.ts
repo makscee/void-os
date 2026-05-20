@@ -55,7 +55,9 @@ export interface McpErrorResult {
   content: Array<{ type: "text"; text: string }>;
 }
 
-function toMcpError(err: unknown): McpErrorResult {
+// Returns CallToolResult (which carries an index signature); McpErrorResult's
+// narrower shape is structurally rejected by the MCP handler return type.
+function toMcpError(err: unknown): CallToolResult {
   const text =
     err instanceof AskAgentError ? err.message :
     err instanceof Error ? `internal: ${err.message}` :

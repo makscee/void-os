@@ -170,8 +170,8 @@ test("list returns cost_usd=0 for chats with no cost rows", () => {
   repo.create({ agent: "maya" });
   const rows = repo.list();
   expect(rows.length).toBe(1);
-  expect(rows[0].cost_usd).toBe(0);
-  expect(typeof rows[0].cost_usd).toBe("number");
+  expect(rows[0]!.cost_usd).toBe(0);
+  expect(typeof rows[0]!.cost_usd).toBe("number");
 });
 
 test("list returns cost_usd as lifetime SUM(costs.cost_usd) per chat", () => {
@@ -191,15 +191,15 @@ test("list returns cost_usd as lifetime SUM(costs.cost_usd) per chat", () => {
   insert.run("r3", b.id, now, 1.50);
   const rows = repo.list();
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
-  expect(byId[a.id].cost_usd).toBeCloseTo(0.42, 5);
-  expect(byId[b.id].cost_usd).toBeCloseTo(1.50, 5);
+  expect(byId[a.id]!.cost_usd).toBeCloseTo(0.42, 5);
+  expect(byId[b.id]!.cost_usd).toBeCloseTo(1.50, 5);
 });
 
 test("list returns input_required=false when no tasks in INPUT_REQUIRED state", () => {
   const repo = makeChatRepo(freshDb());
   repo.create({ agent: "maya" });
   const rows = repo.list();
-  expect(rows[0].input_required).toBe(false);
+  expect(rows[0]!.input_required).toBe(false);
 });
 
 test("list returns input_required=true when any task in chat is INPUT_REQUIRED", () => {
@@ -239,15 +239,15 @@ test("list returns context_tokens + splits from latest costs row per chat (tiebr
   insert.run("r3", a.id, 200, 0.20, 999, 9, 9, 9);
   const rows = repo.list();
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
-  expect(byId[a.id].context_input_tokens).toBe(999);
-  expect(byId[a.id].context_output_tokens).toBe(9);
-  expect(byId[a.id].context_cache_create_tokens).toBe(9);
-  expect(byId[a.id].context_cache_read_tokens).toBe(9);
-  expect(byId[a.id].context_tokens).toBe(999 + 9 + 9 + 9);
+  expect(byId[a.id]!.context_input_tokens).toBe(999);
+  expect(byId[a.id]!.context_output_tokens).toBe(9);
+  expect(byId[a.id]!.context_cache_create_tokens).toBe(9);
+  expect(byId[a.id]!.context_cache_read_tokens).toBe(9);
+  expect(byId[a.id]!.context_tokens).toBe(999 + 9 + 9 + 9);
   // chat b has no costs rows — all 5 fields null.
-  expect(byId[b.id].context_tokens).toBeNull();
-  expect(byId[b.id].context_input_tokens).toBeNull();
-  expect(byId[b.id].context_output_tokens).toBeNull();
-  expect(byId[b.id].context_cache_create_tokens).toBeNull();
-  expect(byId[b.id].context_cache_read_tokens).toBeNull();
+  expect(byId[b.id]!.context_tokens).toBeNull();
+  expect(byId[b.id]!.context_input_tokens).toBeNull();
+  expect(byId[b.id]!.context_output_tokens).toBeNull();
+  expect(byId[b.id]!.context_cache_create_tokens).toBeNull();
+  expect(byId[b.id]!.context_cache_read_tokens).toBeNull();
 });

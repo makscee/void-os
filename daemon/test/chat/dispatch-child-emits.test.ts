@@ -167,10 +167,10 @@ describe("dispatch-child onPart emits chat.* frames with task_id + child run_id"
     }
 
     // Spot-check frame payloads.
-    expect(tokens[0].delta).toBe("A");
-    expect(tuses[0].name).toBe("noop");
-    expect(tuses[0].tool_call_id).toBe("tc-1");
-    expect(tres[0].tool_call_id).toBe("tc-1");
+    expect(tokens[0]!.delta).toBe("A");
+    expect(tuses[0]!.name).toBe("noop");
+    expect(tuses[0]!.tool_call_id).toBe("tc-1");
+    expect(tres[0]!.tool_call_id).toBe("tc-1");
   });
 
   it("mixed-frame ordering: chat.tool_use emitted BEFORE chat.token for same frame", async () => {

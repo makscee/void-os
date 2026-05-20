@@ -7,7 +7,7 @@ const ALLOWED_ORIGINS = new Set<string>();
 function bearerFrom(header: string | undefined): string | null {
   if (!header) return null;
   const m = header.match(/^Bearer\s+(.+)$/);
-  return m ? m[1].trim() : null;
+  return m ? m[1]!.trim() : null;
 }
 
 export function makeRequireAuth(expectedToken: string): MiddlewareHandler {

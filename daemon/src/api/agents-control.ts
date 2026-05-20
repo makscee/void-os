@@ -58,7 +58,7 @@ const VERB_SUMMARY: Record<Verb, string> = {
 
 export function mountAgentsControl(app: Hono, deps: MountAgentsControlDeps): void {
   const handle = (verb: Verb) => (c: import("hono").Context) => {
-    const agentId = c.req.param("id");
+    const agentId = c.req.param("id") ?? "";
     const ctrl = deps.control.get(agentId);
     if (!ctrl) {
       // Unknown id, or the run already reached a terminal state and

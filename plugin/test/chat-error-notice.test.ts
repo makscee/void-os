@@ -50,6 +50,8 @@ describe("ChatRoot inline error notice (VOS-80)", () => {
     async listChats() { return []; },
     async getMessages() { return [] as any[]; },
     async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
+    async deleteChat() {},
+    async answer() { return { ok: true as const }; },
   });
 
   test("run.end{error: timeout} renders timeout notice in place of assistant reply", async () => {

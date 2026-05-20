@@ -3,7 +3,7 @@ import { makeChatApi } from "../src/chat/api";
 
 function fakeFetch(responses: Array<{ status: number; body?: unknown }>): typeof fetch {
   let i = 0;
-  return (async (_url, _init) => {
+  return (async (_url: RequestInfo | URL, _init?: RequestInit) => {
     const r = responses[i++];
     return new Response(JSON.stringify(r.body ?? {}), {
       status: r.status,
@@ -44,7 +44,7 @@ describe("ChatApi.answer", () => {
 
   it("URL-encodes the chatId", async () => {
     let seen = "";
-    const f = (async (url) => {
+    const f = (async (url: RequestInfo | URL) => {
       seen = String(url);
       return new Response("{}", { status: 200 });
     }) as unknown as typeof fetch;

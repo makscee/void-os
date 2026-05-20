@@ -7,6 +7,9 @@ export type TraceKind =
   | "cc.stderr"
   | "tool.call"
   | "tool.result"
+  // VOS-106 T11.4: persona-body diagnostics emitted by the claude-code provider.
+  | "persona.truncated"
+  | "persona.missing"
   | "error";
 
 export interface TraceRecord {

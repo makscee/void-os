@@ -428,9 +428,9 @@ test("walk surfaces task_id per entry — parent and child tasks map to their ow
   expect(entries).toHaveLength(3);
 
   // task_id on user entry matches parentTid.
-  expect(entries[0].task_id).toBe(parentTid);
+  expect(entries[0]!.task_id).toBe(parentTid);
 
   // task_id on assistant text and tool_use entries matches childTid.
-  expect(entries[1].task_id).toBe(childTid);
-  expect(entries[2].task_id).toBe(childTid);
+  expect(entries[1]!.task_id).toBe(childTid);
+  expect(entries[2]!.task_id).toBe(childTid);
 });

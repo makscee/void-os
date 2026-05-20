@@ -108,9 +108,9 @@ describe("buildSpawnSettings", () => {
       settingsDir: freshDir(),
       hookScriptPath: "/h",
     });
-    expect(JSON.parse(env.VOS_READ_PATHS)).toEqual(["/r"]);
-    expect(JSON.parse(env.VOS_WRITE_PATHS)).toEqual(["/r/w"]);
-    expect(JSON.parse(env.VOS_SYSTEM_DENY)).toEqual(["/d"]);
+    expect(JSON.parse(env.VOS_READ_PATHS!)).toEqual(["/r"]);
+    expect(JSON.parse(env.VOS_WRITE_PATHS!)).toEqual(["/r/w"]);
+    expect(JSON.parse(env.VOS_SYSTEM_DENY!)).toEqual(["/d"]);
     expect(env.VOS_VAULT_ROOT).toBe(VAULT);
   });
 

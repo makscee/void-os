@@ -7,7 +7,7 @@ test("env VOID_KEYS_URL set: fetches and returns sk-ant- token", async () => {
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ key: "sk-ant-test123" }), {
       headers: { "content-type": "application/json" },
-    })) as typeof fetch;
+    })) as unknown as typeof fetch;
   try {
     delete process.env.ANTHROPIC_API_KEY;
     process.env.VOID_KEYS_URL = "http://stub.local/lease";

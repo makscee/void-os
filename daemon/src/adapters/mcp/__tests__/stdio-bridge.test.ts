@@ -18,7 +18,6 @@ function makeMemTransport(): MemTransport {
     async close() { t.onclose?.(); },
     push(m: JsonRpcMessage) { t.onmessage?.(m); },
     sent,
-    close() { t.onclose?.(); },
   };
   return t;
 }
@@ -47,7 +46,7 @@ describe("runBridge", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect((captured!.params!._meta as { task_id: string }).task_id).toBe("T-1");
     expect(t.sent).toHaveLength(1);
-    expect((t.sent[0].result as { content: { text: string }[] }).content[0].text).toBe("ok");
+    expect((t.sent[0]!.result as { content: { text: string }[] }).content[0]!.text).toBe("ok");
   });
 
   test("embedded newlines in tool result round-trip byte-for-byte (forge fix #2)", async () => {
@@ -61,7 +60,7 @@ describe("runBridge", () => {
     await runBridge(t, cfg, stubFetch as unknown as typeof fetch);
     t.push({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "vault.read", arguments: { path: "x" } } });
     await new Promise((r) => setTimeout(r, 0));
-    expect((t.sent[0].result as { content: { text: string }[] }).content[0].text).toBe(payload);
+    expect((t.sent[0]!.result as { content: { text: string }[] }).content[0]!.text).toBe(payload);
   });
 
   test("non-tools/call passthrough (initialize)", async () => {
@@ -78,7 +77,7 @@ describe("runBridge", () => {
     t.push({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "x" } });
     await new Promise((r) => setTimeout(r, 0));
     expect(capturedUrl).toBe("http://127.0.0.1:8729/mcp?agent=maya");
-    expect((t.sent[0].result as { protocolVersion: string }).protocolVersion).toBe("2025-03-26");
+    expect((t.sent[0]!.result as { protocolVersion: string }).protocolVersion).toBe("2025-03-26");
   });
 });
 
@@ -131,7 +130,7 @@ describe("stampMeta", () => {
       { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "ask_user", arguments: {} } },
       cfg,
     );
-    expect(out.params._meta).toEqual({
+    expect(out.params!._meta).toEqual({
       task_id: "T-1",
       context_id: "C-1",
       run_id: "R-1",
@@ -143,7 +142,7 @@ describe("stampMeta", () => {
       { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "x", arguments: {} } },
       { ...cfg, runId: null },
     );
-    expect("run_id" in (out.params._meta as object)).toBe(false);
+    expect("run_id" in (out.params!._meta as object)).toBe(false);
   });
 
   test("preserves model-supplied _meta fields the daemon does not stamp", () => {
@@ -154,8 +153,8 @@ describe("stampMeta", () => {
       },
       cfg,
     );
-    expect((out.params._meta as Record<string, unknown>)._vos_tool_use_id).toBe("tu-123");
-    expect((out.params._meta as Record<string, unknown>).task_id).toBe("T-1");
+    expect((out.params!._meta as Record<string, unknown>)._vos_tool_use_id).toBe("tu-123");
+    expect((out.params!._meta as Record<string, unknown>).task_id).toBe("T-1");
   });
 
   test("daemon-stamped fields override model-supplied task_id", () => {
@@ -166,11 +165,11 @@ describe("stampMeta", () => {
       },
       cfg,
     );
-    expect((out.params._meta as Record<string, unknown>).task_id).toBe("T-1");
+    expect((out.params!._meta as Record<string, unknown>).task_id).toBe("T-1");
   });
 
   test("passthrough on initialize / tools/list / notifications", () => {
-    const inputs = [
+    const inputs: JsonRpcMessage[] = [
       { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "x" } },
       { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
       { jsonrpc: "2.0", method: "notifications/initialized" },

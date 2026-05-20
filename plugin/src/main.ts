@@ -35,6 +35,7 @@ import {
 import { getVaultRoot } from "./vault-root";
 import { urlsFromAttachment } from "./daemon-urls";
 
+import type { DaemonStatus } from "./daemon-status";
 export type { DaemonStatus } from "./daemon-status";
 
 /** Adapt Obsidian's `requestUrl` (Electron main-process HTTP, no CORS) to the

@@ -38,7 +38,7 @@ function rng(seed: number): () => number {
 }
 
 function pick<T>(rand: () => number, arr: T[]): T {
-  return arr[Math.floor(rand() * arr.length)];
+  return arr[Math.floor(rand() * arr.length)]!;
 }
 
 describe("matchPath parity: engine vs hook", () => {

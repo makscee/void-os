@@ -638,7 +638,7 @@ describe("VOS-112 T8: stdio-bridge subprocess <-> daemon /mcp", () => {
       (res) => {
         let buf = "";
         proc.stdout.on("data", (c) => { buf += c.toString("utf8"); });
-        proc.on("exit", (c) => res({ stdout: buf, code: c }));
+        (proc as unknown as import("node:events").EventEmitter).on("exit", (c: number | null) => res({ stdout: buf, code: c }));
       },
     );
 

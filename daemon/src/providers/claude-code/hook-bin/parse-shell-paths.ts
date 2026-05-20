@@ -107,7 +107,7 @@ export function parseShellPaths(cmd: string): ShellPaths {
     return true;
   });
 
-  const verb = argv[0];
+  const verb = argv[0] ?? "";
   const rest = argv.slice(1);
 
   if (NO_PATH_VERBS.has(verb)) return { reads, writes };

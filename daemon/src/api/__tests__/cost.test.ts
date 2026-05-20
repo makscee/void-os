@@ -17,7 +17,7 @@ function setup() {
   const db = new Database(":memory:");
   runMigrationsFromDir(db, MIGRATIONS_DIR);
   const app = new Hono();
-  const ctx: ApiContext = { version: "test", db, tz: "UTC" };
+  const ctx: ApiContext = { version: "test", db, tz: "UTC", vaultRoot: "/tmp", token: "test-token", bootTime: 0 };
   mountCost(app, ctx);
   return { app, db };
 }

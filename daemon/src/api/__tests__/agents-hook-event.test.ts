@@ -55,7 +55,7 @@ describe("VOS-162: Source-A hook-event ingest", () => {
     expect(await res.json()).toEqual({ ok: true });
 
     expect(events).toHaveLength(1);
-    const p = events[0].payload as AgentEvent;
+    const p = events[0]!.payload as AgentEvent;
     expect(p.agent_id).toBe("task-7");
     expect(p.kind).toBe("tool_call");
     expect(p.tool).toBe("Bash");
@@ -71,7 +71,7 @@ describe("VOS-162: Source-A hook-event ingest", () => {
       summary: "PostToolUse Edit → ok",
     });
     expect(res.status).toBe(200);
-    expect((events[0].payload as AgentEvent).kind).toBe("tool_return");
+    expect((events[0]!.payload as AgentEvent).kind).toBe("tool_return");
   });
 
   test("missing agent_id → 400 (cannot join the union)", async () => {
@@ -99,11 +99,11 @@ describe("VOS-162: Source-A hook-event ingest", () => {
   test("summary is defaulted + capped at 200 chars", async () => {
     const { app, events } = makeHarness();
     await post(app, { agent_id: "task-7", kind: "tool_call" });
-    expect((events[0].payload as AgentEvent).summary).toBe("cc-hook tool_call");
+    expect((events[0]!.payload as AgentEvent).summary).toBe("cc-hook tool_call");
 
     const long = "x".repeat(500);
     await post(app, { agent_id: "task-8", kind: "tool_call", summary: long });
-    expect((events[1].payload as AgentEvent).summary.length).toBe(200);
+    expect((events[1]!.payload as AgentEvent).summary.length).toBe(200);
   });
 });
 

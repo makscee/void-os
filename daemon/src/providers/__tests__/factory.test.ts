@@ -38,11 +38,17 @@ describe("makeProvider", () => {
 });
 
 function fakeDeps() {
+  // ProviderDeps grew engine/daemonBase/hookScriptPath/loadAgentDefn since this
+  // fixture was written; makeProvider does not exercise them here (VOS-167).
   return {
     bus: { emit: () => {}, subscribe: () => () => {}, query: async () => [] } as any,
     db: {} as any,
     tracesDir: "/tmp/traces",
     agent: "maya",
     cwd: "/tmp",
+    engine: {} as any,
+    daemonBase: "http://localhost:0",
+    hookScriptPath: "/tmp/hook.ts",
+    loadAgentDefn: (() => ({})) as any,
   };
 }
