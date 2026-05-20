@@ -16,6 +16,8 @@ import {
   SHELL_META_SENTINEL,
   SHELL_SUBSTITUTION_SENTINEL,
 } from "./parse-shell-paths";
+// VOS-162 Source A: best-effort hook → daemon event ingest.
+import { postHookEvent } from "./hook-event-post";
 
 interface ToolCall {
   tool_name: string;
@@ -119,6 +121,17 @@ const systemDeny = envList("VOS_SYSTEM_DENY");
 
 const tool = call!.tool_name;
 const args = call!.tool_input ?? {};
+
+// VOS-162 Source A: emit a `tool_call` event to the daemon's union event
+// view BEFORE the gating logic runs. `emit()` below calls process.exit(),
+// so the await must happen here. postHookEvent is best-effort + timeout-
+// capped — a slow/dead daemon never stalls or fails the permission
+// decision (it returns false; we ignore it).
+await postHookEvent({
+  kind: "tool_call",
+  tool,
+  summary: `PreToolUse ${tool}`,
+});
 
 if (WRITE_TOOLS.has(tool)) {
   const paths: string[] = [];

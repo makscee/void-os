@@ -48,6 +48,17 @@ function stubApi(frames: Array<InflightAgent[] | null>): InflightApi {
       if (frame === null) throw new Error("offline");
       return frame;
     },
+    async postVerb(agentId) {
+      return { agent_id: agentId, control_state: "running" as const };
+    },
+    async postBranch(agentId) {
+      return {
+        agent_id: agentId,
+        worktree_path: `/tmp/wt/${agentId}`,
+        branch: `branch/${agentId}`,
+        base_sha: "0".repeat(40),
+      };
+    },
   };
 }
 

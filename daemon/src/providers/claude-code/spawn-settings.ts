@@ -189,12 +189,28 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
 
   const toolsArg = computeEffectiveTools(args.agentName, args.intent.tools);
 
+  // VOS-162 Source A: the PostToolUse script is a sibling of the PreToolUse
+  // script in the same hook-bin/ directory. Deriving it from hookScriptPath
+  // keeps a single configured path; no extra BuildSpawnSettingsArgs field.
+  const postToolUsePath = join(
+    args.hookScriptPath, "..", "post-tool-use.ts",
+  );
+
   const settings = {
     hooks: {
       PreToolUse: [
         {
           matcher: "Read|Glob|Grep|Bash|Edit|Write|MultiEdit",
           hooks: [{ type: "command", command: `bun ${args.hookScriptPath}` }],
+        },
+      ],
+      // VOS-162 Source A: PostToolUse fires after each matched tool returns.
+      // The script does not gate — it pushes a `tool_return` event into the
+      // daemon's union event view (/agents/hook-event).
+      PostToolUse: [
+        {
+          matcher: "Read|Glob|Grep|Bash|Edit|Write|MultiEdit",
+          hooks: [{ type: "command", command: `bun ${postToolUsePath}` }],
         },
       ],
     },
@@ -262,6 +278,15 @@ export function buildSpawnSettings(args: BuildSpawnSettingsArgs): SpawnSettings 
     VOS_SYSTEM_DENY: JSON.stringify(args.intent.systemDenyPaths),
     VOS_VAULT_ROOT: args.vaultRoot,
     NO_PROXY: noProxyEntries.join(","),
+    // VOS-162 Source A: the PreToolUse / PostToolUse hook scripts POST a
+    // tool_call / tool_return event to the daemon's /agents/hook-event
+    // ingest so harness-side activity joins the union event view. They
+    // need the daemon base URL and the agent identity (= the task id the
+    // inflight registry keys on, so Source-A events correlate with the
+    // same agent_id Source B uses). Loopback-only, same trust posture as
+    // the un-authed /mcp route the MCP stdio bridge already targets.
+    VOS_DAEMON_BASE: args.daemonBase,
+    VOS_HOOK_AGENT_ID: args.taskId,
   };
 
   return { settingsPath, mcpConfigPath, env, toolsArg };

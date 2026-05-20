@@ -28,6 +28,14 @@ export interface VerbResult {
   control_state: "running" | "paused" | "killed";
 }
 
+/** VOS-162: result of the branch verb — the freshly-created worktree. */
+export interface BranchResult {
+  agent_id: string;
+  worktree_path: string;
+  branch: string;
+  base_sha: string;
+}
+
 export interface InflightApi {
   /** Fetch the current in-flight agent snapshot. Throws ApiError on a
    *  non-2xx response; throws a plain Error if the token is unavailable. */
@@ -36,6 +44,10 @@ export interface InflightApi {
    *  ApiError on a non-2xx response (404 = unknown / already-terminal
    *  agent); throws a plain Error if the token is unavailable. */
   postVerb(agentId: string, verb: AgentVerb): Promise<VerbResult>;
+  /** VOS-162: branch the agent — fork its repo HEAD into a new worktree.
+   *  Throws ApiError on a non-2xx response (404 = agent the inspector has
+   *  never observed; 500 = host git failure). */
+  postBranch(agentId: string): Promise<BranchResult>;
 }
 
 export function makeInflightApi(
@@ -79,6 +91,23 @@ export function makeInflightApi(
         throw new ApiError(res.status, body);
       }
       return (await res.json()) as VerbResult;
+    },
+
+    async postBranch(agentId) {
+      const token = getToken();
+      if (!token) {
+        throw new ApiError(0, null, "daemon token unavailable");
+      }
+      const res = await fetchImpl(
+        `${baseUrl}/agents/${encodeURIComponent(agentId)}/branch`,
+        { method: "POST", headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!res.ok) {
+        let body: unknown = null;
+        try { body = await res.json(); } catch { /* no body */ }
+        throw new ApiError(res.status, body);
+      }
+      return (await res.json()) as BranchResult;
     },
   };
 }
