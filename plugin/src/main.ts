@@ -6,6 +6,8 @@ import { iconFor, tooltipFor, statusBarTextFor } from "./ribbon-state";
 import { nodeCp } from "./node-runtime";
 const { spawn } = nodeCp;
 import { ChatView, CHAT_VIEW_TYPE } from "./view";
+import { InspectorView, INSPECTOR_VIEW_TYPE } from "./agents/inspector-view";
+import { makeInflightApi } from "./agents/inflight-api";
 import { WsClient, type WsEvent, type WsPort } from "./ws-client";
 import { ReconnectFSM } from "./reconnect";
 import { StatusBar } from "./status";
@@ -23,6 +25,7 @@ import {
   makeProductionSpawn,
   resolveBinary,
   resolveHome,
+  readDaemonToken,
   BinaryNotFoundError,
   VaultMismatchError,
   SpawnError,
@@ -127,6 +130,9 @@ export default class VoidOsPlugin extends Plugin {
     error: "not-initialized",
   };
   private ribbonEl: HTMLElement | null = null;
+  /** VOS-160: dedicated inspector ribbon icon; added once on first healthy
+   *  runtime registration, never re-added on Hot-Reload re-entry. */
+  private inspectorRibbonEl: HTMLElement | null = null;
   private statusBar: StatusBar | null = null;
   private healthyRuntimeRegistered = false;
   /** Current ribbon click handler — replaced when daemonStatus flips. The
@@ -305,6 +311,37 @@ export default class VoidOsPlugin extends Plugin {
       console.warn("void-os: view type already registered (Hot Reload artifact), reusing existing");
     }
 
+    // VOS-160: live in-flight agent inspector. The InflightApi polls
+    // GET /agents/inflight (bearer-auth) — readDaemonToken is called on
+    // every poll so token rotation across daemon restarts is picked up
+    // without a plugin reload. Same Hot-Reload dup-registration guard as
+    // the chat view above.
+    const inflightApi = makeInflightApi(
+      urls.http,
+      () => readDaemonToken(resolveHome()),
+      requestUrlAsFetch(),
+    );
+    try {
+      this.registerView(INSPECTOR_VIEW_TYPE, (leaf: WorkspaceLeaf) =>
+        new InspectorView(leaf, () => ({ inflightApi })),
+      );
+    } catch (e) {
+      if (!(e instanceof Error) || !/existing view type/i.test(e.message)) throw e;
+      console.warn("void-os: inspector view type already registered (Hot Reload artifact), reusing existing");
+    }
+
+    // Dedicated ribbon entry for the inspector — added only once the daemon
+    // is healthy (the inspector is meaningless while disconnected). Guarded
+    // so a Hot-Reload re-entry into registerHealthyRuntime can't stack
+    // duplicate icons.
+    if (!this.inspectorRibbonEl) {
+      this.inspectorRibbonEl = this.addRibbonIcon(
+        "activity",
+        "void-os inspector",
+        () => { void this.activateInspectorView(); },
+      );
+    }
+
     this.fsm = new ReconnectFSM({
       client: tapped,
       onState: (s) => this.statusBar!.update(s),
@@ -338,6 +375,12 @@ export default class VoidOsPlugin extends Plugin {
         await this.settings!.setChatId(created.id);
         await this.activateChatView(created.id);
       },
+    });
+
+    this.addCommand({
+      id: "open-inspector-view",
+      name: "Open void-os inspector",
+      callback: () => this.activateInspectorView(),
     });
   }
 
@@ -459,5 +502,17 @@ export default class VoidOsPlugin extends Plugin {
       const view = leaf.view;
       if (view instanceof ChatView) view.setActiveChatId(chatId);
     }
+  }
+
+  /** VOS-160: open (or reveal) the in-flight agent inspector leaf. Mirrors
+   *  activateChatView — reuse an existing leaf if one is already open. */
+  private async activateInspectorView() {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(INSPECTOR_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = workspace.getLeaf("tab");
+      await leaf.setViewState({ type: INSPECTOR_VIEW_TYPE, active: true });
+    }
+    workspace.revealLeaf(leaf);
   }
 }
