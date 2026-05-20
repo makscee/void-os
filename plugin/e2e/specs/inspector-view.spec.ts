@@ -111,22 +111,23 @@ test("inspector view: lists in-flight agent, click expands its trace, auto-refre
     await expect(agentRow).toHaveAttribute("data-expanded", "false", { timeout: 5_000 });
     await expect(page.getByTestId("inspector-trace")).toHaveCount(0);
 
-    // ── VOS-161: verb routes mounted + bearer-auth gated; UI verb-bar
-    //    gating. ──
+    // ── VOS-161/162: verb routes mounted + bearer-auth gated; UI verb-bar
+    //    gating + the always-on Branch button. ──
     // The control-verb endpoints (POST /agents/:id/{pause,resume,kill})
     // back the inspector's intervention buttons. A control handle is
     // registered only by the child dispatcher (dispatch-child.ts), keyed by
     // childTaskId. The chat run above goes through the orchestrator, which
-    // dispatches no child — so its agent row carries `control_state: null`
-    // and the VerbBar gates itself off. That makes three things
-    // deterministically assertable:
-    //   (a) the verb endpoint rejects a tokenless request (auth gate), and
+    // dispatches no child — so its agent row carries `control_state: null`.
+    // That makes these things deterministically assertable:
+    //   (a) the kill endpoint rejects a tokenless request (auth gate), and
     //   (b) it returns a typed 404 for an unknown agent_id (route mounted), and
-    //   (c) the inspector renders NO verb bar for a handle-less row — the
-    //       VerbBar's `control_state===null` gating path.
-    // Verb *behaviour* (pause-park-resume, kill→abort) and the rendered
-    // verb-buttons path are covered by the daemon unit suite
-    // (control.test.ts, run-driver onCheckpoint, agents-control.test.ts).
+    //   (c) the inspector renders a verb bar with the Branch button but NO
+    //       pause/kill buttons for a handle-less row — VOS-162's "Branch
+    //       always shown, control verbs gated" path, and
+    //   (d) VOS-162: the branch endpoint is auth-gated and route-mounted.
+    // Verb *behaviour* (pause-park-resume, kill→abort, branch→worktree) is
+    // covered by the daemon unit suite (control.test.ts, branch.test.ts,
+    // agents-control.test.ts).
 
     // Auth-gated: a tokenless verb POST is rejected, never silently 200.
     const noAuth = await request.post(
@@ -146,9 +147,27 @@ test("inspector view: lists in-flight agent, click expands its trace, auto-refre
     expect(unknown.status()).toBe(404);
     expect(await unknown.json()).toEqual({ error: "not_found" });
 
-    // UI: the orchestrator-run agent row carries no live control handle,
-    // so the inspector renders no verb bar against it (the gating path).
-    await expect(page.getByTestId("inspector-verb-bar")).toHaveCount(0);
+    // VOS-162: the branch route is auth-gated and mounted.
+    const branchNoAuth = await request.post(
+      `http://127.0.0.1:${state.port}/agents/does-not-exist/branch`,
+    );
+    expect([401, 403]).toContain(branchNoAuth.status());
+    const branchUnknown = await request.post(
+      `http://127.0.0.1:${state.port}/agents/does-not-exist/branch`,
+      { headers: { Authorization: `Bearer ${daemonToken}` } },
+    );
+    expect(branchUnknown.status()).toBe(404);
+    expect(await branchUnknown.json()).toEqual({ error: "not_found" });
+
+    // VOS-162 UI: the orchestrator-run agent row carries no live control
+    // handle, so the inspector renders the verb bar with the always-on
+    // Branch button but withholds the control-gated Pause/Kill buttons.
+    const verbBar = page.getByTestId("inspector-verb-bar").first();
+    await expect(verbBar).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("inspector-verb-branch").first())
+      .toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("inspector-verb-pause")).toHaveCount(0);
+    await expect(page.getByTestId("inspector-verb-kill")).toHaveCount(0);
   } finally {
     await browser.close();
   }
