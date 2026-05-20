@@ -38,8 +38,8 @@ function seedContext(db: Database): string {
   const id = `ctx-${Math.random().toString(36).slice(2, 10)}`;
   const now = Date.now();
   db.run(
-    "INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived) VALUES (?, 'maya', NULL, ?, ?, 0)",
-    [id, now, now],
+    "INSERT INTO contexts (id, title, created_at) VALUES (?, NULL, ?)",
+    [id, now],
   );
   return id;
 }

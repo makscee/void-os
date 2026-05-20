@@ -40,9 +40,9 @@ function seed(db: Database): { contextId: string; childTaskId: string } {
   const contextId = "ctx-d";
   const childTaskId = "child-d";
   db.run(
-    `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-     VALUES (?, 'journaler', 0, ?, ?)`,
-    [contextId, now, now],
+    `INSERT INTO contexts (id, title, created_at)
+     VALUES (?, NULL, ?)`,
+    [contextId, now],
   );
   // Child mint inserts in SUBMITTED — mirror that here so dispatch-child's
   // SUBMITTED -> WORKING flip is observable.

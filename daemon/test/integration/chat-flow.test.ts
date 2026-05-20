@@ -25,6 +25,10 @@
 
 import { test, expect, mock } from "bun:test";
 import * as fs from "node:fs";
+import {
+  applyMigrations,
+  loadMigrations,
+} from "../../src/adapters/sqlite/migrations.ts";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Database } from "bun:sqlite";
@@ -49,19 +53,17 @@ const MIGRATIONS_DIR = join(
 
 function freshDb(): Database {
   const db = new Database(":memory:");
-  for (const m of [
-    "0001_init.sql",
-    "0002_runs_columns.sql",
-    "0003_chat_lifecycle.sql",
-    "0004_messages.sql",
-    "0005_costs_cache.sql",
-    "0006_costs_chat_id.sql",
-    "0007_a2a_tables.sql",
-    "0008_agents_recreate.sql", // VOS-124: agents table required for strict agent validation
-    "0015_agents_rich_fields.sql", // VOS-153: adds color/avatar/tagline columns (selected by repo.list)
-  ]) {
-    db.run(readFileSync(join(MIGRATIONS_DIR, m), "utf8"));
-  }
+  applyMigrations(
+    db,
+    loadMigrations(MIGRATIONS_DIR).filter(
+      (mg) => mg.version.slice(0, 4) <= "0016",
+    ),
+  );
+  // Migration 0014 drops the placeholder `maya` seed; re-seed it for the
+  // strict POST /chats agent validation (VOS-168).
+  db.run(
+    "INSERT INTO agents (name, description, model, vault_path, updated_at) VALUES ('maya','Default void-os agent.','opus','agents/maya/agent.md',0)",
+  );
   return db;
 }
 

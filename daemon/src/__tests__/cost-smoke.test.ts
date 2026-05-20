@@ -23,8 +23,8 @@ describe("cost smoke — end to end", () => {
     subscribeRunEnd(bus, db, log);
 
     const now = Date.now();
-    db.run(`INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived)
-            VALUES ('ctx-smoke', 'aurora', 't', ?, ?, 0)`, [now, now]);
+    db.run(`INSERT INTO contexts (id, title, created_at)
+            VALUES ('ctx-smoke', 't', ?)`, [now]);
     db.run(`INSERT INTO tasks (id, context_id, state, cost_usd, tokens_in, tokens_out, metadata, created_at, updated_at)
             VALUES ('task-smoke', 'ctx-smoke', 'TASK_STATE_WORKING', 0, 0, 0, '{}', ?, ?)`, [now, now]);
 

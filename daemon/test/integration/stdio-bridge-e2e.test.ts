@@ -152,15 +152,15 @@ describe("VOS-112 T8: stdio-bridge subprocess <-> daemon /mcp", () => {
       ["maya", JSON.stringify({ name: "maya" })],
     );
     db.run(
-      `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-         VALUES (?, 'maya', 0, ?, ?)`,
-      [contextId, now, now],
+      `INSERT INTO contexts (id, title, created_at)
+         VALUES (?, NULL, ?)`,
+      [contextId, now],
     );
     db.run(
-      `INSERT INTO tasks (id, context_id, parent_task_id, state,
+      `INSERT INTO tasks (id, context_id, parent_task_id, state, agent,
                           cost_usd, tokens_in, tokens_out, metadata,
                           created_at, updated_at)
-         VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 0, 0, 0, '{}', ?, ?)`,
+         VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 'maya', 0, 0, 0, '{}', ?, ?)`,
       [taskId, contextId, now, now],
     );
 
@@ -312,15 +312,15 @@ describe("VOS-112 T8: stdio-bridge subprocess <-> daemon /mcp", () => {
       ["bob", JSON.stringify({ name: "bob" })],
     );
     db.run(
-      `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-         VALUES (?, 'maya', 0, ?, ?)`,
-      [contextId, now, now],
+      `INSERT INTO contexts (id, title, created_at)
+         VALUES (?, NULL, ?)`,
+      [contextId, now],
     );
     db.run(
-      `INSERT INTO tasks (id, context_id, parent_task_id, state,
+      `INSERT INTO tasks (id, context_id, parent_task_id, state, agent,
                           cost_usd, tokens_in, tokens_out, metadata,
                           created_at, updated_at)
-         VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 0, 0, 0, '{}', ?, ?)`,
+         VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 'maya', 0, 0, 0, '{}', ?, ?)`,
       [taskId, contextId, now, now],
     );
 
@@ -421,15 +421,15 @@ describe("VOS-112 T8: stdio-bridge subprocess <-> daemon /mcp", () => {
       [contextB, taskB],
     ] as const) {
       db.run(
-        `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-           VALUES (?, 'maya', 0, ?, ?)`,
-        [cid, now, now],
+        `INSERT INTO contexts (id, title, created_at)
+           VALUES (?, NULL, ?)`,
+        [cid, now],
       );
       db.run(
-        `INSERT INTO tasks (id, context_id, parent_task_id, state,
+        `INSERT INTO tasks (id, context_id, parent_task_id, state, agent,
                             cost_usd, tokens_in, tokens_out, metadata,
                             created_at, updated_at)
-           VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 0, 0, 0, '{}', ?, ?)`,
+           VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 'maya', 0, 0, 0, '{}', ?, ?)`,
         [tid, cid, now, now],
       );
     }

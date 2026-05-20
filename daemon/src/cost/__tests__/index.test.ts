@@ -20,9 +20,9 @@ function setup() {
 function seedContextAndTask(db: Database, taskId: string, contextId: string) {
   const now = Date.now();
   db.run(
-    `INSERT INTO contexts (id, agent_name, title, created_at, updated_at, archived)
-     VALUES (?, 'aurora', 't', ?, ?, 0)`,
-    [contextId, now, now],
+    `INSERT INTO contexts (id, title, created_at)
+     VALUES (?, 't', ?)`,
+    [contextId, now],
   );
   db.run(
     `INSERT INTO tasks (id, context_id, state, cost_usd, tokens_in, tokens_out, metadata, created_at, updated_at)

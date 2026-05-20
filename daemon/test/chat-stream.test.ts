@@ -26,7 +26,7 @@ beforeEach(async () => {
   const bus = createEventBus();
   const app = await buildApp({ db, vaultRoot, token: TOKEN, bootTime: Date.now(), eventBus: bus });
   // Seed a chat row so route can find it.
-  db.run("INSERT INTO contexts (id, agent_name, title, created_at, updated_at) VALUES ('c1','maya',null,1,1)");
+  db.run("INSERT INTO contexts (id, title, created_at) VALUES ('c1',null,1)");
   ctx = { app, vaultRoot, db, bus };
 });
 
@@ -96,7 +96,7 @@ test("hello frame first, closes on run_end", async () => {
 });
 
 test("events for OTHER chats are not delivered", async () => {
-  ctx.db.run("INSERT INTO contexts (id, agent_name, title, created_at, updated_at) VALUES ('c2','maya',null,1,1)");
+  ctx.db.run("INSERT INTO contexts (id, title, created_at) VALUES ('c2',null,1)");
   const resPromise = ctx.app.request("/chat/c1/stream?token=" + TOKEN);
   await new Promise(r => setTimeout(r, 20));
   const res = await resPromise;

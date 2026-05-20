@@ -24,9 +24,9 @@ function makeDb(): Database {
 function seedContext(db: Database, ctxId: string): void {
   const now = Date.now();
   db.run(
-    `INSERT INTO contexts (id, agent_name, archived, created_at, updated_at)
-     VALUES (?, ?, 0, ?, ?)`,
-    [ctxId, "maya", now, now],
+    `INSERT INTO contexts (id, title, created_at)
+     VALUES (?, NULL, ?)`,
+    [ctxId, now],
   );
 }
 

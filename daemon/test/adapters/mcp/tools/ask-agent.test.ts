@@ -38,16 +38,16 @@ function seed(db: Database): { contextId: string; parentId: string } {
   const contextId = "ctx-1";
   const parentId = "parent-1";
   db.run(
-    `INSERT INTO contexts (id, agent_name, title, created_at, updated_at)
-     VALUES (?, 'maya', NULL, ?, ?)`,
-    [contextId, now, now],
+    `INSERT INTO contexts (id, title, created_at) VALUES (?, NULL, ?)`,
+    [contextId, now],
   );
+  // Post-0016 the caller agent lives on `tasks.agent`, not on the context.
   db.run(
     `INSERT INTO tasks
-       (id, context_id, parent_task_id, state,
+       (id, context_id, parent_task_id, state, agent,
         cost_usd, tokens_in, tokens_out, metadata,
         created_at, updated_at, target_agent)
-     VALUES (?, ?, NULL, 'TASK_STATE_WORKING',
+     VALUES (?, ?, NULL, 'TASK_STATE_WORKING', 'maya',
              0, 0, 0, '{}', ?, ?, NULL)`,
     [parentId, contextId, now, now],
   );
@@ -304,10 +304,10 @@ describe("ask_agent handler (composition)", () => {
       const parent = i === 0 ? null : ids[i - 1]!;
       db.run(
         `INSERT INTO tasks
-           (id, context_id, parent_task_id, state,
+           (id, context_id, parent_task_id, state, agent,
             cost_usd, tokens_in, tokens_out, metadata,
             created_at, updated_at, target_agent)
-         VALUES (?, ?, ?, 'TASK_STATE_WORKING',
+         VALUES (?, ?, ?, 'TASK_STATE_WORKING', 'maya',
                  0, 0, 0, '{}', ?, ?, NULL)`,
         [ids[i]!, contextId, parent, now, now],
       );
