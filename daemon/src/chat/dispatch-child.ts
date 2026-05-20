@@ -45,6 +45,7 @@ import { makeMessagesRepo, type MessagesRepo } from "./messages-repo.ts";
 import { drainRun } from "./run-driver.ts";
 import type { TextPart, DataPart } from "../types/a2a.ts";
 import type { AgentControlRegistry } from "../agents/control.ts";
+import type { LiveAgentRegistry } from "../agents/live-agents.ts";
 
 export interface DispatchChildDeps {
   db: Database;
@@ -75,6 +76,11 @@ export interface DispatchChildDeps {
    *  childTaskId = agent_id) and deregisters it on terminal. Optional so
    *  tests that don't exercise verbs can omit it. */
   control?: AgentControlRegistry;
+  /** VOS-164: live-agent registry, forwarded to the child's claude-code
+   *  provider so its CC spawner registers/unregisters the child's agent_id
+   *  for the hook-event correlation gate. Optional — tests that inject
+   *  `buildProvider` never reach the makeProvider path. */
+  liveAgents?: LiveAgentRegistry;
 }
 
 export type DispatchChildFn = (
@@ -111,6 +117,7 @@ export function makeDispatchChildTask(deps: DispatchChildDeps): DispatchChildFn 
         daemonBase: deps.daemonBase!,
         hookScriptPath: deps.hookScriptPath!,
         loadAgentDefn: deps.loadAgentDefn!,
+        liveAgents: deps.liveAgents,
       }));
 
   const providerFor = (agentName: string): Provider => {
