@@ -32,7 +32,7 @@ export default defineConfig({
   projects: [
     {
       name: "main",
-      testIgnore: ["**/ask-user.spec.ts", "**/permission-deny-ui.spec.ts", "**/daemon-autospawn.spec.ts"],
+      testIgnore: ["**/ask-user.spec.ts", "**/permission-deny-ui.spec.ts", "**/daemon-autospawn.spec.ts", "**/operator-journey.spec.ts"],
     },
     {
       name: "ask-user",
@@ -60,6 +60,15 @@ export default defineConfig({
     {
       name: "binary-missing",
       testMatch: ["**/ribbon-degraded.spec.ts"],
+    },
+    // VOS-163: operator-journey — one long-running staged walkthrough
+    // (fresh-install -> chat -> create agent -> start task -> debug
+    // trace). Its own daemon + Obsidian (globalSetup-journey.ts) so it
+    // never contends with the baseline `main` specs. Excluded from `main`
+    // via the testIgnore below so `bun run e2e` does not pick it up.
+    {
+      name: "journey",
+      testMatch: ["**/operator-journey.spec.ts"],
     },
   ],
   use: {
