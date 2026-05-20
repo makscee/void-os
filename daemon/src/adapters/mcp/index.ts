@@ -40,6 +40,7 @@ import { vaultMoveDef, makeVaultMove } from "./tools/vault-move.ts";
 import { vaultLoadTemplateDef, makeVaultLoadTemplate } from "./tools/vault-load-template.ts";
 import { askUserDef, makeAskUser } from "./tools/ask-user.ts";
 import { askAgentDef, makeAskAgent } from "./tools/ask-agent.ts";
+import { completeTaskDef, makeCompleteTask } from "./tools/complete-task.ts";
 import type { HandoffLog } from "../../agents/handoff-log.ts";
 
 export interface McpDeps {
@@ -256,6 +257,14 @@ export function buildMcpServer(deps: McpDeps & { callingAgent: AgentDefn }): Mcp
       sessionId: deps.sessionId,
       milestone: deps.milestone,
     }) as never,
+  );
+  // VOS-171: agent-declared terminal state. Targets `_meta.task_id` (the
+  // calling agent's own Task) — never a foreign id, so a parent cannot
+  // force-complete a child through it.
+  registerTool(
+    "complete_task",
+    completeTaskDef,
+    makeCompleteTask({ db, emit }) as never,
   );
 
   return mcp;

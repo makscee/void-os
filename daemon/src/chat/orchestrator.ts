@@ -42,7 +42,13 @@
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { type ChatRepo, openTaskFor, setTaskState } from "./repo";
+import {
+  type ChatRepo,
+  openTaskFor,
+  setTaskState,
+  getTaskState,
+  isTaskFrozen,
+} from "./repo";
 import { makeMessagesRepo, type MessagesRepo } from "./messages-repo";
 import type { Part, DataPart } from "../types/a2a";
 
@@ -146,9 +152,13 @@ function tryCompleteTaskOnRunEnd(
   taskId: string,
   terminal: "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED",
 ): boolean {
+  // VOS-171: stamp `last_event` (epoch-ms) on the terminal flip so the
+  // activity list reflects the completion. Bun.sqlite has no ms clock in
+  // SQL, so the timestamp is bound from JS.
+  const now = Date.now();
   const res = db.run(
     `UPDATE tasks
-        SET state = ?, updated_at = strftime('%s','now')
+        SET state = ?, updated_at = ?, last_event = ?
       WHERE id = ?
         AND state = 'TASK_STATE_WORKING'
         AND NOT EXISTS (
@@ -160,7 +170,7 @@ function tryCompleteTaskOnRunEnd(
                'TASK_STATE_CANCELED'
              )
         )`,
-    [terminal, taskId],
+    [terminal, now, now, taskId],
   );
   return res.changes > 0;
 }
@@ -425,6 +435,26 @@ export function makeOrchestrator(deps: OrchestratorDeps): Orchestrator {
           status: number;
         };
         err.status = 404;
+        throw err;
+      }
+
+      // VOS-171: terminal-Task freeze. A root Task that is FROZEN — an
+      // agent-declared `completed` (the agent called `complete_task`), or
+      // any `failed` / `canceled` — is sealed; its lifecycle is over.
+      // Re-engaging it with a new user message is rejected and the caller
+      // must start a fresh sibling root Task. A bare run-end-inferred
+      // `completed` is NOT frozen (it is just "idle between turns"), so
+      // ordinary multi-turn chats continue to work — `isTaskFrozen` draws
+      // that distinction. Runs BEFORE the Phase-1 lock so a frozen Task
+      // never gets a stray runs row. `openTaskFor` resolves the chat's
+      // root Task, to which the dispatch is attributed.
+      const rootTaskId = openTaskFor(db, chatId);
+      if (isTaskFrozen(db, rootTaskId)) {
+        const err = new Error(
+          `TASK_TERMINAL: task ${rootTaskId} is ${getTaskState(db, rootTaskId)} ` +
+            `and frozen — start a new root Task instead of re-engaging it`,
+        ) as Error & { status: number };
+        err.status = 409;
         throw err;
       }
 

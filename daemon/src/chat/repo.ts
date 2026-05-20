@@ -141,11 +141,144 @@ export function setTaskState(
   taskId: string,
   state: "TASK_STATE_WORKING" | "TASK_STATE_INPUT_REQUIRED",
 ): void {
-  db.run("UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?", [
-    state,
-    Date.now(),
-    taskId,
-  ]);
+  // VOS-171: a state change is Task activity — bump `last_event` (epoch-ms)
+  // alongside `state` so the activity list orders by real recency.
+  const now = Date.now();
+  db.run(
+    "UPDATE tasks SET state = ?, updated_at = ?, last_event = ? WHERE id = ?",
+    [state, now, now, taskId],
+  );
+}
+
+/** VOS-171: the three terminal Task states. A Task in any of these is
+ *  frozen — its lifecycle is over. The orchestrator refuses to re-engage a
+ *  terminal Task with a new user message (the caller must start a fresh
+ *  sibling root Task instead). Mirrors the A2A terminal-state set. */
+export const TERMINAL_TASK_STATES = new Set<string>([
+  "TASK_STATE_COMPLETED",
+  "TASK_STATE_FAILED",
+  "TASK_STATE_CANCELED",
+]);
+
+/** VOS-171: read a Task's current `state`. Returns null when the row is
+ *  absent. Used by the orchestrator freeze guard to reject re-engaging a
+ *  terminal Task. */
+export function getTaskState(db: Database, taskId: string): string | null {
+  const row = db
+    .query("SELECT state FROM tasks WHERE id = ?")
+    .get(taskId) as { state: string } | null;
+  return row?.state ?? null;
+}
+
+/** VOS-171: is this Task FROZEN — permanently closed to re-engagement?
+ *
+ *  A Task can hold `TASK_STATE_COMPLETED` in two distinct ways:
+ *    1. **Run-end-inferred** (VOS-89): the orchestrator flips a root Task's
+ *       state to COMPLETED whenever its provider run drains. This is really
+ *       just "idle between turns" — a multi-turn chat legitimately re-engages
+ *       it with the next user message. NOT frozen.
+ *    2. **Agent-declared** (VOS-171): the Agent called `complete_task`. The
+ *       job is genuinely over. `declareTaskTerminal` stamps
+ *       `metadata.terminal_declared = true` to mark this. FROZEN.
+ *
+ *  `failed` / `canceled` are unambiguously terminal regardless of provenance
+ *  (a run that errored or an operator cancel) — always frozen.
+ *
+ *  The orchestrator's re-engage guard consults this, NOT the bare state, so
+ *  ordinary multi-turn chats keep working while an agent-declared `completed`
+ *  Task is correctly sealed. */
+export function isTaskFrozen(db: Database, taskId: string): boolean {
+  const row = db
+    .query(
+      "SELECT state, json_extract(metadata, '$.terminal_declared') AS declared FROM tasks WHERE id = ?",
+    )
+    .get(taskId) as { state: string; declared: unknown } | null;
+  if (!row) return false;
+  if (row.state === "TASK_STATE_FAILED" || row.state === "TASK_STATE_CANCELED") {
+    return true;
+  }
+  if (row.state === "TASK_STATE_COMPLETED") {
+    // frozen only when the completion was agent-declared.
+    return row.declared === 1 || row.declared === true;
+  }
+  return false;
+}
+
+/** VOS-171: stamp activity on a specific Task. Bumps `last_event` (epoch-ms)
+ *  and `updated_at`, and — when `summary` is given — writes a one-line
+ *  human-readable activity blurb into `metadata.last_event_text` (additive;
+ *  `last_event` itself stays the INTEGER timestamp migration 0016 defined).
+ *  No-op if the Task row is absent. */
+export function touchTask(
+  db: Database,
+  taskId: string,
+  summary?: string,
+): void {
+  const now = Date.now();
+  if (summary === undefined) {
+    db.run("UPDATE tasks SET last_event = ?, updated_at = ? WHERE id = ?", [
+      now,
+      now,
+      taskId,
+    ]);
+    return;
+  }
+  db.run(
+    `UPDATE tasks
+        SET last_event = ?, updated_at = ?,
+            metadata = json_set(COALESCE(metadata, '{}'),
+                                '$.last_event_text', ?)
+      WHERE id = ?`,
+    [now, now, summary.slice(0, 200), taskId],
+  );
+}
+
+/** VOS-171: result of an agent-declared terminal-state attempt. `flipped` is
+ *  false when the CAS found no eligible row — either the Task is already
+ *  terminal (frozen — repeated declares are idempotent no-ops) or absent. */
+export interface DeclareTerminalResult {
+  flipped: boolean;
+  /** the Task's state AFTER the attempt (the existing terminal state when
+   *  the CAS no-ops, the new one when it flips, null when the row is gone). */
+  state: string | null;
+}
+
+/** VOS-171: agent-declared terminal state. Flips a non-terminal Task
+ *  (WORKING / INPUT_REQUIRED / WAITING_ON_AGENT) to `completed` or `failed`,
+ *  stamps a one-line summary, and marks `metadata.terminal_declared = true`
+ *  so `isTaskFrozen` treats the Task as sealed (an agent-declared `completed`
+ *  is frozen; a run-end-inferred `completed` is not — see `isTaskFrozen`).
+ *
+ *  CAS-guarded: the UPDATE matches WORKING / INPUT_REQUIRED /
+ *  WAITING_ON_AGENT only. A Task that is already terminal — including a
+ *  run-end-inferred COMPLETED — is left untouched (the CAS no-ops). This
+ *  means a turn whose run already auto-flipped the root Task to COMPLETED
+ *  cannot then be agent-declared; in practice the agent calls `complete_task`
+ *  mid-run (while WORKING) so the declared flip wins first.
+ *
+ *  Never accepts a foreign taskId, so a parent cannot force-complete a
+ *  child through it. */
+export function declareTaskTerminal(
+  db: Database,
+  taskId: string,
+  state: "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED",
+  summary: string,
+): DeclareTerminalResult {
+  const now = Date.now();
+  const res = db.run(
+    `UPDATE tasks
+        SET state = ?, last_event = ?, updated_at = ?,
+            metadata = json_set(
+              json_set(COALESCE(metadata, '{}'),
+                       '$.last_event_text', ?),
+              '$.terminal_declared', json('true'))
+      WHERE id = ?
+        AND state NOT IN ('TASK_STATE_COMPLETED',
+                          'TASK_STATE_FAILED',
+                          'TASK_STATE_CANCELED')`,
+    [state, now, now, summary.slice(0, 200), taskId],
+  );
+  return { flipped: res.changes > 0, state: getTaskState(db, taskId) };
 }
 
 export function makeChatRepo(db: Database): ChatRepo {

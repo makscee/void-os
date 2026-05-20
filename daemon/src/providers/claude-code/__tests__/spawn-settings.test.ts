@@ -267,6 +267,7 @@ describe("VOS-111: tool allowlist + name transform", () => {
       "mcp__void-os__vault_load_template",
       "mcp__void-os__ask_user",
       "mcp__void-os__ask_agent",
+      "mcp__void-os__complete_task",
     ]);
   });
 
