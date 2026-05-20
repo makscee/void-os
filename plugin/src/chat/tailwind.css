@@ -170,8 +170,8 @@
   .void-os-chat-header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 14px;
+    gap: 10px;
+    padding: 12px 14px;
     background: color-mix(in srgb, var(--agent-color) 15%, transparent);
     border-bottom: 1px solid color-mix(in srgb, var(--agent-color) 60%, transparent);
     position: sticky;
@@ -180,16 +180,16 @@
     font-size: 12px;
     flex-shrink: 0;
   }
-  /* FOLLOWUP (smoke): same squish problem as agent-row avatar — `<span>`
-     in a flex parent with empty agent name placeholder ("●") rendered as
-     a tiny vertical bullet. Pin a 20px circle so the badge is always
-     visible and round regardless of header height. */
+  /* FOLLOWUP (smoke 2026-05-20): bumped to 24px circle. The earlier 20px
+     felt cramped versus the 28px agent-row avatars in the sidebar; this
+     keeps the chat header visually a touch lighter than a sidebar row
+     while still giving the badge enough mass to read as an avatar. */
   .void-os-chat-header-avatar {
     box-sizing: border-box;
-    width: 20px;
-    height: 20px;
-    min-width: 20px;
-    min-height: 20px;
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
     aspect-ratio: 1 / 1;
     flex-shrink: 0;
     display: inline-flex;
@@ -197,7 +197,7 @@
     justify-content: center;
     border-radius: 50%;
     background: color-mix(in srgb, var(--agent-color) 25%, transparent);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1;
   }
   .void-os-chat-header-name {

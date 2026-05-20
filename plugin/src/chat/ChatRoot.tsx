@@ -344,16 +344,17 @@ export function ChatRoot(props: ChatRootProps) {
   // ChatList selection, AgentList active-marker — keep their contracts
   // unchanged.
   //
-  // Initial pane comes from props.chatId: if the host has a persisted
-  // chat id we open straight into Active with a placeholder agent (the
-  // real agent name is filled in when ChatList loads, see onSelectChat).
-  const [pane, setPane] = React.useState<PaneState>(() => {
-    if (props.chatId) {
-      const placeholder: ProtocolAgentListEntry = { name: "", description: "" };
-      return { kind: "active", chatId: props.chatId, agent: placeholder };
-    }
-    return { kind: "idle" };
-  });
+  // FOLLOWUP (smoke 2026-05-20): always boot Idle regardless of
+  // props.chatId. Operator wants the chat screen to land on the agent +
+  // existing-chat pickers every time the view opens, per acceptance
+  // bullet 3 ("When no chat is active, the chat screen primarily shows:
+  // agent picker + existing-chat picker"). Host-pushed setActiveChatId
+  // calls (URI handlers, "open chat" commands) still flip to Active via
+  // the registerSetActiveChatId path below — only the INITIAL mount now
+  // ignores props.chatId. The placeholder-refinement useEffect below
+  // stays as defence-in-depth (it just won't fire on a clean Idle boot
+  // because there's nothing to refine).
+  const [pane, setPane] = React.useState<PaneState>(() => ({ kind: "idle" }));
   const activeChatId = pane.kind === "active" ? pane.chatId : null;
   const activeAgent =
     pane.kind === "idle" ? null : pane.agent.name || null;
