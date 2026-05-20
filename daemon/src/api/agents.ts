@@ -4,18 +4,26 @@
 // the operator's vault shipped no maya agent — confusing, and the
 // inverse of the reported friction ("why do I have maya agent? it's
 // not in files").
-// Mounted in app.ts via `app.route("/", agentsApi(db))`.
+// VOS-166: when `vaultRoot` is supplied, GET /agents triggers a debounced
+// rescan of vault/agents/ before listing, so an agent.md authored after
+// daemon boot becomes visible without a restart (regression: VOS-163 S4).
+// Mounted in app.ts via `app.route("/", agentsApi(db, vaultRoot))`.
 
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
 import { makeAgentRepo } from "../agents/repo";
+import { makeDebouncedRescan } from "../agents/rescan";
 import type { AgentListEntry } from "../agents/types";
 
-export function agentsApi(db: Database): Hono {
+export function agentsApi(db: Database, vaultRoot?: string): Hono {
   const repo = makeAgentRepo(db);
   const app = new Hono();
+  // VOS-166: lazy rescan-on-read. Omitted in unit tests that drive the
+  // `agents` table directly; production (app.ts) always passes vaultRoot.
+  const rescan = vaultRoot ? makeDebouncedRescan(db, vaultRoot) : null;
 
   app.get("/agents", (c) => {
+    if (rescan) rescan();
     const rows = repo.list();
     rows.sort((a, b) => a.name.localeCompare(b.name));
     // VOS-153: project optional presentation fields. `undefined` values
