@@ -62,6 +62,8 @@ describe("ChatRoot composer in idle state (S5 regression guard)", () => {
       async listChats() { return []; },
       async getMessages() { return []; },
       async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
+      async deleteChat() {},
+      async answer() { return { ok: true as const }; },
     };
 
     const host = (globalThis as any).document.createElement("div");

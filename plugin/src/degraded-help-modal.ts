@@ -75,7 +75,12 @@ export class DegradedHelpModal extends Modal {
       await this.plugin.attemptDaemon();
     } finally {
       this.retryInFlight = false;
-      if (this.plugin.daemonStatus.state === "running") {
+      // attemptDaemon() above may have reassigned daemonStatus. The widened
+      // `string` local defeats the stale narrowing TS carried over from the
+      // early-return `=== "running"` check at the top of this method, which
+      // would otherwise make this comparison a TS2367 no-overlap error.
+      const state: string = this.plugin.daemonStatus.state;
+      if (state === "running") {
         new Notice("daemon attached");
         this.close();
       } else {

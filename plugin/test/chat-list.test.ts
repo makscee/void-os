@@ -15,13 +15,29 @@ mock.module("obsidian", () => ({
 
 import type { ChatApi, ChatSummary } from "../src/chat/api";
 
-function stubApi(chats: ChatSummary[]): ChatApi {
+// Fill the context-token fields ChatSummary requires; row fixtures below
+// predate those fields and only set the columns the test exercises (VOS-167).
+function fillSummary(p: Partial<ChatSummary>): ChatSummary {
+  return {
+    id: "c", agent: "maya", title: null, last_msg: null, updated_at: 0,
+    last_run_status: null, cost_usd: 0, input_required: false,
+    context_tokens: 0, context_input_tokens: 0, context_output_tokens: 0,
+    context_cache_create_tokens: 0, context_cache_read_tokens: 0,
+    ...p,
+  };
+}
+
+function stubApi(chats: Array<Partial<ChatSummary>>): ChatApi {
+  const filled = chats.map(fillSummary);
   return {
     async createChat() { return { id: "new", title: "untitled", created_at: 0 }; },
+    async deleteChat() {},
     async postMessage() { return { run_id: "r", status: "running" }; },
     async cancel() { return { run_id: "r", status: "cancelled" }; },
-    async listChats() { return chats; },
+    async answer() { return { ok: true as const }; },
+    async listChats() { return filled; },
     async getMessages() { return []; },
+    async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
   };
 }
 
@@ -161,11 +177,13 @@ describe("ChatList", () => {
     let calls = 0;
     const api: ChatApi = {
       async createChat() { return { id: "x", title: "t", created_at: 0 }; },
+      async deleteChat() {},
       async postMessage() { return { run_id: "r", status: "running" }; },
       async cancel() { return { run_id: "r", status: "cancelled" }; },
+      async answer() { return { ok: true as const }; },
       async listChats() {
         calls++;
-        return [{
+        return [fillSummary({
           id: "c1",
           agent: "maya",
           title: "T",
@@ -174,9 +192,10 @@ describe("ChatList", () => {
           last_run_status: calls === 1 ? "running" : "cancelled",
           cost_usd: 0,
           input_required: false,
-        }];
+        })];
       },
       async getMessages() { return []; },
+      async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
     };
 
     const host = (globalThis as any).document.createElement("div");
@@ -223,13 +242,16 @@ describe("ChatList", () => {
     let calls = 0;
     const api: ChatApi = {
       async createChat() { return { id: "x", title: "t", created_at: 0 }; },
+      async deleteChat() {},
       async postMessage() { return { run_id: "r", status: "running" }; },
-    async cancel() { return { run_id: "r", status: "cancelled" }; },
+      async cancel() { return { run_id: "r", status: "cancelled" }; },
+      async answer() { return { ok: true as const }; },
       async listChats() {
         calls++;
-        return [{ id: `c${calls}`, agent: "maya", title: `t${calls}`, last_msg: null, updated_at: calls, last_run_status: null, cost_usd: 0, input_required: false }];
+        return [fillSummary({ id: `c${calls}`, agent: "maya", title: `t${calls}`, last_msg: null, updated_at: calls, last_run_status: null, cost_usd: 0, input_required: false })];
       },
       async getMessages() { return []; },
+      async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
     };
 
     const host = (globalThis as any).document.createElement("div");

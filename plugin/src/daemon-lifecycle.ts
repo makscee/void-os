@@ -114,7 +114,7 @@ async function loginShellWhich(timeoutMs = 2000): Promise<string | null> {
       stdio: ["ignore", "pipe", "ignore"],
     });
     let out = "";
-    child.stdout.on("data", (b) => {
+    child.stdout.on("data", (b: Buffer | string) => {
       out += b.toString();
     });
     const t = setTimeout(() => {
@@ -123,7 +123,7 @@ async function loginShellWhich(timeoutMs = 2000): Promise<string | null> {
       } catch {}
       resolve(null);
     }, timeoutMs);
-    child.on("close", (code) => {
+    child.on("close", (code: number | null) => {
       clearTimeout(t);
       const trimmed = out.trim();
       if (code === 0 && trimmed && isExecutable(trimmed)) resolve(trimmed);

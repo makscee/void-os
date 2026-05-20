@@ -1,5 +1,3 @@
-import type { moment as MomentFn } from "obsidian";
-
 /**
  * Locale-aware relative time string suitable for narrow chat-list rows.
  * Uses Obsidian's bundled moment (runtime-external). The `true` flag
@@ -8,8 +6,15 @@ import type { moment as MomentFn } from "obsidian";
  *
  * Lazy require instead of static import value: obsidian ships .d.ts only —
  * importing values at module load fails outside the Obsidian runtime.
+ *
+ * Minimal call-site type: obsidian re-exports moment as `typeof import("moment")`,
+ * but `moment` is not a declared dependency so that type resolves to a
+ * non-callable namespace stub. We only need the `moment(ts).fromNow(strip)`
+ * shape, so type the require result directly (VOS-167).
  */
+type MomentLike = (ts: number) => { fromNow: (stripSuffix?: boolean) => string };
+
 export function formatRelativeTime(updatedAt: number): string {
-  const { moment } = require("obsidian") as { moment: typeof MomentFn };
+  const { moment } = require("obsidian") as { moment: MomentLike };
   return moment(updatedAt).fromNow(true);
 }
