@@ -41,6 +41,7 @@ import { chatsApi } from "../../src/api/chats.ts";
 import { chatApi } from "../../src/api/chat.ts";
 import { createPermissionEngine, type AgentDefn } from "../../src/permissions/engine.ts";
 import { createVaultWriter } from "../../src/vault/writer.ts";
+import type { HandoffLog } from "../../src/agents/handoff-log.ts";
 
 const MIGRATIONS_DIR = join(
   import.meta.dir,
@@ -69,6 +70,17 @@ export interface BootOpts {
    *  finishes synchronously, run.end fires, and parent flips to
    *  COMPLETED before the test bus subscriber can call MCP. */
   parentPerEventDelayMs?: number;
+  /**
+   * VOS-159: optional handoff-log adapter threaded into mountMcp so
+   * integration tests can exercise the real provenance path (ask_agent ->
+   * hl writer -> vault/work/handoffs/log.jsonl). Omitted -> ask_agent falls
+   * back to NULL_HANDOFF_LOG and writes nothing.
+   */
+  handoffLog?: HandoffLog;
+  /** VOS-159: session id stamped onto handoff entries. */
+  sessionId?: string | null;
+  /** VOS-159: milestone slug stamped onto handoff entries. */
+  milestone?: string | null;
 }
 
 export interface BootedDaemon {
@@ -246,6 +258,11 @@ export async function bootInProcessDaemon(opts: BootOpts): Promise<BootedDaemon>
     loadAgentDefn,
     engine,
     writer,
+    // VOS-159: thread the optional handoff-log adapter + identity so an
+    // integration test can assert provenance entries land on disk.
+    handoffLog: opts.handoffLog,
+    sessionId: opts.sessionId,
+    milestone: opts.milestone,
   });
   mountAnswerRoute(app, { db, bridge });
 

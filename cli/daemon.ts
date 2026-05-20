@@ -201,6 +201,16 @@ export async function cmdStart(opts: StartOpts): Promise<StartResult> {
       ...process.env,
       VOID_OS_PORT: String(port),
       VOID_OS_VAULT_ROOT: opts.vault,
+      // VOS-159: explicitly surface the handoff-log env contract at the spawn
+      // site. The daemon's app.ts reads these via process.env to build the
+      // hub-side provenance writer (makeHandoffLogFromEnv) and to thread
+      // session / milestone identity into every ask_agent entry. They already
+      // flow through the `...process.env` spread above; restating them here
+      // makes the contract self-documenting and lets a future caller override
+      // them per-spawn without touching the spread. Each is best-effort:
+      // VOID_OS_HL_PATH unset -> NULL_HANDOFF_LOG no-op (see
+      // daemon/src/agents/handoff-log.ts and docs/api.md).
+      ...handoffLogEnv(),
     },
   });
 
@@ -281,6 +291,28 @@ async function raceHealth(child: import("node:child_process").ChildProcess, port
 
 function tokenOrEmpty(): string {
   try { return readFileSync(tokenPath(), "utf8").trim(); } catch { return ""; }
+}
+
+// VOS-159: collect the handoff-log env contract for the daemon spawn. Returns
+// only the vars that are actually set so we never inject empty strings (an
+// empty VOID_OS_HL_PATH is falsey to makeHandoffLogFromEnv anyway, but keeping
+// the set narrow avoids surprising downstream `??` checks). The four vars:
+//   - VOID_OS_HL_PATH      absolute path to hub/tools/handoff-log/hl
+//   - VOID_OS_HL_HUB_ROOT  hub root passed to hl as HUB_ROOT (log location)
+//   - VOID_OS_SESSION_ID   orchestrator session id stamped on entries
+//   - VOID_OS_MILESTONE    milestone slug stamped on entries
+function handoffLogEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of [
+    "VOID_OS_HL_PATH",
+    "VOID_OS_HL_HUB_ROOT",
+    "VOID_OS_SESSION_ID",
+    "VOID_OS_MILESTONE",
+  ]) {
+    const v = process.env[key];
+    if (v) out[key] = v;
+  }
+  return out;
 }
 
 function sleep(ms: number): Promise<void> { return new Promise((res) => setTimeout(res, ms)); }
