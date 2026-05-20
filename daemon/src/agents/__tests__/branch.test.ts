@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
-import { branchAgent } from "../branch.ts";
+import { branchAgent, pruneBranchWorktrees } from "../branch.ts";
 
 // branchAgent mkdir-s the worktree parent before driving git. Tests point
 // it at a real, writable tmpdir so that step succeeds and the (faked) git
@@ -94,5 +94,129 @@ describe("VOS-162: branchAgent", () => {
         nonce: () => "1",
       }),
     ).rejects.toThrow(/git worktree add failed/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VOS-165: pruneBranchWorktrees — teardown / GC for the worktrees the branch
+// verb accumulates.
+// ---------------------------------------------------------------------------
+
+/**
+ * A fake git runner for prune tests. `worktree list --porcelain` returns the
+ * canned `listOutput`; `worktree remove` records the removed path and 0-exits
+ * unless its path is in `failRemove`.
+ */
+function fakePruneGit(opts: {
+  listOutput: string;
+  listFails?: boolean;
+  failRemove?: string[];
+}) {
+  const removed: string[] = [];
+  return {
+    removed,
+    run: async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        if (opts.listFails) {
+          return { stdout: "", stderr: "fatal: not a git repository", exitCode: 1 };
+        }
+        return { stdout: opts.listOutput, stderr: "", exitCode: 0 };
+      }
+      if (args[0] === "worktree" && args[1] === "remove") {
+        const target = args[args.length - 1];
+        if (opts.failRemove?.includes(target)) {
+          return { stdout: "", stderr: "fatal: worktree is dirty", exitCode: 1 };
+        }
+        removed.push(target);
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    },
+  };
+}
+
+/** Compose a `git worktree list --porcelain` blob from (path, branch) pairs. */
+function porcelain(entries: Array<{ path: string; branch?: string }>): string {
+  return entries
+    .map((e) => {
+      const lines = [`worktree ${e.path}`, "HEAD " + "0".repeat(40)];
+      if (e.branch) lines.push(`branch refs/heads/${e.branch}`);
+      else lines.push("detached");
+      return lines.join("\n");
+    })
+    .join("\n\n") + "\n";
+}
+
+describe("VOS-165: pruneBranchWorktrees", () => {
+  test("removes only worktrees on a branch/* branch", async () => {
+    const git = fakePruneGit({
+      listOutput: porcelain([
+        { path: "/repo", branch: "main" }, // the daemon's own checkout
+        { path: "/repo-wt/agent1-1", branch: "branch/agent1-1" },
+        { path: "/repo-wt/agent2-2", branch: "branch/agent2-2" },
+        { path: "/repo-wt/manual", branch: "feature/manual" }, // hand-made
+      ]),
+    });
+    const report = await pruneBranchWorktrees({ repoRoot: "/repo", runGit: git.run });
+    expect(report.pruned.map((w) => w.path).sort()).toEqual([
+      "/repo-wt/agent1-1",
+      "/repo-wt/agent2-2",
+    ]);
+    expect(git.removed.sort()).toEqual(["/repo-wt/agent1-1", "/repo-wt/agent2-2"]);
+    expect(report.kept).toHaveLength(0);
+    expect(report.failed).toHaveLength(0);
+  });
+
+  test("the TTL filter keeps worktrees touched more recently than the cutoff", async () => {
+    const git = fakePruneGit({
+      listOutput: porcelain([
+        { path: "/repo-wt/old", branch: "branch/old-1" },
+        { path: "/repo-wt/fresh", branch: "branch/fresh-2" },
+      ]),
+    });
+    const NOW = 1_000_000_000_000;
+    const report = await pruneBranchWorktrees({
+      repoRoot: "/repo",
+      runGit: git.run,
+      olderThanMs: 60_000, // 1 minute
+      now: () => NOW,
+      mtimeOf: (p) => (p.endsWith("fresh") ? NOW - 1_000 : NOW - 120_000),
+    });
+    expect(report.pruned.map((w) => w.path)).toEqual(["/repo-wt/old"]);
+    expect(report.kept.map((w) => w.path)).toEqual(["/repo-wt/fresh"]);
+    expect(git.removed).toEqual(["/repo-wt/old"]);
+  });
+
+  test("a per-worktree remove failure is recorded, the sweep continues", async () => {
+    const git = fakePruneGit({
+      listOutput: porcelain([
+        { path: "/repo-wt/dirty", branch: "branch/dirty-1" },
+        { path: "/repo-wt/clean", branch: "branch/clean-2" },
+      ]),
+      failRemove: ["/repo-wt/dirty"],
+    });
+    const report = await pruneBranchWorktrees({ repoRoot: "/repo", runGit: git.run });
+    expect(report.pruned.map((w) => w.path)).toEqual(["/repo-wt/clean"]);
+    expect(report.failed).toHaveLength(1);
+    expect(report.failed[0].path).toBe("/repo-wt/dirty");
+    expect(report.failed[0].error).toMatch(/dirty/);
+  });
+
+  test("a worktree-list failure (non-git repoRoot) throws", async () => {
+    const git = fakePruneGit({ listOutput: "", listFails: true });
+    await expect(
+      pruneBranchWorktrees({ repoRoot: "/not-a-repo", runGit: git.run }),
+    ).rejects.toThrow(/cannot list worktrees/);
+  });
+
+  test("with no branch/* worktrees, the report is empty", async () => {
+    const git = fakePruneGit({
+      listOutput: porcelain([{ path: "/repo", branch: "main" }]),
+    });
+    const report = await pruneBranchWorktrees({ repoRoot: "/repo", runGit: git.run });
+    expect(report.pruned).toHaveLength(0);
+    expect(report.kept).toHaveLength(0);
+    expect(report.failed).toHaveLength(0);
+    expect(git.removed).toHaveLength(0);
   });
 });

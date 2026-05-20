@@ -19,7 +19,7 @@
 // (running OR within the ended-grace window). The 404 boundary is "the
 // inflight registry has never seen this agent_id", not "no live handle".
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import * as path from "node:path";
 
 export interface BranchResult {
@@ -122,4 +122,148 @@ export async function branchAgent(
     branch,
     base_sha: baseSha,
   };
+}
+
+// VOS-165: teardown / GC for the worktrees the branch verb accumulates.
+//
+// `branchAgent` mints a worktree per call and never removes it. Left
+// unattended they pile up under `<repoRoot>-wt/`. There is no agent
+// lifecycle hook to clean them on completion (branch operates on git
+// state, not the live run — the branched checkout outlives the agent), so
+// the GC is operator-driven: a prune sweep.
+//
+// The sweep is namespace-scoped — it only touches worktrees whose checked
+// -out branch is in the `branch/*` namespace the verb mints, so a hand-
+// made worktree or the daemon's own checkout is never removed.
+
+/** One pruned (or kept) worktree in a prune report. */
+export interface BranchWorktree {
+  /** Absolute worktree path. */
+  path: string;
+  /** The branch the worktree is checked out on (e.g. `branch/agent1-42`). */
+  branch: string;
+}
+
+export interface PruneReport {
+  /** Worktrees successfully removed. */
+  pruned: BranchWorktree[];
+  /** `branch/*` worktrees skipped (TTL not reached). */
+  kept: BranchWorktree[];
+  /** Worktrees a `git worktree remove` failed on, with the git error. */
+  failed: Array<BranchWorktree & { error: string }>;
+}
+
+export interface PruneBranchWorktreesDeps {
+  /** The git repo whose worktrees are enumerated — same repoRoot as branchAgent. */
+  repoRoot: string;
+  /** Spawn a `git` subprocess. Defaults to Bun.spawn; tests inject a stub. */
+  runGit?: (
+    args: string[],
+    cwd: string,
+  ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /**
+   * If set, a `branch/*` worktree whose directory mtime is newer than
+   * `Date.now() - olderThanMs` is kept (the operator may still be using
+   * it). Unset = prune every `branch/*` worktree.
+   */
+  olderThanMs?: number;
+  /** Test seam: override the mtime lookup. Defaults to `statSync(p).mtimeMs`. */
+  mtimeOf?: (worktreePath: string) => number;
+  /** Test seam: override the wall clock. Defaults to `Date.now`. */
+  now?: () => number;
+}
+
+/**
+ * Parse `git worktree list --porcelain` into (path, branch) records.
+ *
+ * Porcelain blocks are blank-line separated; each has a `worktree <path>`
+ * line and (for an attached worktree) a `branch refs/heads/<name>` line.
+ */
+function parseWorktreeList(
+  porcelain: string,
+): Array<{ path: string; branch: string | null }> {
+  const out: Array<{ path: string; branch: string | null }> = [];
+  let cur: { path: string; branch: string | null } | null = null;
+  for (const line of porcelain.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (cur) out.push(cur);
+      cur = { path: line.slice("worktree ".length).trim(), branch: null };
+    } else if (line.startsWith("branch ") && cur) {
+      cur.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/**
+ * Prune the git worktrees the branch verb has accumulated.
+ *
+ * Only worktrees on a `branch/*` branch are candidates — that is the
+ * namespace `branchAgent` mints, so the daemon's own checkout and any
+ * hand-made worktree are untouched. With `olderThanMs` set, a candidate
+ * whose directory mtime is newer than the cutoff is kept.
+ *
+ * Throws if `git worktree list` itself fails (a non-git repoRoot). A
+ * per-worktree `git worktree remove` failure does NOT abort the sweep —
+ * it is recorded in `report.failed` and the remaining worktrees still get
+ * a chance.
+ */
+export async function pruneBranchWorktrees(
+  deps: PruneBranchWorktreesDeps,
+): Promise<PruneReport> {
+  const runGit = deps.runGit ?? defaultRunGit;
+  const repoRoot = deps.repoRoot;
+
+  const list = await runGit(["worktree", "list", "--porcelain"], repoRoot);
+  if (list.exitCode !== 0) {
+    throw new Error(
+      `prune: cannot list worktrees in ${repoRoot}: ${list.stderr.trim()}`,
+    );
+  }
+
+  const candidates = parseWorktreeList(list.stdout).filter(
+    (w): w is { path: string; branch: string } =>
+      w.branch != null && w.branch.startsWith("branch/"),
+  );
+
+  const cutoff =
+    deps.olderThanMs != null
+      ? (deps.now ?? Date.now)() - deps.olderThanMs
+      : null;
+  const mtimeOf =
+    deps.mtimeOf ?? ((p: string) => statSync(p).mtimeMs);
+
+  const report: PruneReport = { pruned: [], kept: [], failed: [] };
+
+  for (const w of candidates) {
+    if (cutoff != null) {
+      let mtime: number;
+      try {
+        mtime = mtimeOf(w.path);
+      } catch {
+        // Directory already gone — treat as nothing to prune.
+        continue;
+      }
+      if (mtime > cutoff) {
+        report.kept.push({ path: w.path, branch: w.branch });
+        continue;
+      }
+    }
+    const rm = await runGit(
+      ["worktree", "remove", "--force", w.path],
+      repoRoot,
+    );
+    if (rm.exitCode === 0) {
+      report.pruned.push({ path: w.path, branch: w.branch });
+    } else {
+      report.failed.push({
+        path: w.path,
+        branch: w.branch,
+        error: rm.stderr.trim() || rm.stdout.trim(),
+      });
+    }
+  }
+
+  return report;
 }

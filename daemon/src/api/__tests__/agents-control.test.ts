@@ -217,3 +217,125 @@ describe("VOS-162: branch verb route", () => {
     expect(p.summary).toContain("branched agent");
   });
 });
+
+// ---------------------------------------------------------------------------
+// VOS-165: POST /agents/branch/prune — GC the worktrees the branch verb left.
+// ---------------------------------------------------------------------------
+
+/** A fake git for prune-route tests: canned `worktree list`, recorded removes. */
+function fakePruneGit(listOutput: string) {
+  const removed: string[] = [];
+  return {
+    removed,
+    run: async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return { stdout: listOutput, stderr: "", exitCode: 0 };
+      }
+      if (args[0] === "worktree" && args[1] === "remove") {
+        removed.push(args[args.length - 1]);
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    },
+  };
+}
+
+const PRUNE_LIST =
+  `worktree /repo\nHEAD ${"0".repeat(40)}\nbranch refs/heads/main\n\n` +
+  `worktree /repo-wt/agent1-1\nHEAD ${"0".repeat(40)}\nbranch refs/heads/branch/agent1-1\n`;
+
+function makePruneHarness(
+  git: ReturnType<typeof fakePruneGit>,
+  mtimeOf?: (p: string) => number,
+  now?: () => number,
+) {
+  const bus = createEventBus();
+  const control = createAgentControlRegistry();
+  const inflight = createInflightRegistry({ bus, control });
+  const app = new Hono();
+  mountAgentsControl(app, {
+    bus,
+    control,
+    inflight,
+    repoRoot: "/repo",
+    pruneOverrides: { runGit: git.run, mtimeOf, now },
+  });
+  const events: DaemonEvent[] = [];
+  bus.subscribe("agent.event", (ev) => events.push(ev));
+  return { app, events };
+}
+
+async function postPrune(app: Hono, body?: unknown) {
+  return app.fetch(
+    new Request("http://x/agents/branch/prune", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: body === undefined ? "{}" : JSON.stringify(body),
+    }),
+  );
+}
+
+describe("VOS-165: POST /agents/branch/prune", () => {
+  test("200s with a report and removes the branch/* worktree", async () => {
+    const git = fakePruneGit(PRUNE_LIST);
+    const { app } = makePruneHarness(git);
+    const res = await postPrune(app);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      pruned: Array<{ path: string }>;
+      kept: unknown[];
+      failed: unknown[];
+    };
+    expect(body.pruned.map((w) => w.path)).toEqual(["/repo-wt/agent1-1"]);
+    expect(body.kept).toHaveLength(0);
+    expect(body.failed).toHaveLength(0);
+    expect(git.removed).toEqual(["/repo-wt/agent1-1"]);
+  });
+
+  test("emits an agent.event recording the sweep", async () => {
+    const git = fakePruneGit(PRUNE_LIST);
+    const { app, events } = makePruneHarness(git);
+    await postPrune(app);
+    expect(events).toHaveLength(1);
+    const p = events[0].payload as { kind: string; summary: string };
+    expect(p.kind).toBe("status");
+    expect(p.summary).toContain("pruned 1 branch worktree");
+  });
+
+  test("older_than_minutes keeps a recently-touched worktree", async () => {
+    const git = fakePruneGit(PRUNE_LIST);
+    const NOW = 2_000_000_000_000;
+    // Worktree mtime is 30s old; cutoff is 1 min → kept.
+    const { app } = makePruneHarness(git, () => NOW - 30_000, () => NOW);
+    const res = await postPrune(app, { older_than_minutes: 1 });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pruned: unknown[]; kept: Array<{ path: string }> };
+    expect(body.pruned).toHaveLength(0);
+    expect(body.kept.map((w) => w.path)).toEqual(["/repo-wt/agent1-1"]);
+    expect(git.removed).toHaveLength(0);
+  });
+
+  test("a negative older_than_minutes is a 400", async () => {
+    const git = fakePruneGit(PRUNE_LIST);
+    const { app } = makePruneHarness(git);
+    const res = await postPrune(app, { older_than_minutes: -5 });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("bad_request");
+  });
+
+  test("a worktree-list failure surfaces as a 500", async () => {
+    const failGit = {
+      removed: [] as string[],
+      run: async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          return { stdout: "", stderr: "fatal: not a git repository", exitCode: 1 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    };
+    const { app } = makePruneHarness(failGit);
+    const res = await postPrune(app);
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toBe("prune_failed");
+  });
+});
