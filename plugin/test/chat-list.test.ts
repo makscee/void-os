@@ -36,6 +36,7 @@ function stubApi(chats: Array<Partial<ChatSummary>>): ChatApi {
     async cancel() { return { run_id: "r", status: "cancelled" }; },
     async answer() { return { ok: true as const }; },
     async listChats() { return filled; },
+    async listTasks() { return []; },
     async getMessages() { return []; },
     async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
   };
@@ -195,6 +196,7 @@ describe("ChatList", () => {
         })];
       },
       async getMessages() { return []; },
+      async listTasks() { return []; },
       async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
     };
 
@@ -251,6 +253,7 @@ describe("ChatList", () => {
         return [fillSummary({ id: `c${calls}`, agent: "maya", title: `t${calls}`, last_msg: null, updated_at: calls, last_run_status: null, cost_usd: 0, input_required: false })];
       },
       async getMessages() { return []; },
+      async listTasks() { return []; },
       async getCostToday() { return { total: { input_tokens: 0, output_tokens: 0, cache_create_tokens: 0, cache_read_tokens: 0 } }; },
     };
 

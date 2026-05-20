@@ -23,6 +23,7 @@ import { mountVault } from "./api/vault.ts";
 import { makeRequireAuth } from "./auth/middleware.ts";
 import { resolveTz } from "./cost/tz.ts";
 import { chatsApi } from "./api/chats.ts";
+import { tasksApi } from "./api/tasks.ts";
 import { agentsApi } from "./api/agents.ts";
 import { chatApi, mountChatTaskStateFanout } from "./api/chat.ts";
 import { mountMcp, defaultLoadAgentDefn } from "./adapters/mcp/index.ts";
@@ -308,6 +309,10 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // VOS-79: chat-lifecycle HTTP surface. `chatsApi` owns list/create;
   // `chatApi` owns per-chat routes (GET /chat/:id, /messages, POST /message).
   app.route("/", chatsApi(deps.db));
+  // VOS-172: global activity list — every Task across every Context,
+  // sorted by last activity. Backed by the same nav-repo query the
+  // `list_tasks` MCP tool uses, so plugin + agent navigation never drift.
+  app.route("/", tasksApi(deps.db));
   app.route("/", agentsApi(deps.db, deps.vaultRoot));
   // VOS-118: pass the shared bus so POST /chat/:id/message can return early
   // (with {run_id, status:"running"}) instead of blocking until dispatch
