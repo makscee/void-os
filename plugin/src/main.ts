@@ -163,6 +163,19 @@ export default class VoidOsPlugin extends Plugin {
     this.fsm?.stop();
     this.fsm = null;
     this.bus = null;
+    // Stop the detached daemon so it doesn't outlive Obsidian and orphan the
+    // vault lock. Bounded by a 3s window so a hung CLI can't block unload.
+    try {
+      const bin = await resolveBinary(this.settings.get());
+      await new Promise<void>((resolve) => {
+        const c = spawn(bin, ["daemon", "stop"], { stdio: "ignore" });
+        const t = setTimeout(() => { try { c.kill(); } catch { /* ignore */ } resolve(); }, 3000);
+        c.on("close", () => { clearTimeout(t); resolve(); });
+        c.on("error", () => { clearTimeout(t); resolve(); });
+      });
+    } catch {
+      // resolveBinary may throw; nothing we can do at unload-time.
+    }
   }
 
   /** Non-throwing for typed errors — distinct from restartDaemon, which
