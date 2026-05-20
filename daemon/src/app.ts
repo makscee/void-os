@@ -30,6 +30,13 @@ import { makeHandoffLogFromEnv } from "./agents/handoff-log.ts";
 import { mountAnswerRoute } from "./api/answer.ts";
 import { createEventBus, type EventBus } from "./events/index.ts";
 import { mountChatStream } from "./api/chat-stream.ts";
+import { mountAgentsInflight } from "./api/agents-inflight.ts";
+import {
+  createInflightBridge,
+  createInflightRegistry,
+  createJsonlWriter,
+  attachJsonlPersistence,
+} from "./agents/inflight.ts";
 import { createAskUserBridge } from "./chat/ask-user-bridge.ts";
 import { makeProvider } from "./providers/factory.ts";
 import { createPermissionEngine } from "./permissions/engine.ts";
@@ -85,6 +92,13 @@ export interface BuildAppDeps {
   // subscribe/unsubscribe lifecycle on the SSE route. Production omits
   // it so buildApp constructs its own bus internally.
   eventBus?: EventBus;
+  // VOS-155: session id used for per-session JSONL filename. Defaults to
+  // VOID_OS_SESSION_ID env or "default". Tests pass an explicit id so
+  // multiple parallel suites don't share the same on-disk file.
+  sessionId?: string;
+  // VOS-155: disable JSONL persistence entirely. Tests that don't assert
+  // disk side-effects pass true to keep the filesystem clean.
+  disableInflightJsonl?: boolean;
 }
 
 export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
@@ -323,6 +337,30 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // events from the shared bus filtered to the URL's chat id.
   app.use("/chat/:id/stream", makeRequireAuth(token));
   mountChatStream(app, { db: deps.db, bus, version: VERSION });
+
+  // VOS-155: in-flight agent inspector substrate.
+  //   - bridge translates legacy chat.*/task.state_changed/run.end/child.*
+  //     frames into agent.event on the same bus.
+  //   - registry maintains an in-memory snapshot keyed by agent_id.
+  //   - JSONL writer persists each event to a per-session log file.
+  //   - GET /agents/inflight returns snapshot + SSE delta stream.
+  createInflightBridge({ bus, db: deps.db });
+  const inflightRegistry = createInflightRegistry({ bus });
+  if (!deps.disableInflightJsonl) {
+    const sessionId =
+      deps.sessionId ?? process.env.VOID_OS_SESSION_ID ?? "default";
+    const inflightWriter = createJsonlWriter({
+      vaultRoot: deps.vaultRoot,
+      sessionId,
+      // Skip fsync per-record in tests; the env override (false) keeps
+      // suites fast. Production callers (daemon/src/index.ts) inherit
+      // the default true via `disableInflightJsonl=false` + no override.
+      fsync: process.env.VOID_OS_INFLIGHT_FSYNC !== "0",
+    });
+    attachJsonlPersistence(bus, inflightWriter);
+  }
+  app.use("/agents/inflight", makeRequireAuth(token));
+  mountAgentsInflight(app, { bus, registry: inflightRegistry, version: VERSION });
   return app;
 };
 
