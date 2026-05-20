@@ -31,6 +31,9 @@ interface E2EState {
   obsidianUserDataDir: string;
   fakeScriptPath: string;
   dbPath: string;
+  /** Per-run tmpdir; the daemon's bearer token lives at
+   *  `${tmpdir}/home/.void-os/token` (globalSetup isolates HOME there). */
+  tmpdir: string;
 }
 
 test("inspector view: lists in-flight agent, click expands its trace, auto-refreshes", async ({ request }) => {
@@ -107,6 +110,45 @@ test("inspector view: lists in-flight agent, click expands its trace, auto-refre
     await agentRow.click({ force: true, timeout: 5_000 });
     await expect(agentRow).toHaveAttribute("data-expanded", "false", { timeout: 5_000 });
     await expect(page.getByTestId("inspector-trace")).toHaveCount(0);
+
+    // ── VOS-161: verb routes mounted + bearer-auth gated; UI verb-bar
+    //    gating. ──
+    // The control-verb endpoints (POST /agents/:id/{pause,resume,kill})
+    // back the inspector's intervention buttons. A control handle is
+    // registered only by the child dispatcher (dispatch-child.ts), keyed by
+    // childTaskId. The chat run above goes through the orchestrator, which
+    // dispatches no child — so its agent row carries `control_state: null`
+    // and the VerbBar gates itself off. That makes three things
+    // deterministically assertable:
+    //   (a) the verb endpoint rejects a tokenless request (auth gate), and
+    //   (b) it returns a typed 404 for an unknown agent_id (route mounted), and
+    //   (c) the inspector renders NO verb bar for a handle-less row — the
+    //       VerbBar's `control_state===null` gating path.
+    // Verb *behaviour* (pause-park-resume, kill→abort) and the rendered
+    // verb-buttons path are covered by the daemon unit suite
+    // (control.test.ts, run-driver onCheckpoint, agents-control.test.ts).
+
+    // Auth-gated: a tokenless verb POST is rejected, never silently 200.
+    const noAuth = await request.post(
+      `http://127.0.0.1:${state.port}/agents/does-not-exist/kill`,
+    );
+    expect([401, 403]).toContain(noAuth.status());
+
+    // Authenticated but unknown agent_id → typed 404 (route IS mounted).
+    const daemonToken = readFileSync(
+      `${state.tmpdir}/home/.void-os/token`,
+      "utf8",
+    ).trim();
+    const unknown = await request.post(
+      `http://127.0.0.1:${state.port}/agents/does-not-exist/kill`,
+      { headers: { Authorization: `Bearer ${daemonToken}` } },
+    );
+    expect(unknown.status()).toBe(404);
+    expect(await unknown.json()).toEqual({ error: "not_found" });
+
+    // UI: the orchestrator-run agent row carries no live control handle,
+    // so the inspector renders no verb bar against it (the gating path).
+    await expect(page.getByTestId("inspector-verb-bar")).toHaveCount(0);
   } finally {
     await browser.close();
   }

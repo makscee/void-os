@@ -29,6 +29,9 @@ export interface AgentEvent {
   reason?: string;
 }
 
+/** VOS-161: operator control state for the pause/kill/resume verbs. */
+export type AgentControlState = "running" | "paused" | "killed";
+
 /** One in-flight (or recently-ended) agent in the inspector snapshot. */
 export interface InflightAgent {
   agent_id: string;
@@ -44,4 +47,7 @@ export interface InflightAgent {
   /** True once a terminal event landed; row lingers for a grace window. */
   ended: boolean;
   ended_at_ms: number | null;
+  /** VOS-161: live control state, or null when no control handle exists
+   *  (ended agent / pre-control-registry run). Gates the verb buttons. */
+  control_state: AgentControlState | null;
 }

@@ -166,3 +166,69 @@ it("firstAssistantSeen is false when no ROLE_AGENT parts event fires", async () 
   const outcome = await drainRun({ handle });
   expect(outcome.firstAssistantSeen).toBe(false);
 });
+
+// VOS-161: soft-pause checkpoint. drainRun awaits `onCheckpoint` at each
+// frame boundary; a checkpoint that parks must hold the run until it
+// resolves, and a kill (abort) while parked must let the run exit.
+describe("run-driver: onCheckpoint (soft pause)", () => {
+  it("awaits onCheckpoint before each frame; a parked checkpoint holds the run", async () => {
+    const processed: string[] = [];
+    async function* gen() {
+      yield { type: "parts", role: "ROLE_AGENT", parts: [{ text: "a" }], ts: 1 };
+      yield { type: "parts", role: "ROLE_AGENT", parts: [{ text: "b" }], ts: 2 };
+    }
+    const handle = makeHandle(gen(), Promise.resolve({ reason: "exit" as const }));
+
+    let release: (() => void) | null = null;
+    let checkpoints = 0;
+    const drain = drainRun({
+      handle,
+      onCheckpoint: () => {
+        checkpoints += 1;
+        // Park only on the SECOND checkpoint (before frame "b").
+        if (checkpoints === 2) {
+          return new Promise<void>((r) => {
+            release = r;
+          });
+        }
+        return Promise.resolve();
+      },
+      onPart: (f) => processed.push(f.frameText),
+    });
+
+    // Let the first frame flow and the run park on the second checkpoint.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(processed).toEqual(["a"]); // frame "b" is held behind the park
+
+    // Resume: the parked checkpoint resolves, frame "b" flows, run finishes.
+    release!();
+    const outcome = await drain;
+    expect(processed).toEqual(["a", "b"]);
+    expect(outcome.reason).toBe("exit");
+  });
+
+  it("a kill (abort) while parked on a checkpoint lets the run exit", async () => {
+    const ac = new AbortController();
+    async function* gen() {
+      yield { type: "parts", role: "ROLE_AGENT", parts: [{ text: "a" }], ts: 1 };
+      yield { type: "parts", role: "ROLE_AGENT", parts: [{ text: "b" }], ts: 2 };
+    }
+    const neverResolve = new Promise<void>(() => {});
+    const handle = makeHandle(gen(), Promise.resolve({ reason: "exit" as const }));
+
+    let checkpoints = 0;
+    setTimeout(() => ac.abort(), 10);
+    const outcome = await drainRun({
+      handle,
+      signal: ac.signal,
+      onCheckpoint: () => {
+        checkpoints += 1;
+        // Park forever on the first checkpoint — only the abort can free it.
+        return checkpoints === 1 ? neverResolve : Promise.resolve();
+      },
+    });
+    // The run exited despite the never-resolving checkpoint — abort won.
+    expect(ac.signal.aborted).toBe(true);
+    expect(outcome).toBeDefined();
+  });
+});
