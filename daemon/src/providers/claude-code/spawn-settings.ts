@@ -72,6 +72,13 @@ export const ALLOWED_MCP_TOOLS_VOID_OS: readonly string[] = Object.freeze([
   "vault.load_template",
   "ask_user",
   "ask_agent",
+  // VOS-169: read-only navigation queries over the perpetual Task tree.
+  "list_tasks",
+  "list_children",
+  "get_task",
+  // VOS-171: agent-declared terminal state — the agent calls this to declare
+  // its own Task `completed` / `failed`.
+  "complete_task",
 ]);
 
 // Back-compat: pre-F7 callers (tests, hook scripts, runbook docs) imported

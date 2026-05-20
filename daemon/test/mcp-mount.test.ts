@@ -58,9 +58,15 @@ describe("mountMcp /mcp", () => {
     // VOS-108 T10: 7 vault.* write tools (create/append/replace_section/
     // set_property/patch/delete/move) registered alongside vault.read.
     // VOS-131: vault.load_template joins the registry.
+    // VOS-169: navigation queries get_task/list_children/list_tasks join.
+    // VOS-171: complete_task (agent-declared terminal state) joins.
     expect(tools.map((t) => t.name).sort()).toEqual([
       "ask_agent",
       "ask_user",
+      "complete_task",
+      "get_task",
+      "list_children",
+      "list_tasks",
       "vault.append",
       "vault.create",
       "vault.delete",

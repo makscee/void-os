@@ -27,6 +27,7 @@
 import type { Database } from "bun:sqlite";
 import type { Part, Role } from "../types/a2a";
 import type { ReplayEntry } from "./session-replay";
+import { touchTask } from "./repo";
 
 export interface MessagesRepo {
   /**
@@ -81,6 +82,14 @@ export function makeMessagesRepo(db: Database): MessagesRepo {
       const t = ts ?? Date.now();
       const partsJson = JSON.stringify(parts);
       const partsText = partsTextOverride ?? flattenText(parts);
+
+      // VOS-171: every message is Task activity — stamp `last_event` so the
+      // activity list orders by real recency and `last_event_text` carries a
+      // one-line preview. `who` prefixes the role; the preview is the first
+      // line of parts_text (collapsed whitespace, 200-char ceiling).
+      const who = role === "ROLE_USER" ? "user" : "agent";
+      const preview = partsText.replace(/\s+/g, " ").trim();
+      touchTask(db, taskId, preview ? `${who}: ${preview}` : `${who} message`);
 
       if (role === "ROLE_AGENT" && runId !== null) {
         const existing = db
