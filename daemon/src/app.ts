@@ -52,9 +52,13 @@ import { makeTitler, type Titler } from "./chat/titler.ts";
 import {
   makeOrchestrator,
   resumeParentOnChildTerminal,
+  reconcileWaitingParents,
   type Orchestrator,
 } from "./chat/orchestrator.ts";
-import { makeDispatchChildTask } from "./chat/dispatch-child.ts";
+import {
+  makeDispatchChildTask,
+  makeRedriveParentTask,
+} from "./chat/dispatch-child.ts";
 import { fetchAnthropicKey } from "./lib/anthropic-key.ts";
 import { subscribeRunEnd } from "./cost/index.ts";
 
@@ -103,6 +107,13 @@ export interface BuildAppDeps {
   // VOS-155: disable JSONL persistence entirely. Tests that don't assert
   // disk side-effects pass true to keep the filesystem clean.
   disableInflightJsonl?: boolean;
+  /**
+   * VOS-170: opt-IN to the durable parent-resume sweep at end of buildApp.
+   * Defaults to false so tests don't fire real provider re-drives against
+   * leftover WAITING_ON_AGENT rows. Production entrypoint
+   * (`daemon/src/index.ts`) passes `runReconcileSweep: true`.
+   */
+  runReconcileSweep?: boolean;
 }
 
 export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
@@ -332,6 +343,22 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
     // spawner registers the child's agent_id for the hook-event gate.
     liveAgents,
   });
+  // VOS-170: parent re-driver for the durable-resume sweep. Shares the same
+  // provider wiring as dispatchChildTask; re-spawns a parked parent's Claude
+  // session with `resumeFrom` so a daemon restart never strands a parent.
+  const redriveParentTask = makeRedriveParentTask({
+    db: deps.db,
+    bus,
+    cwd: deps.chatCwd ?? process.env.VOID_OS_CHAT_CWD ?? deps.vaultRoot,
+    tracesDir: path.join(deps.vaultRoot, ".traces"),
+    emit,
+    engine,
+    daemonBase,
+    hookScriptPath,
+    loadAgentDefn: (name) => defaultLoadAgentDefn(deps.db, name),
+    control: agentControl,
+    liveAgents,
+  });
   // VOS-154: build env-driven handoff-log adapter. NULL when VOID_OS_HL_PATH
   // is unset (smoke harness, tests). Threaded into ask_agent so every
   // sibling-dispatch leaves a provenance entry in the hub-side log.
@@ -419,6 +446,20 @@ export const buildApp = async (deps: BuildAppDeps): Promise<Hono> => {
   // live-agent registry — an event for an agent_id the daemon never
   // spawned is rejected with 403, blocking forged-event injection.
   mountAgentsHookEvent(app, { bus, liveAgents });
+
+  // VOS-170: durable parent-resume sweep (ADR-0008). A parent parked in
+  // WAITING_ON_AGENT whose children all reached terminal — but whose wake
+  // hint (the in-memory bus) and CC subprocess both died with a previous
+  // daemon — is re-driven here. Runs after mountMcp so a resumed parent that
+  // fires a fresh ask_agent reaches a live MCP server. Opt-in
+  // (`runReconcileSweep`) so tests don't fire real provider re-drives.
+  if (deps.runReconcileSweep === true) {
+    const resumed = reconcileWaitingParents(deps.db, redriveParentTask);
+    if (resumed > 0) {
+      console.log(`  reconcile: re-drove ${resumed} parked parent task(s)`);
+    }
+  }
+
   return app;
 };
 

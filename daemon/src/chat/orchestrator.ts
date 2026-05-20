@@ -261,56 +261,183 @@ export function cascadeCancel(db: Database, rootTaskId: string): string[] {
   return cancelled;
 }
 
-/** VOS-89 T13: startup reconciler.
+/** VOS-170: durable parent-resume sweep (ADR-0008).
  *
- * Daemon may crash mid-flight while:
- *   (a) a parent task is parked in TASK_STATE_WAITING_ON_AGENT and its
- *       dispatched child has already reached terminal — the runtime
- *       resume listener (app.ts T11) was not running to flip the parent
- *       back to WORKING, so on next boot the parent would be stuck forever;
- *   (b) an ancestor was already CANCELED but a descendant was still
- *       WORKING (the runtime cascade had not finished, or the cancel
- *       reached only the in-flight provider handle without reaching the
- *       task tree) — descendants would orphan-run forever once the
- *       daemon is back.
+ * The in-memory event bus is the fast-path wake hint; it does not survive a
+ * daemon restart. If the daemon dies while a child Task is running, the
+ * child's terminal state still lands in `tasks` (the durable queue), but the
+ * parent — parked in WAITING_ON_AGENT — is never woken: the in-memory
+ * `task.state_changed` that would have driven `resumeParentOnChildTerminal`
+ * is gone, AND the parent's own CC subprocess died with the daemon, so even
+ * the flip-to-WORKING done by the old reconciler left a parent that was
+ * WORKING-but-dead — no live session to receive the child result.
+ *
+ * This sweep closes the hole. The wake condition is a pure DB query (ADR-0008
+ * §Decision point 2): a parent in WAITING_ON_AGENT whose children have ALL
+ * reached a terminal state is ready to resume. For each such parent it:
+ *
+ *   1. CAS-flips WAITING_ON_AGENT -> WORKING (idempotent; the WHERE predicate
+ *      rejects an already-flipped row).
+ *   2. Re-drives the parent: re-spawns its Claude session (`resumeFrom =
+ *      tasks.session_id`) with the child's terminal output as the next Brief
+ *      message — ADR-0008 §"The notification's content is also durable".
+ *
+ * Idempotency: a re-drive sets the parent's `current_run_id`; the SELECT
+ * skips any parent that already holds a non-terminal `current_run_id`, so a
+ * second sweep (or the periodic tick) never double-fires a resume.
+ *
+ * Runs at boot AFTER buildApp (it needs a provider-backed re-driver), unlike
+ * `reconcileOrphans` which is DB-only and runs pre-buildApp. Safe to call
+ * repeatedly — exposed for an optional slow periodic tick.
+ *
+ * `redrive` is injected (the `makeRedriveParentTask` dispatcher in
+ * dispatch-child.ts) so this function stays unit-testable with a stub. */
+export function reconcileWaitingParents(
+  db: Database,
+  redrive: (
+    parentTaskId: string,
+    args: { agentName: string; message: string; resumeFrom?: string },
+  ) => Promise<void>,
+): number {
+  // Eligible = parent in WAITING_ON_AGENT, has >=1 child, ALL children
+  // terminal, and not already holding a live run (idempotency guard).
+  const parents = db
+    .query(
+      `SELECT id, agent, session_id
+         FROM tasks p
+        WHERE p.state = 'TASK_STATE_WAITING_ON_AGENT'
+          AND EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task_id = p.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM tasks c
+             WHERE c.parent_task_id = p.id
+               AND c.state NOT IN (
+                 'TASK_STATE_COMPLETED','TASK_STATE_FAILED','TASK_STATE_CANCELED'
+               )
+          )
+          AND (
+            p.current_run_id IS NULL
+            OR NOT EXISTS (
+              SELECT 1 FROM runs r
+               WHERE r.id = p.current_run_id
+                 AND r.status IN ('pending','running')
+            )
+          )`,
+    )
+    .all() as Array<{ id: string; agent: string | null; session_id: string | null }>;
+
+  let resumed = 0;
+  for (const parent of parents) {
+    // CAS flip — re-guarded so a concurrent writer (or a racing periodic
+    // tick) cannot double-process. changes==0 means another path won.
+    const flip = db.run(
+      `UPDATE tasks
+          SET state = 'TASK_STATE_WORKING', updated_at = strftime('%s','now')
+        WHERE id = ? AND state = 'TASK_STATE_WAITING_ON_AGENT'`,
+      [parent.id],
+    );
+    if (flip.changes === 0) continue;
+
+    // Compose the resume message from every child's terminal outcome — this
+    // is the "child output as next Brief message" the parent's session needs.
+    const message = composeChildResumeMessage(db, parent.id);
+    const agentName = parent.agent ?? "";
+    void redrive(parent.id, {
+      agentName,
+      message,
+      resumeFrom: parent.session_id ?? undefined,
+    }).catch(() => {
+      // redrive owns its own terminal-state handling + error surfacing
+      // (mirrors dispatch-child's outer catch). A throw here must not abort
+      // the sweep of the remaining parents.
+    });
+    resumed += 1;
+  }
+  return resumed;
+}
+
+/** VOS-170: build the Brief message that re-drives a parked parent. Folds
+ *  every child Task's terminal state + final assistant text into a single
+ *  prompt so the resumed parent session sees what its delegates produced.
+ *  Child rows are ordered by created_at so a parent that fired N children
+ *  reads them dispatch-order. */
+function composeChildResumeMessage(db: Database, parentTaskId: string): string {
+  const children = db
+    .query(
+      `SELECT id, state, target_agent FROM tasks
+        WHERE parent_task_id = ? ORDER BY created_at ASC`,
+    )
+    .all(parentTaskId) as Array<{
+    id: string;
+    state: string;
+    target_agent: string | null;
+  }>;
+  const parts: string[] = [];
+  for (const c of children) {
+    const agent = c.target_agent ?? "agent";
+    if (c.state === "TASK_STATE_COMPLETED") {
+      const row = db
+        .query(
+          `SELECT parts_text FROM messages
+            WHERE task_id = ? AND role = 'ROLE_AGENT' AND parts_text != ''
+            ORDER BY ts DESC, ord DESC LIMIT 1`,
+        )
+        .get(c.id) as { parts_text: string | null } | undefined;
+      const text =
+        row && row.parts_text && row.parts_text.length > 0
+          ? row.parts_text
+          : "(no message)";
+      parts.push(`Delegated agent "${agent}" completed:\n${text}`);
+    } else if (c.state === "TASK_STATE_FAILED") {
+      let detail = "unknown";
+      const metaRow = db
+        .query("SELECT metadata FROM tasks WHERE id = ?")
+        .get(c.id) as { metadata: string | null } | undefined;
+      if (metaRow?.metadata) {
+        try {
+          const parsed = JSON.parse(metaRow.metadata) as Record<string, unknown>;
+          if (typeof parsed.errorMessage === "string") detail = parsed.errorMessage;
+        } catch {
+          /* malformed metadata — keep "unknown" */
+        }
+      }
+      parts.push(`Delegated agent "${agent}" failed: ${detail}`);
+    } else {
+      // CANCELED
+      parts.push(`Delegated agent "${agent}" was cancelled.`);
+    }
+  }
+  const body = parts.join("\n\n---\n\n");
+  return (
+    "Your delegated agent task(s) finished while this session was offline. " +
+    "Continue from their result(s) below.\n\n" +
+    body
+  );
+}
+
+/** VOS-89 T13: startup reconciler — cancel-cascade orphan cleanup.
+ *
+ * Daemon may crash mid-flight while an ancestor was already CANCELED but a
+ * descendant was still WORKING (the runtime cascade had not finished, or the
+ * cancel reached only the in-flight provider handle without reaching the task
+ * tree) — descendants would orphan-run forever once the daemon is back.
  *
  * `reconcileOrphans(db)` is called at boot, before the MCP server starts
- * accepting connections, and fixes both classes in a SINGLE transaction:
+ * accepting connections: a recursive CTE rooted at every CANCELED task
+ * descending via parent_task_id flips every non-terminal descendant to
+ * CANCELED.
  *
- *   (a) WAITING_ON_AGENT parent whose at-least-one child is terminal →
- *       parent state = WORKING. CAS-guarded so a concurrent writer
- *       (impossible at boot, defensive) cannot race.
+ * VOS-170: the WAITING_ON_AGENT parent-resume class is NO LONGER handled
+ * here. A bare flip-to-WORKING is not a resume — the parent's CC subprocess
+ * died with the daemon, so it must be re-spawned, which needs a provider.
+ * `reconcileWaitingParents` (run after buildApp) owns that class now;
+ * `reconcileOrphans` stays DB-only + pre-buildApp for the cancel cascade.
  *
- *   (b) Recursive CTE rooted at every CANCELED task descending via
- *       parent_task_id → flip every non-terminal descendant to CANCELED.
- *
- * Idempotent: re-running on an already-reconciled DB is a no-op (every
- * UPDATE is guarded by a state predicate that rejects already-correct
- * rows). DB-only by design — emits no events; runtime listeners are not
- * yet wired at this point in the boot sequence. */
+ * Idempotent: re-running on an already-reconciled DB is a no-op (the UPDATE
+ * is guarded by a state predicate that rejects already-correct rows).
+ * DB-only by design — emits no events. */
 export function reconcileOrphans(db: Database): void {
   const tx = db.transaction(() => {
-    // (a) Parent parked WAITING_ON_AGENT but a child already terminal.
-    // Use EXISTS with a state predicate so the UPDATE only touches rows
-    // that genuinely need flipping. Distinct join to avoid double-counting
-    // when multiple children are terminal — the UPDATE result is the same
-    // regardless of how many children matched.
-    db.run(
-      `UPDATE tasks
-         SET state = 'TASK_STATE_WORKING', updated_at = strftime('%s','now')
-       WHERE state = 'TASK_STATE_WAITING_ON_AGENT'
-         AND EXISTS (
-           SELECT 1 FROM tasks ch
-            WHERE ch.parent_task_id = tasks.id
-              AND ch.state IN (
-                'TASK_STATE_COMPLETED',
-                'TASK_STATE_FAILED',
-                'TASK_STATE_CANCELED'
-              )
-         )`,
-    );
-
-    // (b) Recursive CTE: descend from every CANCELED root through
+    // Recursive CTE: descend from every CANCELED root through
     // parent_task_id chains and cancel any non-terminal descendant.
     // Base case = direct children of any CANCELED task; recursive step
     // extends down. The CTE only carries non-terminal rows so we never
