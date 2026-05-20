@@ -15,8 +15,11 @@ const VaultListEntry = z.object({
 });
 const VaultListResp = z.object({ path: z.string(), entries: z.array(VaultListEntry) }).passthrough();
 export type VaultFileResp = z.infer<typeof VaultFileResp>;
-export type VaultWriteResp = z.infer<typeof VaultWriteResp>;
-export type VaultListResp = z.infer<typeof VaultListResp>;
+// Not re-exported: vault.ts owns the canonical `VaultWriteResp` / `VaultListResp`
+// type names. These local aliases are the loose client-side envelopes and stay
+// module-private so `export *` from index.ts does not collide (VOS-167).
+type VaultWriteRespLocal = z.infer<typeof VaultWriteResp>;
+type VaultListRespLocal = z.infer<typeof VaultListResp>;
 
 // Verified against daemon/src/api/chats.ts POST /chats — returns {id, title, created_at}.
 // Note: response key is `id` (not `chat_id`).
@@ -68,8 +71,8 @@ export interface Client {
   agents: { list(): Promise<AgentsListResp> };
   vault: {
     read(path: string): Promise<VaultFileResp>;
-    write(path: string, content: string): Promise<VaultWriteResp>;
-    list(path?: string, opts?: { depth?: number }): Promise<VaultListResp>;
+    write(path: string, content: string): Promise<VaultWriteRespLocal>;
+    list(path?: string, opts?: { depth?: number }): Promise<VaultListRespLocal>;
   };
   chat: {
     create(opts?: { agent?: string }): Promise<ChatCreateResp>;
