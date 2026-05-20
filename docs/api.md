@@ -270,6 +270,37 @@ Environment overrides:
 - `VOID_OS_PORT` — default port for `daemon start` (default 7777)
 - `VOID_OS_VAULT_ROOT` — default vault for `daemon start`
 
+### Handoff-log env contract (VOS-154 / VOS-159)
+
+`ask_agent` (agent-to-agent dispatch) optionally writes a provenance entry to
+the hub-side handoff log (`hub/tools/handoff-log/hl` → `vault/work/handoffs/log.jsonl`)
+for every dispatch and every return. The daemon reads four env vars at boot to
+build that writer. `void-os daemon start` forwards them from the launching
+shell's environment into the spawned daemon process (see `cli/daemon.ts`
+`handoffLogEnv()`); export them in the shell that runs `daemon start`.
+
+| Var | Purpose | Unset behaviour |
+|-----|---------|-----------------|
+| `VOID_OS_HL_PATH` | Absolute path to the `hl` binary (e.g. `~/hub/tools/handoff-log/hl`). | **Disables the log entirely** — `ask_agent` falls back to a no-op `NULL_HANDOFF_LOG`. This is the master on/off switch. |
+| `VOID_OS_HL_HUB_ROOT` | Hub root passed to `hl` as `HUB_ROOT`; controls where `log.jsonl` + `bundles/` are written. | `hl` falls back to its own default (relative to the `hl` binary's own directory). |
+| `VOID_OS_SESSION_ID` | Orchestrator session id stamped onto every handoff entry (`session` field). Also used by the in-flight JSONL writer. | Entries carry `session: null`. |
+| `VOID_OS_MILESTONE` | Milestone slug stamped onto every handoff entry (`milestone` field). | Entries carry `milestone: null`. |
+
+The wiring is **best-effort**: a missing binary, an unreachable hub, or an `hl`
+non-zero exit logs a warning and the `ask_agent` dispatch proceeds normally. A
+daemon running without these vars set (e.g. the smoke harness in `/tmp`, or any
+non-hub deployment) is fully functional — it simply leaves no provenance trail.
+
+Example:
+
+```sh
+export VOID_OS_HL_PATH="$HOME/hub/tools/handoff-log/hl"
+export VOID_OS_HL_HUB_ROOT="$HOME/hub"
+export VOID_OS_SESSION_ID="wm-dogfood/2026-05-20"
+export VOID_OS_MILESTONE="dogfood-void-os-workflow"
+void-os daemon restart
+```
+
 Exit codes (stable contract):
 
 | Code | Meaning |
