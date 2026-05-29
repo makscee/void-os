@@ -115,17 +115,30 @@ a{color:#93c5fd}</style>
     return c.html(workingPage(fields));
   });
 
-  // GET /s/:uuid/stream — SSE: emits "reload" whenever body.html mtime advances
+  // GET /s/:uuid/stream — SSE: emits "reload" whenever body.html mtime advances.
+  // Sends a keepalive ping comment every PING_INTERVAL_MS so the connection never
+  // idles out — even Bun's idleTimeout:255 is not enough for very slow cold starts.
+  const PING_INTERVAL_MS = 5_000;
   app.get("/s/:uuid/stream", (c) => {
     const uuid = c.req.param("uuid");
     const bp = bodyPath(vault, uuid);
     let last = existsSync(bp) ? statSync(bp).mtimeMs : 0;
+    let msSinceLastPing = 0;
     return streamSSE(c, async (stream) => {
       while (!stream.closed) {
         const now = existsSync(bp) ? statSync(bp).mtimeMs : 0;
         if (now > last) {
           last = now;
+          msSinceLastPing = 0;
           await stream.writeSSE({ data: "reload" });
+        } else {
+          msSinceLastPing += 1000;
+          if (msSinceLastPing >= PING_INTERVAL_MS) {
+            msSinceLastPing = 0;
+            // SSE comment keeps the socket alive without triggering onmessage.
+            // Two newlines (\n\n) terminate the SSE event block per the protocol.
+            await stream.write(": ping\n\n");
+          }
         }
         await stream.sleep(1000);
       }

@@ -47,7 +47,10 @@ export async function runServe(): Promise<void> {
   const app = makeApp(vault);
   const url = `http://localhost:${port}`;
 
-  Bun.serve({ port, hostname: "0.0.0.0", fetch: app.fetch });
+  // idleTimeout:255 prevents Bun's 10s default from killing long-lived SSE connections
+  // during cold starts. 255 is Bun's max; the SSE loop also sends periodic keepalive
+  // pings so connections survive even beyond 255s.
+  Bun.serve({ port, hostname: "0.0.0.0", fetch: app.fetch, idleTimeout: 255 });
   console.log(`void-os serving ${vault} at ${url}`);
 
   const noOpen = process.argv.includes("--no-open");

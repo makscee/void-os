@@ -225,6 +225,8 @@ document.getElementById('copybtn').addEventListener('click',function(){
   setTimeout(function(){b.textContent=lbl;b.classList.remove('copied')},1800);
 });
 var es=new EventSource("/s/${esc(uuid)}/stream");
-es.onmessage=function(){document.getElementById("f").contentWindow.location.reload()};
+// Always navigate to the canonical body URL on reload events rather than re-POST.
+// location.reload() would re-submit POST /send and spawn a spurious vc turn.
+es.onmessage=function(){document.getElementById("f").contentWindow.location.replace("/s/${esc(uuid)}/body")};
 </script>`;
 }

@@ -153,6 +153,57 @@ test("POST /s/:uuid/send calls stubbed spawnTurn and returns working page", asyn
   expect(spawnCalls[spawnCalls.length - 1].uuid).toBe("send-uuid");
 });
 
+/**
+ * SSE keepalive regression test (VOS-181):
+ * The /stream route must emit a ": ping" SSE comment within PING_INTERVAL_MS (5s)
+ * even when body.html does NOT change — this keeps the connection alive during cold starts
+ * and prevents Bun's idleTimeout from killing the socket.
+ *
+ * We collect SSE chunks from the stream with a timeout and assert that a ping
+ * comment arrives within the expected window.
+ */
+test("GET /s/:uuid/stream emits SSE keepalive ping within 6s when body.html does not change", async () => {
+  const id = "stream-keepalive-test";
+  mkdirSync(sessionDir(vault, id), { recursive: true });
+  // Write body.html but DO NOT advance its mtime — mtime stays fixed so no "reload" fires
+  const bp = bodyPath(vault, id);
+  writeFileSync(bp, "<title>k</title>waiting");
+  // Backdate so stat mtime < now
+  const past = new Date(Date.now() - 10_000);
+  utimesSync(bp, past, past);
+
+  const app = makeApp(vault);
+  const res = await app.request(`/s/${id}/stream`);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toContain("text/event-stream");
+
+  // Collect up to 6 seconds of SSE chunks and assert a ": ping" comment arrives
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  const collected: string[] = [];
+  const deadline = Date.now() + 6_000;
+
+  outer: while (Date.now() < deadline) {
+    const { value, done } = await Promise.race([
+      reader.read(),
+      new Promise<{ value: undefined; done: true }>((resolve) =>
+        setTimeout(() => resolve({ value: undefined, done: true as const }), deadline - Date.now()),
+      ),
+    ]);
+    if (done) break;
+    if (value) {
+      const chunk = decoder.decode(value);
+      collected.push(chunk);
+      // Stop as soon as we see a ping
+      if (collected.join("").includes(": ping")) break outer;
+    }
+  }
+  reader.cancel();
+
+  const fullText = collected.join("");
+  expect(fullText).toContain(": ping");
+}, 10_000); // 10s test timeout — ping fires at 5s so this is safe
+
 test("POST /launch writes placeholder + session-meta.json, calls spawnTurn, redirects", async () => {
   const before = spawnCalls.length;
   const app = makeApp(vault);
