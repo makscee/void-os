@@ -1,6 +1,8 @@
 // render.ts — HTML string templates for dashboard, iframe shell, placeholder, working page (Task 9)
 import type { CatalogSkill } from "./catalog.ts";
 import type { SessionInfo, SessionStatus } from "./sessions.ts";
+import { DEFAULT_RUNNERS, DEFAULT_RUNNER_LABEL } from "./paths.ts";
+import type { Runner } from "./paths.ts";
 
 /** Escape HTML special chars to prevent XSS in string templates. */
 const esc = (s: string): string =>
@@ -123,12 +125,26 @@ export function renderDashboard(
   skills: CatalogSkill[],
   sessions: SessionInfo[],
   relay: { authed: boolean },
+  runnerCfg: { runners: Runner[]; defaultRunner: string } = { runners: DEFAULT_RUNNERS, defaultRunner: DEFAULT_RUNNER_LABEL },
 ): string {
+  const showSelector = runnerCfg.runners.length > 1;
+  const runnerOptions = runnerCfg.runners
+    .map((r) => `<option value="${esc(r.label)}"${r.label === runnerCfg.defaultRunner ? " selected" : ""}>${esc(r.label)}</option>`)
+    .join("");
+  const runnerBar = showSelector
+    ? `<div class="runner-bar"><label class="section-label">Run as</label>
+     <select id="runner-select" onchange="syncRunner(this.value)">${runnerOptions}</select></div>`
+    : "";
+  const runnerScript = showSelector
+    ? `<script>function syncRunner(v){document.querySelectorAll('input[name=runner]').forEach(function(i){i.value=v})}</script>`
+    : "";
+
   const skillChips = skills
     .map(
       (s) => `
     <form action="/launch" method="POST" class="skill-chip-form">
       <input type="hidden" name="skill" value="${esc(s.name)}">
+      <input type="hidden" name="runner" value="${esc(runnerCfg.defaultRunner)}">
       <button type="submit" class="skill-chip">
         <span>${esc(s.name)}</span>
         <input name="text" placeholder="optional input…" onclick="event.stopPropagation()">
@@ -171,6 +187,10 @@ code{font-family:monospace;font-size:0.85em}
 /* Section labels */
 .section-label{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
   color:hsl(var(--muted-foreground));margin-bottom:.5rem}
+/* Runner bar */
+.runner-bar{display:flex;align-items:center;gap:.5rem;margin-bottom:1rem}
+.runner-bar select{font:13px system-ui;background:hsl(var(--secondary));color:hsl(var(--foreground));
+  border:1px solid hsl(var(--border));border-radius:calc(var(--radius) - 2px);padding:.2rem .5rem}
 /* Skill chips */
 .skill-chips{display:flex;flex-wrap:wrap;gap:.375rem;margin-bottom:1.5rem}
 .skill-chip-form{display:inline-flex}
@@ -196,8 +216,10 @@ code{font-family:monospace;font-size:0.85em}
 .session-title{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .session-uuid{font-size:11px;font-family:monospace;color:hsl(var(--muted-foreground))}
 </style>
+${runnerScript}
 <div class="topbar"><span class="logo">void-os</span>${badge}</div>
 <div class="dash-layout">
+${runnerBar}
 <div class="section-label">Skills</div>
 <div class="skill-chips">${skillChips}</div>
 <div class="section-label">Sessions</div>

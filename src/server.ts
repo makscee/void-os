@@ -21,8 +21,9 @@ export function makeApp(vault: string) {
   // GET / — dashboard: skill buttons + session list + relay status banner
   app.get("/", async (c) => {
     const status = await realDeps.vcStatus();
+    const cfg = readConfig(vault);
     return c.html(
-      renderDashboard(listCatalogSkills(catalogRoot), listSessions(vault), { authed: status.ok }),
+      renderDashboard(listCatalogSkills(catalogRoot), listSessions(vault), { authed: status.ok }, cfg),
     );
   });
 

@@ -95,3 +95,19 @@ test("shell escapes special chars in uuid", () => {
   expect(html).not.toContain('"def');
   expect(html).toContain("&quot;");
 });
+
+const TWO = { runners: [{ label: "vc (relay)", command: "vc --" }, { label: "artem", command: "claude_artem" }], defaultRunner: "vc (relay)" };
+const ONE = { runners: [{ label: "vc (relay)", command: "vc --" }], defaultRunner: "vc (relay)" };
+
+test("renders Run as select with default selected when >1 runner", () => {
+  const html = renderDashboard([{ name: "smoke-test", description: "x", dir: "/d" } as any], [], { authed: true }, TWO);
+  expect(html).toContain('id="runner-select"');
+  expect(html).toContain('<option value="artem"');
+  expect(html).toContain('value="vc (relay)" selected');
+  expect(html).toContain('name="runner"'); // hidden input on chip forms
+});
+
+test("hides Run as select when only one runner", () => {
+  const html = renderDashboard([{ name: "smoke-test", description: "x", dir: "/d" } as any], [], { authed: true }, ONE);
+  expect(html).not.toContain('id="runner-select"');
+});
