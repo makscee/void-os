@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>void-os — Option 2: Sidebar Nav + Card Grid</title>
+<style>
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --destructive: 0 62.8% 30.6%;
+  --ring: 212.7 26.8% 83.9%;
+  --radius: 0.5rem;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font: 14px/1.5 system-ui, -apple-system, sans-serif;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── APP CHROME ─────────────────────────────────────────── */
+.app-layout {
+  display: flex;
+  flex: 1;
+}
+
+/* Left sidebar */
+.sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  background: hsl(220 35% 3.5%);
+  border-right: 1px solid hsl(var(--border));
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 0;
+  min-height: 100vh;
+}
+.sidebar-logo {
+  padding: 0 0.875rem 1rem;
+  border-bottom: 1px solid hsl(var(--border));
+  margin-bottom: 0.75rem;
+}
+.sidebar-logo .wordmark {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.sidebar-logo .version {
+  font-size: 10px;
+  color: hsl(var(--muted-foreground));
+}
+.sidebar-section {
+  padding: 0 0.875rem;
+  margin-bottom: 0.25rem;
+}
+.sidebar-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+  margin-bottom: 0.25rem;
+  margin-top: 0.75rem;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: calc(var(--radius) - 2px);
+  font-size: 13px;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.1s, color 0.1s;
+}
+.nav-item:hover, .nav-item.active {
+  background: hsl(var(--secondary));
+  color: hsl(var(--foreground));
+}
+.nav-item .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dot.green { background: hsl(142 70% 45%); }
+.dot.gray  { background: hsl(var(--muted-foreground)); }
+.dot.red   { background: hsl(0 70% 55%); }
+
+.relay-status {
+  margin-top: auto;
+  padding: 0.625rem 0.875rem;
+  border-top: 1px solid hsl(var(--border));
+  font-size: 11px;
+}
+.relay-ok  { color: hsl(142 70% 55%); }
+.relay-bad { color: hsl(0 70% 60%); }
+
+/* Main content */
+.main {
+  flex: 1;
+  padding: 1.5rem;
+  overflow: auto;
+}
+.page-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 1.25rem;
+}
+
+/* Skill grid: cards */
+.skill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+.skill-card {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--secondary));
+  padding: 0.875rem;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.skill-card:hover {
+  border-color: hsl(var(--ring));
+}
+.skill-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.skill-card-desc {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  margin-bottom: 0.625rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.skill-card-input {
+  width: 100%;
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) - 4px);
+  padding: 0.25rem 0.5rem;
+  font: 11px system-ui;
+  color: hsl(var(--foreground));
+  outline: none;
+}
+.skill-card-input::placeholder { color: hsl(var(--muted-foreground)); }
+.skill-card-input:focus { border-color: hsl(var(--ring)); }
+
+/* Session table */
+.session-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.session-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+  padding: 0.25rem 0.5rem 0.5rem;
+  border-bottom: 1px solid hsl(var(--border));
+}
+.session-table td {
+  padding: 0.5rem;
+  border-bottom: 1px solid hsl(217.2 32.6% 10%);
+}
+.session-table tr:hover td { background: hsl(var(--secondary)); }
+.session-table a { color: hsl(var(--foreground)); text-decoration: none; }
+.session-table a:hover { text-decoration: underline; }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 9999px;
+}
+.status-pill.active { background: hsl(142 70% 10%); color: hsl(142 70% 60%); }
+.status-pill.idle   { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+.status-pill.error  { background: hsl(0 62.8% 14%); color: hsl(0 70% 60%); }
+.mono { font-family: monospace; color: hsl(var(--muted-foreground)); font-size: 11px; }
+
+/* ── SESSION VIEW SHELL ─────────────────────────────────── */
+.shell-frame {
+  display: flex;
+  flex-direction: column;
+  height: 200px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.shell-topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: hsl(220 35% 3.5%);
+  border-bottom: 1px solid hsl(var(--border));
+}
+.shell-back {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+.shell-back:hover { color: hsl(var(--foreground)); }
+.shell-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Copy button — prominent, labelled */
+.copy-resume {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary));
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  user-select: none;
+}
+.copy-resume:hover {
+  border-color: hsl(var(--ring));
+  color: hsl(var(--foreground));
+}
+.copy-resume.copied {
+  border-color: hsl(142 70% 40%);
+  background: hsl(142 70% 8%);
+  color: hsl(142 70% 65%);
+}
+.copy-resume .resume-cmd {
+  font-family: monospace;
+  font-size: 11px;
+}
+.shell-body-mock {
+  flex: 1;
+  background: hsl(218 40% 3%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+  font-size: 13px;
+}
+</style>
+</head>
+<body>
+
+<div style="background:hsl(217.2 32.6% 10%);padding:0.5rem 1rem;font-size:11px;letter-spacing:0.05em;text-transform:uppercase;color:hsl(var(--muted-foreground));border-bottom:1px solid hsl(var(--border))">
+  Option 2 — Sidebar Nav + Card Grid &nbsp;|&nbsp; Dashboard view
+</div>
+
+<!-- ── DASHBOARD ─── -->
+<div class="app-layout">
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <div class="wordmark">void-os</div>
+      <div class="version">v0.8.0</div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Skills</div>
+      <a class="nav-item active" href="#">&#9641; All skills</a>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Sessions</div>
+      <a class="nav-item" href="#s1">
+        <div class="dot green"></div> VOS-178 restyle…
+      </a>
+      <a class="nav-item" href="#s2">
+        <div class="dot gray"></div> deep-research ant…
+      </a>
+      <a class="nav-item" href="#s3">
+        <div class="dot red"></div> forge ADM-22…
+      </a>
+      <a class="nav-item" href="#s4">
+        <div class="dot gray"></div> write-a-skill ctx…
+      </a>
+    </div>
+
+    <div class="relay-status">
+      <span class="relay-ok">&#9679; relay: authed</span>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+    <div class="page-title">Skills</div>
+    <div class="skill-grid">
+      <div class="skill-card">
+        <div class="skill-card-name">deep-research</div>
+        <div class="skill-card-desc">Fan-out web searches, fetch sources, synthesize a cited report.</div>
+        <input class="skill-card-input" type="text" placeholder="research topic…">
+      </div>
+      <div class="skill-card">
+        <div class="skill-card-name">write-a-skill</div>
+        <div class="skill-card-desc">Scaffold a new skill from a brief description.</div>
+        <input class="skill-card-input" type="text" placeholder="optional input…">
+      </div>
+      <div class="skill-card">
+        <div class="skill-card-name">distill</div>
+        <div class="skill-card-desc">Adversarial leanness review — cuts bloat from plans and specs.</div>
+        <input class="skill-card-input" type="text" placeholder="optional input…">
+      </div>
+      <div class="skill-card">
+        <div class="skill-card-name">forge</div>
+        <div class="skill-card-desc">Adversarial plan review — finds what will fail.</div>
+        <input class="skill-card-input" type="text" placeholder="optional input…">
+      </div>
+      <div class="skill-card">
+        <div class="skill-card-name">code-review</div>
+        <div class="skill-card-desc">Review diff for bugs, reuse, and simplification.</div>
+        <input class="skill-card-input" type="text" placeholder="optional input…">
+      </div>
+    </div>
+
+    <div style="font-size:16px;font-weight:600;margin-bottom:0.875rem">Sessions</div>
+    <table class="session-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Status</th>
+          <th>UUID</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><a href="#">VOS-178 void-os restyle design options pass</a></td>
+          <td><span class="status-pill active">&#9679; active</span></td>
+          <td class="mono">a1b2c3d4…</td>
+        </tr>
+        <tr>
+          <td><a href="#">deep-research anthropic tool-use patterns</a></td>
+          <td><span class="status-pill idle">idle</span></td>
+          <td class="mono">e5f6a7b8…</td>
+        </tr>
+        <tr>
+          <td><a href="#">forge ADM-22 onboarding spec review</a></td>
+          <td><span class="status-pill error">&#9679; error</span></td>
+          <td class="mono">c9d0e1f2…</td>
+        </tr>
+        <tr>
+          <td><a href="#">write-a-skill context-mode routing rules</a></td>
+          <td><span class="status-pill idle">idle</span></td>
+          <td class="mono">03a4b5c6…</td>
+        </tr>
+      </tbody>
+    </table>
+  </main>
+</div>
+
+<!-- ── SESSION VIEW SHELL DEMO ─── -->
+<div style="background:hsl(217.2 32.6% 10%);padding:0.5rem 1rem;font-size:11px;letter-spacing:0.05em;text-transform:uppercase;color:hsl(var(--muted-foreground));border-top:1px solid hsl(var(--border));border-bottom:1px solid hsl(var(--border))">
+  Option 2 — Session view shell (full-page, sidebar context preserved)
+</div>
+
+<div class="app-layout">
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <div class="wordmark">void-os</div>
+      <div class="version">v0.8.0</div>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Sessions</div>
+      <a class="nav-item active" href="#"><div class="dot green"></div> VOS-178 restyle…</a>
+      <a class="nav-item" href="#"><div class="dot gray"></div> deep-research…</a>
+    </div>
+    <div class="relay-status"><span class="relay-ok">&#9679; relay: authed</span></div>
+  </nav>
+  <main class="main" style="padding:1rem;">
+    <div class="shell-frame">
+      <div class="shell-topbar">
+        <a class="shell-back" href="#">&#8592; sessions</a>
+        <span class="shell-title">VOS-178 void-os restyle design options pass</span>
+        <button class="copy-resume" onclick="
+          this.innerHTML='&#10003; copied!';
+          this.classList.add('copied');
+          navigator.clipboard&&navigator.clipboard.writeText('cd /Users/admin/hub && vc -- --resume a1b2c3d4-e5f6-7890-abcd-ef1234567890');
+          setTimeout(()=>{this.innerHTML='Copy resume cmd';this.classList.remove('copied')},1800)
+        ">Copy resume cmd</button>
+      </div>
+      <div class="shell-body-mock">[ session body.html in iframe ]</div>
+    </div>
+
+    <!-- Expanded resume command shown below copy btn after click (tooltip approach) -->
+    <div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:hsl(var(--secondary));border:1px solid hsl(var(--border));border-radius:calc(var(--radius) - 2px);font:11px/1.6 monospace;color:hsl(var(--muted-foreground));">
+      <span style="color:hsl(var(--muted-foreground));font-size:10px;font-family:system-ui;font-weight:600;text-transform:uppercase;letter-spacing:0.06em">Resume command</span><br>
+      cd /Users/admin/hub &amp;&amp; vc -- --resume a1b2c3d4-e5f6-7890-abcd-ef1234567890
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

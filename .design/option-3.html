@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>void-os — Option 3: Terminal-Chromatic</title>
+<style>
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --destructive: 0 62.8% 30.6%;
+  --ring: 212.7 26.8% 83.9%;
+  --radius: 0.5rem;
+
+  /* Option-3 accent: cyan-green terminal tone
+     Proposed ui-kit addition: --color-void (semantic brand accent) */
+  --void: 165 80% 42%;
+  --void-dim: 165 60% 20%;
+  --void-glow: 165 80% 70%;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font: 13px/1.6 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  min-height: 100vh;
+}
+
+/* ── HEADER BAR ─────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.625rem 1.25rem;
+  background: hsl(220 35% 3%);
+  border-bottom: 1px solid hsl(var(--void-dim));
+}
+.header-logo {
+  font-size: 13px;
+  font-weight: 700;
+  color: hsl(var(--void-glow));
+  letter-spacing: 0.05em;
+}
+.header-sep { color: hsl(var(--void-dim)); }
+.relay-ok  { font-size: 11px; color: hsl(var(--void)); }
+.relay-bad { font-size: 11px; color: hsl(0 70% 60%); }
+
+/* ── DASHBOARD LAYOUT ───────────────────────────────────── */
+.dash {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem;
+}
+
+/* Prompt-style section headers */
+.prompt-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 11px;
+  color: hsl(var(--void));
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  margin-bottom: 0.625rem;
+}
+.prompt-head::before {
+  content: '>';
+  color: hsl(var(--void-glow));
+  font-size: 13px;
+}
+
+/* Skills: vertical list with inline input */
+.skill-rows { margin-bottom: 2rem; }
+.skill-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid hsl(220 35% 8%);
+}
+.skill-row:last-child { border-bottom: none; }
+.skill-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: hsl(var(--void-glow));
+  padding: 0;
+  font-weight: 600;
+}
+.skill-trigger::before {
+  content: '$ ';
+  color: hsl(var(--muted-foreground));
+  font-weight: 400;
+}
+.skill-desc {
+  flex: 1;
+  padding-left: 1.5rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-family: system-ui, sans-serif;
+}
+.skill-input-inline {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid hsl(var(--void-dim));
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 12px;
+  padding: 0 0.375rem;
+  width: 14rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.skill-input-inline::placeholder { color: hsl(var(--muted-foreground)); }
+.skill-input-inline:focus { border-color: hsl(var(--void)); }
+
+/* Sessions: terminal-style log lines */
+.session-log { display: flex; flex-direction: column; gap: 0; }
+.session-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.375rem;
+  border-radius: calc(var(--radius) - 4px);
+  text-decoration: none;
+  color: hsl(var(--foreground));
+  transition: background 0.1s;
+  font-size: 12px;
+}
+.session-line:hover { background: hsl(220 35% 7%); }
+.session-sigil { font-size: 12px; flex-shrink: 0; }
+.session-ts {
+  font-size: 10px;
+  color: hsl(var(--muted-foreground));
+  flex-shrink: 0;
+  width: 6rem;
+  text-align: right;
+}
+.session-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-text .skill-tag {
+  color: hsl(var(--void));
+  font-weight: 600;
+}
+.session-err { color: hsl(0 70% 60%); font-size: 10px; }
+
+/* ── SESSION VIEW SHELL ─────────────────────────────────── */
+.shell-chrome {
+  border: 1px solid hsl(var(--void-dim));
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.shell-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.875rem;
+  background: hsl(220 35% 3%);
+  border-bottom: 1px solid hsl(var(--void-dim));
+}
+
+/* Traffic-light dots */
+.tl-dots { display: flex; gap: 5px; flex-shrink: 0; }
+.tl-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+}
+.tl-red    { background: hsl(0 70% 50%); }
+.tl-yellow { background: hsl(43 90% 55%); }
+.tl-green  { background: hsl(142 70% 45%); }
+
+.shell-session-id {
+  flex: 1;
+  text-align: center;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 0.5rem;
+}
+.shell-back-term {
+  font-size: 11px;
+  color: hsl(var(--void));
+  text-decoration: none;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+.shell-back-term:hover { opacity: 0.7; }
+
+/* Copy button: terminal-style, the whole command visible */
+.copy-term-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0.35rem 0.875rem;
+  background: hsl(220 35% 5%);
+  border-bottom: 1px solid hsl(var(--void-dim));
+}
+.copy-term-prompt {
+  color: hsl(var(--void));
+  font-size: 12px;
+  flex-shrink: 0;
+  margin-right: 0.5rem;
+}
+.copy-term-cmd {
+  flex: 1;
+  font-size: 12px;
+  color: hsl(var(--foreground));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.copy-term-btn {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid hsl(var(--void-dim));
+  border-radius: calc(var(--radius) - 4px);
+  background: transparent;
+  color: hsl(var(--void));
+  font: 11px monospace;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+  margin-left: 0.625rem;
+}
+.copy-term-btn:hover {
+  background: hsl(var(--void-dim));
+  border-color: hsl(var(--void));
+}
+.copy-term-btn.copied {
+  background: hsl(142 70% 8%);
+  border-color: hsl(142 70% 45%);
+  color: hsl(142 70% 70%);
+}
+.shell-body-mock {
+  height: 160px;
+  background: hsl(220 35% 3%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-style: italic;
+}
+</style>
+</head>
+<body>
+
+<div style="background:hsl(217.2 32.6% 10%);padding:0.5rem 1rem;font-size:11px;letter-spacing:0.05em;text-transform:uppercase;color:hsl(var(--muted-foreground));border-bottom:1px solid hsl(var(--border))">
+  Option 3 — Terminal-Chromatic &nbsp;|&nbsp; Dashboard view
+</div>
+
+<!-- ── HEADER ─── -->
+<div class="header">
+  <span class="header-logo">void-os</span>
+  <span class="header-sep">/</span>
+  <span class="relay-ok">&#9679; relay:authed</span>
+</div>
+
+<!-- ── DASHBOARD ─── -->
+<div class="dash">
+  <div class="prompt-head">skills</div>
+  <div class="skill-rows">
+    <div class="skill-row">
+      <button class="skill-trigger">deep-research</button>
+      <span class="skill-desc">Multi-source fact-checked report</span>
+      <input class="skill-input-inline" type="text" placeholder="topic…">
+    </div>
+    <div class="skill-row">
+      <button class="skill-trigger">write-a-skill</button>
+      <span class="skill-desc">Scaffold new skill from brief</span>
+      <input class="skill-input-inline" type="text" placeholder="brief…">
+    </div>
+    <div class="skill-row">
+      <button class="skill-trigger">distill</button>
+      <span class="skill-desc">Cut bloat from plans and specs</span>
+      <input class="skill-input-inline" type="text" placeholder="target…">
+    </div>
+    <div class="skill-row">
+      <button class="skill-trigger">forge</button>
+      <span class="skill-desc">Find what will fail in a plan</span>
+      <input class="skill-input-inline" type="text" placeholder="plan…">
+    </div>
+    <div class="skill-row">
+      <button class="skill-trigger">code-review</button>
+      <span class="skill-desc">Diff review for bugs + simplification</span>
+      <input class="skill-input-inline" type="text" placeholder="effort…">
+    </div>
+  </div>
+
+  <div class="prompt-head">sessions</div>
+  <div class="session-log">
+    <a class="session-line" href="#">
+      <span class="session-sigil" style="color:hsl(142 70% 45%)">&#9632;</span>
+      <span class="session-text"><span class="skill-tag">[deep-research]</span> VOS-178 void-os restyle design options pass</span>
+      <span class="session-ts">just now</span>
+    </a>
+    <a class="session-line" href="#">
+      <span class="session-sigil" style="color:hsl(var(--muted-foreground))">&#9633;</span>
+      <span class="session-text"><span class="skill-tag">[deep-research]</span> anthropic tool-use patterns</span>
+      <span class="session-ts">2h ago</span>
+    </a>
+    <a class="session-line" href="#">
+      <span class="session-sigil" style="color:hsl(0 70% 55%)">&#9632;</span>
+      <span class="session-text"><span class="skill-tag">[forge]</span> ADM-22 onboarding spec review <span class="session-err">&#9888;</span></span>
+      <span class="session-ts">3h ago</span>
+    </a>
+    <a class="session-line" href="#">
+      <span class="session-sigil" style="color:hsl(var(--muted-foreground))">&#9633;</span>
+      <span class="session-text"><span class="skill-tag">[write-a-skill]</span> context-mode routing rules</span>
+      <span class="session-ts">yesterday</span>
+    </a>
+  </div>
+</div>
+
+<!-- ── SESSION VIEW SHELL DEMO ─── -->
+<div style="background:hsl(217.2 32.6% 10%);padding:0.5rem 1rem;font-size:11px;letter-spacing:0.05em;text-transform:uppercase;color:hsl(var(--muted-foreground));border-top:1px solid hsl(var(--border));border-bottom:1px solid hsl(var(--border))">
+  Option 3 — Session view shell
+</div>
+<div style="padding:1rem 1.25rem;max-width:56rem;margin:0 auto;">
+  <div class="shell-chrome">
+    <div class="shell-titlebar">
+      <div class="tl-dots">
+        <div class="tl-dot tl-red"></div>
+        <div class="tl-dot tl-yellow"></div>
+        <div class="tl-dot tl-green"></div>
+      </div>
+      <div class="shell-session-id">VOS-178 void-os restyle — a1b2c3d4-e5f6-7890-abcd-ef1234567890</div>
+      <a class="shell-back-term" href="#">← sessions</a>
+    </div>
+    <div class="copy-term-wrap">
+      <span class="copy-term-prompt">$</span>
+      <span class="copy-term-cmd">cd /Users/admin/hub &amp;&amp; vc -- --resume a1b2c3d4-e5f6-7890-abcd-ef1234567890</span>
+      <button class="copy-term-btn" onclick="
+        this.textContent='[copied]';
+        this.classList.add('copied');
+        navigator.clipboard&&navigator.clipboard.writeText('cd /Users/admin/hub && vc -- --resume a1b2c3d4-e5f6-7890-abcd-ef1234567890');
+        setTimeout(()=>{this.textContent='[copy]';this.classList.remove('copied')},1800)
+      ">[copy]</button>
+    </div>
+    <div class="shell-body-mock">[ session body.html in iframe ]</div>
+  </div>
+</div>
+
+</body>
+</html>
