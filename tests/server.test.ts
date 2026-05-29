@@ -268,3 +268,34 @@ test("POST /s/:uuid/send reuses runner from session-meta on resume", async () =>
   expect(res.status).toBe(200);
   expect(spawnCalls[spawnCalls.length - 1].command).toBe("claude_artem");
 });
+
+test("GET /s/:uuid/transcript renders escaped turns from the CC transcript", async () => {
+  const uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+  // Inject directly: seed the real ~/.claude/projects subdir that locateTranscript scans.
+  const proj = join(process.env.HOME!, ".claude", "projects", "-voidos-server-test");
+  mkdirSync(proj, { recursive: true });
+  const txFile = join(proj, `${uuid}.jsonl`);
+  writeFileSync(
+    txFile,
+    `{"type":"user","message":{"role":"user","content":"/smoke-test go"}}\n` +
+    `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working <x>"}]}}\n`,
+  );
+  try {
+    const app = makeApp(vault);
+    const res = await app.request(`/s/${uuid}/transcript`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("/smoke-test go");
+    expect(body).toContain("working &lt;x&gt;");
+  } finally {
+    // Clean up the injected fixture
+    try { rmSync(txFile); } catch { /* ignore */ }
+  }
+});
+
+test("GET /s/:uuid/transcript returns strictly empty body for unknown uuid", async () => {
+  const app = makeApp(vault);
+  const res = await app.request("/s/99999999-8888-7777-6666-555555555555/transcript");
+  expect(res.status).toBe(200);
+  expect(await res.text()).toBe("");
+});

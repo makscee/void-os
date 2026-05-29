@@ -11,6 +11,7 @@ import { buildLaunchArgv, buildAnswerArgv, spawnTurn } from "./spawn.ts";
 import { renderDashboard, renderShell, placeholderBody, workingPage } from "./render.ts";
 import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner } from "./paths.ts";
 import { realDeps } from "./preflight.ts";
+import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogRoot = join(repoRoot, "catalog");
@@ -89,6 +90,20 @@ a{color:#93c5fd}</style>
       }
     }
     return c.html(html);
+  });
+
+  // GET /s/:uuid/transcript — minimal escaped HTML fragment of the CC conversation.
+  // Empty body when no transcript exists yet (run not started) or uuid is malformed.
+  app.get("/s/:uuid/transcript", (c) => {
+    const path = locateTranscript(c.req.param("uuid"));
+    if (!path) return c.html("");
+    let raw: string;
+    try {
+      raw = readFileSync(path, "utf8");
+    } catch {
+      return c.html("");
+    }
+    return c.html(renderTranscript(parseTranscript(raw)));
   });
 
   // GET /s/:uuid/body/assets/* — static assets written by the session alongside body.html
