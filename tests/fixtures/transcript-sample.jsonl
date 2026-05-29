@@ -1,0 +1,7 @@
+{"type":"user","message":{"role":"user","content":"/smoke-test hello"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Turn 1 done. body.html written."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"file listing"}]}}
+{"type":"mode","mode":"default"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"   "}]}}
+not valid json at all
