@@ -58,7 +58,8 @@ test("readConfig returns defaults when void-os.json absent", () => {
 });
 
 test("writeConfig + readConfig round-trips a config", () => {
-  writeConfig({ vault, onboarded: true, skills: ["onboarding"], answers: { name: "Maks" }, port: 5000 });
+  writeConfig({ vault, onboarded: true, skills: ["onboarding"], answers: { name: "Maks" }, port: 5000,
+    runners: [{ label: "vc (relay)", command: "vc --" }], defaultRunner: "vc (relay)" });
   const cfg = readConfig(vault);
   expect(cfg.onboarded).toBe(true);
   expect(cfg.port).toBe(5000);
