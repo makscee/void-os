@@ -10,6 +10,19 @@ well-sourced, adversarially-verified report rendered as `body.html`.
 
 ## What to do
 
+### Test mode — short-circuit (check this FIRST)
+
+If the request begins with `TEST:` (or `[test]`), this is a flow/smoke check, **not** a
+real research request. Do **not** run any `WebSearch`/`WebFetch` or sub-agents. Instead,
+immediately write a tiny mock `body.html` and finish:
+- `<title>` = the text after the marker (first 60 chars).
+- An `<h1>` with the question, one `<p>` noting "mock report (test mode — no research run)",
+  a `## Summary` with 2 bullet points of plausible-sounding placeholder text, and a
+  `## Sources` list with 2 example URLs clearly labelled `(mock)`.
+- No `<script>` tags. After writing `body.html`, you are done.
+
+This keeps end-to-end tests fast and cheap. Real requests (no `TEST:` prefix) proceed below.
+
 ### Turn 1 — Clarify and plan (if question is clear, skip directly to Turn 2)
 
 If the question is underspecified (no budget/region/scope given), render a `body.html` form
