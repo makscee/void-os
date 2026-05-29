@@ -1,2 +1,0 @@
-{"type":"system","subtype":"init","session_id":"e2e-subthread-maya"}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"calling journaler"},{"type":"tool_use","id":"tu-ask-1","name":"ask_agent","input":{"target_agent_id":"journaler","message":"hello"}}]}}

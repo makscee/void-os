@@ -1,3 +1,0 @@
-{"type":"system","subtype":"init","session_id":"e2e-ask-free"}
-{"type":"vos_ask_user","question":"Your name?"}
-{"type":"assistant","message":{"content":[{"type":"text","text":"hello, ${answer}"}]}}

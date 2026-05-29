@@ -1,2 +1,0 @@
-{"type":"system","subtype":"init","session_id":"e2e-hello"}
-{"type":"assistant","message":{"content":[{"type":"text","text":"hello from fake"}]}}

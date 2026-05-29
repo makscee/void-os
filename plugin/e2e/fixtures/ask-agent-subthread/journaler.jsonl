@@ -1,7 +1,0 @@
-{"type":"system","subtype":"init","session_id":"e2e-subthread-journaler"}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"chunk-1 "}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"chunk-2 "}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-inner-1","name":"noop","input":{}}]}}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-inner-1","content":"ok"}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final-answer-A"}]}}
-{"type":"result","subtype":"success"}

@@ -1,3 +1,0 @@
-{"type":"system","subtype":"init","session_id":"e2e-ask-options"}
-{"type":"vos_ask_user","question":"Pick a color","options":["red","blue"]}
-{"type":"assistant","message":{"content":[{"type":"text","text":"chose ${answer}"}]}}
