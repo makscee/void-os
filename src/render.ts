@@ -5,7 +5,7 @@ import { DEFAULT_RUNNERS, DEFAULT_RUNNER_LABEL } from "./paths.ts";
 import type { Runner } from "./paths.ts";
 
 /** Escape HTML special chars to prevent XSS in string templates. */
-const esc = (s: string): string =>
+export const esc = (s: string): string =>
   s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 // Shared ui-kit tokens (shadcn slate dark) — inlined so the dashboard is self-contained.

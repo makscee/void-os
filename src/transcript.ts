@@ -2,6 +2,7 @@
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { esc } from "./render.ts";
 
 const UUID_RE = /^[0-9a-f-]{36}$/;
 
@@ -64,4 +65,14 @@ export function parseTranscript(jsonl: string): Turn[] {
     turns.push({ role: o.type, text });
   }
   return turns;
+}
+
+/** Render turns as an escaped HTML fragment (no surrounding document). */
+export function renderTranscript(turns: Turn[]): string {
+  return turns
+    .map((t) => {
+      const label = t.role === "user" ? "you:" : "claude:";
+      return `<div class="turn role-${t.role}"><span class="who">${label}</span>${esc(t.text)}</div>`;
+    })
+    .join("");
 }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { locateTranscript, parseTranscript } from "../src/transcript.ts";
+import { locateTranscript, parseTranscript, renderTranscript } from "../src/transcript.ts";
 
 const fixture = readFileSync(join(import.meta.dir, "fixtures", "transcript-sample.jsonl"), "utf8");
 
@@ -51,4 +51,22 @@ test("locateTranscript rejects a uuid failing the format guard (no fs/exec)", ()
 
 test("locateTranscript returns null when projects dir is missing", () => {
   expect(locateTranscript("f7f5f7a4-e74e-4002-8283-9afa30dae25a", "/tmp/does-not-exist-xyz")).toBeNull();
+});
+
+test("renderTranscript labels roles and escapes text", () => {
+  const html = renderTranscript([
+    { role: "user", text: "/smoke <b>hi</b>" },
+    { role: "assistant", text: "done & ok" },
+  ]);
+  expect(html).toContain('class="turn role-user"');
+  expect(html).toContain("you:");
+  expect(html).toContain("&lt;b&gt;hi&lt;/b&gt;");
+  expect(html).toContain('class="turn role-assistant"');
+  expect(html).toContain("claude:");
+  expect(html).toContain("done &amp; ok");
+  expect(html).not.toContain("<b>hi</b>");
+});
+
+test("renderTranscript returns empty string for no turns", () => {
+  expect(renderTranscript([])).toBe("");
 });
