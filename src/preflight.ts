@@ -79,3 +79,6 @@ export function productionDeps(): PreflightDeps {
 
 // Legacy export for any callers that used the old stub name
 export const checkPreflight = () => checkPrereqs(productionDeps());
+
+// Singleton real deps used by server.ts (avoids re-constructing on each request)
+export const realDeps: PreflightDeps = productionDeps();
