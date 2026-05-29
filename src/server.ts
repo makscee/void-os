@@ -26,13 +26,33 @@ export function makeApp(vault: string) {
     );
   });
 
-  // POST /launch — create session dir, write placeholder, fire spawnTurn, redirect
+  // POST /launch — relay auth guard, create session dir, write placeholder, fire spawnTurn, redirect
   app.post("/launch", async (c) => {
+    // Bug #4 fix: check relay auth BEFORE creating any session state
+    const status = await realDeps.vcStatus();
+    if (!status.ok) {
+      return c.html(`<!doctype html><meta charset=utf8><title>relay not authed</title>
+<style>body{font:16px system-ui;max-width:32rem;margin:3rem auto;padding:0 1rem;background:#0a0f1a;color:#e2e8f0}
+h2{color:#f87171;margin-bottom:1rem}.cmd{background:#1e293b;padding:.5rem .75rem;border-radius:.375rem;
+font-family:monospace;font-size:14px;color:#7dd3fc;display:inline-block;margin:.25rem 0}
+a{color:#93c5fd}</style>
+<h2>relay not authenticated</h2>
+<p>The relay is not authed — vc sessions will fail immediately. Run:</p>
+<p><span class="cmd">vc login</span></p>
+<p>then <a href="/">return to dashboard</a> and try again.</p>`, 403);
+    }
+
     const body = await c.req.parseBody();
     const skill = String(body.skill ?? "");
     const text = String(body.text ?? "");
     const uuid = randomUUID();
-    mkdirSync(sessionDir(vault, uuid), { recursive: true });
+    const dir = sessionDir(vault, uuid);
+    mkdirSync(dir, { recursive: true });
+    // Write session metadata for title fallback + status display
+    writeFileSync(
+      join(dir, "session-meta.json"),
+      JSON.stringify({ skill, launchedAt: Date.now(), text }),
+    );
     // Forge #2: write placeholder BEFORE spawning so the body route never 404s
     writeFileSync(bodyPath(vault, uuid), placeholderBody());
     // F7: buildLaunchArgv already handles prompt construction
@@ -77,15 +97,22 @@ export function makeApp(vault: string) {
     return new Response(Bun.file(p));
   });
 
-  // POST /s/:uuid/send — answer-back: build prompt from form fields, resume session
+  // POST /s/:uuid/send — answer-back: serialize ALL form fields as "key: value\n" lines, resume session
   app.post("/s/:uuid/send", async (c) => {
     const uuid = c.req.param("uuid");
     const body = await c.req.parseBody();
-    // F7: form fields are formatted as key: value lines by the caller;
-    // buildAnswerArgv prepends the render-contract preamble
-    const text = String(body.text ?? "");
+    // Bug #1 fix: serialize ALL submitted form fields, not just body.text
+    // Each field becomes "key: value\n" so the onboarding skill (and others) can read name + checkboxes
+    const fields: Record<string, string> = {};
+    for (const [k, v] of Object.entries(body)) {
+      fields[k] = String(v);
+    }
+    const text = Object.entries(fields)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("\n");
     spawnTurn(vault, uuid, buildAnswerArgv(uuid, text));
-    return c.html(workingPage());
+    // Bug #5 fix: return working page with submitted context + elapsed timer
+    return c.html(workingPage(fields));
   });
 
   // GET /s/:uuid/stream — SSE: emits "reload" whenever body.html mtime advances

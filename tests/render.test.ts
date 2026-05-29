@@ -10,35 +10,84 @@ test("working page contains 'received'", () => {
   expect(workingPage()).toContain("received");
 });
 
-test("dashboard shows skill buttons and session rows", () => {
+test("working page shows submitted field values", () => {
+  const html = workingPage({ name: "Alice", goal: "learn TypeScript" });
+  expect(html).toContain("Alice");
+  expect(html).toContain("learn TypeScript");
+  expect(html).toContain("name");
+  expect(html).toContain("goal");
+});
+
+test("working page includes elapsed timer script", () => {
+  const html = workingPage();
+  expect(html).toContain("timer");
+  expect(html).toContain("elapsed");
+  expect(html).toContain("script");
+});
+
+test("working page escapes XSS in field values", () => {
+  const html = workingPage({ name: '<script>alert(1)</script>' });
+  expect(html).not.toContain('<script>alert(1)');
+  expect(html).toContain("&lt;script&gt;");
+});
+
+test("dashboard shows skill chips and session rows in Option 1 style", () => {
   const html = renderDashboard(
     [{ dir: "/c/skills/deep-research", name: "deep-research", description: "Research." }],
-    [{ uuid: "u1", title: "T1", mtimeMs: 1, error: false }],
+    [{ uuid: "u1", title: "T1", mtimeMs: 1, error: false, status: "complete", skill: "deep-research" }],
     { authed: true },
   );
   expect(html).toContain("deep-research");
   expect(html).toContain('action="/launch"');
   expect(html).toContain("/s/u1");
-  expect(html).toContain("authed");
+  expect(html).toContain("relay ✓");
+  expect(html).toContain("skill-chip");
+  expect(html).toContain("session-row");
 });
 
 test("dashboard shows error flag for errored session", () => {
   const html = renderDashboard(
     [],
-    [{ uuid: "err-uuid", title: "Boom", mtimeMs: 1, error: true }],
+    [{ uuid: "err-uuid", title: "Boom", mtimeMs: 1, error: true, status: "error", skill: "" }],
     { authed: false },
   );
-  expect(html).toContain("⚠️");
-  expect(html).toContain("not authed");
+  expect(html).toContain("relay ✗");
+  expect(html).toContain("session-dot");
+  expect(html).toContain("err"); // error dot class
 });
 
-test("shell embeds the body iframe + SSE reload + vault-anchored inspect command", () => {
+test("dashboard session dot has awaiting class when status is awaiting", () => {
+  const html = renderDashboard(
+    [],
+    [{ uuid: "a1", title: "Awaiting", mtimeMs: 1, error: false, status: "awaiting", skill: "" }],
+    { authed: true },
+  );
+  expect(html).toContain("await");
+});
+
+test("shell embeds the body iframe + SSE reload + vault-anchored resume cmd", () => {
   const html = renderShell("u1", "/home/user/void-os");
   expect(html).toContain('src="/s/u1/body"');
   expect(html).toContain("/s/u1/stream");
   expect(html).toContain("--resume u1");
   // vault path must appear so user knows where to cd
   expect(html).toContain("/home/user/void-os");
+});
+
+test("shell has click-to-copy button with resume command", () => {
+  const html = renderShell("u1", "/home/user/vault");
+  expect(html).toContain("copy-btn");
+  expect(html).toContain("navigator.clipboard");
+  expect(html).toContain("✓ copied");
+  // must contain the full resume command in JS
+  expect(html).toContain("vc -- --resume u1");
+});
+
+test("shell header is compact (36px min-height)", () => {
+  const html = renderShell("u1", "/vault");
+  expect(html).toContain("36px");
+  expect(html).toContain("back-link");
+  expect(html).toContain("← all");
 });
 
 test("shell escapes special chars in uuid", () => {

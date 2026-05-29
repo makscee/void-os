@@ -4,8 +4,9 @@
  * Tests: GET /, GET /s/:uuid, GET /s/:uuid/body (with + without error.txt), POST /s/:uuid/send.
  */
 import { expect, test, beforeAll, mock } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync } from "node:fs";
 import { bodyPath, sessionDir, errorPath } from "../src/paths.ts";
+import { join } from "node:path";
 
 const vault = "/tmp/voidos-server-test";
 
@@ -22,6 +23,13 @@ mock.module("../src/spawn.ts", () => ({
     "--permission-mode", "bypassPermissions",
   ],
   spawnTurn: (v: string, u: string, a: string[]) => { spawnCalls.push({ vault: v, uuid: u, argv: a }); },
+}));
+
+// Stub preflight to return authed by default (tests override per-test via module reload if needed)
+mock.module("../src/preflight.ts", () => ({
+  realDeps: {
+    vcStatus: async () => ({ ok: true, msg: "authed" }),
+  },
 }));
 
 // Import AFTER mock is registered
@@ -107,6 +115,29 @@ test("GET /s/:uuid returns the iframe shell with correct src and vault-anchored 
   expect(html).toContain("u9");
 });
 
+test("POST /s/:uuid/send serializes ALL form fields (Bug #1 fix)", async () => {
+  mkdirSync(sessionDir(vault, "multi-uuid"), { recursive: true });
+  writeFileSync(bodyPath(vault, "multi-uuid"), "<title>s</title>hi");
+  const before = spawnCalls.length;
+  const app = makeApp(vault);
+  const form = new FormData();
+  form.append("name", "Alice");
+  form.append("skill_deep-research", "on");
+  const res = await app.request("/s/multi-uuid/send", { method: "POST", body: form });
+  expect(res.status).toBe(200);
+  const html = await res.text();
+  // Working page must echo submitted fields (Bug #5 fix)
+  expect(html).toContain("Alice");
+  expect(html).toContain("skill_deep-research");
+  expect(html).toContain("elapsed");
+  // Spawned argv must include ALL fields
+  expect(spawnCalls.length).toBe(before + 1);
+  const lastArgv = spawnCalls[spawnCalls.length - 1].argv;
+  const promptArg = lastArgv.find((a) => a.includes("name:"));
+  expect(promptArg).toBeDefined();
+  expect(promptArg).toContain("Alice");
+});
+
 test("POST /s/:uuid/send calls stubbed spawnTurn and returns working page", async () => {
   mkdirSync(sessionDir(vault, "send-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "send-uuid"), "<title>s</title>hi");
@@ -122,7 +153,7 @@ test("POST /s/:uuid/send calls stubbed spawnTurn and returns working page", asyn
   expect(spawnCalls[spawnCalls.length - 1].uuid).toBe("send-uuid");
 });
 
-test("POST /launch writes placeholder, calls spawnTurn, redirects to /s/:uuid", async () => {
+test("POST /launch writes placeholder + session-meta.json, calls spawnTurn, redirects", async () => {
   const before = spawnCalls.length;
   const app = makeApp(vault);
   const form = new FormData();
@@ -137,4 +168,9 @@ test("POST /launch writes placeholder, calls spawnTurn, redirects to /s/:uuid", 
   const lastArgv = spawnCalls[spawnCalls.length - 1].argv;
   // prompt is in the -p slot: "/deep-research AI safety"
   expect(lastArgv.some((a) => a.includes("deep-research"))).toBe(true);
+  // session-meta.json must be written with skill name
+  const uuid = loc.replace("/s/", "");
+  const meta = JSON.parse(readFileSync(join(sessionDir(vault, uuid), "session-meta.json"), "utf8"));
+  expect(meta.skill).toBe("deep-research");
+  expect(meta.text).toBe("AI safety");
 });
