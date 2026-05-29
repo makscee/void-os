@@ -267,6 +267,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .copy-btn:hover{border-color:hsl(var(--ring));color:hsl(var(--foreground))}
 .copy-btn.copied{border-color:hsl(142 70% 45%);color:hsl(142 70% 65%);background:hsl(142 70% 8%)}
 iframe{border:0;width:100%;height:calc(100vh - 36px);display:block}
+body.drawer-open iframe{height:calc(100vh - 36px - 40vh - 28px)}
+#drawer-bar{position:fixed;left:0;right:0;bottom:0;height:28px;z-index:10;
+  display:flex;align-items:center;padding:0 .75rem;cursor:pointer;user-select:none;
+  font-size:11px;font-family:monospace;color:hsl(var(--muted-foreground));
+  background:hsl(217.2 32.6% 8%);border-top:1px solid hsl(var(--border))}
+#drawer-bar:hover{color:hsl(var(--foreground))}
+body.drawer-open #drawer-bar{bottom:40vh}
+#drawer-panel{position:fixed;left:0;right:0;bottom:0;height:40vh;z-index:9;display:none;
+  overflow:auto;padding:.5rem .75rem;background:hsl(var(--background));
+  border-top:1px solid hsl(var(--border));font-size:12px;line-height:1.5}
+body.drawer-open #drawer-panel{display:block}
+.turn{white-space:pre-wrap;word-break:break-word;padding:.35rem 0;
+  border-bottom:1px solid hsl(var(--border))}
+.turn .who{display:block;font-family:monospace;font-size:10px;text-transform:uppercase;
+  letter-spacing:.04em;color:hsl(var(--muted-foreground));margin-bottom:.15rem}
+.role-user .who{color:hsl(217 70% 65%)}
+.role-assistant .who{color:hsl(142 60% 60%)}
 </style>
 <div class="shell-header">
   <a href="/" class="back-link">← all</a>
@@ -276,6 +293,8 @@ iframe{border:0;width:100%;height:calc(100vh - 36px);display:block}
     data-cmd="${resumeCmdAttr}" data-label="${displayLabelAttr}">${displayLabelAttr}</button>
 </div>
 <iframe id="f" src="/s/${esc(uuid)}/body"></iframe>
+<div id="drawer-panel"></div>
+<div id="drawer-bar">▾ transcript</div>
 <script>
 document.getElementById('copybtn').addEventListener('click',function(){
   var b=this,cmd=b.getAttribute('data-cmd'),lbl=b.getAttribute('data-label');
@@ -287,5 +306,22 @@ var es=new EventSource("/s/${esc(uuid)}/stream");
 // Always navigate to the canonical body URL on reload events rather than re-POST.
 // location.reload() would re-submit POST /send and spawn a spurious vc turn.
 es.onmessage=function(){document.getElementById("f").contentWindow.location.replace("/s/${esc(uuid)}/body")};
+var dvBar=document.getElementById("drawer-bar");
+var dvPanel=document.getElementById("drawer-panel");
+var dvTimer=null;
+function dvNearBottom(){return dvPanel.scrollTop+dvPanel.clientHeight>=dvPanel.scrollHeight-40;}
+function dvRefresh(){
+  fetch("/s/${esc(uuid)}/transcript").then(function(r){return r.text();}).then(function(html){
+    var atBottom=dvNearBottom();
+    dvPanel.innerHTML=html;
+    if(atBottom){dvPanel.scrollTop=dvPanel.scrollHeight;}
+  });
+}
+dvBar.addEventListener("click",function(){
+  var open=document.body.classList.toggle("drawer-open");
+  dvBar.textContent=open?"▴ transcript":"▾ transcript";
+  if(open){dvRefresh();dvTimer=setInterval(dvRefresh,2000);}
+  else if(dvTimer){clearInterval(dvTimer);dvTimer=null;}
+});
 </script>`;
 }

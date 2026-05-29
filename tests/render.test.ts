@@ -111,3 +111,12 @@ test("hides Run as select when only one runner", () => {
   const html = renderDashboard([{ name: "smoke-test", description: "x", dir: "/d" } as any], [], { authed: true }, ONE);
   expect(html).not.toContain('id="runner-select"');
 });
+
+test("renderShell includes the collapsible transcript drawer wired to /transcript", () => {
+  const html = renderShell("abc12345-0000-1111-2222-333344445555", "/Users/admin/void-os");
+  expect(html).toContain('id="drawer-bar"');
+  expect(html).toContain('id="drawer-panel"');
+  expect(html).toContain("/s/abc12345-0000-1111-2222-333344445555/transcript");
+  expect(html).toContain("drawer-open");
+  expect(html).toContain("setInterval");
+});
