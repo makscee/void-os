@@ -32,15 +32,17 @@ test("dashboard shows error flag for errored session", () => {
   expect(html).toContain("not authed");
 });
 
-test("shell embeds the body iframe + SSE reload + inspect command", () => {
-  const html = renderShell("u1");
+test("shell embeds the body iframe + SSE reload + vault-anchored inspect command", () => {
+  const html = renderShell("u1", "/home/user/void-os");
   expect(html).toContain('src="/s/u1/body"');
   expect(html).toContain("/s/u1/stream");
-  expect(html).toContain("vc -- --resume u1");
+  expect(html).toContain("--resume u1");
+  // vault path must appear so user knows where to cd
+  expect(html).toContain("/home/user/void-os");
 });
 
 test("shell escapes special chars in uuid", () => {
-  const html = renderShell('abc"def');
+  const html = renderShell('abc"def', "/vault");
   expect(html).not.toContain('"def');
   expect(html).toContain("&quot;");
 });

@@ -67,13 +67,15 @@ export function renderDashboard(
  * Iframe shell: wraps a session's body.html in a header with a back link,
  * the inspect command, and SSE-driven auto-reload.
  */
-export function renderShell(uuid: string): string {
+export function renderShell(uuid: string, vault: string): string {
+  // The resume command must be run from the vault dir because CC uses cwd to locate sessions.
+  const resumeCmd = `cd ${esc(vault)} && vc -- --resume ${esc(uuid)}`;
   return `<!doctype html><meta charset=utf8><title>session ${esc(uuid)}</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}
 body{font:14px system-ui}header{padding:.5rem 1rem;background:#111;color:#eee;display:flex;gap:1rem;align-items:center}
 code{background:#333;padding:.2rem .4rem;border-radius:3px}iframe{border:0;width:100%;height:calc(100vh - 44px)}</style>
 <header><a href="/" style="color:#9cf">← all</a>
-<span>inspect: <code>vc -- --resume ${esc(uuid)}</code></span></header>
+<span>inspect: <code>${resumeCmd}</code></span></header>
 <iframe id="f" src="/s/${esc(uuid)}/body"></iframe>
 <script>
 const es = new EventSource("/s/${esc(uuid)}/stream");

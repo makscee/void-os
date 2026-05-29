@@ -41,18 +41,29 @@ export function makeApp(vault: string) {
   });
 
   // GET /s/:uuid — iframe shell wrapping the session body
-  app.get("/s/:uuid", (c) => c.html(renderShell(c.req.param("uuid"))));
+  app.get("/s/:uuid", (c) => c.html(renderShell(c.req.param("uuid"), vault)));
 
-  // GET /s/:uuid/body — serves the session's body.html, appends error banner if error.txt present
+  // GET /s/:uuid/body — serves the session's body.html, appends error banner if error.txt present.
+  // Exception: suppress a "timeout" error when body.html was updated AFTER error.txt was written —
+  // the skill completed during SIGTERM cleanup, so the timeout was premature and the output is valid.
   app.get("/s/:uuid/body", (c) => {
     const uuid = c.req.param("uuid");
     const bp = bodyPath(vault, uuid);
     if (!existsSync(bp)) return c.text("no body yet", 404);
     let html = readFileSync(bp, "utf8");
-    if (existsSync(errorPath(vault, uuid))) {
-      html += `<pre style="color:#a00;border-top:1px solid #a00;padding:1rem">${
-        readFileSync(errorPath(vault, uuid), "utf8")
-      }</pre>`;
+    const ep = errorPath(vault, uuid);
+    if (existsSync(ep)) {
+      const errContent = readFileSync(ep, "utf8");
+      const bodyMtime = statSync(bp).mtimeMs;
+      const errMtime = statSync(ep).mtimeMs;
+      // If body.html is newer than error.txt and the error was a timeout, the skill
+      // completed after SIGTERM — suppress the banner so the user sees the clean output.
+      const suppressTimeout = errContent.startsWith("timeout") && bodyMtime > errMtime;
+      if (!suppressTimeout) {
+        html += `<pre style="color:#a00;border-top:1px solid #a00;padding:1rem">${
+          readFileSync(ep, "utf8")
+        }</pre>`;
+      }
     }
     return c.html(html);
   });

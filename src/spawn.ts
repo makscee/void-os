@@ -6,7 +6,7 @@ const PERM = ["--permission-mode", "bypassPermissions"] as const;
 const RENDER_PREAMBLE = "[render contract: rewrite body.html, no terminal reply]";
 
 /** R4: max ms a spawned vc turn may run before we surface an error. */
-const SPAWN_TIMEOUT_MS = 180_000; // 3 minutes
+const SPAWN_TIMEOUT_MS = 300_000; // 5 minutes — onboarding cold-start needs headroom
 
 /**
  * Build argv for `vc -- ...` to launch a new session with a skill.
