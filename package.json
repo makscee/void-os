@@ -10,6 +10,7 @@
     "serve": "bun run src/cli.ts serve"
   },
   "dependencies": {
+    "@clack/prompts": "^1.4.0",
     "hono": "^4.6.0"
   },
   "devDependencies": {
