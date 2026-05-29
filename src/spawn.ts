@@ -5,8 +5,11 @@ import { sessionDir, errorPath, bodyPath, runLogPath } from "./paths.ts";
 const PERM = ["--permission-mode", "bypassPermissions"] as const;
 const RENDER_PREAMBLE = "[render contract: rewrite body.html, no terminal reply]";
 
-/** R4: max ms a spawned vc turn may run before we surface an error. */
-const SPAWN_TIMEOUT_MS = 300_000; // 5 minutes — onboarding cold-start needs headroom
+/** R4: max ms a spawned vc turn may run before we surface an error.
+ * deep-research is a fan-out skill that legitimately runs ~7min (measured 415s on a
+ * cold start); 300s killed it mid-research. 12min covers research + cold-start headroom
+ * while still catching a truly hung vc (e.g. relay auth hang). */
+const SPAWN_TIMEOUT_MS = 720_000; // 12 minutes
 
 /**
  * Build argv for `vc -- ...` to launch a new session with a skill.
@@ -59,12 +62,16 @@ export function spawnTurn(vault: string, uuid: string, argv: string[]): void {
   const proc = Bun.spawn(["vc", ...argv], {
     cwd: vault,
     env: { ...process.env, VOID_OS_SESSION: uuid },
+    // vc waits ~3s for stdin before proceeding; we never pipe input, so close it.
+    stdin: "ignore",
     stdout: logFd,
     stderr: logFd,
   });
 
   // R4: timeout watchdog — kills and surfaces error if vc hangs
+  let timedOut = false;
   const watchdog = setTimeout(() => {
+    timedOut = true;
     proc.kill();
     writeFileSync(
       errorPath(vault, uuid),
@@ -74,6 +81,9 @@ export function spawnTurn(vault: string, uuid: string, argv: string[]): void {
 
   proc.exited.then((code) => {
     clearTimeout(watchdog);
+    // If the watchdog already killed + recorded the timeout, keep that clearer message
+    // rather than clobbering it with the generic SIGTERM exit below.
+    if (timedOut) return;
     const afterMtime = existsSync(bp) ? statSync(bp).mtimeMs : 0;
     // R5: advanced means body.html mtime strictly increased from the pre-spawn snapshot
     const advanced = afterMtime > beforeMtime;
