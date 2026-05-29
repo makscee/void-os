@@ -11,29 +11,52 @@ export const runLogPath = (vault: string, uuid: string, n: number) =>
 export const configPath = (vault: string) => join(vault, "void-os.json");
 export const vaultRoot = () => process.env.VOID_OS_VAULT ?? join(process.env.HOME ?? "/tmp", ".void-os");
 
+export interface Runner {
+  label: string;
+  command: string; // argv prefix, tokenized on whitespace (e.g. "vc --" or "claude_artem")
+}
+
 export interface VoidOsConfig {
   vault: string;
   onboarded: boolean;
   skills: string[];
   answers: Record<string, string>;
   port: number;
+  runners: Runner[];
+  defaultRunner: string;
 }
 
 const DEFAULT_PORT = 4317;
+export const DEFAULT_RUNNER_LABEL = "vc (relay)";
+export const DEFAULT_RUNNERS: Runner[] = [{ label: DEFAULT_RUNNER_LABEL, command: "vc --" }];
 
 export function readConfig(vault: string): VoidOsConfig {
   const p = configPath(vault);
   if (!existsSync(p)) {
-    return { vault, onboarded: false, skills: [], answers: {}, port: DEFAULT_PORT };
+    return { vault, onboarded: false, skills: [], answers: {}, port: DEFAULT_PORT,
+      runners: DEFAULT_RUNNERS, defaultRunner: DEFAULT_RUNNER_LABEL };
   }
   const raw = JSON.parse(readFileSync(p, "utf8")) as Partial<VoidOsConfig>;
+  const runners = raw.runners && raw.runners.length ? raw.runners : DEFAULT_RUNNERS;
   return {
     vault: raw.vault ?? vault,
     onboarded: raw.onboarded ?? false,
     skills: raw.skills ?? [],
     answers: raw.answers ?? {},
     port: raw.port ?? DEFAULT_PORT,
+    runners,
+    defaultRunner: raw.defaultRunner ?? runners[0].label,
   };
+}
+
+/** Resolve a runner label to its command prefix; falls back to defaultRunner's command. */
+export function resolveRunner(cfg: VoidOsConfig, label?: string): string {
+  const target = label ?? cfg.defaultRunner;
+  const found = cfg.runners.find((r) => r.label === target);
+  if (found) return found.command;
+  // Fallback: default runner command
+  const def = cfg.runners.find((r) => r.label === cfg.defaultRunner);
+  return def?.command ?? cfg.runners[0]?.command ?? "vc --";
 }
 
 export function writeConfig(cfg: VoidOsConfig): void {
