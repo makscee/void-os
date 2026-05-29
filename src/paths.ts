@@ -1,8 +1,11 @@
 // paths.ts — vault + session path resolution (Task 2)
-export function vaultRoot(): string { throw new Error("not implemented"); }
-export function sessionsRoot(vault: string): string { throw new Error("not implemented"); }
-export function sessionDir(vault: string, uuid: string): string { throw new Error("not implemented"); }
-export function bodyPath(vault: string, uuid: string): string { throw new Error("not implemented"); }
-export function errorPath(vault: string, uuid: string): string { throw new Error("not implemented"); }
-export function runLogPath(vault: string, uuid: string): string { throw new Error("not implemented"); }
-export function configPath(vault: string): string { throw new Error("not implemented"); }
+import { join } from "node:path";
+
+export const sessionsRoot = (vault: string) => join(vault, "sessions");
+export const sessionDir = (vault: string, uuid: string) => join(sessionsRoot(vault), uuid);
+export const bodyPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "body.html");
+export const errorPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "error.txt");
+export const runLogPath = (vault: string, uuid: string, n: number) =>
+  join(sessionDir(vault, uuid), `run-${n}.log`);
+export const configPath = (vault: string) => join(vault, "config.json");
+export const vaultRoot = () => process.env.VOID_OS_VAULT ?? join(process.env.HOME ?? "/tmp", ".void-os");
