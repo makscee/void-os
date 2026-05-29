@@ -3,6 +3,32 @@ import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+const UUID_RE = /^[0-9a-f-]{36}$/;
+
+/**
+ * Locate a session's JSONL transcript by uuid. fs-only (no shell), uuid-guarded.
+ * @param uuid session uuid to search for
+ * @param projectsDir defaults to ~/.claude/projects; injectable for tests
+ * @returns absolute path to the first matching <uuid>.jsonl, or null
+ */
+export function locateTranscript(
+  uuid: string,
+  projectsDir: string = join(homedir(), ".claude", "projects"),
+): string | null {
+  if (!UUID_RE.test(uuid)) return null;
+  let entries: string[];
+  try {
+    entries = readdirSync(projectsDir);
+  } catch {
+    return null;
+  }
+  for (const sub of entries) {
+    const p = join(projectsDir, sub, `${uuid}.jsonl`);
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
 export interface Turn {
   role: "user" | "assistant";
   text: string;
