@@ -73,3 +73,19 @@ test("readConfig repairs missing optional fields from old JSON", () => {
   expect(cfg.skills).toEqual([]);
   expect(cfg.answers).toEqual({});
 });
+
+test("init seeding: void-os.json carries runners and defaultRunner after init path", () => {
+  // Simulate what init() does: seedVault then readConfig + writeConfig
+  seedVault(vault);
+  const cfg = readConfig(vault);
+  cfg.vault = vault;
+  cfg.onboarded = true;
+  writeConfig(cfg);
+  // Read back the written file to assert runners are persisted
+  const written = JSON.parse(readFileSync(join(vault, "void-os.json"), "utf8"));
+  expect(Array.isArray(written.runners)).toBe(true);
+  expect(written.runners.length).toBeGreaterThan(0);
+  expect(written.runners[0].label).toBe("vc (relay)");
+  expect(written.runners[0].command).toBe("vc --");
+  expect(written.defaultRunner).toBe("vc (relay)");
+});
