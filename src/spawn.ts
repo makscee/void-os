@@ -12,26 +12,29 @@ const RENDER_PREAMBLE = "[render contract: rewrite body.html, no terminal reply]
 const SPAWN_TIMEOUT_MS = 720_000; // 12 minutes
 
 /**
- * Build argv for `vc -- ...` to launch a new session with a skill.
- * Callers prepend `vc` and pass this array as the full argv suffix.
+ * Build argv suffix for a new session launch (no leading --; the runner command owns that).
  *
- * Shape: -- --session-id <uuid> -p /<skill> [text] --permission-mode bypassPermissions
+ * Shape: --session-id <uuid> -p /<skill> [text] --permission-mode bypassPermissions
  */
 export function buildLaunchArgv(uuid: string, skill: string, text: string): string[] {
   const prompt = text ? `/${skill} ${text}` : `/${skill}`;
-  return ["--", "--session-id", uuid, "-p", prompt, ...PERM];
+  return ["--session-id", uuid, "-p", prompt, ...PERM];
 }
 
 /**
- * Build argv for `vc -- ...` to resume a session and inject an answer.
+ * Build argv suffix for resuming a session and injecting an answer.
  * Prompt is the render-contract preamble + newline + the user-supplied text.
- * For form-field answers, callers should format text as "key: value\n..." lines.
  *
- * Shape: -- --resume <uuid> -p <preamble\ntext> --permission-mode bypassPermissions
+ * Shape: --resume <uuid> -p <preamble\ntext> --permission-mode bypassPermissions
  */
 export function buildAnswerArgv(uuid: string, text: string): string[] {
   const prompt = `${RENDER_PREAMBLE}\n${text}`;
-  return ["--", "--resume", uuid, "-p", prompt, ...PERM];
+  return ["--resume", uuid, "-p", prompt, ...PERM];
+}
+
+/** Split a runner command prefix into argv tokens (whitespace-separated). */
+export function tokenizeCommand(command: string): string[] {
+  return command.trim().split(/\s+/).filter(Boolean);
 }
 
 /** Return the next run index (1-based) for this session's run-N.log files. */
@@ -43,13 +46,15 @@ function nextRunIndex(vault: string, uuid: string): number {
 }
 
 /**
- * Fire-and-forget: spawn `vc -- …` in the vault, pipe output to run-<n>.log,
+ * Fire-and-forget: spawn `<command> <argv>` in the vault, pipe output to run-<n>.log,
  * and on exit write error.txt iff the process failed OR exited without advancing
  * body.html (R5: compare mtime BEFORE spawn, not after placeholder write).
  *
  * R4: a SPAWN_TIMEOUT_MS watchdog kills the process and writes an error if it hangs.
+ *
+ * @param command - The runner command prefix (e.g. "vc --" or "claude_artem"), tokenized on whitespace.
  */
-export function spawnTurn(vault: string, uuid: string, argv: string[]): void {
+export function spawnTurn(vault: string, uuid: string, argv: string[], command: string): void {
   const n = nextRunIndex(vault, uuid);
   const logFd = openSync(runLogPath(vault, uuid, n), "a");
   const bp = bodyPath(vault, uuid);
@@ -59,7 +64,7 @@ export function spawnTurn(vault: string, uuid: string, argv: string[]): void {
   // For resume/answer turns body.html already exists with real content.
   const beforeMtime = existsSync(bp) ? statSync(bp).mtimeMs : 0;
 
-  const proc = Bun.spawn(["vc", ...argv], {
+  const proc = Bun.spawn([...tokenizeCommand(command), ...argv], {
     cwd: vault,
     env: { ...process.env, VOID_OS_SESSION: uuid },
     // vc waits ~3s for stdin before proceeding; we never pipe input, so close it.

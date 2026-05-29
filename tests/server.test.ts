@@ -12,17 +12,18 @@ const vault = "/tmp/voidos-server-test";
 
 // Stub spawnTurn before importing server.ts so routes don't fire real vc processes.
 // Bun.mock.module replaces the module for all subsequent imports in this file.
-const spawnCalls: Array<{ vault: string; uuid: string; argv: string[] }> = [];
+const spawnCalls: Array<{ vault: string; uuid: string; argv: string[]; command: string }> = [];
 mock.module("../src/spawn.ts", () => ({
   buildLaunchArgv: (uuid: string, skill: string, text: string) => [
-    "--", "--session-id", uuid, "-p", text ? `/${skill} ${text}` : `/${skill}`,
+    "--session-id", uuid, "-p", text ? `/${skill} ${text}` : `/${skill}`,
     "--permission-mode", "bypassPermissions",
   ],
   buildAnswerArgv: (uuid: string, text: string) => [
-    "--", "--resume", uuid, "-p", `[render contract: rewrite body.html, no terminal reply]\n${text}`,
+    "--resume", uuid, "-p", `[render contract: rewrite body.html, no terminal reply]\n${text}`,
     "--permission-mode", "bypassPermissions",
   ],
-  spawnTurn: (v: string, u: string, a: string[]) => { spawnCalls.push({ vault: v, uuid: u, argv: a }); },
+  tokenizeCommand: (cmd: string) => cmd.trim().split(/\s+/).filter(Boolean),
+  spawnTurn: (v: string, u: string, a: string[], cmd: string) => { spawnCalls.push({ vault: v, uuid: u, argv: a, command: cmd }); },
 }));
 
 // Stub preflight to return authed by default (tests override per-test via module reload if needed)
