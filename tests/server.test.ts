@@ -226,3 +226,45 @@ test("POST /launch writes placeholder + session-meta.json, calls spawnTurn, redi
   expect(meta.skill).toBe("deep-research");
   expect(meta.text).toBe("AI safety");
 });
+
+test("POST /launch persists resolved runner command in session-meta", async () => {
+  // Write a vault config with a custom runner
+  writeFileSync(
+    join(vault, "void-os.json"),
+    JSON.stringify({
+      vault, onboarded: true, skills: [], answers: {}, port: 4317,
+      runners: [{ label: "vc (relay)", command: "vc --" }, { label: "artem", command: "claude_artem" }],
+      defaultRunner: "vc (relay)",
+    }),
+  );
+  const before = spawnCalls.length;
+  const app = makeApp(vault);
+  const form = new FormData();
+  form.append("skill", "smoke-test");
+  form.append("text", "");
+  form.append("runner", "artem");
+  const res = await app.request("/launch", { method: "POST", body: form });
+  expect(res.status).toBe(302);
+  const uuid = res.headers.get("location")!.split("/s/")[1];
+  const meta = JSON.parse(readFileSync(join(sessionDir(vault, uuid), "session-meta.json"), "utf8"));
+  expect(meta.runner).toBe("claude_artem");
+  expect(spawnCalls[spawnCalls.length - 1].command).toBe("claude_artem");
+});
+
+test("POST /s/:uuid/send reuses runner from session-meta on resume", async () => {
+  const id = "resume-runner-uuid";
+  mkdirSync(sessionDir(vault, id), { recursive: true });
+  writeFileSync(bodyPath(vault, id), "<title>r</title>hi");
+  // Pre-seed session-meta with a non-default runner
+  writeFileSync(
+    join(sessionDir(vault, id), "session-meta.json"),
+    JSON.stringify({ skill: "smoke-test", launchedAt: Date.now(), text: "", runner: "claude_artem" }),
+  );
+  const before = spawnCalls.length;
+  const app = makeApp(vault);
+  const form = new FormData();
+  form.append("text", "echo: hello");
+  const res = await app.request(`/s/${id}/send`, { method: "POST", body: form });
+  expect(res.status).toBe(200);
+  expect(spawnCalls[spawnCalls.length - 1].command).toBe("claude_artem");
+});

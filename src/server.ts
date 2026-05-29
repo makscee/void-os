@@ -9,7 +9,7 @@ import { listCatalogSkills } from "./catalog.ts";
 import { listSessions } from "./sessions.ts";
 import { buildLaunchArgv, buildAnswerArgv, spawnTurn } from "./spawn.ts";
 import { renderDashboard, renderShell, placeholderBody, workingPage } from "./render.ts";
-import { sessionDir, bodyPath, errorPath } from "./paths.ts";
+import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner } from "./paths.ts";
 import { realDeps } from "./preflight.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -45,18 +45,20 @@ a{color:#93c5fd}</style>
     const body = await c.req.parseBody();
     const skill = String(body.skill ?? "");
     const text = String(body.text ?? "");
+    const runnerLabel = String(body.runner ?? "");
+    const runnerCommand = resolveRunner(readConfig(vault), runnerLabel || undefined);
     const uuid = randomUUID();
     const dir = sessionDir(vault, uuid);
     mkdirSync(dir, { recursive: true });
     // Write session metadata for title fallback + status display
     writeFileSync(
       join(dir, "session-meta.json"),
-      JSON.stringify({ skill, launchedAt: Date.now(), text }),
+      JSON.stringify({ skill, launchedAt: Date.now(), text, runner: runnerCommand }),
     );
     // Forge #2: write placeholder BEFORE spawning so the body route never 404s
     writeFileSync(bodyPath(vault, uuid), placeholderBody(skill));
     // F7: buildLaunchArgv already handles prompt construction
-    spawnTurn(vault, uuid, buildLaunchArgv(uuid, skill, text));
+    spawnTurn(vault, uuid, buildLaunchArgv(uuid, skill, text), runnerCommand);
     return c.redirect(`/s/${uuid}`);
   });
 
@@ -110,7 +112,16 @@ a{color:#93c5fd}</style>
     const text = Object.entries(fields)
       .map(([k, v]) => `${k}: ${v}`)
       .join("\n");
-    spawnTurn(vault, uuid, buildAnswerArgv(uuid, text));
+    // Recover the runner command stored at launch time; fall back to vault default
+    const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
+    let runnerCommand = resolveRunner(readConfig(vault)); // default fallback for legacy sessions
+    if (existsSync(metaPath)) {
+      try {
+        const m = JSON.parse(readFileSync(metaPath, "utf8"));
+        if (typeof m.runner === "string" && m.runner) runnerCommand = m.runner;
+      } catch { /* keep default */ }
+    }
+    spawnTurn(vault, uuid, buildAnswerArgv(uuid, text), runnerCommand);
     // Bug #5 fix: return working page with submitted context + elapsed timer
     return c.html(workingPage(fields));
   });
