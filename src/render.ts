@@ -32,10 +32,47 @@ const UI_TOKENS = `
 /**
  * Placeholder body written BEFORE the vc process starts so the iframe shows
  * something while the session cold-starts (no 404 during cold start).
+ *
+ * Self-updating: a client-side timer ticks the elapsed clock and escalates the
+ * status message (cold starts run ~30s–3min; research-style skills 5–8min), so
+ * the page reads as "still working" rather than a frozen "session starting…".
+ * The script runs inside the iframe for the whole cold start — the SSE only
+ * swaps it out once the skill writes real body.html.
  */
-export function placeholderBody(): string {
-  return `<!doctype html><title>session starting…</title>
-<body style="font:16px system-ui;padding:2rem;color:#666">session starting…</body>`;
+export function placeholderBody(skill = ""): string {
+  const label = (skill || "session").replace(/[<>&"]/g, "");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${label} — starting…</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0a0a0f;color:#d4d4d8;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem}
+  .card{text-align:center;max-width:30rem}
+  .spinner{width:38px;height:38px;border:3px solid #272738;border-top-color:#a78bfa;border-radius:50%;margin:0 auto 1.5rem;animation:spin .9s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  h1{font-size:1.15rem;font-weight:600;color:#e4e4e7;margin-bottom:.6rem}
+  .skill{color:#a78bfa}
+  .status{color:#a1a1aa;font-size:.95rem;min-height:1.4em}
+  .elapsed{margin-top:1rem;font-size:.8rem;color:#52525b;font-variant-numeric:tabular-nums}
+</style></head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h1>Launching <span class="skill">${label}</span></h1>
+    <div class="status" id="st">Starting Claude Code…</div>
+    <div class="elapsed" id="el">0:00</div>
+  </div>
+  <script>
+    var start=Date.now();
+    var stages=[[0,"Starting Claude Code…"],[15,"Warming up the session…"],[45,"Loading the ${label} skill…"],[90,"Working — cold starts can take a few minutes…"],[180,"Still working — research-style skills can take 5–8 minutes…"]];
+    function tick(){
+      var s=Math.floor((Date.now()-start)/1000),m=Math.floor(s/60),ss=s%60;
+      document.getElementById("el").textContent=m+":"+(ss<10?"0":"")+ss;
+      var msg=stages[0][1];
+      for(var i=0;i<stages.length;i++){if(s>=stages[i][0])msg=stages[i][1];}
+      document.getElementById("st").textContent=msg;
+    }
+    tick();setInterval(tick,1000);
+  </script>
+</body></html>`;
 }
 
 /**

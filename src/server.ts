@@ -54,7 +54,7 @@ a{color:#93c5fd}</style>
       JSON.stringify({ skill, launchedAt: Date.now(), text }),
     );
     // Forge #2: write placeholder BEFORE spawning so the body route never 404s
-    writeFileSync(bodyPath(vault, uuid), placeholderBody());
+    writeFileSync(bodyPath(vault, uuid), placeholderBody(skill));
     // F7: buildLaunchArgv already handles prompt construction
     spawnTurn(vault, uuid, buildLaunchArgv(uuid, skill, text));
     return c.redirect(`/s/${uuid}`);
