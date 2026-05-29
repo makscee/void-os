@@ -65,16 +65,39 @@ a{color:#93c5fd}</style>
   });
 
   // GET /s/:uuid — iframe shell wrapping the session body
-  app.get("/s/:uuid", (c) => c.html(renderShell(c.req.param("uuid"), vault)));
+  app.get("/s/:uuid", (c) => {
+    const uuid = c.req.param("uuid");
+    // Read skill name from session-meta.json to show a human-readable title in the header.
+    const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
+    let sessionName: string | undefined;
+    if (existsSync(metaPath)) {
+      try {
+        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { skill?: string; text?: string };
+        if (m.skill) sessionName = m.text ? `${m.skill} — ${m.text.slice(0, 40)}` : m.skill;
+      } catch { /* use fallback */ }
+    }
+    return c.html(renderShell(uuid, vault, sessionName));
+  });
 
   // GET /s/:uuid/body — serves the session's body.html, appends error banner if error.txt present.
   // Exception: suppress a "timeout" error when body.html was updated AFTER error.txt was written —
   // the skill completed during SIGTERM cleanup, so the timeout was premature and the output is valid.
+  //
+  // Bare-fragment wrap: skills like smoke-test write minimal HTML without <html>/<style>. On dark-mode
+  // systems the browser renders bare fragments with dark background + dark text = unreadable. Wrap bare
+  // fragments in a minimal light-theme document so content is always readable regardless of system theme.
   app.get("/s/:uuid/body", (c) => {
     const uuid = c.req.param("uuid");
     const bp = bodyPath(vault, uuid);
     if (!existsSync(bp)) return c.text("no body yet", 404);
     let html = readFileSync(bp, "utf8");
+    // Inject light-theme base if it's a bare fragment (no <html> tag).
+    if (!html.includes("<html")) {
+      html = `<!doctype html><html><head><meta charset="utf-8"><style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  background:#ffffff;color:#1a1a1a;padding:1rem;line-height:1.5}
+</style></head><body>${html}</body></html>`;
+    }
     const ep = errorPath(vault, uuid);
     if (existsSync(ep)) {
       const errContent = readFileSync(ep, "utf8");

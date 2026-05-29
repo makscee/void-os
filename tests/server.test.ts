@@ -205,6 +205,44 @@ test("GET /s/:uuid/stream emits SSE keepalive ping within 6s when body.html does
   expect(fullText).toContain(": ping");
 }, 10_000); // 10s test timeout — ping fires at 5s so this is safe
 
+// Bug 2: /s/:uuid shell should show session skill name in header, not raw uuid
+test("GET /s/:uuid shows skill name in header when session-meta.json exists", async () => {
+  const id = "u-named-session";
+  mkdirSync(sessionDir(vault, id), { recursive: true });
+  writeFileSync(bodyPath(vault, id), "<title>s</title>body");
+  writeFileSync(
+    join(sessionDir(vault, id), "session-meta.json"),
+    JSON.stringify({ skill: "smoke-test", launchedAt: Date.now(), text: "", runner: "vc --" }),
+  );
+  const html = await (await makeApp(vault).request(`/s/${id}`)).text();
+  expect(html).toContain("smoke-test");
+  // raw id must NOT appear in the session-name slot
+  expect(html).not.toMatch(/class="session-name"[^>]*>u-named-session</);
+});
+
+// Bug 1: /s/:uuid/body should wrap bare HTML fragments in a light-themed document
+test("GET /s/:uuid/body wraps bare fragment with readable light-theme CSS", async () => {
+  const id = "u-bare-body";
+  mkdirSync(sessionDir(vault, id), { recursive: true });
+  // smoke-test writes bare fragments: no <html>, no <style>
+  writeFileSync(bodyPath(vault, id), "<h1>smoke-test ✓ session live</h1><p>no input</p>");
+  const html = await (await makeApp(vault).request(`/s/${id}/body`)).text();
+  // Must include explicit color + background so text is readable on any system
+  expect(html).toContain("color");
+  expect(html).toContain("background");
+  expect(html).toContain("smoke-test ✓ session live");
+});
+
+test("GET /s/:uuid/body does NOT double-wrap full HTML documents", async () => {
+  const id = "u-full-html-body";
+  mkdirSync(sessionDir(vault, id), { recursive: true });
+  writeFileSync(bodyPath(vault, id), "<!doctype html><html><head><title>t</title></head><body>full</body></html>");
+  const html = await (await makeApp(vault).request(`/s/${id}/body`)).text();
+  // Should pass through as-is (single doctype)
+  expect(html.split("<!doctype html").length).toBe(2);
+  expect(html).toContain("full");
+});
+
 test("POST /launch writes placeholder + session-meta.json, calls spawnTurn, redirects", async () => {
   const before = spawnCalls.length;
   const app = makeApp(vault);

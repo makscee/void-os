@@ -120,3 +120,25 @@ test("renderShell includes the collapsible transcript drawer wired to /transcrip
   expect(html).toContain("drawer-open");
   expect(html).toContain("setInterval");
 });
+
+// Bug 2: header shows session name, not raw uuid
+test("shell header shows session name when provided", () => {
+  const html = renderShell("u1", "/vault", "smoke-test");
+  expect(html).toContain("smoke-test");
+  // should NOT show the raw uuid in the session-name slot
+  const nameSlot = html.match(/class="session-name"[^>]*>([^<]*)</)?.[1] ?? "";
+  expect(nameSlot).not.toBe("u1");
+  expect(nameSlot).toContain("smoke-test");
+});
+
+test("shell header falls back to truncated uuid when no name provided", () => {
+  const html = renderShell("abc12345-0000-1111-2222-333344445555", "/vault");
+  const nameSlot = html.match(/class="session-name"[^>]*>([^<]*)</)?.[1] ?? "";
+  expect(nameSlot).toContain("abc12345");
+});
+
+test("shell header escapes name to prevent XSS", () => {
+  const html = renderShell("u1", "/vault", '<script>bad</script>');
+  expect(html).not.toContain('<script>bad</script>');
+  expect(html).toContain("&lt;script&gt;");
+});
