@@ -77,14 +77,17 @@ export function spawnTurn(vault: string, uuid: string, argv: string[]): void {
     const afterMtime = existsSync(bp) ? statSync(bp).mtimeMs : 0;
     // R5: advanced means body.html mtime strictly increased from the pre-spawn snapshot
     const advanced = afterMtime > beforeMtime;
-    if (code !== 0 || !advanced) {
+    // Only surface an error when body.html was NOT advanced — a non-zero exit code with
+    // an updated body.html means the skill finished work and the process exited non-cleanly
+    // (e.g. CC SIGTERM after the turn), which is acceptable output.
+    if (!advanced) {
       const logFile = runLogPath(vault, uuid, n);
       const tail = existsSync(logFile)
         ? readFileSync(logFile, "utf8").split("\n").slice(-15).join("\n")
         : "";
       writeFileSync(
         errorPath(vault, uuid),
-        `exit ${code}; body.html ${advanced ? "updated" : "NOT updated"}\n---\n${tail}`,
+        `exit ${code}; body.html NOT updated\n---\n${tail}`,
       );
     }
   });
