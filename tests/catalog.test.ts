@@ -1,6 +1,11 @@
 import { expect, test, beforeAll } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { listCatalogSkills } from "../src/catalog.ts";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const realCatalogRoot = join(repoRoot, "catalog");
 
 const root = "/tmp/voidos-catalog-test";
 beforeAll(() => {
@@ -29,4 +34,11 @@ test("empty skills dir returns empty array", () => {
   rmSync(`${root}/skills`, { recursive: true });
   mkdirSync(`${root}/skills`, { recursive: true });
   expect(listCatalogSkills(root)).toEqual([]);
+});
+
+test("real catalog contains smoke-test skill", () => {
+  const skills = listCatalogSkills(realCatalogRoot);
+  const smokeTest = skills.find((s) => s.name === "smoke-test");
+  expect(smokeTest).toBeDefined();
+  expect(smokeTest!.description).toContain("smoke");
 });
