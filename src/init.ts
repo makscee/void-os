@@ -51,18 +51,31 @@ async function pickVault(
     process.exit(1);
   }
 
-  const { createInterface } = await import("node:readline/promises");
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Same @clack/prompts UI as the top-level menu (tui.ts) for a consistent look.
+  const p = await import("@clack/prompts");
   const def = join(env.HOME ?? "/tmp", "void-os");
-  const answer = (
-    await rl.question(
-      `vault folder?\n  [1] default (${def})\n  [2] current dir (${process.cwd()})\n  [3] custom\n> `,
-    )
-  ).trim();
+  const choice = await p.select<string>({
+    message: "vault folder?",
+    options: [
+      { value: "default", label: "default", hint: def },
+      { value: "cwd", label: "current dir", hint: process.cwd() },
+      { value: "custom", label: "custom", hint: "enter a path" },
+    ],
+  });
+  if (p.isCancel(choice)) {
+    p.cancel("cancelled");
+    process.exit(0);
+  }
   let vault = def;
-  if (answer === "2") vault = process.cwd();
-  else if (answer === "3") vault = (await rl.question("path: ")).trim();
-  rl.close();
+  if (choice === "cwd") vault = process.cwd();
+  else if (choice === "custom") {
+    const custom = await p.text({ message: "path:", placeholder: def });
+    if (p.isCancel(custom)) {
+      p.cancel("cancelled");
+      process.exit(0);
+    }
+    vault = String(custom).trim();
+  }
   return vault;
 }
 
