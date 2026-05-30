@@ -1,7 +1,5 @@
 # Ralph Gated-Loop PoC Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** A single autonomous Issue-drain loop over the void-os web dashboard — a `ralph` SKILL (fixed Inputs/Process/Outputs prompt) + a server-side drain runner that re-spawns fresh sessions per box, runs each box's `auto`/`human` gate, and drains one real GitHub Issue end-to-end in a worktree.
 
 **Architecture:** GitHub Issue = work store; a `- [ ]` checkbox in the Issue body = a box (story) carrying acceptance criteria + a gate annotation (`auto: <cmd>` | `human`) + priority. A new `src/drain.ts` runner is an `async for`-loop: each iteration spawns a FRESH `vc` session (own uuid, `--session-id`) whose cwd is the worktree, feeds it the ralph SKILL prompt + the Issue's open boxes + `progress.txt`, waits for `proc.exited`, then reads the session's structured outcome. Auto gates run a shell check with bounded inline recovery; human gates park the drain and surface the artifact in the dashboard agent-inbox, resumed via the existing `POST /s/:uuid/send`. No bespoke prd.json, no MCP server, no paused/interrupt-resume sessions.
@@ -13,7 +11,7 @@
 ## Load-bearing facts (verified against repo at plan time — do NOT re-derive)
 
 - **Session model:** `~/.void-os/sessions/<uuid>/` holds `body.html`, `error.txt`, `run-N.log`, `session-meta.json`. Vault root = `process.env.VOID_OS_VAULT ?? ~/.void-os` (`src/paths.ts:vaultRoot`).
-- **`spawnTurn(vault, uuid, argv, command)`** in `src/spawn.ts` is `void` / fire-and-forget — it does NOT return the process and does NOT await. It hardcodes `cwd: vault`. **The drain runner CANNOT reuse `spawnTurn`** because (a) it needs to `await` exit, and (b) it needs `cwd: <worktree>`, not the vault. The runner uses its own awaitable spawn (factored out of the same primitives). `Bun.spawn(...).exited` is a promise — await it.
+- **`spawnTurn(vault, uuid, argv, command)`** in `src/spawn.ts` is `void` / fire-and-forget — it does NOT return the process and does NOT await. It hardcodes `cwd: vault`. **The drain runner CANNOT reuse `spawnTurn`** — it needs its own awaitable spawn (factored out of the same primitives). `Bun.spawn(...).exited` is a promise — await it.
 - **argv builders** (`src/spawn.ts`): `buildLaunchArgv(uuid, skill, text)` → `["--session-id", uuid, "-p", "/<skill> <text>", "--permission-mode", "bypassPermissions"]`. `buildAnswerArgv(uuid, text)` → `["--resume", uuid, "-p", "<preamble>\n<text>", ...PERM]`. `tokenizeCommand(cmd)` splits a runner prefix like `"vc --"`.
 - **Runner command** resolved from `void-os.json` via `resolveRunner(readConfig(vault), label?)`; default `"vc --"`.
 - **`POST /launch`** (`src/server.ts`): relay-auth guard → `randomUUID()` → mkdir session dir → write `session-meta.json` `{skill, launchedAt, text, runner}` → write placeholder `body.html` → `spawnTurn(...)` → redirect `/s/:uuid`.
@@ -102,7 +100,7 @@ Expected: ends with `VERIFY GREEN`, exit 0.
 
 - [ ] **Step 4: Confirm red is scriptable**
 
-Temporarily add a `tsc` error (e.g. `const x: number = "s"` in a scratch file), run `bun run verify`, confirm non-zero exit + no `VERIFY GREEN`. Remove the scratch error.
+Confirm a failing `tsc`/test makes `bun run verify` exit non-zero without printing `VERIFY GREEN`.
 
 - [ ] **Step 5: Commit**
 
@@ -460,7 +458,7 @@ git commit -m "feat(issue): parse boxes + lost-update-safe targeted checkBox"
 - Create: `src/drain.ts`
 - Test: `tests/drain.test.ts`
 
-The runner is a dumb `for`-loop with a MANDATORY MAX backstop. It does NOT assign boxes (the agent self-selects). Each iteration: build the launch prompt (open boxes + progress.txt), spawn a fresh session **in the worktree (cwd=worktree)** while its state writes land **under the vault** (`sessionDir(vault, uuid)`), await exit, then inspect the session's **`signal.txt`** (NOT body.html) for the terminal signal (`PROMISE COMPLETE HERE` → done; `NEEDS HUMAN` → park; `FAILED`/`PROGRESS` → loop).
+The runner is a `for`-loop with a MANDATORY MAX backstop. It does NOT assign boxes (the agent self-selects). Each iteration: build the launch prompt (open boxes + progress.txt), spawn a fresh session **in the worktree (cwd=worktree)** while its state writes land **under the vault** (`sessionDir(vault, uuid)`), await exit, then inspect the session's **`signal.txt`** (NOT body.html) for the terminal signal (`PROMISE COMPLETE HERE` → done; `NEEDS HUMAN` → park; `FAILED`/`PROGRESS` → loop).
 
 **Forge fix #2 — the cwd/vault split is the runner's core invariant.** The agent's cwd is the worktree (so its `git commit` lands on `ralph/issue-<N>` and `bun run verify` runs against worktree code), but `runTurn` resolves ALL session I/O (`runLogPath`/`errorPath`/`bodyPath`/`signalPath`) under the vault via `sessionDir(vault, uuid)` — these are decoupled (verified: `spawnTurn` already hardcodes `cwd: vault` yet writes state via `sessionDir`). This is why `runTurn` takes `cwd` AND `vault` as separate args. The human-gate resume (`POST /s/:uuid/send` → `spawnTurn`, which uses `cwd: vault`) and the drain spawn (`cwd: worktree`) BOTH write to the same `sessionDir(vault, uuid)`, so resume-after-human-gate reads/writes the same state with no split-brain.
 
