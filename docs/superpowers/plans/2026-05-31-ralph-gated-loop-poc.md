@@ -15,7 +15,8 @@
 - **argv builders** (`src/spawn.ts`): `buildLaunchArgv(uuid, skill, text)` → `["--session-id", uuid, "-p", "/<skill> <text>", "--permission-mode", "bypassPermissions"]`. `buildAnswerArgv(uuid, text)` → `["--resume", uuid, "-p", "<preamble>\n<text>", ...PERM]`. `tokenizeCommand(cmd)` splits a runner prefix like `"vc --"`.
 - **Runner command** resolved from `void-os.json` via `resolveRunner(readConfig(vault), label?)`; default `"vc --"`.
 - **`POST /launch`** (`src/server.ts`): relay-auth guard → `randomUUID()` → mkdir session dir → write `session-meta.json` `{skill, launchedAt, text, runner}` → write placeholder `body.html` → `spawnTurn(...)` → redirect `/s/:uuid`.
-- **`POST /s/:uuid/send`** (`src/server.ts`): serializes ALL form fields as `key: value\n`, recovers runner from `session-meta.json`, `spawnTurn(vault, uuid, buildAnswerArgv(uuid, text), runner)`, returns `workingPage(fields)`. **This is the human-gate verdict path — reuse it, do not build a new endpoint.**
+- **`POST /s/:uuid/send`** (`src/server.ts:142–166`): serializes ALL form fields as `key: value\n`, recovers ONLY `runner` from `session-meta.json` (it does NOT read any drain context today), `spawnTurn(vault, uuid, buildAnswerArgv(uuid, text), runner)`, returns `c.html(workingPage(fields))`. **This is the human-gate verdict path — reuse it, do not build a new endpoint.** **Pass-2 fix #1 hooks here:** after `spawnTurn` (which resumes the parked agent so it checks its one human box + writes `signal.txt`), the handler must recover the drain context and re-invoke `drain({...})` to continue the loop. Today the handler has NO drain context — so `drain()` (Task 5) MUST persist `{drainIssue, worktree, max}` into the parked session's `session-meta.json` (it currently writes only `{skill, launchedAt, text, runner, drainIssue}`); the `/send` handler reads those three back and, IF present, fires a fresh `drain({issueNum: drainIssue, worktree, max, runner, fetchBody, commentDrained})` after the resume. The continuation is a NEW async drain (no long-lived process) — pass-1 idempotency (re-fetch each iter + skip already-checked boxes) makes it safe: it skips the just-checked box and the now-checked earlier boxes, picks the next open box, and the final box reaches `finishComplete`.
+- **`gh issue comment` is the no-push completion action (pass-2 fix #2):** `gh issue comment <num> --body <text>` (gh 2.89.0) posts a comment and leaves the Issue OPEN. This REPLACES `gh issue close` — a closed Issue with only-local unpushed commits misleads + risks loss if the worktree is cleaned.
 - **Dashboard** (`renderDashboard` in `src/render.ts`, `listSessions` in `src/sessions.ts`): session status derived purely from filesystem — `error.txt`→`error`; `body.html` contains `<form`→`awaiting`; else `complete`.
 - **`gh`** authenticated as `makscee`, `repo` scope, remote `makscee/void-os`, ZERO open issues (clean slate for the dogfood Issue).
 - **Tests:** `package.json` scripts are only `test` (`bun test`) + `serve`. `bunx tsc --noEmit` exits 0 today. e2e files are plain `.ts` driver scripts in `tests/` (e.g. `tests/e2e-transcript-drawer.ts`), run with `bun tests/<file>.ts`, NOT `@playwright/test` runner. Unit tests are `tests/*.test.ts`.
@@ -24,6 +25,19 @@
 - **Machine-readable signal file (Forge fix #1):** there is NO existing signal/outcome file in the session dir today. `classifyOutcome` MUST read a dedicated `signal.txt` written by the agent — NOT `body.html`. Verified: `deriveStatus` (`src/sessions.ts:24`) keys session `awaiting` status off `body.html` containing `<form`. So body.html stays dashboard-presentation-only (and for human gates MUST still carry the `<form>` so the inbox shows `awaiting`), while the terminal machine signal lives in `signal.txt`. A new `signalPath(vault, uuid)` is added to `src/paths.ts`.
 - **cwd/vault split is clean (Forge fix #2):** verified that `spawnTurn` hardcodes `cwd: vault` but ALL session state I/O (`runLogPath`, `errorPath`, `bodyPath`, and the new `signalPath`) resolves under `sessionDir(vault, uuid)` — fully decoupled from cwd. Therefore `runTurn(cwd, vault, uuid, …)` can run the agent in the worktree (code/git plane) while session state writes land under the vault (state plane) with no split-brain. T5 tests this divergence explicitly.
 - **`gh` checkbox edit is full-body-replace only:** verified `gh issue edit` (gh 2.89.0) exposes only `--body`/`--body-file` (whole-body replacement); there is NO targeted task-list/checkbox API. This is why Forge fix #3 (re-fetch immediately before write + targeted single-line edit of the `- [ ]`→`- [x]` line, serialized through the runner) is mandatory — a naive full-body overwrite would clobber a concurrent operator reshape.
+- **No existing drain/issue/signal code (verified):** `grep` across `src/` + `tests/` finds NO `drain`/`runTurn`/`signalPath`/`classifyOutcome`/`parseBoxes` — all are new. Existing tests: `catalog.test.ts`, `server.test.ts`, `render.test.ts`, `sessions.test.ts`, `spawn.test.ts`, `paths.test.ts`, `configurable-runner.test.ts`, `onboarding.test.ts`, `transcript.test.ts`, `preflight.test.ts`, plus `e2e-transcript-drawer.ts`.
+
+---
+
+## Pass-2 forge fixes (BINDING, 2026-05-31) — folded below
+
+A second forge pass (after the 5 pass-1 fixes landed + were distilled) surfaced 5 NEW issues; operator decided each. Folded into the tasks/tests as marked `[P2-#n]`. None re-open pass-1.
+
+- **[P2-#1] Human-gate resume mechanism (BLOCKER).** `drain()` returns `parked-human` and the loop dies — nothing re-drives it after the verdict, so any Issue with a human box never completes. Fix: `POST /s/:uuid/send` re-invokes `drain()` after resuming the parked agent. Requires `drain()` to persist `{drainIssue, worktree, max}` into the parked session's `session-meta.json` so the handler can recover the drain context. (Tasks 5 + 6 + a new test.)
+- **[P2-#2] Close → comment, NOT close (no-push posture).** Replace `gh issue close` with `gh issue comment <num> "drained locally on ralph/issue-<N>, unpushed"`; leave the Issue OPEN. Rename the drain opt `closeIssue?` → `commentDrained?`. T8 evidence asserts Issue OPEN + comment present. (Tasks 5 + 6 + 8.)
+- **[P2-#3] `bypassPermissions` autonomous loop — ACCEPTED RISK (operator: skip).** Each iteration spawns a fresh agent with all perms bypassed, unattended up to MAX. No new fence — accepted for a disposable-Issue PoC on the author's own repo. One-line note only; revisit before AFK/untrusted-Issue use (already out of scope). NO code change.
+- **[P2-#4] `git add -A` scope guard.** `git add -A` absorbs stray untracked scratch into a box's commit. Fix: the runner asserts `git status --porcelain` is clean in the worktree at iteration start (refuse/park if dirty), so each box's `git add -A` captures only its own changes + progress.txt. Runner guard + SKILL note. (Tasks 5 + 3.)
+- **[P2-#5] `progress.txt` tail, not whole-file.** `buildDrainPrompt` injected the ENTIRE `progress.txt`, busting the ~2–8k budget + the stable-prefix cache as the tail grows unbounded. Fix: inject only the last ~40 lines (or lines since the last `DONE:`). progress.txt stays append-only on disk. (Task 5.)
 
 ---
 
@@ -37,9 +51,9 @@
 | `catalog/skills/ralph/SKILL.md` (new) | the fixed loop prompt as an explicit Inputs/Process/Outputs contract, self-documenting for a zero-context agent (Task 3) |
 | `src/paths.ts` | add `signalPath(vault, uuid)` → `sessionDir/signal.txt` — the machine-readable terminal-signal carrier (Forge #1, Task 5) |
 | `src/issue.ts` (new) | parse Issue body → `Box[]` (text, gate, priority, checked); `checkBox(body, box)` returns a body with ONLY that box's line flipped `- [ ]`→`- [x]` (targeted, Forge #3); detect all-checked (Task 4) |
-| `src/drain.ts` (new) | the server-side drain runner: fresh-session loop, MAX backstop, auto-gate bounded recovery, `PROMISE COMPLETE HERE` early-exit, `NEEDS HUMAN` park; `classifyOutcome` reads `signal.txt` NOT body.html (Forge #1); idempotent re-run + safe close (Forge #4) (Task 5–7) |
+| `src/drain.ts` (new) | the server-side drain runner: fresh-session loop, MAX backstop, auto-gate bounded recovery, `PROMISE COMPLETE HERE` early-exit, `NEEDS HUMAN` park; `classifyOutcome` reads `signal.txt` NOT body.html (Forge #1); idempotent re-run + safe completion (Forge #4); `commentDrained?` not `closeIssue?` ([P2-#2]); clean-tree guard at iter start ([P2-#4]); `buildDrainPrompt` tails progress.txt ([P2-#5]); persists `{drainIssue,worktree,max}` to the parked session meta so `/send` can resume the loop ([P2-#1]) (Task 5–7) |
 | `src/spawn.ts` | factor an awaitable `runTurn(cwd, vault, uuid, argv, command)` used by the drain runner; explicit `cwd` parameter = worktree (code plane) while session state stays under `sessionDir(vault, …)` (state plane) (Forge #2, Task 5) |
-| `src/server.ts` | wire a `POST /drain` launch route + agent-inbox surfacing of a parked human box (Task 6) |
+| `src/server.ts` | wire a `POST /drain` launch route + agent-inbox surfacing of a parked human box; the existing `POST /s/:uuid/send` handler re-invokes `drain()` after the verdict resume ([P2-#1]) (Task 6) |
 | `src/render.ts` | agent-inbox panel: list drains parked on a human box with accept/edit/feedback form posting to `POST /s/:uuid/send` (Task 6) |
 | `tests/issue.test.ts`, `tests/drain.test.ts` (new) | unit tests for box parsing + runner state machine (Tasks 4–5, 7) |
 | `tests/e2e-ralph-drain.ts` (new) | optional e2e driving a fake-runner drain to green (Task 7) |
@@ -243,7 +257,12 @@ Do NOT attempt the whole Issue. The runner re-spawns a fresh you for the next bo
      checkbox API; the targeted single-line flip on a freshly-fetched body is how we
      avoid clobbering concurrent operator edits.
    - Append a `DONE: <box>` line to `progress.txt`.
-   - `git add -A && git commit -m "<box title>"` — code + progress.txt together.
+   - `git add -A && git commit -m "<box title>"` — code + progress.txt together. The runner
+     guarantees a CLEAN worktree at iteration start (it refuses/parks if `git status
+     --porcelain` is dirty — [P2-#4]), so your `git add -A` captures ONLY this box's changes
+     plus your `progress.txt` append — never stray scratch from a prior crashed iteration.
+     Do NOT leave uncommitted scratch files (`*.tmp`, half-written fixtures) behind: anything
+     you create and do not need, delete before you commit, or the NEXT iteration refuses to start.
    - Write `PROGRESS` to `signal.txt` (a normal box was checked; the runner loops).
 5. **If, after checking your box, ALL boxes are now checked** (verify against the body you
    just wrote back): render a done summary to `body.html` and write `PROMISE COMPLETE HERE`
@@ -558,25 +577,40 @@ export interface DrainOpts {
   issueNum: number;
   runner: string;       // "vc --"
   max: number;          // MANDATORY backstop
-  fetchBody: () => Promise<string>;   // gh issue view --json body -q .body (always re-fetch)
-  closeIssue?: () => Promise<void>;   // gh issue close — called ONLY when allChecked(refetched)
+  fetchBody: () => Promise<string>;       // gh issue view --json body -q .body (always re-fetch)
+  // [P2-#2] no-push posture: on completion COMMENT + leave the Issue OPEN, do NOT close it.
+  // Called ONLY when allChecked(refetched). Renamed from closeIssue?.
+  commentDrained?: () => Promise<void>;   // gh issue comment <num> "drained locally on ralph/issue-<N>, unpushed"
 }
 
 export interface DrainResult {
-  status: "complete" | "parked-human" | "max-reached" | "stalled" | "error";
+  status: "complete" | "parked-human" | "max-reached" | "stalled" | "error" | "dirty-worktree";
   parkedUuid?: string;  // session awaiting a human verdict
   iterations: number;
 }
 
-/** Build the launch prompt text: open boxes + progress.txt tail. */
+/** [P2-#5] Tail progress.txt: inject only the last ~40 lines, or everything since the last
+ * `DONE:` line if that is shorter — protects the ~2–8k budget + the stable-prefix cache
+ * (the whole file would grow unbounded and bust both). progress.txt stays append-only on disk. */
+export function tailProgress(progress: string, maxLines = 40): string {
+  if (!progress.trim()) return "(empty)";
+  const lines = progress.split("\n");
+  const lastDone = lines.map((l, i) => (l.startsWith("DONE:") ? i : -1)).filter((i) => i >= 0).pop();
+  const start = lastDone !== undefined
+    ? Math.min(lastDone, Math.max(0, lines.length - maxLines))
+    : Math.max(0, lines.length - maxLines);
+  return lines.slice(start).join("\n");
+}
+
+/** Build the launch prompt text: open boxes + progress.txt TAIL ([P2-#5], not the whole file). */
 export function buildDrainPrompt(issueNum: number, body: string, progress: string): string {
   const open = parseBoxes(body).filter((b) => !b.checked);
   const list = open.map((b) => `${b.raw}`).join("\n");
   return [
     `Issue #${issueNum}. Open boxes:`,
     list,
-    `--- progress.txt ---`,
-    progress || "(empty)",
+    `--- progress.txt (recent tail) ---`,
+    tailProgress(progress),
   ].join("\n");
 }
 
@@ -593,6 +627,12 @@ export async function drain(opts: DrainOpts): Promise<DrainResult> {
   if (!existsSync(progressPath)) writeFileSync(progressPath, "");
 
   for (let i = 1; i <= opts.max; i++) {
+    // [P2-#4] Clean-tree guard: each box must start from a clean worktree so its `git add -A`
+    // captures only its own changes + progress.txt — never stray scratch from a crashed iter.
+    // (progress.txt itself is tracked/committed by the agent, so a committed tree IS clean.)
+    const porcelain = await gitPorcelain(opts.worktree);
+    if (porcelain.trim() !== "") return { status: "dirty-worktree", iterations: i - 1 };
+
     const body = await opts.fetchBody();               // re-fetch each iter (idempotent)
     const boxes = parseBoxes(body);
     if (allChecked(boxes)) return await finishComplete(i - 1);
@@ -601,9 +641,11 @@ export async function drain(opts: DrainOpts): Promise<DrainResult> {
     const uuid = randomUUID();
     const dir = sessionDir(opts.vault, uuid);
     mkdirSync(dir, { recursive: true });
+    // [P2-#1] Persist the full drain context (drainIssue + worktree + max) so the POST /send
+    // verdict handler can recover it and re-invoke drain() to continue the loop after a human gate.
     writeFileSync(
       join(dir, "session-meta.json"),
-      JSON.stringify({ skill: "ralph", launchedAt: Date.now(), text: `drain #${opts.issueNum}`, runner: opts.runner, drainIssue: opts.issueNum }),
+      JSON.stringify({ skill: "ralph", launchedAt: Date.now(), text: `drain #${opts.issueNum}`, runner: opts.runner, drainIssue: opts.issueNum, worktree: opts.worktree, max: opts.max }),
     );
     const progress = existsSync(progressPath) ? readFileSync(progressPath, "utf8") : "";
     const prompt = buildDrainPrompt(opts.issueNum, body, progress);
@@ -622,16 +664,27 @@ export async function drain(opts: DrainOpts): Promise<DrainResult> {
   }
   return { status: "max-reached", iterations: opts.max };
 
-  // Safe close: confirm against a FRESH fetch before close + progress delete (Forge #4).
+  // Safe completion: confirm against a FRESH fetch before comment + progress delete (Forge #4).
+  // [P2-#2] No-push posture — COMMENT "drained locally, unpushed" and leave the Issue OPEN.
   async function finishComplete(iterations: number): Promise<DrainResult> {
     const fresh = parseBoxes(await opts.fetchBody());
     if (allChecked(fresh)) {
-      await opts.closeIssue?.();
+      await opts.commentDrained?.();           // gh issue comment — Issue stays OPEN
       if (existsSync(progressPath)) rmSync(progressPath);
       return { status: "complete", iterations };
     }
-    return { status: "stalled", iterations }; // a box re-opened mid-flight; do not close
+    return { status: "stalled", iterations }; // a box re-opened mid-flight; do not comment-complete
   }
+}
+
+/** [P2-#4] `git status --porcelain` in the worktree — empty string = clean tree.
+ * If the dir is not a git repo (`git status` errors), treat as clean ("") — the guard is a
+ * scratch-leak safety net, not a repo validator; non-repo dirs carry no git scratch. */
+async function gitPorcelain(cwd: string): Promise<string> {
+  const proc = Bun.spawn(["git", "status", "--porcelain"], { cwd, stdout: "pipe", stderr: "ignore" });
+  const code = await proc.exited;
+  if (code !== 0) return "";
+  return (await new Response(proc.stdout).text());
 }
 ```
 
@@ -680,7 +733,7 @@ test("drain ends complete when a fresh session writes PROMISE COMPLETE HERE to s
     fetchBody: async () => (calls++ === 0
       ? "- [ ] do it {auto: true} {p1}"
       : "- [x] do it {auto: true} {p1}"),
-    closeIssue: async () => {},
+    commentDrained: async () => {},   // [P2-#2] comment, not close
   });
   expect(result.status).toBe("complete");
   expect(result.iterations).toBeLessThanOrEqual(2);
@@ -713,7 +766,7 @@ test("drain runs the agent in the worktree (commit lands there) while state writ
     fetchBody: async () => (calls++ === 0
       ? "- [ ] split test {auto: true} {p1}"
       : "- [x] split test {auto: true} {p1}"),
-    closeIssue: async () => {},
+    commentDrained: async () => {},   // [P2-#2] comment, not close
   });
 
   expect(res.status).toBe("complete");
@@ -731,16 +784,71 @@ test("drain runs the agent in the worktree (commit lands there) while state writ
 });
 ```
 
+- [ ] **Step 8b: Add the `tailProgress` unit test ([P2-#5])**
+
+```typescript
+import { tailProgress } from "../src/drain.ts";
+
+test("tailProgress returns only the recent tail, not the whole file", () => {
+  const big = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n");
+  const out = tailProgress(big, 40);
+  expect(out.split("\n").length).toBeLessThanOrEqual(40);
+  expect(out).toContain("line 199");       // newest kept
+  expect(out).not.toContain("line 0");     // oldest dropped
+});
+
+test("tailProgress keeps from the last DONE: marker when that is shorter", () => {
+  const body = ["DONE: box-a", "noise", "noise", "DONE: box-b", "working on c"].join("\n");
+  const out = tailProgress(body, 40);
+  expect(out.startsWith("DONE: box-b")).toBe(true);
+  expect(out).not.toContain("box-a");
+});
+
+test("tailProgress on empty returns (empty)", () => {
+  expect(tailProgress("")).toBe("(empty)");
+});
+```
+
+- [ ] **Step 8c: Add the clean-tree-guard test ([P2-#4])**
+
+Make a real git repo as the worktree, leave an UNTRACKED stray file in it, and assert the drain refuses with `dirty-worktree` and spawns NO session (the stray scratch from a crashed prior iter must not be swept into a commit).
+
+```typescript
+test("drain refuses to start a box when the worktree is dirty ([P2-#4])", async () => {
+  const vault = `/tmp/ralph-vault-dirty-${Date.now()}`;
+  const worktree = `/tmp/ralph-wt-dirty-${Date.now()}`;
+  mkdirSync(worktree, { recursive: true });
+  spawnSync("git", ["init", "-q"], { cwd: worktree });
+  spawnSync("git", ["commit", "--allow-empty", "-m", "init", "-q"], { cwd: worktree });
+  writeFileSync(join(worktree, "stray-scratch.tmp"), "leftover from a crashed iter");
+
+  const res = await drain({
+    vault, worktree, issueNum: 9,
+    runner: `bun ${import.meta.dir}/fixtures/fake-ralph.ts --`,
+    max: 3,
+    fetchBody: async () => "- [ ] do it {auto: true} {p1}",
+    commentDrained: async () => {},
+  });
+
+  expect(res.status).toBe("dirty-worktree");
+  // no session was spawned (the guard fires before the spawn)
+  const sessRoot = join(vault, "sessions");
+  expect(existsSync(sessRoot) ? require("node:fs").readdirSync(sessRoot).length : 0).toBe(0);
+});
+```
+
+(`writeFileSync`/`join`/`existsSync` already imported in the split test above; `progress.txt` is committed by the agent each box, so a between-box tree is clean — the guard only trips on genuine uncommitted scratch.)
+
 - [ ] **Step 9: Run tests**
 
 Run: `bun test tests/drain.test.ts`
-Expected: PASS (classifyOutcome + integration + cwd/vault split).
+Expected: PASS (classifyOutcome + tailProgress + integration + cwd/vault split + dirty-worktree guard).
 
 - [ ] **Step 10: Commit**
 
 ```bash
 git add src/paths.ts src/spawn.ts src/drain.ts tests/drain.test.ts tests/fixtures/fake-ralph.ts
-git commit -m "feat(drain): fresh-session runner — signal.txt control, cwd/vault split, idempotent safe-close"
+git commit -m "feat(drain): fresh-session runner — signal.txt, cwd/vault split, idempotent comment-complete, tail + clean-tree guards"
 ```
 
 ---
@@ -779,14 +887,45 @@ app.post("/drain", async (c) => {
       const proc = Bun.spawn(["gh", "issue", "view", String(issueNum), "--json", "body", "-q", ".body"], { cwd: worktree, stdout: "pipe" });
       return (await new Response(proc.stdout).text()).trim();
     },
-    // Safe close (Forge #4): drain only calls this after allChecked(refetched) is true.
-    closeIssue: async () => {
-      await Bun.spawn(["gh", "issue", "close", String(issueNum)], { cwd: worktree }).exited;
+    // [P2-#2] No-push posture: COMMENT + leave OPEN, do NOT close. drain only calls this
+    // after allChecked(refetched) is true.
+    commentDrained: async () => {
+      const branch = `ralph/issue-${issueNum}`;
+      await Bun.spawn(["gh", "issue", "comment", String(issueNum), "--body",
+        `Drained locally on \`${branch}\`, unpushed (no-push PoC posture). All boxes checked; commits live in the worktree only.`],
+        { cwd: worktree }).exited;
     },
   });
   return c.redirect("/");
 });
 ```
+
+Factor the drain-options builder so the `/send` resume path ([P2-#1], Step 1b) reuses the SAME `fetchBody`/`commentDrained` closures rather than duplicating them. Extract a small `drainOptsFor(vault, issueNum, worktree, runner, max)` helper returning the `DrainOpts` object; `POST /drain` and the `/send` re-invoke both call it.
+
+- [ ] **Step 1b: Re-invoke `drain()` from `POST /s/:uuid/send` after a human verdict ([P2-#1] — BLOCKER)**
+
+The existing `/send` handler (verified `src/server.ts:142–166`) resumes the parked agent via `spawnTurn` and returns `workingPage`. It has NO drain context today. After the resume, read the parked session's `session-meta.json` (which `drain()` now persists with `{drainIssue, worktree, max}` — Task 5) and, IF those fields are present, fire a fresh continuation `drain()`:
+
+```typescript
+// inside app.post("/s/:uuid/send", ...), AFTER spawnTurn(...) and BEFORE return c.html(...):
+// [P2-#1] If this is a parked ralph drain, the verdict resume above lets the agent check its
+// human box + write signal.txt; then re-invoke drain() to continue the loop. The pass-1
+// idempotent drain re-fetches + skips already-checked boxes, so the continuation picks the
+// next open box and the last box reaches finishComplete. Fire-and-forget (no long-lived proc).
+try {
+  const meta = JSON.parse(readFileSync(metaPath, "utf8")) as {
+    skill?: string; drainIssue?: number; worktree?: string; max?: number;
+  };
+  if (meta.skill === "ralph" && typeof meta.drainIssue === "number" && meta.worktree) {
+    // brief delay so the resumed agent's commit + signal land before the continuation re-fetches
+    setTimeout(() => {
+      void drain(drainOptsFor(vault, meta.drainIssue!, meta.worktree!, runnerCommand, meta.max ?? 12));
+    }, 1500);
+  }
+} catch { /* not a drain session — normal /send, do nothing extra */ }
+```
+
+(`metaPath` + `runnerCommand` are already in scope in the handler. `drain`, `drainOptsFor` are imported from `./drain.ts` / defined in `server.ts`. The 1.5s delay is a pragmatic guard against the continuation re-fetching the Issue body before the resumed agent's `gh issue edit` lands; the idempotency makes a too-early re-fetch harmless anyway — it would just re-spawn the same box, which the agent no-ops if already done. Tune if flaky.)
 
 - [ ] **Step 2: Add an agent-inbox panel to the dashboard**
 
@@ -799,6 +938,7 @@ In `src/render.ts` `renderDashboard`, add a panel that lists sessions whose `ski
 In `tests/server.test.ts`, add:
 - a test that `POST /drain` with a non-existent worktree returns 412.
 - a test that `renderDashboard` output contains "Agent inbox" and lists a seeded awaiting ralph session.
+- **[P2-#1] a test that `POST /s/:uuid/send` re-invokes `drain()` after a parked-human verdict.** Seed a session-meta with `{skill:"ralph", drainIssue:N, worktree:<tmp>, max:3}`; stub/spy `drain` (or point the runner at the fake-ralph fixture + a `fetchBody` that returns all-checked after the verdict) and POST a `verdict: accept` to `/s/<uuid>/send`; assert the continuation `drain()` ran and reached `complete`. This is the regression guard for the blocker — without the re-invoke, an Issue with a human box never completes.
 
 (Follow the existing test harness in `tests/server.test.ts` — it builds the app via `makeApp(vault)` against a tmp vault.)
 
@@ -890,7 +1030,7 @@ Record the issue number `<NUM>`.
 Start the server (`bun run serve`), open the dashboard, press the ralph drain button (or `POST /drain` with `issue=<NUM>`). Watch:
 - Box #1 (`p1`, auto): a fresh session implements `drainProgress`, runs `bun run verify` green, checks the box, commits. `run-1.log` written.
 - Box #2 (`p2`, auto): next fresh session adds the badge, verify green, checks box, commits.
-- Box #3 (`p3`, human): a fresh session renders a preview to `body.html` + emits `NEEDS HUMAN`; the drain parks; the dashboard agent-inbox shows it pending. Operator submits `verdict: accept` via the form (`POST /s/<uuid>/send`); a resumed session checks the box + commits; emits `PROMISE COMPLETE HERE`; the runner closes the Issue.
+- Box #3 (`p3`, human): a fresh session renders a preview to `body.html` + emits `NEEDS HUMAN`; the drain parks; the dashboard agent-inbox shows it pending. Operator submits `verdict: accept` via the form (`POST /s/<uuid>/send`); the resumed session checks the box + commits + writes its `signal.txt`; **then the `/send` handler re-invokes `drain()` ([P2-#1]) which re-fetches, sees all boxes checked, and runs `finishComplete` → `gh issue comment "drained locally, unpushed"`, Issue left OPEN ([P2-#2])**.
 
 - [ ] **Step 4: Red-blocks proof**
 
@@ -907,14 +1047,14 @@ Capture this as part of the evidence.
 - `git -C ~/void-os-wt/issue-<NUM> log --oneline` showing one commit per box (commits in the WORKTREE — proves the cwd/vault split, Forge #2).
 - `cat ~/void-os-wt/issue-<NUM>/progress.txt` showing DONE/FAILED/NEEDS HUMAN lines. progress.txt is deleted at drain end (Forge #4 — only after allChecked); capture it BEFORE the final close, OR copy it aside during the run.
 - Playwright/manual screenshot of the dashboard agent-inbox: human box pending, then resolved.
-- `gh issue view <NUM>` showing all boxes `- [x]` and the Issue closed.
+- `gh issue view <NUM>` showing all boxes `- [x]`, the Issue **OPEN**, and the **"drained locally on ralph/issue-<N>, unpushed" comment present** ([P2-#2] — NOT closed).
 
 - [ ] **Step 5b: Idempotency + safe-close proof (Forge fix #4)**
 
 Demonstrate crash/re-run safety without breaking the real drain:
 - After ≥1 box is checked, kill the drain mid-run (or let MAX trip on a scratch Issue), then re-`POST /drain`. Confirm the re-run SKIPS already-checked boxes (the re-fetched body shows them `- [x]`; no duplicate commits for them).
-- Confirm the Issue is closed ONLY after `allChecked(refetched body)` — `gh issue view <NUM>` is `OPEN` while any box is unchecked, `CLOSED` only once all are `- [x]`.
-- Confirm `progress.txt` still exists mid-drain and is gone only after the complete close.
+- Confirm the drained-comment is posted ONLY after `allChecked(refetched body)` — `gh issue view <NUM>` has NO drained-comment while any box is unchecked, and the comment appears (Issue still OPEN, [P2-#2]) only once all are `- [x]`.
+- Confirm `progress.txt` still exists mid-drain and is gone only after the complete (comment) step.
 
 - [ ] **Step 5c: cache_control verification (Forge fix #5)**
 
@@ -951,5 +1091,11 @@ Expected: `VERIFY GREEN`.
   - #1 signal file — `signalPath` in paths.ts (T5 S1); SKILL writes `signal.txt` (T3 Signal contract); `classifyOutcome` reads it, not body.html (T5 S3 test + drain.ts); body.html keeps the human-gate `<form>` so `deriveStatus` still marks `awaiting`. ✓
   - #2 cwd/vault split — `runTurn(cwd, vault, …)` explicit (T5); dedicated split test asserts commit-in-worktree + signal-in-vault + resume-after-gate no split-brain (T5 S8). ✓
   - #3 lost-update guard — `checkBox(body, box)` targeted single-line flip (T4) + SKILL re-fetch-before-write + serialize-through-runner rule (T3 Process step 4). ✓
-  - #4 idempotent drain + safe close — re-fetch each iter, skip checked, delete progress.txt + close ONLY after allChecked(refetched) (drain.ts `finishComplete`); proof in T8 S5b. ✓
+  - #4 idempotent drain + safe completion — re-fetch each iter, skip checked, delete progress.txt + comment ONLY after allChecked(refetched) (drain.ts `finishComplete`); proof in T8 S5b. ✓
   - #5 cache_control verification — capture step in T8 S5c (cache_control present OR cache-read hit). ✓
+- **Pass-2 forge fixes folded (2026-05-31):**
+  - [P2-#1] human-gate loop-resume (BLOCKER) — `drain()` persists `{drainIssue,worktree,max}` to parked meta (Task 5 loop body); `POST /s/:uuid/send` re-invokes `drain()` after the verdict resume (Task 6 Step 1b); regression test in Task 6 Step 3. Continuation is safe via pass-1 idempotency. ✓
+  - [P2-#2] comment-not-close — `commentDrained?` opt (renamed from `closeIssue?`), `finishComplete` comments + leaves OPEN (Task 5); `/drain` wires `gh issue comment` (Task 6 Step 1); T8 S5/S5b assert OPEN + comment. ✓
+  - [P2-#3] bypassPermissions — accepted-risk one-liner (Load-bearing facts / pass-2 block); no code change. ✓
+  - [P2-#4] git add -A scope — `gitPorcelain` clean-tree guard at iter start returns `dirty-worktree` (Task 5); SKILL note (Task 3 Process step 4); dirty-worktree test (Task 5 Step 8c). ✓
+  - [P2-#5] progress.txt tail — `tailProgress` (~40 lines / since last DONE:) in `buildDrainPrompt` (Task 5); unit test (Task 5 Step 8b). ✓
