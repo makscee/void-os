@@ -22,7 +22,10 @@
 - **`gh`** authenticated as `makscee`, `repo` scope, remote `makscee/void-os`, ZERO open issues (clean slate for the dogfood Issue).
 - **Tests:** `package.json` scripts are only `test` (`bun test`) + `serve`. `bunx tsc --noEmit` exits 0 today. e2e files are plain `.ts` driver scripts in `tests/` (e.g. `tests/e2e-transcript-drawer.ts`), run with `bun tests/<file>.ts`, NOT `@playwright/test` runner. Unit tests are `tests/*.test.ts`.
 - **void-os E2E traps** ([[feedback_void_os_e2e_gotchas]]): no shared helpers, maya script pinning, `isEmpty` session filter, `Bun.serve` idleTimeout. Watch these in any e2e step.
-- **Relay cache_control:** the `vc` relay must pass `cache_control` through untouched ([[feedback_relay_header_merge_not_clobber]]). This PoC does not modify the relay; it only relies on the prefix-stable prompt being cacheable. Out of scope to verify relay caching here — note only.
+- **Relay cache_control:** the `vc` relay must pass `cache_control` through untouched ([[feedback_relay_header_merge_not_clobber]]). This PoC does not modify the relay; it only relies on the prefix-stable prompt being cacheable. T8 adds a verification step (Forge fix #5) capturing one outbound Anthropic call with `cache_control` present OR a cache-read usage hit — a VRL-30-class strip would functionally pass but blow ~10x token cost.
+- **Machine-readable signal file (Forge fix #1):** there is NO existing signal/outcome file in the session dir today. `classifyOutcome` MUST read a dedicated `signal.txt` written by the agent — NOT `body.html`. Verified: `deriveStatus` (`src/sessions.ts:24`) keys session `awaiting` status off `body.html` containing `<form`. So body.html stays dashboard-presentation-only (and for human gates MUST still carry the `<form>` so the inbox shows `awaiting`), while the terminal machine signal lives in `signal.txt`. A new `signalPath(vault, uuid)` is added to `src/paths.ts`.
+- **cwd/vault split is clean (Forge fix #2):** verified that `spawnTurn` hardcodes `cwd: vault` but ALL session state I/O (`runLogPath`, `errorPath`, `bodyPath`, and the new `signalPath`) resolves under `sessionDir(vault, uuid)` — fully decoupled from cwd. Therefore `runTurn(cwd, vault, uuid, …)` can run the agent in the worktree (code/git plane) while session state writes land under the vault (state plane) with no split-brain. T5 tests this divergence explicitly.
+- **`gh` checkbox edit is full-body-replace only:** verified `gh issue edit` (gh 2.89.0) exposes only `--body`/`--body-file` (whole-body replacement); there is NO targeted task-list/checkbox API. This is why Forge fix #3 (re-fetch immediately before write + targeted single-line edit of the `- [ ]`→`- [x]` line, serialized through the runner) is mandatory — a naive full-body overwrite would clobber a concurrent operator reshape.
 
 ---
 
@@ -34,9 +37,10 @@
 | `scripts/verify.sh` (new) | the single scriptable green/red gate: `bun test` + `bunx tsc --noEmit` (Task 1) |
 | `docs/ralph/issue-schema.md` (new) | canonical box/story schema doc — box = `- [ ]` + criteria + `auto:`/`human` gate + priority (Task 2) |
 | `catalog/skills/ralph/SKILL.md` (new) | the fixed loop prompt as an explicit Inputs/Process/Outputs contract, self-documenting for a zero-context agent (Task 3) |
-| `src/issue.ts` (new) | parse Issue body → `Box[]` (text, gate, priority, checked); check a box via `gh`; detect all-checked (Task 4) |
-| `src/drain.ts` (new) | the server-side drain runner: fresh-session loop, MAX backstop, auto-gate bounded recovery, `PROMISE COMPLETE HERE` early-exit, `NEEDS HUMAN` park (Task 5–7) |
-| `src/spawn.ts` | factor an awaitable `spawnTurnAwaitable(...)` (or `runVcTurn`) used by both `spawnTurn` and the drain runner; add `cwd` parameter (Task 5) |
+| `src/paths.ts` | add `signalPath(vault, uuid)` → `sessionDir/signal.txt` — the machine-readable terminal-signal carrier (Forge #1, Task 5) |
+| `src/issue.ts` (new) | parse Issue body → `Box[]` (text, gate, priority, checked); `checkBox(body, box)` returns a body with ONLY that box's line flipped `- [ ]`→`- [x]` (targeted, Forge #3); detect all-checked (Task 4) |
+| `src/drain.ts` (new) | the server-side drain runner: fresh-session loop, MAX backstop, auto-gate bounded recovery, `PROMISE COMPLETE HERE` early-exit, `NEEDS HUMAN` park; `classifyOutcome` reads `signal.txt` NOT body.html (Forge #1); idempotent re-run + safe close (Forge #4) (Task 5–7) |
+| `src/spawn.ts` | factor an awaitable `runTurn(cwd, vault, uuid, argv, command)` used by the drain runner; explicit `cwd` parameter = worktree (code plane) while session state stays under `sessionDir(vault, …)` (state plane) (Forge #2, Task 5) |
 | `src/server.ts` | wire a `POST /drain` launch route + agent-inbox surfacing of a parked human box (Task 6) |
 | `src/render.ts` | agent-inbox panel: list drains parked on a human box with accept/edit/feedback form posting to `POST /s/:uuid/send` (Task 6) |
 | `tests/issue.test.ts`, `tests/drain.test.ts` (new) | unit tests for box parsing + runner state machine (Tasks 4–5, 7) |
@@ -223,19 +227,42 @@ Do NOT attempt the whole Issue. The runner re-spawns a fresh you for the next bo
      - **Green (exit 0):** go to step 4.
      - **Red:** read the failure output, fix the cause, re-run. Retry inline up to
        **3 times total**. Still red after 3 → append a `FAILED: <box> — <last error>`
-       line to `progress.txt`, render the failure to `body.html`, and STOP (do NOT
-       check the box). The next fresh session will retry.
+       line to `progress.txt`, render the failure to `body.html`, write `FAILED` to
+       `signal.txt` (see Signal contract below), and STOP (do NOT check the box). The
+       next fresh session will retry.
    - **`human`** — produce the artifact (a committed branch / a rendered preview in
      `body.html`), append a `NEEDS HUMAN: <box> — <what to review>` line to
-     `progress.txt`, render the artifact + a review summary to `body.html`, emit the
-     literal token `NEEDS HUMAN` in `body.html`, and STOP. Do NOT check the box.
+     `progress.txt`, render the artifact + a review summary + an accept/edit/feedback
+     `<form>` posting to `/s/$VOID_OS_SESSION/send` into `body.html` (the `<form>` is
+     what makes the dashboard mark you `awaiting`), write `NEEDS HUMAN` to `signal.txt`,
+     and STOP. Do NOT check the box.
 4. **On pass** (auto green, OR you were resumed with a human ACCEPT verdict):
-   - Check the box: `gh issue edit <num> --body "<updated body with - [x]>"` (or the
-     `gh` task-list checkbox API). Use the Issue number from your launch prompt.
+   - Check the box with a TARGETED, lost-update-safe edit: (a) RE-FETCH the current body
+     immediately first — `gh issue view <num> --json body -q .body` (an operator reshape
+     may have changed it since launch); (b) flip ONLY your box's `- [ ]` line to `- [x]`
+     (do NOT regenerate or overwrite the whole body from your stale launch copy);
+     (c) write it back — `gh issue edit <num> --body-file -`. `gh` has no targeted
+     checkbox API; the targeted single-line flip on a freshly-fetched body is how we
+     avoid clobbering concurrent operator edits.
    - Append a `DONE: <box>` line to `progress.txt`.
    - `git add -A && git commit -m "<box title>"` — code + progress.txt together.
-5. **If, after checking your box, ALL boxes are now checked:** render a done summary to
-   `body.html` and emit the literal token `PROMISE COMPLETE HERE` in `body.html`.
+   - Write `PROGRESS` to `signal.txt` (a normal box was checked; the runner loops).
+5. **If, after checking your box, ALL boxes are now checked** (verify against the body you
+   just wrote back): render a done summary to `body.html` and write `PROMISE COMPLETE HERE`
+   to `signal.txt`.
+
+## Signal contract (machine-readable — Forge fix #1)
+
+`body.html` is dashboard-presentation HTML and is NOT a reliable sentinel carrier. Every
+iteration you MUST write your ONE terminal signal to a dedicated file the runner reads:
+
+- Path: `$VOID_OS_VAULT/sessions/$VOID_OS_SESSION/signal.txt` (resolve both env vars;
+  `VOID_OS_VAULT` defaults to `~/.void-os` if unset). This is the SAME session dir your
+  `body.html` lives in — it is under the VAULT, not your cwd/worktree.
+- Write EXACTLY one of these literal first lines: `PROMISE COMPLETE HERE` | `NEEDS HUMAN` |
+  `FAILED` | `PROGRESS`. Overwrite (not append) — it reflects only this iteration.
+- The runner reads `signal.txt` to decide done / park / loop. Do NOT rely on tokens in
+  `body.html` for control flow — body.html is for the human, signal.txt is for the runner.
 
 ## Resume-after-human-verdict
 
@@ -248,13 +275,15 @@ If your launch prompt contains a human verdict (`verdict: accept` / `verdict: ed
 
 ## Outputs (contract)
 
-- `body.html` rewritten every turn (render contract — the dashboard reads it).
-- Exactly ONE of these terminal signals per iteration, emitted as literal text in `body.html`:
-  - a checked box + commit (normal progress), OR
-  - `NEEDS HUMAN` (parked on a human gate), OR
-  - `PROMISE COMPLETE HERE` (all boxes done), OR
-  - a `FAILED:` progress line + stop (auto gate exhausted).
-- NEVER carry state in the terminal conversation — only files (Issue, progress.txt, git).
+- `body.html` rewritten every turn (render contract — the dashboard reads it). For a human
+  gate it MUST contain the accept/edit/feedback `<form>` (this is what marks you `awaiting`).
+- `signal.txt` written every turn with EXACTLY one terminal signal (see Signal contract):
+  - `PROGRESS` — a checked box + commit (runner loops), OR
+  - `NEEDS HUMAN` — parked on a human gate, OR
+  - `PROMISE COMPLETE HERE` — all boxes done, OR
+  - `FAILED` — auto gate exhausted after 3 inline retries (box left unchecked).
+- NEVER carry state in the terminal conversation — only files (Issue, progress.txt, git,
+  signal.txt).
 ````
 
 - [ ] **Step 2: Confirm the skill is discoverable**
@@ -291,7 +320,7 @@ git commit -m "feat(ralph): drain-loop SKILL.md as Inputs/Process/Outputs contra
 ```typescript
 // tests/issue.test.ts
 import { test, expect } from "bun:test";
-import { parseBoxes, allChecked, type Box } from "../src/issue.ts";
+import { parseBoxes, allChecked, checkBox, type Box } from "../src/issue.ts";
 
 const BODY = `Some preamble.
 
@@ -314,6 +343,25 @@ test("allChecked false when an open box remains, true when all checked", () => {
   expect(allChecked(parseBoxes(BODY))).toBe(false);
   const done = BODY.replace(/- \[ \]/g, "- [x]");
   expect(allChecked(parseBoxes(done))).toBe(true);
+});
+
+// Forge fix #3: checkBox flips ONLY the target box's line, leaving the rest of the
+// body byte-for-byte intact — so a concurrent operator reshape is not clobbered.
+test("checkBox flips only the target box line, preserves everything else", () => {
+  const boxes = parseBoxes(BODY);
+  const out = checkBox(BODY, boxes[0]); // the open /healthz box
+  expect(out).toContain("- [x] Add /healthz route {auto: bun run verify} {p1}");
+  // the other lines are untouched (including the operator's prose + already-checked box)
+  expect(out).toContain("Some preamble.");
+  expect(out).toContain("- [x] Scaffold module {auto: bun test} {p2}");
+  expect(out).toContain("- [ ] Polish empty-state copy {human} {p3}");
+  // exactly one line changed
+  expect(out.split("\n").filter((l, idx) => l !== BODY.split("\n")[idx]).length).toBe(1);
+});
+
+test("checkBox is idempotent on an already-checked box", () => {
+  const boxes = parseBoxes(BODY);
+  expect(checkBox(BODY, boxes[1])).toBe(BODY); // box[1] already - [x]
 });
 ```
 
@@ -368,6 +416,23 @@ export function allChecked(boxes: Box[]): boolean {
   return boxes.length > 0 && boxes.every((b) => b.checked);
 }
 
+/**
+ * Forge fix #3: lost-update-safe checkbox flip. Given a freshly-fetched body and the
+ * target box, return a new body with ONLY that box's `- [ ]` line changed to `- [x]`,
+ * matched by the box's exact `raw` line. Every other byte (operator prose, other boxes,
+ * reshaped content) is preserved. Idempotent if the box is already checked.
+ * The CALLER must pass a body it re-fetched immediately before calling this — never a
+ * stale launch-time copy — and must serialize writes (see drain runner).
+ */
+export function checkBox(body: string, box: Box): string {
+  if (box.checked) return body;
+  const checkedLine = box.raw.replace(/^- \[ \]/, "- [x]");
+  // Replace the first exact occurrence of the raw line only.
+  const idx = body.indexOf(box.raw);
+  if (idx === -1) return body; // box not found in current body (reshaped away) — no-op
+  return body.slice(0, idx) + checkedLine + body.slice(idx + box.raw.length);
+}
+
 /** Highest-priority OPEN box (lowest prio number), or undefined if none open. */
 export function nextOpenBox(boxes: Box[]): Box | undefined {
   return boxes.filter((b) => !b.checked).sort((a, b) => a.prio - b.prio)[0];
@@ -383,7 +448,7 @@ Expected: PASS (both tests).
 
 ```bash
 git add src/issue.ts tests/issue.test.ts
-git commit -m "feat(issue): parse Issue body into gated/prioritised boxes"
+git commit -m "feat(issue): parse boxes + lost-update-safe targeted checkBox"
 ```
 
 ---
@@ -395,9 +460,17 @@ git commit -m "feat(issue): parse Issue body into gated/prioritised boxes"
 - Create: `src/drain.ts`
 - Test: `tests/drain.test.ts`
 
-The runner is a dumb `for`-loop with a MANDATORY MAX backstop. It does NOT assign boxes (the agent self-selects). Each iteration: build the launch prompt (open boxes + progress.txt), spawn a fresh session in the worktree, await exit, inspect the session's `body.html` for terminal signals (`PROMISE COMPLETE HERE` → done; `NEEDS HUMAN` → park; else → continue / failure recorded by the agent in progress.txt).
+The runner is a dumb `for`-loop with a MANDATORY MAX backstop. It does NOT assign boxes (the agent self-selects). Each iteration: build the launch prompt (open boxes + progress.txt), spawn a fresh session **in the worktree (cwd=worktree)** while its state writes land **under the vault** (`sessionDir(vault, uuid)`), await exit, then inspect the session's **`signal.txt`** (NOT body.html) for the terminal signal (`PROMISE COMPLETE HERE` → done; `NEEDS HUMAN` → park; `FAILED`/`PROGRESS` → loop).
 
-- [ ] **Step 1: Factor an awaitable spawn in `src/spawn.ts`**
+**Forge fix #2 — the cwd/vault split is the runner's core invariant.** The agent's cwd is the worktree (so its `git commit` lands on `ralph/issue-<N>` and `bun run verify` runs against worktree code), but `runTurn` resolves ALL session I/O (`runLogPath`/`errorPath`/`bodyPath`/`signalPath`) under the vault via `sessionDir(vault, uuid)` — these are decoupled (verified: `spawnTurn` already hardcodes `cwd: vault` yet writes state via `sessionDir`). This is why `runTurn` takes `cwd` AND `vault` as separate args. The human-gate resume (`POST /s/:uuid/send` → `spawnTurn`, which uses `cwd: vault`) and the drain spawn (`cwd: worktree`) BOTH write to the same `sessionDir(vault, uuid)`, so resume-after-human-gate reads/writes the same state with no split-brain.
+
+- [ ] **Step 1: Add `signalPath` to `src/paths.ts`**
+
+```typescript
+export const signalPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "signal.txt");
+```
+
+- [ ] **Step 2: Factor an awaitable spawn in `src/spawn.ts`**
 
 Add (do not break existing `spawnTurn` — refactor it to delegate):
 
@@ -433,43 +506,52 @@ export async function runTurn(
 
 (Leave `spawnTurn` as-is for the dashboard launch/answer paths — it has its own error.txt/mtime logic that the drain runner does not need.)
 
-- [ ] **Step 2: Write the failing test for the runner state machine**
+- [ ] **Step 3: Write the failing test for the runner state machine (signal.txt, NOT body.html)**
 
 ```typescript
 // tests/drain.test.ts
 import { test, expect } from "bun:test";
 import { classifyOutcome, type Outcome } from "../src/drain.ts";
 
-test("classifyOutcome detects terminal signals from body.html", () => {
-  expect(classifyOutcome("<h1>all done</h1>PROMISE COMPLETE HERE")).toBe("complete");
-  expect(classifyOutcome("<p>built a PR</p>NEEDS HUMAN")).toBe("human");
-  expect(classifyOutcome("<p>checked a box, moving on</p>")).toBe("progress");
+// Forge fix #1: classifyOutcome reads the machine-readable signal.txt content,
+// NOT free-form body.html. The first line is the terminal signal.
+test("classifyOutcome maps signal.txt content to outcome", () => {
+  expect(classifyOutcome("PROMISE COMPLETE HERE")).toBe("complete");
+  expect(classifyOutcome("NEEDS HUMAN")).toBe("human");
+  expect(classifyOutcome("PROGRESS")).toBe("progress");
+  expect(classifyOutcome("FAILED")).toBe("progress"); // failure recorded; runner loops
+  expect(classifyOutcome("")).toBe("error");           // no signal written = agent crashed
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 4: Run test to verify it fails**
 
 Run: `bun test tests/drain.test.ts`
 Expected: FAIL — `classifyOutcome` not defined.
 
-- [ ] **Step 4: Write `src/drain.ts`**
+- [ ] **Step 5: Write `src/drain.ts`**
 
 ```typescript
 // src/drain.ts — server-side Issue-drain runner. One fresh session per box.
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { sessionDir, bodyPath } from "./paths.ts";
+import { sessionDir, signalPath } from "./paths.ts";
 import { runTurn } from "./spawn.ts";
 import { parseBoxes, nextOpenBox, allChecked } from "./issue.ts";
 
 export type Outcome = "complete" | "human" | "progress" | "error";
 
-/** Read terminal signals out of a session's rendered body.html. */
-export function classifyOutcome(body: string): Outcome {
-  if (body.includes("PROMISE COMPLETE HERE")) return "complete";
-  if (body.includes("NEEDS HUMAN")) return "human";
-  return "progress";
+/**
+ * Forge fix #1: classify the terminal signal from signal.txt content (NOT body.html).
+ * The first line is the signal. Empty/missing = the agent crashed without signalling.
+ */
+export function classifyOutcome(signal: string): Outcome {
+  const first = signal.split("\n")[0]?.trim() ?? "";
+  if (first === "PROMISE COMPLETE HERE") return "complete";
+  if (first === "NEEDS HUMAN") return "human";
+  if (first === "PROGRESS" || first === "FAILED") return "progress";
+  return "error";
 }
 
 export interface DrainOpts {
@@ -478,11 +560,12 @@ export interface DrainOpts {
   issueNum: number;
   runner: string;       // "vc --"
   max: number;          // MANDATORY backstop
-  fetchBody: () => Promise<string>;   // gh issue view --json body -q .body
+  fetchBody: () => Promise<string>;   // gh issue view --json body -q .body (always re-fetch)
+  closeIssue?: () => Promise<void>;   // gh issue close — called ONLY when allChecked(refetched)
 }
 
 export interface DrainResult {
-  status: "complete" | "parked-human" | "max-reached" | "stalled";
+  status: "complete" | "parked-human" | "max-reached" | "stalled" | "error";
   parkedUuid?: string;  // session awaiting a human verdict
   iterations: number;
 }
@@ -499,14 +582,22 @@ export function buildDrainPrompt(issueNum: number, body: string, progress: strin
   ].join("\n");
 }
 
+/**
+ * Forge fix #4: idempotent drain + safe close.
+ * - Re-fetch the body EVERY iteration (the agent or operator may have changed it) and
+ *   recompute open boxes from the fresh body — already-checked boxes are skipped, so a
+ *   crash/MAX-trip re-run resumes cleanly.
+ * - progress.txt is deleted ONLY after allChecked is confirmed (Ralph-faithful end).
+ * - The Issue is closed ONLY when allChecked(refetched body) is true.
+ */
 export async function drain(opts: DrainOpts): Promise<DrainResult> {
   const progressPath = join(opts.worktree, "progress.txt");
   if (!existsSync(progressPath)) writeFileSync(progressPath, "");
 
   for (let i = 1; i <= opts.max; i++) {
-    const body = await opts.fetchBody();
+    const body = await opts.fetchBody();               // re-fetch each iter (idempotent)
     const boxes = parseBoxes(body);
-    if (allChecked(boxes)) return { status: "complete", iterations: i - 1 };
+    if (allChecked(boxes)) return await finishComplete(i - 1);
     if (!nextOpenBox(boxes)) return { status: "stalled", iterations: i - 1 };
 
     const uuid = randomUUID();
@@ -518,46 +609,68 @@ export async function drain(opts: DrainOpts): Promise<DrainResult> {
     );
     const progress = existsSync(progressPath) ? readFileSync(progressPath, "utf8") : "";
     const prompt = buildDrainPrompt(opts.issueNum, body, progress);
-    // launch a fresh ralph session whose cwd is the worktree
+    // Fresh ralph session: cwd = worktree (code plane); state writes land under vault (state plane).
     const argv = ["--session-id", uuid, "-p", `/ralph ${prompt}`, "--permission-mode", "bypassPermissions"];
     await runTurn(opts.worktree, opts.vault, uuid, argv, opts.runner);
 
-    const bp = bodyPath(opts.vault, uuid);
-    const rendered = existsSync(bp) ? readFileSync(bp, "utf8") : "";
-    const outcome = classifyOutcome(rendered);
-    if (outcome === "complete") return { status: "complete", iterations: i };
+    // Forge fix #1: read the MACHINE signal file, not body.html.
+    const sp = signalPath(opts.vault, uuid);
+    const signal = existsSync(sp) ? readFileSync(sp, "utf8") : "";
+    const outcome = classifyOutcome(signal);
+    if (outcome === "complete") return await finishComplete(i);
     if (outcome === "human") return { status: "parked-human", parkedUuid: uuid, iterations: i };
+    if (outcome === "error") return { status: "error", iterations: i }; // agent crashed, no signal
     // "progress" → loop; the agent already checked a box or recorded a FAILED line
   }
   return { status: "max-reached", iterations: opts.max };
+
+  // Safe close: confirm against a FRESH fetch before close + progress delete (Forge #4).
+  async function finishComplete(iterations: number): Promise<DrainResult> {
+    const fresh = parseBoxes(await opts.fetchBody());
+    if (allChecked(fresh)) {
+      await opts.closeIssue?.();
+      if (existsSync(progressPath)) rmSync(progressPath);
+      return { status: "complete", iterations };
+    }
+    return { status: "stalled", iterations }; // a box re-opened mid-flight; do not close
+  }
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 6: Run test to verify it passes**
 
 Run: `bun test tests/drain.test.ts`
 Expected: PASS.
 
-- [ ] **Step 6: Add an integration test driving the loop with a FAKE runner**
+- [ ] **Step 7: Add an integration test driving the loop with a FAKE runner (writes signal.txt + commits in cwd)**
 
-Add to `tests/drain.test.ts` a test that calls `drain(...)` with a `runner` of `"true"` (a no-op command that exits 0) is NOT enough — the loop needs the body.html to advance. Instead inject a fake by pointing `runner` at a small bun script under `tests/fixtures/` that, on each spawn, writes a `body.html` containing `PROMISE COMPLETE HERE` and checks the box. Write that fixture:
+Inject a fake by pointing `runner` at a small bun script under `tests/fixtures/` that, on each spawn, writes its terminal signal to `signal.txt` under the VAULT session dir (Forge #1) AND makes a real `git commit` in its CWD (so the cwd/vault split is exercised — Forge #2). Write that fixture:
 
 ```typescript
-// tests/fixtures/fake-ralph.ts — pretends to be vc; writes a terminal body.html.
-// Reads --session-id and VOID_OS_SESSION; writes PROMISE COMPLETE HERE so drain ends in 1 iter.
+// tests/fixtures/fake-ralph.ts — pretends to be vc.
+// Forge #1: writes the terminal signal to signal.txt (under the VAULT), NOT body.html.
+// Forge #2: makes a real commit in CWD (the worktree) to prove cwd != vault state plane.
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 const uuid = process.env.VOID_OS_SESSION!;
 const vault = process.env.VOID_OS_VAULT ?? join(process.env.HOME ?? "/tmp", ".void-os");
 const dir = join(vault, "sessions", uuid);
 mkdirSync(dir, { recursive: true });
-writeFileSync(join(dir, "body.html"), "<h1>fake drain</h1>PROMISE COMPLETE HERE");
+// dashboard-presentation only:
+writeFileSync(join(dir, "body.html"), "<h1>fake drain</h1>");
+// machine signal the runner actually reads:
+writeFileSync(join(dir, "signal.txt"), "PROMISE COMPLETE HERE\n");
+// prove the commit lands in CWD (the worktree), not the vault:
+writeFileSync(join(process.cwd(), "fake-touch.txt"), uuid);
+spawnSync("git", ["add", "-A"], { cwd: process.cwd() });
+spawnSync("git", ["commit", "-m", `fake box ${uuid}`], { cwd: process.cwd() });
 ```
 
-Integration test (set `VOID_OS_VAULT` to a tmp dir, `fetchBody` returns a one-box body that flips to all-checked after the first call):
+Integration test — `fetchBody` flips the box to checked after the first call:
 
 ```typescript
-test("drain ends complete when a fresh session signals PROMISE COMPLETE HERE", async () => {
+test("drain ends complete when a fresh session writes PROMISE COMPLETE HERE to signal.txt", async () => {
   const tmp = `/tmp/ralph-drain-${Date.now()}`;
   let calls = 0;
   const result = await drain({
@@ -569,22 +682,67 @@ test("drain ends complete when a fresh session signals PROMISE COMPLETE HERE", a
     fetchBody: async () => (calls++ === 0
       ? "- [ ] do it {auto: true} {p1}"
       : "- [x] do it {auto: true} {p1}"),
+    closeIssue: async () => {},
   });
   expect(result.status).toBe("complete");
   expect(result.iterations).toBeLessThanOrEqual(2);
 });
 ```
 
-- [ ] **Step 7: Run tests**
+- [ ] **Step 8: Add the cwd≠vault split test (Forge fix #2)**
+
+Make `worktree` a real, separate git repo and assert BOTH planes after one turn: the commit landed in the WORKTREE (code plane) and `signal.txt` is readable under the VAULT (state plane). Use distinct tmp dirs for `vault` and `worktree`.
+
+```typescript
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { signalPath } from "../src/paths.ts";
+
+test("drain runs the agent in the worktree (commit lands there) while state writes to the vault", async () => {
+  const vault = `/tmp/ralph-vault-${Date.now()}`;
+  const worktree = `/tmp/ralph-wt-${Date.now()}`;
+  mkdirSync(worktree, { recursive: true });
+  spawnSync("git", ["init", "-q"], { cwd: worktree });
+  spawnSync("git", ["commit", "--allow-empty", "-m", "init", "-q"], { cwd: worktree });
+  const before = spawnSync("git", ["rev-list", "--count", "HEAD"], { cwd: worktree }).stdout.toString().trim();
+
+  let calls = 0;
+  const res = await drain({
+    vault, worktree, issueNum: 7,
+    runner: `bun ${import.meta.dir}/fixtures/fake-ralph.ts --`,
+    max: 3,
+    fetchBody: async () => (calls++ === 0
+      ? "- [ ] split test {auto: true} {p1}"
+      : "- [x] split test {auto: true} {p1}"),
+    closeIssue: async () => {},
+  });
+
+  expect(res.status).toBe("complete");
+  // code plane: commit landed in the worktree, NOT the vault
+  const after = spawnSync("git", ["rev-list", "--count", "HEAD"], { cwd: worktree }).stdout.toString().trim();
+  expect(Number(after)).toBeGreaterThan(Number(before));
+  expect(existsSync(join(vault, ".git"))).toBe(false);
+  // state plane: the session's signal.txt is readable under the vault
+  // (uuid is random; assert at least one session dir carries the signal)
+  const fs = await import("node:fs");
+  const sessRoot = join(vault, "sessions");
+  const uuids = existsSync(sessRoot) ? fs.readdirSync(sessRoot) : [];
+  expect(uuids.length).toBeGreaterThan(0);
+  expect(readFileSync(signalPath(vault, uuids[0]), "utf8")).toContain("PROMISE COMPLETE HERE");
+});
+```
+
+- [ ] **Step 9: Run tests**
 
 Run: `bun test tests/drain.test.ts`
-Expected: PASS (all three).
+Expected: PASS (classifyOutcome + integration + cwd/vault split).
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add src/spawn.ts src/drain.ts tests/drain.test.ts tests/fixtures/fake-ralph.ts
-git commit -m "feat(drain): fresh-session Issue-drain runner with MAX backstop + terminal-signal detection"
+git add src/paths.ts src/spawn.ts src/drain.ts tests/drain.test.ts tests/fixtures/fake-ralph.ts
+git commit -m "feat(drain): fresh-session runner — signal.txt control, cwd/vault split, idempotent safe-close"
 ```
 
 ---
@@ -618,9 +776,14 @@ app.post("/drain", async (c) => {
   // fire-and-forget; the parked/complete state is observable via the session list
   drain({
     vault, worktree, issueNum, runner, max,
+    // Always re-fetch (Forge #4 idempotency depends on a fresh body each iteration).
     fetchBody: async () => {
       const proc = Bun.spawn(["gh", "issue", "view", String(issueNum), "--json", "body", "-q", ".body"], { cwd: worktree, stdout: "pipe" });
       return (await new Response(proc.stdout).text()).trim();
+    },
+    // Safe close (Forge #4): drain only calls this after allChecked(refetched) is true.
+    closeIssue: async () => {
+      await Bun.spawn(["gh", "issue", "close", String(issueNum)], { cwd: worktree }).exited;
     },
   });
   return c.redirect("/");
@@ -742,11 +905,26 @@ Capture this as part of the evidence.
 
 - [ ] **Step 5: Capture evidence**
 
-- `cat ~/.void-os/sessions/<uuid>/run-*.log` for the drain (the `run-N.log` per box).
-- `git -C ~/void-os-wt/issue-<NUM> log --oneline` showing one commit per box.
-- `cat ~/void-os-wt/issue-<NUM>/progress.txt` showing DONE/FAILED/NEEDS HUMAN lines (note: ralph-faithful, progress.txt is deleted at drain end — capture it BEFORE close, or relax the delete for the PoC run).
+- `cat ~/.void-os/sessions/<uuid>/run-*.log` for the drain (the `run-N.log` per box) + each `signal.txt` showing the terminal signal the runner acted on.
+- `git -C ~/void-os-wt/issue-<NUM> log --oneline` showing one commit per box (commits in the WORKTREE — proves the cwd/vault split, Forge #2).
+- `cat ~/void-os-wt/issue-<NUM>/progress.txt` showing DONE/FAILED/NEEDS HUMAN lines. progress.txt is deleted at drain end (Forge #4 — only after allChecked); capture it BEFORE the final close, OR copy it aside during the run.
 - Playwright/manual screenshot of the dashboard agent-inbox: human box pending, then resolved.
 - `gh issue view <NUM>` showing all boxes `- [x]` and the Issue closed.
+
+- [ ] **Step 5b: Idempotency + safe-close proof (Forge fix #4)**
+
+Demonstrate crash/re-run safety without breaking the real drain:
+- After ≥1 box is checked, kill the drain mid-run (or let MAX trip on a scratch Issue), then re-`POST /drain`. Confirm the re-run SKIPS already-checked boxes (the re-fetched body shows them `- [x]`; no duplicate commits for them).
+- Confirm the Issue is closed ONLY after `allChecked(refetched body)` — `gh issue view <NUM>` is `OPEN` while any box is unchecked, `CLOSED` only once all are `- [x]`.
+- Confirm `progress.txt` still exists mid-drain and is gone only after the complete close.
+
+- [ ] **Step 5c: cache_control verification (Forge fix #5)**
+
+Prove the prefix-stable prompt is actually being cached (a VRL-30-class relay strip would functionally pass but cost ~10x). Capture ONE of:
+- an outbound Anthropic request body from the drain showing a `cache_control` block on the stable prefix (e.g. via the relay's request log, or `LOG_RAW_API_PAYLOADS` on void-fcc TEMPORARILY — then disable + purge per [[feedback_fcc_raw_payload_logging_privacy]]), OR
+- a usage record from a drain turn showing `cache_read_input_tokens > 0` (cache hit on iteration ≥2, which reuses the stable SKILL+references prefix).
+
+Record the captured evidence inline. If neither cache_control nor a cache-read hit is observable, that is a FINDING to surface (relay may be stripping it) — do not silently pass T8.
 
 - [ ] **Step 6: Confirm NO push happened**
 
@@ -771,3 +949,9 @@ Expected: `VERIFY GREEN`.
 - **Shippability:** each phase lands a self-contained, tested unit; no half-broken intermediate. ✓
 - **Scope discipline:** no MCP, no prd.json, no merge-gate, no AFK/eval layer — all explicitly out of scope per design. ✓
 - **Premise check:** spawn/launch/send/argv/gh/worktree/session-model all verified against repo at plan time (see Load-bearing facts). The one wrinkle — `spawnTurn` is fire-and-forget + cwd=vault — is resolved by the new awaitable `runTurn(cwd, ...)` in T5. ✓
+- **Forge fixes folded (2026-05-31 re-plan):**
+  - #1 signal file — `signalPath` in paths.ts (T5 S1); SKILL writes `signal.txt` (T3 Signal contract); `classifyOutcome` reads it, not body.html (T5 S3 test + drain.ts); body.html keeps the human-gate `<form>` so `deriveStatus` still marks `awaiting`. ✓
+  - #2 cwd/vault split — `runTurn(cwd, vault, …)` explicit (T5); dedicated split test asserts commit-in-worktree + signal-in-vault + resume-after-gate no split-brain (T5 S8). ✓
+  - #3 lost-update guard — `checkBox(body, box)` targeted single-line flip (T4) + SKILL re-fetch-before-write + serialize-through-runner rule (T3 Process step 4). ✓
+  - #4 idempotent drain + safe close — re-fetch each iter, skip checked, delete progress.txt + close ONLY after allChecked(refetched) (drain.ts `finishComplete`); proof in T8 S5b. ✓
+  - #5 cache_control verification — capture step in T8 S5c (cache_control present OR cache-read hit). ✓
