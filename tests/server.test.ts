@@ -7,13 +7,19 @@ import { expect, test, beforeAll, mock } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync } from "node:fs";
 import { bodyPath, sessionDir, errorPath, pidPath, stopPath } from "../src/paths.ts";
 import { join } from "node:path";
+import { openRegistry } from "../src/registry.ts";
 
 const vault = "/tmp/voidos-server-test";
 
-// Stub spawnTurn + runTurn before importing server.ts so routes don't fire real vc processes.
+/** Shared in-memory registry for the test suite. */
+const db = openRegistry(":memory:");
+
+// Stub spawnTurn + runTurn + spawnRun before importing server.ts so routes don't fire real vc processes.
 // Bun.mock.module replaces the module for all subsequent imports in this file.
 const spawnCalls: Array<{ vault: string; uuid: string; argv: string[]; command: string }> = [];
 const runTurnCalls: Array<{ cwd: string; vault: string; uuid: string; argv: string[]; command: string }> = [];
+const spawnRunCalls: Array<unknown> = [];
+import { randomUUID } from "node:crypto";
 mock.module("../src/spawn.ts", () => ({
   buildLaunchArgv: (uuid: string, skill: string, text: string) => [
     "--session-id", uuid, "-p", text ? `/${skill} ${text}` : `/${skill}`,
@@ -26,6 +32,14 @@ mock.module("../src/spawn.ts", () => ({
   tokenizeCommand: (cmd: string) => cmd.trim().split(/\s+/).filter(Boolean),
   spawnTurn: (v: string, u: string, a: string[], cmd: string) => { spawnCalls.push({ vault: v, uuid: u, argv: a, command: cmd }); },
   runTurn: async (cwd: string, v: string, u: string, a: string[], cmd: string) => { runTurnCalls.push({ cwd, vault: v, uuid: u, argv: a, command: cmd }); return 0; },
+  spawnRun: (opts: { db: unknown; vault: string; daemonUrl: string; skill: string; agent: null; runnerCommand: string; now?: number }) => {
+    const sessionId = randomUUID();
+    const runId = `run-${randomUUID()}`;
+    const tmuxSession = `vos-run-${runId}`;
+    spawnRunCalls.push({ ...opts, sessionId, runId, tmuxSession });
+    spawnCalls.push({ vault: opts.vault, uuid: sessionId, argv: [opts.skill], command: opts.runnerCommand });
+    return { sessionId, runId, tmuxSession };
+  },
 }));
 
 // Stub drain to avoid long-running loop in tests
@@ -50,7 +64,7 @@ beforeAll(() => {
 });
 
 test("GET / renders dashboard with void-os title", async () => {
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const res = await app.request("/");
   expect(res.status).toBe(200);
   const text = await res.text();
@@ -60,7 +74,7 @@ test("GET / renders dashboard with void-os title", async () => {
 test("GET /s/:uuid/body serves body.html content", async () => {
   mkdirSync(sessionDir(vault, "u9"), { recursive: true });
   writeFileSync(bodyPath(vault, "u9"), "<title>u9</title>BODY_CONTENT");
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const html = await (await app.request("/s/u9/body")).text();
   expect(html).toContain("BODY_CONTENT");
 });
@@ -72,7 +86,7 @@ test("GET /s/:uuid/body appends error marker when error.txt present (non-timeout
   const past = new Date(Date.now() - 5000);
   utimesSync(bodyPath(vault, "u-err"), past, past);
   writeFileSync(errorPath(vault, "u-err"), "exit 1 boom");
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const html = await (await app.request("/s/u-err/body")).text();
   expect(html).toContain("BODY");
   expect(html).toContain("boom");
@@ -86,7 +100,7 @@ test("GET /s/:uuid/body suppresses timeout error when body.html is newer than er
   const past = new Date(Date.now() - 3000);
   utimesSync(errorPath(vault, id), past, past);
   writeFileSync(bodyPath(vault, id), "<title>ok</title>FORM_CONTENT");
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const html = await (await app.request(`/s/${id}/body`)).text();
   expect(html).toContain("FORM_CONTENT");
   // timeout banner must NOT appear
@@ -101,7 +115,7 @@ test("GET /s/:uuid/body shows timeout error when body.html NOT updated after kil
   const past = new Date(Date.now() - 3000);
   utimesSync(bodyPath(vault, id), past, past);
   writeFileSync(errorPath(vault, id), "timeout after 300s — vc process killed");
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const html = await (await app.request(`/s/${id}/body`)).text();
   expect(html).toContain("session starting");
   // timeout banner MUST appear — skill never produced output
@@ -109,13 +123,13 @@ test("GET /s/:uuid/body shows timeout error when body.html NOT updated after kil
 });
 
 test("GET /s/:uuid/body returns 404 when no body.html", async () => {
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const res = await app.request("/s/no-such-uuid/body");
   expect(res.status).toBe(404);
 });
 
 test("GET /s/:uuid returns the iframe shell with correct src and vault-anchored resume cmd", async () => {
-  const html = await (await makeApp(vault).request("/s/u9")).text();
+  const html = await (await makeApp(vault, db).request("/s/u9")).text();
   expect(html).toContain('src="/s/u9/body"');
   expect(html).toContain("/s/u9/stream");
   // Resume command must include the vault path so the user runs it from the right cwd
@@ -128,7 +142,7 @@ test("POST /s/:uuid/send serializes ALL form fields (Bug #1 fix)", async () => {
   mkdirSync(sessionDir(vault, "multi-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "multi-uuid"), "<title>s</title>hi");
   const before = spawnCalls.length;
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const form = new FormData();
   form.append("name", "Alice");
   form.append("skill_deep-research", "on");
@@ -153,7 +167,7 @@ test("POST /s/:uuid/send redirects to shell and writes working page into body.ht
   mkdirSync(sessionDir(vault, "send-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "send-uuid"), "<title>s</title>hi");
   const before = spawnCalls.length;
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const form = new FormData();
   form.append("text", "my answer");
   const res = await app.request("/s/send-uuid/send", { method: "POST", body: form });
@@ -186,7 +200,7 @@ test("GET /s/:uuid/stream emits SSE keepalive ping within 6s when body.html does
   const past = new Date(Date.now() - 10_000);
   utimesSync(bp, past, past);
 
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const res = await app.request(`/s/${id}/stream`);
   expect(res.status).toBe(200);
   expect(res.headers.get("content-type")).toContain("text/event-stream");
@@ -227,7 +241,7 @@ test("GET /s/:uuid shows skill name in header when session-meta.json exists", as
     join(sessionDir(vault, id), "session-meta.json"),
     JSON.stringify({ skill: "smoke-test", launchedAt: Date.now(), text: "", runner: "vc --" }),
   );
-  const html = await (await makeApp(vault).request(`/s/${id}`)).text();
+  const html = await (await makeApp(vault, db).request(`/s/${id}`)).text();
   expect(html).toContain("smoke-test");
   // raw id must NOT appear in the session-name slot
   expect(html).not.toMatch(/class="session-name"[^>]*>u-named-session</);
@@ -239,7 +253,7 @@ test("GET /s/:uuid/body wraps bare fragment with readable light-theme CSS", asyn
   mkdirSync(sessionDir(vault, id), { recursive: true });
   // smoke-test writes bare fragments: no <html>, no <style>
   writeFileSync(bodyPath(vault, id), "<h1>smoke-test ✓ session live</h1><p>no input</p>");
-  const html = await (await makeApp(vault).request(`/s/${id}/body`)).text();
+  const html = await (await makeApp(vault, db).request(`/s/${id}/body`)).text();
   // Must include explicit color + background so text is readable on any system
   expect(html).toContain("color");
   expect(html).toContain("background");
@@ -250,7 +264,7 @@ test("GET /s/:uuid/body does NOT double-wrap full HTML documents", async () => {
   const id = "u-full-html-body";
   mkdirSync(sessionDir(vault, id), { recursive: true });
   writeFileSync(bodyPath(vault, id), "<!doctype html><html><head><title>t</title></head><body>full</body></html>");
-  const html = await (await makeApp(vault).request(`/s/${id}/body`)).text();
+  const html = await (await makeApp(vault, db).request(`/s/${id}/body`)).text();
   // Should pass through as-is (single doctype)
   expect(html.split("<!doctype html").length).toBe(2);
   expect(html).toContain("full");
@@ -260,13 +274,13 @@ test("GET /s/:uuid/body injects base target=_top so in-body links escape the ifr
   const id = "basetarget-uuid";
   mkdirSync(sessionDir(vault, id), { recursive: true });
   writeFileSync(bodyPath(vault, id), '<h1>all set</h1><a href="/">return to dashboard</a>');
-  const html = await (await makeApp(vault).request(`/s/${id}/body`)).text();
+  const html = await (await makeApp(vault, db).request(`/s/${id}/body`)).text();
   expect(html).toContain('<base target="_top">');
 });
 
 test("POST /launch writes placeholder + session-meta.json, calls spawnTurn, redirects", async () => {
   const before = spawnCalls.length;
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const form = new FormData();
   form.append("skill", "deep-research");
   form.append("text", "AI safety");
@@ -297,7 +311,7 @@ test("POST /launch persists resolved runner command in session-meta", async () =
     }),
   );
   const before = spawnCalls.length;
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const form = new FormData();
   form.append("skill", "smoke-test");
   form.append("text", "");
@@ -320,7 +334,7 @@ test("POST /s/:uuid/send reuses runner from session-meta on resume", async () =>
     JSON.stringify({ skill: "smoke-test", launchedAt: Date.now(), text: "", runner: "claude_artem" }),
   );
   const before = spawnCalls.length;
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const form = new FormData();
   form.append("text", "echo: hello");
   const res = await app.request(`/s/${id}/send`, { method: "POST", body: form });
@@ -340,7 +354,7 @@ test("GET /s/:uuid/transcript renders escaped turns from the CC transcript", asy
     `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working <x>"}]}}\n`,
   );
   try {
-    const app = makeApp(vault);
+    const app = makeApp(vault, db);
     const res = await app.request(`/s/${uuid}/transcript`);
     expect(res.status).toBe(200);
     const body = await res.text();
@@ -353,7 +367,7 @@ test("GET /s/:uuid/transcript renders escaped turns from the CC transcript", asy
 });
 
 test("GET /s/:uuid/transcript returns strictly empty body for unknown uuid", async () => {
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const res = await app.request("/s/99999999-8888-7777-6666-555555555555/transcript");
   expect(res.status).toBe(200);
   expect(await res.text()).toBe("");
@@ -362,7 +376,7 @@ test("GET /s/:uuid/transcript returns strictly empty body for unknown uuid", asy
 // --- Drain route tests ---
 
 test("POST /drain with non-existent worktree returns 412", async () => {
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const form = new FormData();
   form.append("issue", "99999");
   const res = await app.request("/drain", { method: "POST", body: form });
@@ -372,7 +386,7 @@ test("POST /drain with non-existent worktree returns 412", async () => {
 });
 
 test("GET / renders 'Agent inbox' section in dashboard", async () => {
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const res = await app.request("/");
   expect(res.status).toBe(200);
   const html = await res.text();
@@ -388,7 +402,7 @@ test("GET / agent-inbox lists an awaiting (human-parked) session", async () => {
     join(sessionDir(vault, awaitId), "session-meta.json"),
     JSON.stringify({ skill: "ralph", launchedAt: Date.now(), text: "drain #42", runner: "vc --", drainIssue: 42, worktree: "/tmp/drain-wt-test", max: 5 }),
   );
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const res = await app.request("/");
   const html = await res.text();
   expect(html).toContain("awaiting verdict");
@@ -408,7 +422,7 @@ test("POST /s/:uuid/stop kills the child, marks stopped, and halts a drain", asy
   const wt = "/tmp/void-os-stop-wt";
   mkdirSync(wt, { recursive: true });
   writeFileSync(join(dir, "session-meta.json"), JSON.stringify({ skill: "x", drainIssue: 7, worktree: wt }));
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const res = await app.request(`/s/${uuid}/stop`, { method: "POST" });
   expect(res.status).toBeLessThan(400);
   expect(existsSync(stopPath(vault, uuid))).toBe(true);
@@ -428,7 +442,7 @@ test("POST /stop writes a clean stopped body.html and clears a stale error.txt",
   mkdirSync(sessionDir(vault, uuid), { recursive: true });
   writeFileSync(bodyPath(vault, uuid), "<title>x</title><p>running…</p>");
   writeFileSync(errorPath(vault, uuid), "exit 143; body.html NOT updated"); // the stale banner
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   await app.request(`/s/${uuid}/stop`, { method: "POST" });
   expect(existsSync(stopPath(vault, uuid))).toBe(true);
   expect(existsSync(errorPath(vault, uuid))).toBe(false);          // banner cleared
@@ -442,7 +456,7 @@ test("GET /body suppresses the exit-143 banner when stopped.txt exists", async (
   writeFileSync(bodyPath(vault, uuid), "<title>x</title><p>stopped</p>");
   writeFileSync(errorPath(vault, uuid), "exit 143; body.html NOT updated");
   writeFileSync(stopPath(vault, uuid), "stopped\n");
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const res = await app.request(`/s/${uuid}/body`);
   const body = await res.text();
   expect(body).not.toContain("NOT updated");
@@ -453,7 +467,7 @@ test("POST /stop on an already-stopped session is a no-op (idempotent)", async (
   rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
   mkdirSync(sessionDir(vault, uuid), { recursive: true });
   writeFileSync(bodyPath(vault, uuid), "<p>x</p>");
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const r1 = await app.request(`/s/${uuid}/stop`, { method: "POST" });
   const r2 = await app.request(`/s/${uuid}/stop`, { method: "POST" }); // second stop
   expect(r1.status).toBeLessThan(400);
@@ -467,7 +481,7 @@ test("GET /s/:uuid/status returns 'stopped' when stopped.txt present", async () 
   mkdirSync(sessionDir(vault, uuid), { recursive: true });
   writeFileSync(bodyPath(vault, uuid), "<p>done</p>");
   writeFileSync(stopPath(vault, uuid), "stopped\n");
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const res = await app.request(`/s/${uuid}/status`);
   expect(await res.text()).toBe("stopped");
 });
@@ -486,7 +500,7 @@ test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktr
   const runTurnBefore = runTurnCalls.length;
   const drainBefore = drainCalls.length;
 
-  const app = makeApp(vault);
+  const app = makeApp(vault, db);
   const form = new FormData();
   form.append("verdict", "accept");
   const res = await app.request(`/s/${parkedId}/send`, { method: "POST", body: form });

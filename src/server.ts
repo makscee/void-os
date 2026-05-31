@@ -5,9 +5,10 @@ import { mkdirSync, writeFileSync, existsSync, statSync, readFileSync, rmSync } 
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import type { Database } from "bun:sqlite";
 import { listCatalogSkills } from "./catalog.ts";
 import { listSessions } from "./sessions.ts";
-import { buildLaunchArgv, buildAnswerArgv, spawnTurn, runTurn } from "./spawn.ts";
+import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn } from "./spawn.ts";
 import { drain, type DrainOpts } from "./drain.ts";
 import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody } from "./render.ts";
 import { killProcessTree } from "./kill.ts";
@@ -15,6 +16,9 @@ import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, st
 import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
+import { handleHookEvent, type HookPayload } from "./hooks-endpoint.ts";
+import { latestRunForSession, setRunState } from "./registry.ts";
+import { killSession } from "./tmux.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogRoot = join(repoRoot, "catalog");
@@ -49,7 +53,7 @@ export function buildDrainOptsFor(vault: string, issueNum: number, worktree: str
   };
 }
 
-export function makeApp(vault: string) {
+export function makeApp(vault: string, db: Database) {
   const app = new Hono();
 
   // GET / — dashboard: skill buttons + session list + relay status banner
@@ -61,7 +65,19 @@ export function makeApp(vault: string) {
     );
   });
 
-  // POST /launch — relay auth guard, create session dir, write placeholder, fire spawnTurn, redirect
+  // POST /hook?run=<run-id> — CC HTTP hook sink. Maps a lifecycle event to a registry
+  // transition. Always 200 (a hook must never see a 5xx — it would stall the Run).
+  app.post("/hook", async (c) => {
+    const runId = c.req.query("run") ?? "";
+    let payload: HookPayload;
+    try { payload = (await c.req.json()) as HookPayload; }
+    catch { return c.json({ ok: false }, 200); }
+    try { handleHookEvent(db, runId, payload, Date.now()); }
+    catch { /* never fail a hook */ }
+    return c.json({ ok: true }, 200);
+  });
+
+  // POST /launch — relay auth guard, create session dir, write placeholder, spawn tmux Run, redirect
   app.post("/launch", async (c) => {
     // Bug #4 fix: check relay auth BEFORE creating any session state
     const status = await realDeps.vcStatus();
@@ -81,20 +97,21 @@ a{color:#93c5fd}</style>
     const skill = String(body.skill ?? "");
     const text = String(body.text ?? "");
     const runnerLabel = String(body.runner ?? "");
-    const runnerCommand = resolveRunner(readConfig(vault), runnerLabel || undefined);
-    const uuid = randomUUID();
-    const dir = sessionDir(vault, uuid);
+    const cfg = readConfig(vault);
+    const runnerCommand = resolveRunner(cfg, runnerLabel || undefined);
+    const daemonUrl = `http://127.0.0.1:${cfg.port}`;
+    const { sessionId, tmuxSession } = spawnRun({
+      db, vault, daemonUrl, skill, agent: null, runnerCommand, now: Date.now(),
+    });
+    // Keep the body.html render shell working: seed a placeholder + meta under the sessionId key.
+    const dir = sessionDir(vault, sessionId);
     mkdirSync(dir, { recursive: true });
-    // Write session metadata for title fallback + status display
     writeFileSync(
       join(dir, "session-meta.json"),
-      JSON.stringify({ skill, launchedAt: Date.now(), text, runner: runnerCommand }),
+      JSON.stringify({ skill, launchedAt: Date.now(), text, tmuxSession, runner: runnerCommand }),
     );
-    // Forge #2: write placeholder BEFORE spawning so the body route never 404s
-    writeFileSync(bodyPath(vault, uuid), placeholderBody(skill));
-    // F7: buildLaunchArgv already handles prompt construction
-    spawnTurn(vault, uuid, buildLaunchArgv(uuid, skill, text), runnerCommand);
-    return c.redirect(`/s/${uuid}`);
+    writeFileSync(bodyPath(vault, sessionId), placeholderBody(skill));
+    return c.redirect(`/s/${sessionId}`);
   });
 
   // GET /s/:uuid — iframe shell wrapping the session body
@@ -196,28 +213,37 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     return c.redirect("/");
   });
 
-  // POST /s/:uuid/stop — kill the vc child, mark the session stopped, and halt any drain it belongs to.
-  // "Stop means stop": no respawn. A drain-owned stop writes <worktree>/drain.stop so the loop
-  // returns status:"stopped" on its next iteration check (the stopped box stays unchecked).
+  // POST /s/:uuid/stop — stop a Run: kill tmux session (interactive) or pid tree (drain headless),
+  // mark the registry row exited, halt any drain loop. "Stop means stop": no respawn.
   app.post("/s/:uuid/stop", async (c) => {
-    const uuid = c.req.param("uuid");
+    const sessionId = c.req.param("uuid");
     // Idempotent: stopping an already-stopped session is a no-op.
-    if (existsSync(stopPath(vault, uuid))) return c.redirect("/");
+    if (existsSync(stopPath(vault, sessionId))) return c.redirect("/");
     // Write the terminal marker FIRST so the race guard in spawn.ts sees it
     // before the killed child's late exit handler can fire.
-    writeFileSync(stopPath(vault, uuid), "stopped\n");
-    const pp = pidPath(vault, uuid);
+    writeFileSync(stopPath(vault, sessionId), "stopped\n");
+
+    // Kill the latest Run's tmux session + mark the run exited in the registry.
+    const run = latestRunForSession(db, sessionId);
+    if (run && run.state !== "exited_ok" && run.state !== "exited_fail") {
+      killSession(run.tmux_session); // tmux kill-session = stop (folds VOS-187 stop semantics)
+      setRunState(db, run.id, "exited_fail", Date.now()); // operator-stopped = non-clean exit
+    }
+
+    // Drain-owned Runs are headless (runTurn), not tmux — keep the VOS-187 tree-kill for the in-flight child.
+    const pp = pidPath(vault, sessionId);
     if (existsSync(pp)) {
       const pid = parseInt(readFileSync(pp, "utf8"), 10);
-      if (Number.isFinite(pid)) await killProcessTree(pid); // tree kill + SIGTERM→SIGKILL
+      if (Number.isFinite(pid)) await killProcessTree(pid);
       try { rmSync(pp); } catch { /* ignore */ }
     }
-    // Clean terminal view: clear the stale error banner + write a stopped body so
-    // re-open shows "stopped" (never the placeholder spinner) and the SSE swaps it in.
-    try { rmSync(errorPath(vault, uuid)); } catch { /* none */ }
+
+    // Clean terminal view: clear the stale error banner.
+    try { rmSync(errorPath(vault, sessionId)); } catch { /* none */ }
+
     // Halt the drain if this session belongs to one; read skill name for stopped body.
     let skill = "";
-    const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
+    const metaPath = join(sessionDir(vault, sessionId), "session-meta.json");
     if (existsSync(metaPath)) {
       try {
         const m = JSON.parse(readFileSync(metaPath, "utf8")) as { skill?: string; drainIssue?: number; worktree?: string };
@@ -229,7 +255,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     }
     // Write a clean stopped body so re-open shows true terminal state (not placeholder spinner).
     // Advancing mtime also triggers the SSE reload → spinner replaced with stopped view.
-    writeFileSync(bodyPath(vault, uuid), stoppedBody(skill));
+    writeFileSync(bodyPath(vault, sessionId), stoppedBody(skill));
     return c.redirect("/");
   });
 

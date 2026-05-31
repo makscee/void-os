@@ -1,7 +1,13 @@
 // spawn.ts — argv builders (Task 6) + spawnTurn fire-and-forget integration (Task 8)
+// + spawnRun: create Run row + tmux session + per-Run hook settings
 import { openSync, closeSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath } from "./paths.ts";
+import { randomUUID } from "node:crypto";
+import type { Database } from "bun:sqlite";
+import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath, hookSettingsDir } from "./paths.ts";
+import { createSession, createRun, getSession } from "./registry.ts";
+import { newRunSession } from "./tmux.ts";
+import { writeHookSettings } from "./hooks-endpoint.ts";
 
 const PERM = ["--permission-mode", "bypassPermissions"] as const;
 const RENDER_PREAMBLE = "[render contract: rewrite body.html, no terminal reply]";
@@ -124,6 +130,74 @@ export function spawnTurn(vault: string, uuid: string, argv: string[], command: 
       );
     }
   });
+}
+
+export interface SpawnRunOpts {
+  db: Database;
+  vault: string;
+  daemonUrl: string;    // e.g. "http://127.0.0.1:4317"
+  skill: string | null; // slash-command to pass (omit for raw interactive)
+  agent: string | null; // agent label for the session row
+  runnerCommand: string;
+  now?: number;
+  sessionId?: string;   // if provided, spawn a second Run on an existing Session (resume path)
+}
+
+export interface SpawnRunResult {
+  runId: string;
+  sessionId: string;
+  tmuxSession: string;
+}
+
+/**
+ * Create a Run row + a named tmux session containing a live CC/vc subprocess.
+ * Writes per-Run hook settings so CC POSTs lifecycle events to /hook?run=<runId>.
+ *
+ * - Fresh session: spawns `<runner> --session-id <ccSeed> --settings <settingsPath>`
+ * - Resume:        spawns `<runner> --resume <resume_token> --settings <settingsPath>`
+ *
+ * The tmux session name is `vos-run-<runId>`.
+ */
+export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
+  const now = opts.now ?? Date.now();
+  const runId = `run-${randomUUID()}`;
+  let sessionId = opts.sessionId ?? randomUUID();
+
+  // Ensure the Session row exists (create on fresh launch; skip on resume).
+  if (!opts.sessionId) {
+    createSession(opts.db, { id: sessionId, agent: opts.agent, skill: opts.skill, now });
+  }
+
+  // Write per-Run hook settings file.
+  const settingsPath = writeHookSettings(hookSettingsDir(opts.vault), opts.daemonUrl, runId);
+
+  // Determine whether to resume an existing CC session.
+  const ses = opts.sessionId ? getSession(opts.db, opts.sessionId) : null;
+  const ccSeed = randomUUID(); // CC's own session uuid for a fresh thread
+  const sessionArg: string[] = ses?.resume_token
+    ? ["--resume", ses.resume_token]
+    : ["--session-id", ccSeed];
+
+  // Interactive launch (NO -p): CC stays attached in the tmux pane.
+  // --settings scopes hooks to this Run. Skill is passed as a slash-command for the first turn.
+  const argv: string[] = [
+    ...sessionArg,
+    "--settings", settingsPath,
+    "--permission-mode", "bypassPermissions",
+    ...(opts.skill ? [opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`] : []),
+  ];
+  const toks = tokenizeCommand(opts.runnerCommand);
+  const fullCommand = [...toks, ...argv].map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ");
+
+  const tmuxSession = `vos-run-${runId}`;
+  const pid = newRunSession(tmuxSession, opts.vault, fullCommand, {
+    VOID_OS_SESSION: sessionId,
+    VOS_RUN_ID: runId,
+  });
+
+  createRun(opts.db, { id: runId, sessionId, tmuxSession, pid, now });
+
+  return { runId, sessionId, tmuxSession };
 }
 
 /**

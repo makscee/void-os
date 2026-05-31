@@ -1,10 +1,11 @@
 // serve.ts — start the Hono server + open browser (Task 12)
 // F5: port 4317 hardcoded; --port flag or VOID_OS_PORT env override.
 // --no-open: skip browser-open (required for G6 headless E2E).
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { makeApp } from "./server.ts";
-import { readConfig, writeConfig } from "./paths.ts";
+import { readConfig, writeConfig, registryDbPath } from "./paths.ts";
+import { openRegistry } from "./registry.ts";
 
 /** Resolve the port: --port <n> flag > VOID_OS_PORT env > void-os.json > 4317. */
 export function resolvePort(argv: string[], env: Record<string, string | undefined>, cfgPort: number): number {
@@ -44,7 +45,12 @@ export async function runServe(): Promise<void> {
     writeConfig(cfg);
   }
 
-  const app = makeApp(vault);
+  // Open the registry DB (create dir if needed).
+  const dbPath = registryDbPath(vault);
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const db = openRegistry(dbPath);
+
+  const app = makeApp(vault, db);
   const url = `http://localhost:${port}`;
 
   // idleTimeout:255 prevents Bun's 10s default from killing long-lived SSE connections
