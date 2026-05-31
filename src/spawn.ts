@@ -38,7 +38,7 @@ export function tokenizeCommand(command: string): string[] {
 }
 
 /** Return the next run index (1-based) for this session's run-N.log files. */
-function nextRunIndex(vault: string, uuid: string): number {
+export function nextRunIndex(vault: string, uuid: string): number {
   const dir = sessionDir(vault, uuid);
   if (!existsSync(dir)) return 1;
   const used = readdirSync(dir).filter((f) => /^run-\d+\.log$/.test(f)).length;
@@ -106,4 +106,33 @@ export function spawnTurn(vault: string, uuid: string, argv: string[], command: 
       );
     }
   });
+}
+
+/**
+ * Awaitable spawn of one runner turn. Returns the exit code. Unlike spawnTurn
+ * (fire-and-forget, cwd=vault), this lets the drain runner await each iteration
+ * and run it in an arbitrary cwd (the worktree). State I/O still resolves under
+ * the vault via sessionDir — cwd and vault are independent.
+ * @param cwd - working dir for the spawned vc (the worktree for drains).
+ */
+export async function runTurn(
+  cwd: string,
+  vault: string,
+  uuid: string,
+  argv: string[],
+  command: string,
+): Promise<number> {
+  const n = nextRunIndex(vault, uuid);
+  const logFd = openSync(runLogPath(vault, uuid, n), "a");
+  const proc = Bun.spawn([...tokenizeCommand(command), ...argv], {
+    cwd,
+    env: { ...process.env, VOID_OS_SESSION: uuid },
+    stdin: "ignore",
+    stdout: logFd,
+    stderr: logFd,
+  });
+  const watchdog = setTimeout(() => proc.kill(), SPAWN_TIMEOUT_MS);
+  const code = await proc.exited;
+  clearTimeout(watchdog);
+  return code ?? -1;
 }

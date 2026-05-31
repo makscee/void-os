@@ -10,9 +10,10 @@ import { join } from "node:path";
 
 const vault = "/tmp/voidos-server-test";
 
-// Stub spawnTurn before importing server.ts so routes don't fire real vc processes.
+// Stub spawnTurn + runTurn before importing server.ts so routes don't fire real vc processes.
 // Bun.mock.module replaces the module for all subsequent imports in this file.
 const spawnCalls: Array<{ vault: string; uuid: string; argv: string[]; command: string }> = [];
+const runTurnCalls: Array<{ cwd: string; vault: string; uuid: string; argv: string[]; command: string }> = [];
 mock.module("../src/spawn.ts", () => ({
   buildLaunchArgv: (uuid: string, skill: string, text: string) => [
     "--session-id", uuid, "-p", text ? `/${skill} ${text}` : `/${skill}`,
@@ -24,6 +25,13 @@ mock.module("../src/spawn.ts", () => ({
   ],
   tokenizeCommand: (cmd: string) => cmd.trim().split(/\s+/).filter(Boolean),
   spawnTurn: (v: string, u: string, a: string[], cmd: string) => { spawnCalls.push({ vault: v, uuid: u, argv: a, command: cmd }); },
+  runTurn: async (cwd: string, v: string, u: string, a: string[], cmd: string) => { runTurnCalls.push({ cwd, vault: v, uuid: u, argv: a, command: cmd }); return 0; },
+}));
+
+// Stub drain to avoid long-running loop in tests
+const drainCalls: Array<unknown> = [];
+mock.module("../src/drain.ts", () => ({
+  drain: async (opts: unknown) => { drainCalls.push(opts); return { status: "complete", iterations: 0 }; },
 }));
 
 // Stub preflight to return authed by default (tests override per-test via module reload if needed)
@@ -34,7 +42,7 @@ mock.module("../src/preflight.ts", () => ({
 }));
 
 // Import AFTER mock is registered
-const { makeApp } = await import("../src/server.ts");
+const { makeApp, buildDrainOptsFor } = await import("../src/server.ts");
 
 beforeAll(() => {
   rmSync(vault, { recursive: true, force: true });
@@ -336,4 +344,71 @@ test("GET /s/:uuid/transcript returns strictly empty body for unknown uuid", asy
   const res = await app.request("/s/99999999-8888-7777-6666-555555555555/transcript");
   expect(res.status).toBe(200);
   expect(await res.text()).toBe("");
+});
+
+// --- Drain route tests ---
+
+test("POST /drain with non-existent worktree returns 412", async () => {
+  const app = makeApp(vault);
+  const form = new FormData();
+  form.append("issue", "99999");
+  const res = await app.request("/drain", { method: "POST", body: form });
+  expect(res.status).toBe(412);
+  const text = await res.text();
+  expect(text).toContain("does not exist");
+});
+
+test("GET / renders 'Agent inbox' section in dashboard", async () => {
+  const app = makeApp(vault);
+  const res = await app.request("/");
+  expect(res.status).toBe(200);
+  const html = await res.text();
+  expect(html).toContain("Agent inbox");
+});
+
+test("GET / agent-inbox lists an awaiting (human-parked) session", async () => {
+  const awaitId = "await-drain-uuid";
+  mkdirSync(sessionDir(vault, awaitId), { recursive: true });
+  // body.html with <form so deriveStatus returns "awaiting"
+  writeFileSync(bodyPath(vault, awaitId), `<title>ralph box review</title><form action="/s/${awaitId}/send" method="POST"><button>accept</button></form>`);
+  writeFileSync(
+    join(sessionDir(vault, awaitId), "session-meta.json"),
+    JSON.stringify({ skill: "ralph", launchedAt: Date.now(), text: "drain #42", runner: "vc --", drainIssue: 42, worktree: "/tmp/drain-wt-test", max: 5 }),
+  );
+  const app = makeApp(vault);
+  const res = await app.request("/");
+  const html = await res.text();
+  expect(html).toContain("awaiting verdict");
+});
+
+test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktree and triggers drain continuation", async () => {
+  const parkedId = "parked-drain-uuid";
+  const drainWorktree = "/tmp/drain-wt-parked";
+  const drainIssue = 42;
+  mkdirSync(sessionDir(vault, parkedId), { recursive: true });
+  writeFileSync(bodyPath(vault, parkedId), `<title>review</title><form action="/s/${parkedId}/send" method="POST"><button>accept</button></form>`);
+  writeFileSync(
+    join(sessionDir(vault, parkedId), "session-meta.json"),
+    JSON.stringify({ skill: "ralph", launchedAt: Date.now(), text: "drain #42", runner: "vc --", drainIssue, worktree: drainWorktree, max: 3 }),
+  );
+
+  const runTurnBefore = runTurnCalls.length;
+  const drainBefore = drainCalls.length;
+
+  const app = makeApp(vault);
+  const form = new FormData();
+  form.append("verdict", "accept");
+  const res = await app.request(`/s/${parkedId}/send`, { method: "POST", body: form });
+  expect(res.status).toBe(200);
+
+  // runTurn must have been called with cwd = the worktree (NOT the vault)
+  const newRunTurnCalls = runTurnCalls.slice(runTurnBefore);
+  expect(newRunTurnCalls.length).toBe(1);
+  expect(newRunTurnCalls[0].cwd).toBe(drainWorktree);
+  expect(newRunTurnCalls[0].vault).toBe(vault);
+
+  // Drain continuation is fire-and-forget (setTimeout 500ms); wait briefly
+  await new Promise((r) => setTimeout(r, 600));
+  const newDrainCalls = drainCalls.slice(drainBefore);
+  expect(newDrainCalls.length).toBe(1);
 });

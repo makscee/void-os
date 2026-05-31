@@ -42,3 +42,11 @@ test("real catalog contains smoke-test skill", () => {
   expect(smokeTest).toBeDefined();
   expect(smokeTest!.description).toContain("smoke");
 });
+
+test("real catalog contains ralph skill with non-empty description", () => {
+  const skills = listCatalogSkills(realCatalogRoot);
+  const ralph = skills.find((s) => s.name === "ralph");
+  expect(ralph).toBeDefined();
+  expect(ralph!.description.length).toBeGreaterThan(0);
+  expect(ralph!.description).toContain("Box");
+});

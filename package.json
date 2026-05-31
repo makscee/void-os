@@ -7,7 +7,8 @@
   },
   "scripts": {
     "test": "bun test",
-    "serve": "bun run src/cli.ts serve"
+    "serve": "bun run src/cli.ts serve",
+    "verify": "bash scripts/verify.sh"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
