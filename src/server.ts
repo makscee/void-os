@@ -1,7 +1,7 @@
 // server.ts — Hono app with all routes (Task 10)
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { mkdirSync, writeFileSync, existsSync, statSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, statSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -10,7 +10,7 @@ import { listSessions } from "./sessions.ts";
 import { buildLaunchArgv, buildAnswerArgv, spawnTurn, runTurn } from "./spawn.ts";
 import { drain, type DrainOpts } from "./drain.ts";
 import { renderDashboard, renderShell, placeholderBody, workingPage } from "./render.ts";
-import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner } from "./paths.ts";
+import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, stopPath } from "./paths.ts";
 import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
@@ -180,6 +180,32 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     const runner = resolveRunner(readConfig(vault));
     const max = Number(body.max ?? 12);
     void drain(buildDrainOptsFor(vault, issueNum, worktree, runner, max));
+    return c.redirect("/");
+  });
+
+  // POST /s/:uuid/stop — kill the vc child, mark the session stopped, and halt any drain it belongs to.
+  // "Stop means stop": no respawn. A drain-owned stop writes <worktree>/drain.stop so the loop
+  // returns status:"stopped" on its next iteration check (the stopped box stays unchecked).
+  app.post("/s/:uuid/stop", (c) => {
+    const uuid = c.req.param("uuid");
+    const pp = pidPath(vault, uuid);
+    if (existsSync(pp)) {
+      const pid = parseInt(readFileSync(pp, "utf8"), 10);
+      if (Number.isFinite(pid)) { try { process.kill(pid); } catch { /* already gone */ } }
+      try { rmSync(pp); } catch { /* ignore */ }
+    }
+    // Mark stopped (sessions.ts deriveStatus reads this first).
+    writeFileSync(stopPath(vault, uuid), "stopped\n");
+    // Halt the drain if this session belongs to one.
+    const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
+    if (existsSync(metaPath)) {
+      try {
+        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { drainIssue?: number; worktree?: string };
+        if (typeof m.drainIssue === "number" && m.worktree) {
+          writeFileSync(join(m.worktree, "drain.stop"), "1");
+        }
+      } catch { /* ignore malformed meta */ }
+    }
     return c.redirect("/");
   });
 

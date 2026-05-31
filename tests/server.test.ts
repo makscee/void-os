@@ -4,8 +4,8 @@
  * Tests: GET /, GET /s/:uuid, GET /s/:uuid/body (with + without error.txt), POST /s/:uuid/send.
  */
 import { expect, test, beforeAll, mock } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync } from "node:fs";
-import { bodyPath, sessionDir, errorPath } from "../src/paths.ts";
+import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync } from "node:fs";
+import { bodyPath, sessionDir, errorPath, pidPath, stopPath } from "../src/paths.ts";
 import { join } from "node:path";
 
 const vault = "/tmp/voidos-server-test";
@@ -379,6 +379,31 @@ test("GET / agent-inbox lists an awaiting (human-parked) session", async () => {
   const res = await app.request("/");
   const html = await res.text();
   expect(html).toContain("awaiting verdict");
+});
+
+test("POST /s/:uuid/stop kills the child, marks stopped, and halts a drain", async () => {
+  const uuid = "stop-route-uuid";
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<title>running</title><p>running</p>");
+  // Spawn a real child to kill
+  const child = Bun.spawn(["sleep", "30"]);
+  writeFileSync(pidPath(vault, uuid), String(child.pid));
+  const wt = "/tmp/void-os-stop-wt";
+  mkdirSync(wt, { recursive: true });
+  writeFileSync(join(dir, "session-meta.json"), JSON.stringify({ skill: "x", drainIssue: 7, worktree: wt }));
+  const app = makeApp(vault);
+  const res = await app.request(`/s/${uuid}/stop`, { method: "POST" });
+  expect(res.status).toBeLessThan(400);
+  expect(existsSync(stopPath(vault, uuid))).toBe(true);
+  expect(existsSync(join(wt, "drain.stop"))).toBe(true);
+  expect(existsSync(pidPath(vault, uuid))).toBe(false);
+  // Give the OS a moment to reap the killed process
+  await new Promise((r) => setTimeout(r, 100));
+  // Verify child is no longer alive
+  let alive = true;
+  try { process.kill(child.pid!, 0); } catch { alive = false; }
+  expect(alive).toBe(false);
 });
 
 test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktree and triggers drain continuation", async () => {
