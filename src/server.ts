@@ -224,6 +224,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       // (the skill left a dirty tree — its reviewable changes — which the runner now commits).
       const acceptHumanBox = text.includes("verdict: accept") && meta.parkedBoxRaw
         ? meta.parkedBoxRaw : undefined;
+      // Clear body.html <form> after verdict so the session exits the agent-inbox
+      if (acceptHumanBox) {
+        writeFileSync(bodyPath(vault, uuid), "<p>Verdict accepted — drain continuing.</p>");
+      }
       setTimeout(() => {
         const drainOpts = buildDrainOptsFor(vault, meta.drainIssue!, meta.worktree!, runnerCommand, meta.max ?? 12);
         void drain({ ...drainOpts, acceptHumanBox });

@@ -27,13 +27,15 @@ of that after you exit.
 
 1. **Work your assigned Box.** Make the minimal code/doc change its acceptance
    criteria require. Do NOT attempt other Boxes.
-2. **Render progress** to this session's `body.html` (resolve `$VOID_OS_SESSION`,
-   write `sessions/<id>/body.html` under the vault) so the dashboard shows what
-   you did. Keep it presentation-only.
+2. **Render progress** to this session's `body.html` at the ABSOLUTE path
+   `$HOME/.void-os/sessions/$VOID_OS_SESSION/body.html` so the dashboard shows
+   what you did. Keep it presentation-only. Do NOT write to a relative path —
+   your cwd is the worktree, not the vault.
 3. **For a `human` Box:** your job is to make the change reviewable, not to pass
-   any check. Render into `body.html`: (a) a short markdown review summary of
-   what you changed and what the human should eye, and (b) an accept / edit /
-   natural-language-feedback `<form>` posting to `/s/$VOID_OS_SESSION/send`.
+   any check. Render into `$HOME/.void-os/sessions/$VOID_OS_SESSION/body.html`:
+   (a) a short markdown review summary of what you changed and what the human
+   should eye, and (b) an accept / edit / natural-language-feedback `<form>`
+   posting to `/s/$VOID_OS_SESSION/send`.
    The `<form>` is REQUIRED — it is what marks this session `awaiting` so the
    runner parks and the inbox surfaces you. Then STOP.
 4. **Leave the worktree clean of scratch.** Anything you create and do not need
@@ -49,18 +51,20 @@ of that after you exit.
 If your launch prompt contains a human verdict (`verdict: accept` /
 `verdict: edit` / `feedback: <text>`), you were resumed to act on it:
 - `accept` → nothing more to change; render a brief "accepted" note to
-  `body.html` WITHOUT a `<form>` (so you are no longer `awaiting`) and STOP. The
-  runner will check the box + commit + continue the loop.
+  `$HOME/.void-os/sessions/$VOID_OS_SESSION/body.html` WITHOUT a `<form>`
+  (so you are no longer `awaiting`) and STOP. The runner will check the box +
+  commit + continue the loop.
 - `edit` / `feedback` → apply the feedback (it MAY reshape the Issue's Boxes —
   add/remove/rewrite via `gh issue edit` — not just revise one diff), render the
-  updated artifact + a fresh `<form>` to `body.html`, and STOP for another
+  updated artifact + a fresh `<form>` to
+  `$HOME/.void-os/sessions/$VOID_OS_SESSION/body.html`, and STOP for another
   verdict round.
 
 ## Outputs (contract)
 
 - Code/doc changes in the worktree (uncommitted — the runner commits).
-- `body.html` rewritten (dashboard presentation). For a human Box it MUST carry
-  the accept/edit/feedback `<form>`.
+- `$HOME/.void-os/sessions/$VOID_OS_SESSION/body.html` rewritten (dashboard
+  presentation). For a human Box it MUST carry the accept/edit/feedback `<form>`.
 - NOTHING ELSE. No checkbox write, no commit, no gate run, no signal file.
 - NEVER carry state in the terminal conversation — only files (the worktree,
   `progress.txt`, `body.html`).
