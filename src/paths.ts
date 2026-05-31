@@ -11,6 +11,8 @@ export const runLogPath = (vault: string, uuid: string, n: number) =>
 export const pidPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "vc.pid");
 export const stopPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "stopped.txt");
 export const configPath = (vault: string) => join(vault, "void-os.json");
+export const registryDbPath = (vault: string) => join(vault, ".void-os", "registry.db");
+export const hookSettingsDir = (vault: string) => join(vault, ".void-os", "cc");
 export const vaultRoot = () => process.env.VOID_OS_VAULT ?? join(process.env.HOME ?? "/tmp", ".void-os");
 
 export interface Runner {
