@@ -140,8 +140,19 @@ export function renderDashboard(
     : "";
 
   const skillChips = skills
-    .map(
-      (s) => `
+    .map((s) => {
+      if (s.needsInput) {
+        const label = esc(s.inputLabel || "input");
+        return `
+    <form action="/launch" method="POST" class="skill-chip-form needs-input">
+      <input type="hidden" name="skill" value="${esc(s.name)}">
+      <input type="hidden" name="runner" value="${esc(runnerCfg.defaultRunner)}">
+      <span class="skill-chip-label">${esc(s.name)}</span>
+      <input name="text" class="needs-input-field" placeholder="${label}" required>
+      <button type="submit" class="skill-chip-run">Run</button>
+    </form>`;
+      }
+      return `
     <form action="/launch" method="POST" class="skill-chip-form">
       <input type="hidden" name="skill" value="${esc(s.name)}">
       <input type="hidden" name="runner" value="${esc(runnerCfg.defaultRunner)}">
@@ -149,8 +160,8 @@ export function renderDashboard(
         <span>${esc(s.name)}</span>
         <input name="text" placeholder="optional input…" onclick="event.stopPropagation()">
       </button>
-    </form>`,
-    )
+    </form>`;
+    })
     .join("");
 
   // Agent inbox: sessions awaiting a human verdict (skill rendered a <form> into body.html)
@@ -217,6 +228,15 @@ code{font-family:monospace;font-size:0.85em}
 .skill-chip:focus-within{border-color:hsl(var(--ring))}
 .skill-chip:focus-within input{width:9rem;padding-left:.375rem;
   border-left:1px solid hsl(var(--border));margin-left:.375rem}
+/* needs-input gated chips */
+.skill-chip-form.needs-input{display:inline-flex;align-items:center;gap:.375rem;padding:.3rem .5rem;
+  border:1px solid hsl(var(--border));border-radius:var(--radius);background:hsl(var(--secondary))}
+.needs-input-field{width:10rem;background:transparent;border:none;
+  border-bottom:1px solid hsl(var(--border));color:hsl(var(--foreground));font-size:12px;outline:none}
+.skill-chip-label{font-size:13px;font-weight:500;color:hsl(var(--secondary-foreground))}
+.skill-chip-run{font-size:12px;padding:.2rem .6rem;border:1px solid hsl(var(--ring));
+  background:transparent;color:hsl(var(--foreground));border-radius:calc(var(--radius) - 4px);
+  cursor:pointer}
 /* Session list */
 .session-list{display:flex;flex-direction:column;gap:1px}
 .session-row{display:flex;align-items:center;gap:.75rem;padding:.5rem .625rem;

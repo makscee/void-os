@@ -149,3 +149,30 @@ test("renderShell includes a Stop control posting to /s/:uuid/stop", () => {
   expect(html.toLowerCase()).toContain("stop");
   expect(html).toContain("stop-btn");
 });
+
+test("renderDashboard gates needs_input skills behind a labeled text field, does not auto-submit", () => {
+  const skills = [
+    { dir: "/d", name: "deep-research", description: "x", needsInput: true, inputLabel: "Research query" },
+    { dir: "/d2", name: "smoke-test", description: "y", needsInput: false, inputLabel: "" },
+  ];
+  const html = renderDashboard(skills as any, [], { authed: true });
+  // flagged skill: a required input carrying the label, NOT a bare one-click submit
+  expect(html).toContain("Research query");
+  expect(html).toContain("needs-input");      // marker class on the gated chip
+  // unflagged skill still renders the plain one-click chip
+  expect(html).toContain("smoke-test");
+  expect(html).toContain("skill-chip");
+});
+
+test("renderDashboard non-flagged skill renders plain one-click chip (no gated input)", () => {
+  const skills = [
+    { dir: "/d", name: "smoke-test", description: "y", needsInput: false, inputLabel: "" },
+  ];
+  const html = renderDashboard(skills as any, [], { authed: true });
+  // Plain chip — skill-chip class present as button
+  expect(html).toContain('class="skill-chip"');
+  // The chip form should NOT have needs-input class on its element (only in CSS)
+  expect(html).not.toContain('class="skill-chip-form needs-input"');
+  // No gated Run button on this chip
+  expect(html).not.toContain('class="skill-chip-run"');
+});
