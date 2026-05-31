@@ -67,7 +67,10 @@ export async function drain(opts: DrainOpts): Promise<DrainResult> {
   for (let i = 1; i <= opts.max; i++) {
     // Clean-tree guard: each Box starts from a committed tree so the runner's
     // `git add -A` captures only its own changes — never stray scratch from a crash.
-    if ((await gitPorcelain(opts.worktree)).trim() !== "") {
+    // Exception: skip the guard on the first iteration of an acceptHumanBox continuation —
+    // the skill made reviewable changes (expected dirty tree) and the runner commits them via checkBox.
+    const skipDirtyGuard = i === 1 && !!opts.acceptHumanBox;
+    if (!skipDirtyGuard && (await gitPorcelain(opts.worktree)).trim() !== "") {
       return { status: "dirty-worktree", iterations: i - 1 };
     }
 
@@ -93,25 +96,32 @@ export async function drain(opts: DrainOpts): Promise<DrainResult> {
     const uuid = randomUUID();
     mkdirSync(sessionDir(opts.vault, uuid), { recursive: true });
     // Persist drain context so POST /s/:uuid/send can resume + re-invoke drain() after a human verdict.
-    writeFileSync(
-      join(sessionDir(opts.vault, uuid), "session-meta.json"),
-      JSON.stringify({
-        skill,
-        launchedAt: Date.now(),
-        text: `drain #${opts.issueNum}`,
-        runner: opts.runner,
-        drainIssue: opts.issueNum,
-        worktree: opts.worktree,
-        max: opts.max,
-      }),
-    );
+    const baseMeta = {
+      skill,
+      launchedAt: Date.now(),
+      text: `drain #${opts.issueNum}`,
+      runner: opts.runner,
+      drainIssue: opts.issueNum,
+      worktree: opts.worktree,
+      max: opts.max,
+    };
 
     if (box.gate.kind === "human") {
+      // Store the parked box raw in meta so POST /s/:uuid/send can pass acceptHumanBox to the continuation.
+      writeFileSync(
+        join(sessionDir(opts.vault, uuid), "session-meta.json"),
+        JSON.stringify({ ...baseMeta, parkedBoxRaw: box.raw }),
+      );
       // Spawn once so the skill renders the artifact + <form> into body.html, then park.
       const progress = existsSync(progressPath) ? readFileSync(progressPath, "utf8") : "";
       await spawnBox(uuid, box, progress);
       return { status: "parked-human", parkedUuid: uuid, iterations: i };
     }
+
+    writeFileSync(
+      join(sessionDir(opts.vault, uuid), "session-meta.json"),
+      JSON.stringify(baseMeta),
+    );
 
     // auto gate — RUNNER runs the check after the skill exits; bounded inline recovery.
     const check = box.gate.check;

@@ -199,7 +199,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // Recover the runner command stored at launch time; fall back to vault default
     const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
     let runnerCommand = resolveRunner(readConfig(vault)); // default fallback for legacy sessions
-    let meta: { runner?: string; drainIssue?: number; worktree?: string; max?: number; skill?: string } = {};
+    let meta: { runner?: string; drainIssue?: number; worktree?: string; max?: number; skill?: string; parkedBoxRaw?: string } = {};
     if (existsSync(metaPath)) {
       try {
         meta = JSON.parse(readFileSync(metaPath, "utf8"));
@@ -218,8 +218,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       // We read the current Issue body to find which box is parked (the human box that just got a verdict).
       // For simplicity: since the parked session's meta doesn't store the specific box raw,
       // we rely on the drain loop: re-invoke with acceptHumanBox from meta if stored, else just drain.
+      // Verdict-aware path A: if the verdict is "accept" and we know the parked box raw,
+      // pass acceptHumanBox so the continuation runner checks that box directly (no re-spawn).
+      // The dirty-worktree guard is skipped on iteration 1 of acceptHumanBox continuations
+      // (the skill left a dirty tree — its reviewable changes — which the runner now commits).
+      const acceptHumanBox = text.includes("verdict: accept") && meta.parkedBoxRaw
+        ? meta.parkedBoxRaw : undefined;
       setTimeout(() => {
-        void drain(buildDrainOptsFor(vault, meta.drainIssue!, meta.worktree!, runnerCommand, meta.max ?? 12));
+        const drainOpts = buildDrainOptsFor(vault, meta.drainIssue!, meta.worktree!, runnerCommand, meta.max ?? 12);
+        void drain({ ...drainOpts, acceptHumanBox });
       }, 500);
       return c.html(workingPage(fields));
     }

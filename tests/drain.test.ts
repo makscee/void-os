@@ -230,7 +230,7 @@ test("human-park: single human box parks and returns parked-human with drainIssu
   expect(result.status).toBe("parked-human");
   expect(result.parkedUuid).toBeDefined();
 
-  // session-meta.json carries drain context
+  // session-meta.json carries drain context + parkedBoxRaw for verdict-aware continuation
   const metaPath = join(sessionDir(vault, result.parkedUuid!), "session-meta.json");
   expect(existsSync(metaPath)).toBe(true);
   const meta = JSON.parse(readFileSync(metaPath, "utf8"));
@@ -238,6 +238,53 @@ test("human-park: single human box parks and returns parked-human with drainIssu
   expect(meta.worktree).toBe(worktree);
   expect(meta.max).toBe(5);
   expect(meta.skill).toBe("ralph");
+  // parkedBoxRaw lets the /send handler pass acceptHumanBox to the continuation drain
+  expect(typeof meta.parkedBoxRaw).toBe("string");
+  expect(meta.parkedBoxRaw).toContain("Box H");
+}, 30000);
+
+// --- 5b. acceptHumanBox with dirty worktree (verdict-aware path A) ---
+test("acceptHumanBox: dirty worktree skipped on i=1, box checked + committed, then completes", async () => {
+  const vault = makeVault("accept-human");
+  const worktree = makeWorktree("accept-human");
+
+  // Simulate a dirty tree: create a file the skill "left behind"
+  const { writeFileSync: wfs } = await import("node:fs");
+  wfs(join(worktree, "skill-work.txt"), "polished content from skill");
+
+  const HUMAN_BOX_RAW = HUMAN_BODY.split("\n").find(l => l.includes("Box H"))!;
+  let bodyState = HUMAN_BODY; // p3 still unchecked (same body as the parked drain had)
+  const commitMessages: string[] = [];
+  let writeBodyCalled = false;
+
+  const opts: DrainOpts = {
+    vault,
+    worktree,
+    issueNum: 9,
+    runner: `bun ${fakeSkillPath} --`,
+    skill: "ralph",
+    max: 5,
+    autoRetries: 1,
+    acceptHumanBox: HUMAN_BOX_RAW,
+    fetchBody: async () => bodyState,
+    writeBody: async (body) => { writeBodyCalled = true; bodyState = body; },
+    runGate: async () => 0,
+    commit: async (msg) => {
+      commitMessages.push(msg);
+      // Stage + commit the dirty files so the tree is clean after
+      const { spawnSync } = await import("node:child_process");
+      spawnSync("git", ["add", "-A"], { cwd: worktree });
+      spawnSync("git", ["commit", "-m", msg, "--allow-empty"], { cwd: worktree });
+    },
+    commentDrained: async () => {},
+  };
+
+  const result = await drain(opts);
+  // The dirty worktree is skipped on i=1 (acceptHumanBox), box is checked + committed, then complete
+  expect(result.status).toBe("complete");
+  expect(writeBodyCalled).toBe(true);
+  expect(commitMessages).toHaveLength(1);
+  expect(commitMessages[0]).toContain("Box H");
 }, 30000);
 
 // --- 6. red-after-N → terminal failed (no loop-to-max) ---
