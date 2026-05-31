@@ -4,8 +4,8 @@
  * Tests: GET /, GET /s/:uuid, GET /s/:uuid/body (with + without error.txt), POST /s/:uuid/send.
  */
 import { expect, test, beforeAll, mock } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync } from "node:fs";
-import { bodyPath, sessionDir, errorPath } from "../src/paths.ts";
+import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync } from "node:fs";
+import { bodyPath, sessionDir, errorPath, pidPath, stopPath } from "../src/paths.ts";
 import { join } from "node:path";
 
 const vault = "/tmp/voidos-server-test";
@@ -133,12 +133,14 @@ test("POST /s/:uuid/send serializes ALL form fields (Bug #1 fix)", async () => {
   form.append("name", "Alice");
   form.append("skill_deep-research", "on");
   const res = await app.request("/s/multi-uuid/send", { method: "POST", body: form });
-  expect(res.status).toBe(200);
-  const html = await res.text();
-  // Working page must echo submitted fields (Bug #5 fix)
-  expect(html).toContain("Alice");
-  expect(html).toContain("skill_deep-research");
-  expect(html).toContain("elapsed");
+  // Fix: redirect to /s/:uuid (not inline 200) so the shell wrapper stays visible
+  expect(res.status).toBe(302);
+  expect(res.headers.get("location")).toContain("/s/multi-uuid");
+  // Working page content must be written to body.html (not returned inline)
+  const bodyHtml = readFileSync(bodyPath(vault, "multi-uuid"), "utf8");
+  expect(bodyHtml).toContain("Alice");
+  expect(bodyHtml).toContain("skill_deep-research");
+  expect(bodyHtml).toContain("elapsed");
   // Spawned argv must include ALL fields
   expect(spawnCalls.length).toBe(before + 1);
   const lastArgv = spawnCalls[spawnCalls.length - 1].argv;
@@ -147,7 +149,7 @@ test("POST /s/:uuid/send serializes ALL form fields (Bug #1 fix)", async () => {
   expect(promptArg).toContain("Alice");
 });
 
-test("POST /s/:uuid/send calls stubbed spawnTurn and returns working page", async () => {
+test("POST /s/:uuid/send redirects to shell and writes working page into body.html", async () => {
   mkdirSync(sessionDir(vault, "send-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "send-uuid"), "<title>s</title>hi");
   const before = spawnCalls.length;
@@ -155,9 +157,12 @@ test("POST /s/:uuid/send calls stubbed spawnTurn and returns working page", asyn
   const form = new FormData();
   form.append("text", "my answer");
   const res = await app.request("/s/send-uuid/send", { method: "POST", body: form });
-  expect(res.status).toBe(200);
-  const html = await res.text();
-  expect(html).toContain("received");
+  // Fix (VOS-186 v2): redirect to /s/:uuid so back-nav + Stop control stay visible
+  expect(res.status).toBe(302);
+  expect(res.headers.get("location")).toContain("/s/send-uuid");
+  // Working page is written to body.html so the iframe shows it
+  const bodyHtml = readFileSync(bodyPath(vault, "send-uuid"), "utf8");
+  expect(bodyHtml).toContain("received");
   expect(spawnCalls.length).toBe(before + 1);
   expect(spawnCalls[spawnCalls.length - 1].uuid).toBe("send-uuid");
 });
@@ -251,6 +256,14 @@ test("GET /s/:uuid/body does NOT double-wrap full HTML documents", async () => {
   expect(html).toContain("full");
 });
 
+test("GET /s/:uuid/body injects base target=_top so in-body links escape the iframe", async () => {
+  const id = "basetarget-uuid";
+  mkdirSync(sessionDir(vault, id), { recursive: true });
+  writeFileSync(bodyPath(vault, id), '<h1>all set</h1><a href="/">return to dashboard</a>');
+  const html = await (await makeApp(vault).request(`/s/${id}/body`)).text();
+  expect(html).toContain('<base target="_top">');
+});
+
 test("POST /launch writes placeholder + session-meta.json, calls spawnTurn, redirects", async () => {
   const before = spawnCalls.length;
   const app = makeApp(vault);
@@ -311,7 +324,7 @@ test("POST /s/:uuid/send reuses runner from session-meta on resume", async () =>
   const form = new FormData();
   form.append("text", "echo: hello");
   const res = await app.request(`/s/${id}/send`, { method: "POST", body: form });
-  expect(res.status).toBe(200);
+  expect(res.status).toBe(302);
   expect(spawnCalls[spawnCalls.length - 1].command).toBe("claude_artem");
 });
 
@@ -381,6 +394,84 @@ test("GET / agent-inbox lists an awaiting (human-parked) session", async () => {
   expect(html).toContain("awaiting verdict");
 });
 
+test("POST /s/:uuid/stop kills the child, marks stopped, and halts a drain", async () => {
+  const uuid = "stop-route-uuid";
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<title>running</title><p>running</p>");
+  // Spawn a detached child (group leader) so killProcessTree(-pid) can kill the whole group.
+  // This matches the production spawn path (node:child_process.spawn { detached: true }).
+  const { spawn: nodeSpawn } = await import("node:child_process");
+  const child = nodeSpawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  const childPid = child.pid!;
+  writeFileSync(pidPath(vault, uuid), String(childPid));
+  const wt = "/tmp/void-os-stop-wt";
+  mkdirSync(wt, { recursive: true });
+  writeFileSync(join(dir, "session-meta.json"), JSON.stringify({ skill: "x", drainIssue: 7, worktree: wt }));
+  const app = makeApp(vault);
+  const res = await app.request(`/s/${uuid}/stop`, { method: "POST" });
+  expect(res.status).toBeLessThan(400);
+  expect(existsSync(stopPath(vault, uuid))).toBe(true);
+  expect(existsSync(join(wt, "drain.stop"))).toBe(true);
+  expect(existsSync(pidPath(vault, uuid))).toBe(false);
+  // Give the OS a moment to reap the killed process
+  await new Promise((r) => setTimeout(r, 200));
+  // Verify child process group is gone
+  let alive = true;
+  try { process.kill(-childPid, 0); } catch { alive = false; }
+  expect(alive).toBe(false);
+});
+
+test("POST /stop writes a clean stopped body.html and clears a stale error.txt", async () => {
+  const uuid = "stop-body-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<title>x</title><p>running…</p>");
+  writeFileSync(errorPath(vault, uuid), "exit 143; body.html NOT updated"); // the stale banner
+  const app = makeApp(vault);
+  await app.request(`/s/${uuid}/stop`, { method: "POST" });
+  expect(existsSync(stopPath(vault, uuid))).toBe(true);
+  expect(existsSync(errorPath(vault, uuid))).toBe(false);          // banner cleared
+  expect(readFileSync(bodyPath(vault, uuid), "utf8")).toContain("stopped"); // clean terminal body
+});
+
+test("GET /body suppresses the exit-143 banner when stopped.txt exists", async () => {
+  const uuid = "banner-suppress-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<title>x</title><p>stopped</p>");
+  writeFileSync(errorPath(vault, uuid), "exit 143; body.html NOT updated");
+  writeFileSync(stopPath(vault, uuid), "stopped\n");
+  const app = makeApp(vault);
+  const res = await app.request(`/s/${uuid}/body`);
+  const body = await res.text();
+  expect(body).not.toContain("NOT updated");
+});
+
+test("POST /stop on an already-stopped session is a no-op (idempotent)", async () => {
+  const uuid = "restop-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>x</p>");
+  const app = makeApp(vault);
+  const r1 = await app.request(`/s/${uuid}/stop`, { method: "POST" });
+  const r2 = await app.request(`/s/${uuid}/stop`, { method: "POST" }); // second stop
+  expect(r1.status).toBeLessThan(400);
+  expect(r2.status).toBeLessThan(400); // idempotent — no 500
+  expect(existsSync(stopPath(vault, uuid))).toBe(true);
+});
+
+test("GET /s/:uuid/status returns 'stopped' when stopped.txt present", async () => {
+  const uuid = "status-stopped-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>done</p>");
+  writeFileSync(stopPath(vault, uuid), "stopped\n");
+  const app = makeApp(vault);
+  const res = await app.request(`/s/${uuid}/status`);
+  expect(await res.text()).toBe("stopped");
+});
+
 test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktree and triggers drain continuation", async () => {
   const parkedId = "parked-drain-uuid";
   const drainWorktree = "/tmp/drain-wt-parked";
@@ -399,7 +490,7 @@ test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktr
   const form = new FormData();
   form.append("verdict", "accept");
   const res = await app.request(`/s/${parkedId}/send`, { method: "POST", body: form });
-  expect(res.status).toBe(200);
+  expect(res.status).toBe(302);
 
   // runTurn must have been called with cwd = the worktree (NOT the vault)
   const newRunTurnCalls = runTurnCalls.slice(runTurnBefore);

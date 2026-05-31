@@ -50,3 +50,11 @@ test("real catalog contains ralph skill with non-empty description", () => {
   expect(ralph!.description.length).toBeGreaterThan(0);
   expect(ralph!.description).toContain("Box");
 });
+
+test("deep-research catalog skill is flagged needs_input", () => {
+  const skills = listCatalogSkills(realCatalogRoot);
+  const dr = skills.find((s) => s.name === "deep-research")!;
+  expect(dr).toBeDefined();
+  expect(dr.needsInput).toBe(true);
+  expect(dr.inputLabel.length).toBeGreaterThan(0);
+});

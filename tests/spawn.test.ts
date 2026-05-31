@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand } from "../src/spawn.ts";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand, spawnTurn, runTurn } from "../src/spawn.ts";
+import { pidPath, sessionDir, bodyPath, errorPath, stopPath } from "../src/paths.ts";
 
 test("buildLaunchArgv has no leading -- (separator now lives in runner command)", () => {
   const a = buildLaunchArgv("uuid-1", "deep-research", "hello");
@@ -50,4 +53,59 @@ test("tokenizeCommand splits prefix into argv head", () => {
   expect(tokenizeCommand("vc --")).toEqual(["vc", "--"]);
   expect(tokenizeCommand("claude_artem")).toEqual(["claude_artem"]);
   expect(tokenizeCommand("  vc   -- ")).toEqual(["vc", "--"]);
+});
+
+test("spawnTurn persists the child pid to vc.pid", async () => {
+  const vault = "/tmp/void-os-spawn-pid-test";
+  const uuid = "pid-uuid-1";
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  // Use 'sleep 2' so the child stays alive long enough to observe the pid file
+  spawnTurn(vault, uuid, ["2"], "sleep");
+  const p = pidPath(vault, uuid);
+  expect(existsSync(p)).toBe(true);
+  expect(parseInt(readFileSync(p, "utf8"), 10)).toBeGreaterThan(0);
+  // cleanup
+  try { const pid = parseInt(readFileSync(p, "utf8"), 10); process.kill(-pid, "SIGKILL"); } catch { /* ignore */ }
+});
+
+test("spawnTurn child is its own process-group leader (pgid == pid)", async () => {
+  const vault = "/tmp/void-os-spawn-pg-test";
+  const uuid = "pg-uuid-1";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  spawnTurn(vault, uuid, ["2"], "sleep");
+  await new Promise((r) => setTimeout(r, 150));
+  const p = pidPath(vault, uuid);
+  const pid = parseInt(readFileSync(p, "utf8"), 10);
+  const pgidOut = spawnSync("ps", ["-o", "pgid=", "-p", String(pid)]).stdout.toString().trim();
+  // child leads its own group → pgid equals its own pid
+  expect(pgidOut).toBe(String(pid));
+  // cleanup
+  try { process.kill(-pid, "SIGKILL"); } catch { /* ignore */ }
+});
+
+test("runTurn persists then clears vc.pid", async () => {
+  const vault = "/tmp/void-os-runturn-pid-test";
+  const uuid = "rt-uuid-1";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  const p = runTurn(vault, vault, uuid, ["0.3"], "sleep");
+  await new Promise((r) => setTimeout(r, 100));
+  expect(existsSync(pidPath(vault, uuid))).toBe(true); // alive → pid present
+  await p;
+  expect(existsSync(pidPath(vault, uuid))).toBe(false); // exited → pid cleared
+});
+
+test("spawnTurn exit handler is a no-op once stopped.txt is present (race guard)", async () => {
+  const vault = "/tmp/void-os-raceguard-test";
+  const uuid = "race-uuid-1";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  // body.html exists but will NOT advance — without the guard this writes "exit ...; body.html NOT updated"
+  writeFileSync(bodyPath(vault, uuid), "<p>placeholder</p>");
+  spawnTurn(vault, uuid, ["-c", "exit 0"], "sh");
+  // simulate a Stop landing before the child's exit handler runs
+  writeFileSync(stopPath(vault, uuid), "stopped\n");
+  await new Promise((r) => setTimeout(r, 400));
+  expect(existsSync(errorPath(vault, uuid))).toBe(false); // guard suppressed the stale banner
 });

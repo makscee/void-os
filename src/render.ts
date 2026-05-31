@@ -78,6 +78,19 @@ export function placeholderBody(skill = ""): string {
 }
 
 /**
+ * Terminal "stopped" body written on Stop so the iframe shows a clean stopped state
+ * (no spinner, no stale error banner) and a re-open renders the true terminal state.
+ */
+export function stoppedBody(skill = ""): string {
+  const label = (skill || "session").replace(/[<>&"]/g, "");
+  return `<!doctype html><html><head><meta charset="utf-8"><base target="_top"><title>stopped</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+background:#0a0a0f;color:#d4d4d8;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{text-align:center}.icon{font-size:2rem;color:#f87171}.msg{margin-top:.5rem;color:#a1a1aa}</style></head>
+<body><div class="card"><div class="icon">■</div><div class="msg">${label} — stopped</div></div></body></html>`;
+}
+
+/**
  * "Working" interstitial shown after submitting an answer-back form.
  * Displays submitted fields as a readonly summary + elapsed timer.
  * The SSE stream will trigger an iframe reload when body.html advances.
@@ -136,22 +149,43 @@ export function renderDashboard(
      <select id="runner-select" onchange="syncRunner(this.value)">${runnerOptions}</select></div>`
     : "";
   const runnerScript = showSelector
-    ? `<script>function syncRunner(v){document.querySelectorAll('input[name=runner]').forEach(function(i){i.value=v})}</script>`
+    ? `<script>function syncRunner(v){document.getElementById('lm-runner').value=v;}</script>`
     : "";
 
   const skillChips = skills
-    .map(
-      (s) => `
-    <form action="/launch" method="POST" class="skill-chip-form">
-      <input type="hidden" name="skill" value="${esc(s.name)}">
-      <input type="hidden" name="runner" value="${esc(runnerCfg.defaultRunner)}">
-      <button type="submit" class="skill-chip">
-        <span>${esc(s.name)}</span>
-        <input name="text" placeholder="optional input…" onclick="event.stopPropagation()">
-      </button>
-    </form>`,
-    )
+    .map((s) => `
+    <button type="button" class="skill-chip" data-skill="${esc(s.name)}"
+      data-desc="${esc(s.description)}" data-placeholder="${esc(s.inputLabel || "optional input…")}"
+      onclick="openLaunch(this)">${esc(s.name)}</button>`)
     .join("");
+
+  const modal = `
+<div id="launch-modal" class="modal-backdrop" hidden>
+  <form action="/launch" method="POST" class="modal-card">
+    <h2 id="lm-name"></h2>
+    <p id="lm-desc" class="modal-desc"></p>
+    <input type="hidden" name="skill" id="lm-skill" value="">
+    <input type="hidden" name="runner" id="lm-runner" value="${esc(runnerCfg.defaultRunner)}">
+    <textarea name="text" id="lm-text" class="modal-text" rows="3" placeholder=""></textarea>
+    <div class="modal-actions">
+      <button type="button" class="modal-cancel" onclick="closeLaunch()">Cancel</button>
+      <button type="submit" class="modal-launch">Launch</button>
+    </div>
+  </form>
+</div>`;
+
+  const modalScript = `<script>
+function openLaunch(btn){
+  document.getElementById('lm-name').textContent=btn.dataset.skill;
+  document.getElementById('lm-desc').textContent=btn.dataset.desc;
+  document.getElementById('lm-skill').value=btn.dataset.skill;
+  var t=document.getElementById('lm-text');t.value='';t.placeholder=btn.dataset.placeholder;
+  document.getElementById('launch-modal').hidden=false;t.focus();
+}
+function closeLaunch(){document.getElementById('launch-modal').hidden=true;}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLaunch();});
+document.getElementById('launch-modal').addEventListener('click',function(e){if(e.target===this)closeLaunch();});
+</script>`;
 
   // Agent inbox: sessions awaiting a human verdict (skill rendered a <form> into body.html)
   const awaitingRows = sessions
@@ -206,17 +240,22 @@ code{font-family:monospace;font-size:0.85em}
   border:1px solid hsl(var(--border));border-radius:calc(var(--radius) - 2px);padding:.2rem .5rem}
 /* Skill chips */
 .skill-chips{display:flex;flex-wrap:wrap;gap:.375rem;margin-bottom:1.5rem}
-.skill-chip-form{display:inline-flex}
 .skill-chip{display:inline-flex;align-items:center;gap:.375rem;padding:.3rem .75rem;
   border-radius:calc(var(--radius) - 2px);border:1px solid hsl(var(--border));
   background:hsl(var(--secondary));cursor:pointer;font-size:13px;font-weight:500;
   color:hsl(var(--secondary-foreground));transition:border-color .15s,background .15s}
 .skill-chip:hover{border-color:hsl(var(--ring));background:hsl(var(--accent))}
-.skill-chip input{width:0;overflow:hidden;padding:0;border:none;background:transparent;
-  transition:width .2s;font:inherit;color:inherit;outline:none}
-.skill-chip:focus-within{border-color:hsl(var(--ring))}
-.skill-chip:focus-within input{width:9rem;padding-left:.375rem;
-  border-left:1px solid hsl(var(--border));margin-left:.375rem}
+/* Universal launch modal */
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50}
+.modal-backdrop[hidden]{display:none}
+.modal-card{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);padding:1.25rem;max-width:32rem;width:90%;color:hsl(var(--foreground))}
+.modal-card h2{font-size:15px;margin-bottom:.4rem}
+.modal-desc{font-size:13px;color:hsl(var(--muted-foreground));margin-bottom:.75rem;white-space:pre-wrap}
+.modal-text{width:100%;background:hsl(var(--secondary));color:hsl(var(--foreground));border:1px solid hsl(var(--border));border-radius:calc(var(--radius) - 2px);padding:.5rem;font:13px system-ui;resize:vertical}
+.modal-actions{display:flex;justify-content:flex-end;gap:.5rem;margin-top:.75rem}
+.modal-cancel,.modal-launch{font-size:13px;padding:.35rem .85rem;border-radius:calc(var(--radius) - 2px);cursor:pointer;border:1px solid hsl(var(--border))}
+.modal-cancel{background:transparent;color:hsl(var(--muted-foreground))}
+.modal-launch{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:hsl(var(--ring))}
 /* Session list */
 .session-list{display:flex;flex-direction:column;gap:1px}
 .session-row{display:flex;align-items:center;gap:.75rem;padding:.5rem .625rem;
@@ -229,7 +268,6 @@ code{font-family:monospace;font-size:0.85em}
 .session-title{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .session-uuid{font-size:11px;font-family:monospace;color:hsl(var(--muted-foreground))}
 </style>
-${runnerScript}
 <div class="topbar"><span class="logo">void-os</span>${badge}</div>
 <div class="dash-layout">
 ${runnerBar}
@@ -239,7 +277,10 @@ ${runnerBar}
 <div class="session-list">${awaitingRows || '<span style="font-size:13px;color:hsl(var(--muted-foreground));padding:.5rem .625rem">no pending verdicts</span>'}</div>
 <div class="section-label" style="margin-top:1.25rem">Sessions</div>
 <div class="session-list">${rows || '<span style="font-size:13px;color:hsl(var(--muted-foreground));padding:.5rem .625rem">no sessions yet</span>'}</div>
-</div>`;
+${modal}
+</div>
+${runnerScript}
+${modalScript}`;
 }
 
 /**
@@ -283,6 +324,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
   text-overflow:ellipsis;white-space:nowrap;user-select:none}
 .copy-btn:hover{border-color:hsl(var(--ring));color:hsl(var(--foreground))}
 .copy-btn.copied{border-color:hsl(142 70% 45%);color:hsl(142 70% 65%);background:hsl(142 70% 8%)}
+.stop-btn{font-size:11px;padding:2px 8px;border:1px solid hsl(0 60% 40%);background:transparent;
+  color:hsl(0 70% 65%);border-radius:calc(var(--radius) - 4px);cursor:pointer;flex-shrink:0}
+.stop-btn:hover{background:hsl(0 60% 12%)}
 iframe{border:0;width:100%;height:calc(100vh - 36px);display:block}
 body.drawer-open iframe{height:calc(100vh - 36px - 40vh - 28px)}
 #drawer-bar{position:fixed;left:0;right:0;bottom:0;height:28px;z-index:10;
@@ -308,6 +352,9 @@ body.drawer-open #drawer-panel{display:block}
   <span class="session-name">${esc(headerName)}</span>
   <button class="copy-btn" id="copybtn" title="Copy resume command"
     data-cmd="${resumeCmdAttr}" data-label="${displayLabelAttr}">${displayLabelAttr}</button>
+  <form action="/s/${esc(uuid)}/stop" method="POST" class="stop-form" style="flex-shrink:0">
+    <button type="submit" class="stop-btn" title="Stop this session">■ Stop</button>
+  </form>
 </div>
 <iframe id="f" src="/s/${esc(uuid)}/body"></iframe>
 <div id="drawer-panel"></div>
@@ -322,7 +369,15 @@ document.getElementById('copybtn').addEventListener('click',function(){
 var es=new EventSource("/s/${esc(uuid)}/stream");
 // Always navigate to the canonical body URL on reload events rather than re-POST.
 // location.reload() would re-submit POST /send and spawn a spurious vc turn.
-es.onmessage=function(){document.getElementById("f").contentWindow.location.replace("/s/${esc(uuid)}/body")};
+// After reload, probe the session status; close the EventSource once terminal so
+// the spinner stops and the connection is not held open needlessly.
+es.onmessage=function(){
+  var f=document.getElementById("f");
+  f.contentWindow.location.replace("/s/${esc(uuid)}/body");
+  fetch("/s/${esc(uuid)}/status").then(function(r){return r.text();}).then(function(s){
+    if(s==="stopped"||s==="error"||s==="complete"){es.close();}
+  });
+};
 var dvBar=document.getElementById("drawer-bar");
 var dvPanel=document.getElementById("drawer-panel");
 var dvTimer=null;

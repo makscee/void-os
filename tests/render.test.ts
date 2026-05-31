@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { placeholderBody, renderDashboard, renderShell, workingPage } from "../src/render.ts";
+import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody } from "../src/render.ts";
 
 test("placeholder body has a title so it lists + sorts", () => {
   expect(placeholderBody()).toContain("<title>");
@@ -33,7 +33,7 @@ test("working page escapes XSS in field values", () => {
 
 test("dashboard shows skill chips and session rows in Option 1 style", () => {
   const html = renderDashboard(
-    [{ dir: "/c/skills/deep-research", name: "deep-research", description: "Research." }],
+    [{ dir: "/c/skills/deep-research", name: "deep-research", description: "Research.", needsInput: false, inputLabel: "" }],
     [{ uuid: "u1", title: "T1", mtimeMs: 1, error: false, status: "complete", skill: "deep-research" }],
     { authed: true },
   );
@@ -141,4 +141,73 @@ test("shell header escapes name to prevent XSS", () => {
   const html = renderShell("u1", "/vault", '<script>bad</script>');
   expect(html).not.toContain('<script>bad</script>');
   expect(html).toContain("&lt;script&gt;");
+});
+
+test("renderShell includes a Stop control posting to /s/:uuid/stop", () => {
+  const html = renderShell("abc-uuid", "/tmp/v", "deep-research");
+  expect(html).toContain('action="/s/abc-uuid/stop"');
+  expect(html.toLowerCase()).toContain("stop");
+  expect(html).toContain("stop-btn");
+});
+
+// VOS-187: stoppedBody and SSE teardown tests.
+test("stoppedBody is a clean terminal document with no spinner", () => {
+  const html = stoppedBody("onboarding");
+  expect(html).toContain("stopped");
+  expect(html).not.toContain("spinner");
+  expect(html).not.toContain("Starting Claude Code");
+  expect(html).toContain("onboarding");
+});
+
+test("renderShell SSE client closes the stream on a terminal status", () => {
+  const shell = renderShell("u-1", "/tmp/vault", "onboarding");
+  expect(shell).toContain("/s/u-1/status");
+  expect(shell).toContain("es.close()");
+});
+
+// VOS-187: Universal modal replaces needs_input gated chip + single-click chip.
+// Both flagged and unflagged skills now open a modal — no direct submit, no needs-input class.
+import type { CatalogSkill } from "../src/catalog.ts";
+
+test("every skill chip opens the universal modal — no single-click submit", () => {
+  const skills: CatalogSkill[] = [
+    { dir: "/c/onboarding", name: "onboarding", description: "Set up your void-os profile.", needsInput: false, inputLabel: "" },
+    { dir: "/c/deep-research", name: "deep-research", description: "Fan-out research.", needsInput: true, inputLabel: "Research query" },
+  ];
+  const html = renderDashboard(skills, [], { authed: true });
+  // No chip is a bare submit button into /launch anymore — chips are modal triggers.
+  expect(html).not.toContain('<button type="submit" class="skill-chip">');
+  expect(html).not.toContain('class="skill-chip-run"'); // the old needs_input Run button is gone
+  // Each skill has a modal-trigger carrying its name + description.
+  expect(html).toContain('data-skill="onboarding"');
+  expect(html).toContain('data-skill="deep-research"');
+  expect(html).toContain("Set up your void-os profile.");
+  expect(html).toContain("Fan-out research.");
+  // inputLabel reused as placeholder hint
+  expect(html).toContain("Research query");
+});
+
+test("modal has one optional free-text field (not required) + Launch/Cancel, posting to /launch", () => {
+  const skills: CatalogSkill[] = [
+    { dir: "/c/onboarding", name: "onboarding", description: "Set up your void-os profile.", needsInput: false, inputLabel: "" },
+  ];
+  const html = renderDashboard(skills, [], { authed: true });
+  expect(html).toContain('id="launch-modal"');
+  expect(html).toContain('action="/launch"');
+  // text field is NOT required
+  expect(html).toMatch(/<textarea[^>]*name="text"(?![^>]*\brequired\b)/);
+  expect(html).toContain(">Launch<");
+  expect(html).toContain(">Cancel<");
+});
+
+test("renderDashboard non-flagged skill renders modal-trigger chip (no old chip form)", () => {
+  const skills = [
+    { dir: "/d", name: "smoke-test", description: "y", needsInput: false, inputLabel: "" },
+  ];
+  const html = renderDashboard(skills as any, [], { authed: true });
+  // Modal-trigger button present
+  expect(html).toContain('data-skill="smoke-test"');
+  // Old forms are gone
+  expect(html).not.toContain('class="skill-chip-form needs-input"');
+  expect(html).not.toContain('class="skill-chip-run"');
 });

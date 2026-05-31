@@ -6,5 +6,5 @@ cd "$(dirname "$0")/.."
 echo "== bunx tsc --noEmit =="
 bunx tsc --noEmit
 echo "== bun test =="
-bun test
+bun test --isolate
 echo "VERIFY GREEN"

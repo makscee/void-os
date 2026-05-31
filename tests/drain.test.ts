@@ -367,6 +367,55 @@ test("idempotent re-run: all boxes already checked → complete with zero spawns
   expect(commitCalled).toBe(false);
 }, 30000);
 
+// --- 8b. drain.stop halt ---
+
+test("drain halts when drain.stop flag is written mid-run — stops after first box, second not spawned", async () => {
+  const vault = makeVault("drain-stop");
+  const worktree = makeWorktree("drain-stop");
+  // NOTE: drain clears a stale drain.stop on entry (fresh run = resume works).
+  // To test mid-run halt, write drain.stop inside a callback that fires DURING iteration 1
+  // (e.g. inside runGate, which is called after spawn but before the next iteration).
+  // The loop checks drain.stop at the TOP of each iteration — so the halt is caught at iteration 2.
+
+  let boxesSpawned = 0;
+
+  // Two open boxes so iteration 2 would normally spawn another
+  const TWO_BOX_BODY = [
+    "- [ ] Box A {auto: exit 0} {p0}",
+    "      desc A",
+    "- [ ] Box B {auto: exit 0} {p1}",
+    "      desc B",
+  ].join("\n");
+
+  const opts: DrainOpts = {
+    vault,
+    worktree,
+    issueNum: 99,
+    runner: `bun ${fakeSkillPath} --`,
+    skill: "ralph",
+    max: 5,
+    autoRetries: 1,
+    fetchBody: async () => TWO_BOX_BODY,
+    writeBody: async () => {},
+    runGate: async () => {
+      boxesSpawned++;
+      // Write drain.stop after first box's gate runs — loop will halt at iteration 2 top check
+      writeFileSync(join(worktree, "drain.stop"), "1");
+      return 0; // green gate
+    },
+    commit: async () => {
+      // Real commit to keep worktree clean for iteration 2 (which we expect to be halted)
+      Bun.spawnSync(["git", "add", "-A"], { cwd: worktree });
+      Bun.spawnSync(["git", "commit", "--allow-empty", "-m", "progress"], { cwd: worktree });
+    },
+    commentDrained: async () => {},
+  };
+
+  const result = await drain(opts);
+  expect(result.status).toBe("stopped"); // halted at start of iteration 2
+  expect(boxesSpawned).toBe(1); // only one box was spawned before halt
+}, 30000);
+
 // --- 8. dirty-worktree guard ---
 
 test("dirty-worktree guard: untracked file in worktree → status=dirty-worktree, no spawn", async () => {
@@ -397,4 +446,31 @@ test("dirty-worktree guard: untracked file in worktree → status=dirty-worktree
 
   expect(result.status).toBe("dirty-worktree");
   expect(spawnCalled).toBe(false);
+}, 10000);
+
+// --- 8c. drain.stop cleared on fresh run (VOS-187) ---
+
+test("drain clears a stale drain.stop at start so a manual re-trigger resumes", async () => {
+  const worktree = makeWorktree("drain-resume");
+  writeFileSync(join(worktree, "drain.stop"), "1"); // stale flag from a prior Stop
+  // All-checked body → drain finishes immediately (status=complete) after clearing the stale flag
+  const opts: DrainOpts = {
+    vault: makeVault("drain-resume"),
+    worktree,
+    issueNum: 1,
+    runner: `bun ${fakeSkillPath} --`,
+    skill: "ralph",
+    max: 2,
+    autoRetries: 1,
+    fetchBody: async () => "- [x] Box already done {auto: exit 0} {p0}",
+    writeBody: async () => {},
+    runGate: async () => 0,
+    commit: async () => {},
+    commentDrained: async () => {},
+  };
+  const result = await drain(opts);
+  // Stale flag must be gone — fresh run cleared it
+  expect(existsSync(join(worktree, "drain.stop"))).toBe(false);
+  // Drain should complete (not return stopped) because the stale flag was cleared
+  expect(result.status).toBe("complete");
 }, 10000);

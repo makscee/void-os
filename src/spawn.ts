@@ -1,6 +1,7 @@
 // spawn.ts — argv builders (Task 6) + spawnTurn fire-and-forget integration (Task 8)
-import { openSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
-import { sessionDir, errorPath, bodyPath, runLogPath } from "./paths.ts";
+import { openSync, closeSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath } from "./paths.ts";
 
 const PERM = ["--permission-mode", "bypassPermissions"] as const;
 const RENDER_PREAMBLE = "[render contract: rewrite body.html, no terminal reply]";
@@ -52,6 +53,10 @@ export function nextRunIndex(vault: string, uuid: string): number {
  *
  * R4: a SPAWN_TIMEOUT_MS watchdog kills the process and writes an error if it hangs.
  *
+ * Uses node:child_process spawn with detached:true so the child leads its own process
+ * group (pgid == pid). This lets the stop route kill the whole tree (vc + claude
+ * descendants) via process.kill(-pid, signal) — no orphan "finishes anyway".
+ *
  * @param command - The runner command prefix (e.g. "vc --" or "claude_artem"), tokenized on whitespace.
  */
 export function spawnTurn(vault: string, uuid: string, argv: string[], command: string): void {
@@ -64,31 +69,44 @@ export function spawnTurn(vault: string, uuid: string, argv: string[], command: 
   // For resume/answer turns body.html already exists with real content.
   const beforeMtime = existsSync(bp) ? statSync(bp).mtimeMs : 0;
 
-  const proc = Bun.spawn([...tokenizeCommand(command), ...argv], {
+  const toks = tokenizeCommand(command);
+  // detached:true makes the child its own session/process-group leader (pgid == pid).
+  // process.kill(-pid, sig) then signals the whole group (vc + claude descendants).
+  const proc = spawn(toks[0], [...toks.slice(1), ...argv], {
     cwd: vault,
     env: { ...process.env, VOID_OS_SESSION: uuid },
-    // vc waits ~3s for stdin before proceeding; we never pipe input, so close it.
-    stdin: "ignore",
-    stdout: logFd,
-    stderr: logFd,
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
   });
 
-  // R4: timeout watchdog — kills and surfaces error if vc hangs
+  // Persist the child pid so the Stop route can kill the whole group.
+  // proc.pid is defined when spawn succeeds; guard against spawn failure.
+  if (proc.pid != null) {
+    writeFileSync(pidPath(vault, uuid), String(proc.pid));
+  }
+
+  // R4: timeout watchdog — kills the whole group and surfaces error if vc hangs
   let timedOut = false;
   const watchdog = setTimeout(() => {
     timedOut = true;
-    proc.kill();
+    try { process.kill(-(proc.pid!), "SIGKILL"); } catch { /* already gone */ }
     writeFileSync(
       errorPath(vault, uuid),
       `timeout after ${SPAWN_TIMEOUT_MS / 1000}s — vc process killed`,
     );
   }, SPAWN_TIMEOUT_MS);
 
-  proc.exited.then((code) => {
+  proc.on("exit", (code) => {
     clearTimeout(watchdog);
+    try { closeSync(logFd); } catch { /* ignore */ }
+    // Clear the pid file — process has exited.
+    try { rmSync(pidPath(vault, uuid)); } catch { /* already gone */ }
     // If the watchdog already killed + recorded the timeout, keep that clearer message
     // rather than clobbering it with the generic SIGTERM exit below.
     if (timedOut) return;
+    // Race guard: a Stop wrote stopped.txt — this is a LATE natural completion of an
+    // already-killed turn. Do NOT write error.txt or touch body.html; stopped is terminal.
+    if (existsSync(stopPath(vault, uuid))) return;
     const afterMtime = existsSync(bp) ? statSync(bp).mtimeMs : 0;
     // R5: advanced means body.html mtime strictly increased from the pre-spawn snapshot
     const advanced = afterMtime > beforeMtime;
@@ -113,6 +131,8 @@ export function spawnTurn(vault: string, uuid: string, argv: string[], command: 
  * (fire-and-forget, cwd=vault), this lets the drain runner await each iteration
  * and run it in an arbitrary cwd (the worktree). State I/O still resolves under
  * the vault via sessionDir — cwd and vault are independent.
+ *
+ * Also uses detached:true + persists pid so the Stop route can kill drain turns.
  * @param cwd - working dir for the spawned vc (the worktree for drains).
  */
 export async function runTurn(
@@ -124,15 +144,22 @@ export async function runTurn(
 ): Promise<number> {
   const n = nextRunIndex(vault, uuid);
   const logFd = openSync(runLogPath(vault, uuid, n), "a");
-  const proc = Bun.spawn([...tokenizeCommand(command), ...argv], {
+  const toks = tokenizeCommand(command);
+  const proc = spawn(toks[0], [...toks.slice(1), ...argv], {
     cwd,
     env: { ...process.env, VOID_OS_SESSION: uuid },
-    stdin: "ignore",
-    stdout: logFd,
-    stderr: logFd,
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
   });
-  const watchdog = setTimeout(() => proc.kill(), SPAWN_TIMEOUT_MS);
-  const code = await proc.exited;
+  if (proc.pid != null) {
+    writeFileSync(pidPath(vault, uuid), String(proc.pid));
+  }
+  const watchdog = setTimeout(() => {
+    try { process.kill(-(proc.pid!), "SIGKILL"); } catch { /* already gone */ }
+  }, SPAWN_TIMEOUT_MS);
+  const code: number = await new Promise((res) => proc.on("exit", (c) => res(c ?? -1)));
   clearTimeout(watchdog);
-  return code ?? -1;
+  try { closeSync(logFd); } catch { /* ignore */ }
+  try { rmSync(pidPath(vault, uuid)); } catch { /* already gone */ }
+  return code;
 }

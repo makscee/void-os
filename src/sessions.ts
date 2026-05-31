@@ -1,10 +1,10 @@
 // sessions.ts — list sessions sorted by body.html mtime (Task 5)
 import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { sessionsRoot, sessionDir, bodyPath, errorPath } from "./paths.ts";
+import { sessionsRoot, sessionDir, bodyPath, errorPath, stopPath } from "./paths.ts";
 
 /** Status derived purely from filesystem state — no process lookup needed. */
-export type SessionStatus = "error" | "awaiting" | "complete";
+export type SessionStatus = "error" | "stopped" | "awaiting" | "complete";
 
 export interface SessionInfo {
   uuid: string;
@@ -20,8 +20,9 @@ function extractTitle(html: string): string {
   return m ? m[1] : "";
 }
 
-/** Derive status from filesystem: error.txt → error; body has <form → awaiting; else complete. */
+/** Derive status from filesystem: stopped.txt → stopped; error.txt → error; body has <form → awaiting; else complete. */
 function deriveStatus(vault: string, uuid: string, html: string): SessionStatus {
+  if (existsSync(stopPath(vault, uuid))) return "stopped";
   if (existsSync(errorPath(vault, uuid))) return "error";
   if (html.includes("<form")) return "awaiting";
   return "complete";

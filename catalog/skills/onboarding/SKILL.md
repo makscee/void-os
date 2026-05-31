@@ -22,6 +22,8 @@ questions into `body.html` and installing what they choose.
    `<repo>/catalog/skills/<name>/` into this vault's `.claude/skills/<name>/`. Record the
    user's name and chosen skills into `void-os.json` (merge; set `"onboarded": true`).
 4. Rewrite `body.html` to a "you're all set" summary listing the installed skills and telling
-   the user to return to the dashboard (`/`) to launch one.
+   the user to return to the dashboard with a `<a href="/" target="_top">back to dashboard</a>` link
+   (the `target="_top"` is required so the link replaces the whole page instead of nesting the
+   dashboard inside the session iframe).
 
 Keep it to these steps — do not dispatch subagents; onboarding is a single-session flow.

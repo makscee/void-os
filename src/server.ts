@@ -1,7 +1,7 @@
 // server.ts — Hono app with all routes (Task 10)
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { mkdirSync, writeFileSync, existsSync, statSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, statSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -9,8 +9,9 @@ import { listCatalogSkills } from "./catalog.ts";
 import { listSessions } from "./sessions.ts";
 import { buildLaunchArgv, buildAnswerArgv, spawnTurn, runTurn } from "./spawn.ts";
 import { drain, type DrainOpts } from "./drain.ts";
-import { renderDashboard, renderShell, placeholderBody, workingPage } from "./render.ts";
-import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner } from "./paths.ts";
+import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody } from "./render.ts";
+import { killProcessTree } from "./kill.ts";
+import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, stopPath } from "./paths.ts";
 import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
@@ -125,13 +126,25 @@ a{color:#93c5fd}</style>
     let html = readFileSync(bp, "utf8");
     // Inject light-theme base if it's a bare fragment (no <html> tag).
     if (!html.includes("<html")) {
-      html = `<!doctype html><html><head><meta charset="utf-8"><style>
+      html = `<!doctype html><html><head><meta charset="utf-8"><base target="_top"><style>
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
   background:#ffffff;color:#1a1a1a;padding:1rem;line-height:1.5}
 </style></head><body>${html}</body></html>`;
+    } else {
+      // Full HTML documents: inject base target=_top so in-body navigation escapes the iframe
+      // (prevents wrapper stacking when the user clicks a dashboard link inside the session body).
+      if (html.includes("<head>")) {
+        html = html.replace("<head>", `<head><base target="_top">`);
+      } else if (html.includes("<head ")) {
+        html = html.replace(/<head(\s[^>]*)?>/, (m) => m.slice(0, -1) + `><base target="_top">`);
+      } else {
+        html = `<base target="_top">` + html;
+      }
     }
     const ep = errorPath(vault, uuid);
-    if (existsSync(ep)) {
+    // Never show the error banner for stopped sessions — the banner is a live-run artifact.
+    const isStopped = existsSync(stopPath(vault, uuid));
+    if (existsSync(ep) && !isStopped) {
       const errContent = readFileSync(ep, "utf8");
       const bodyMtime = statSync(bp).mtimeMs;
       const errMtime = statSync(ep).mtimeMs;
@@ -183,6 +196,53 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     return c.redirect("/");
   });
 
+  // POST /s/:uuid/stop — kill the vc child, mark the session stopped, and halt any drain it belongs to.
+  // "Stop means stop": no respawn. A drain-owned stop writes <worktree>/drain.stop so the loop
+  // returns status:"stopped" on its next iteration check (the stopped box stays unchecked).
+  app.post("/s/:uuid/stop", async (c) => {
+    const uuid = c.req.param("uuid");
+    // Idempotent: stopping an already-stopped session is a no-op.
+    if (existsSync(stopPath(vault, uuid))) return c.redirect("/");
+    // Write the terminal marker FIRST so the race guard in spawn.ts sees it
+    // before the killed child's late exit handler can fire.
+    writeFileSync(stopPath(vault, uuid), "stopped\n");
+    const pp = pidPath(vault, uuid);
+    if (existsSync(pp)) {
+      const pid = parseInt(readFileSync(pp, "utf8"), 10);
+      if (Number.isFinite(pid)) await killProcessTree(pid); // tree kill + SIGTERM→SIGKILL
+      try { rmSync(pp); } catch { /* ignore */ }
+    }
+    // Clean terminal view: clear the stale error banner + write a stopped body so
+    // re-open shows "stopped" (never the placeholder spinner) and the SSE swaps it in.
+    try { rmSync(errorPath(vault, uuid)); } catch { /* none */ }
+    // Halt the drain if this session belongs to one; read skill name for stopped body.
+    let skill = "";
+    const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
+    if (existsSync(metaPath)) {
+      try {
+        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { skill?: string; drainIssue?: number; worktree?: string };
+        skill = m.skill ?? "";
+        if (typeof m.drainIssue === "number" && m.worktree) {
+          writeFileSync(join(m.worktree, "drain.stop"), "1");
+        }
+      } catch { /* ignore malformed meta */ }
+    }
+    // Write a clean stopped body so re-open shows true terminal state (not placeholder spinner).
+    // Advancing mtime also triggers the SSE reload → spinner replaced with stopped view.
+    writeFileSync(bodyPath(vault, uuid), stoppedBody(skill));
+    return c.redirect("/");
+  });
+
+  // GET /s/:uuid/status — plain-text SessionStatus for the SSE client to decide when to stop reloading.
+  app.get("/s/:uuid/status", (c) => {
+    const uuid = c.req.param("uuid");
+    if (existsSync(stopPath(vault, uuid))) return c.text("stopped");
+    if (existsSync(errorPath(vault, uuid))) return c.text("error");
+    const bp = bodyPath(vault, uuid);
+    const html = existsSync(bp) ? readFileSync(bp, "utf8") : "";
+    return c.text(html.includes("<form") ? "awaiting" : "complete");
+  });
+
   // POST /s/:uuid/send — answer-back: serialize ALL form fields as "key: value\n" lines, resume session
   app.post("/s/:uuid/send", async (c) => {
     const uuid = c.req.param("uuid");
@@ -227,17 +287,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       // Clear body.html <form> after verdict so the session exits the agent-inbox
       if (acceptHumanBox) {
         writeFileSync(bodyPath(vault, uuid), "<p>Verdict accepted — drain continuing.</p>");
+      } else {
+        // Write working-page into body.html so the iframe shows it while the skill runs.
+        // Redirect to the shell (/s/:uuid) keeps back-nav and Stop control visible.
+        writeFileSync(bodyPath(vault, uuid), workingPage(fields));
       }
       setTimeout(() => {
         const drainOpts = buildDrainOptsFor(vault, meta.drainIssue!, meta.worktree!, runnerCommand, meta.max ?? 12);
         void drain({ ...drainOpts, acceptHumanBox });
       }, 500);
-      return c.html(workingPage(fields));
+      return c.redirect(`/s/${uuid}`);
     }
 
     spawnTurn(vault, uuid, buildAnswerArgv(uuid, text), runnerCommand);
-    // Bug #5 fix: return working page with submitted context + elapsed timer
-    return c.html(workingPage(fields));
+    // Write working-page into body.html so the iframe shows "received — working…"
+    // while the skill runs, then redirect to the shell so the wrapper (back-nav +
+    // Stop control) stays visible — avoids landing bare on /s/:uuid/send.
+    writeFileSync(bodyPath(vault, uuid), workingPage(fields));
+    return c.redirect(`/s/${uuid}`);
   });
 
   // GET /s/:uuid/stream — SSE: emits "reload" whenever body.html mtime advances.

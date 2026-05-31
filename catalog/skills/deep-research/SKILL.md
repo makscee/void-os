@@ -1,6 +1,8 @@
 ---
 name: deep-research
 description: Fan-out research harness — multi-source search, verify claims, synthesise a cited report.
+needs_input: true
+input_label: "Research query"
 ---
 
 # Deep Research
