@@ -125,10 +125,20 @@ a{color:#93c5fd}</style>
     let html = readFileSync(bp, "utf8");
     // Inject light-theme base if it's a bare fragment (no <html> tag).
     if (!html.includes("<html")) {
-      html = `<!doctype html><html><head><meta charset="utf-8"><style>
+      html = `<!doctype html><html><head><meta charset="utf-8"><base target="_top"><style>
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
   background:#ffffff;color:#1a1a1a;padding:1rem;line-height:1.5}
 </style></head><body>${html}</body></html>`;
+    } else {
+      // Full HTML documents: inject base target=_top so in-body navigation escapes the iframe
+      // (prevents wrapper stacking when the user clicks a dashboard link inside the session body).
+      if (html.includes("<head>")) {
+        html = html.replace("<head>", `<head><base target="_top">`);
+      } else if (html.includes("<head ")) {
+        html = html.replace(/<head(\s[^>]*)?>/, (m) => m.slice(0, -1) + `><base target="_top">`);
+      } else {
+        html = `<base target="_top">` + html;
+      }
     }
     const ep = errorPath(vault, uuid);
     if (existsSync(ep)) {

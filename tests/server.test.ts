@@ -251,6 +251,14 @@ test("GET /s/:uuid/body does NOT double-wrap full HTML documents", async () => {
   expect(html).toContain("full");
 });
 
+test("GET /s/:uuid/body injects base target=_top so in-body links escape the iframe", async () => {
+  const id = "basetarget-uuid";
+  mkdirSync(sessionDir(vault, id), { recursive: true });
+  writeFileSync(bodyPath(vault, id), '<h1>all set</h1><a href="/">return to dashboard</a>');
+  const html = await (await makeApp(vault).request(`/s/${id}/body`)).text();
+  expect(html).toContain('<base target="_top">');
+});
+
 test("POST /launch writes placeholder + session-meta.json, calls spawnTurn, redirects", async () => {
   const before = spawnCalls.length;
   const app = makeApp(vault);
