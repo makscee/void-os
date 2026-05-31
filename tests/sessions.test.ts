@@ -2,7 +2,7 @@ import { expect, test, beforeAll } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { listSessions } from "../src/sessions.ts";
-import { bodyPath, sessionDir } from "../src/paths.ts";
+import { bodyPath, sessionDir, stopPath } from "../src/paths.ts";
 
 const vault = "/tmp/voidos-sessions-test";
 beforeAll(() => {
@@ -63,6 +63,15 @@ test("title fallback uses skill name when title is generic", () => {
   // title must not be "session starting…" — it should fall back to skill name
   expect(meta.title).not.toBe("session starting…");
   expect(meta.title).toContain("deep-research");
+});
+
+test("status: stopped when stopped.txt present (beats error)", () => {
+  const uuid = "stopped-uuid-1";
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<title>stopped session</title>");
+  writeFileSync(stopPath(vault, uuid), "stopped");
+  const s = listSessions(vault).find((x) => x.uuid === uuid)!;
+  expect(s.status).toBe("stopped");
 });
 
 test("sessions without body.html are excluded", () => {
