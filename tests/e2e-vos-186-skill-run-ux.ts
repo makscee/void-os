@@ -1,13 +1,11 @@
 /**
- * VOS-186 E2E: Dashboard skill-run UX — stop control, back-nav stacking fix, input-required skills
+ * VOS-186+187 E2E: Dashboard skill-run UX — stop control, back-nav, universal modal
  *
- * Verifies:
- * 1. Stop control kills the vc process and marks the session stopped.
+ * Verifies (updated for VOS-187):
+ * 1. Stop control kills the vc process group (tree-kill) and marks session stopped.
  * 2. Back-to-dashboard navigation yields a single root view (no stacked wrapper headers).
- * 3. needs_input skills (deep-research) gate the run behind a text field + Run button.
- *    - Empty field blocks submit (required attribute).
- *    - Filled field navigates to /s/:uuid.
- * 4. Non-flagged skill (smoke-test) still runs immediately on click (no regression).
+ * 3. Universal modal opens on chip click (no single-click launch); launch with text works.
+ * 4. Launch with empty text also works (text field is not required).
  *
  * Run: bun run tests/e2e-vos-186-skill-run-ux.ts
  */
@@ -16,7 +14,7 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
-const WORKTREE = "/Users/admin/void-os-wt/VOS-186";
+const WORKTREE = "/Users/admin/void-os-wt/VOS-187";
 const VAULT = "/tmp/void-os-e2e-vos186";
 const PORT = 4394;
 const BASE = `http://localhost:${PORT}`;
@@ -28,8 +26,6 @@ const FAKE_RUNNER = `${WORKTREE}/tests/fixtures/fake-runner.sh`;
 rmSync(VAULT, { recursive: true, force: true });
 mkdirSync(join(VAULT, "sessions"), { recursive: true });
 
-// Config with two runners — sleep runner for Stop tests, instant runner for regression test.
-// The default runner is the sleep one; regression test overrides per launch.
 writeFileSync(join(VAULT, "void-os.json"), JSON.stringify({
   vault: VAULT,
   onboarded: true,
@@ -67,17 +63,20 @@ function assert(cond: boolean, msg: string): void {
 
 try {
   // =========================================================================
-  // Fix 1: Stop control kills the child process and marks session stopped
+  // Fix 1: Stop control kills the child process GROUP and marks session stopped
   // =========================================================================
-  console.log("\n--- Fix 1: Stop control ---");
+  console.log("\n--- Fix 1: Stop control (tree-kill) ---");
 
   await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 10000 });
   console.log("Dashboard loaded.");
 
-  // Launch smoke-test with the sleep runner (default)
+  // Launch via the universal modal (VOS-187: all skills open modal, no single-click)
+  await page.click("button.skill-chip", { timeout: 5000 });
+  await page.waitForSelector("#launch-modal:not([hidden])", { timeout: 5000 });
+  console.log("Modal opened ✓");
   await Promise.all([
     page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 10000 }),
-    page.click("button.skill-chip", { timeout: 5000 }),
+    page.click("button.modal-launch", { timeout: 5000 }),
   ]);
 
   const stopSessionUrl = page.url();
@@ -112,7 +111,7 @@ try {
   console.log("Stop submitted, navigated to:", page.url());
 
   // Give the OS a moment to reap the process
-  await new Promise<void>((r) => setTimeout(r, 200));
+  await new Promise<void>((r) => setTimeout(r, 300));
 
   // Assert stopped.txt exists
   const stoppedPath = join(VAULT, "sessions", stopUuid, "stopped.txt");
@@ -123,17 +122,17 @@ try {
   assert(!existsSync(pidFile), `vc.pid should have been removed after stop`);
   console.log("vc.pid removed ✓");
 
-  // Assert child process is no longer alive
+  // Assert child process GROUP is no longer alive (tree-kill sends to whole group)
   if (childPid !== null) {
-    let alive = true;
-    try { process.kill(childPid, 0); } catch { alive = false; }
-    assert(!alive, `Child process ${childPid} should be dead after Stop`);
-    console.log(`Child process ${childPid} is dead ✓`);
+    let groupAlive = true;
+    try { process.kill(-childPid, 0); } catch { groupAlive = false; }
+    assert(!groupAlive, `Process group ${childPid} should be dead after Stop (tree-kill)`);
+    console.log(`Process group ${childPid} is dead ✓`);
   }
 
   await page.screenshot({ path: "/tmp/vos-186-01-stopped.png", fullPage: false });
   console.log("Screenshot saved: /tmp/vos-186-01-stopped.png");
-  console.log("Fix 1 PASSED: Stop control kills child and marks session stopped.");
+  console.log("Fix 1 PASSED: Stop control kills process group and marks session stopped.");
 
   // =========================================================================
   // Fix 2: Back-nav yields a single root view — no stacked wrapper headers
@@ -189,129 +188,118 @@ try {
   console.log("Fix 2 PASSED: Back-nav yields single root dashboard view.");
 
   // =========================================================================
-  // Fix 3: needs_input gate — deep-research requires a query before launch
+  // Fix 3 (VOS-187): Universal modal — chip opens modal, not single-click launch
   // =========================================================================
-  console.log("\n--- Fix 3: needs_input gate (deep-research) ---");
+  console.log("\n--- Fix 3: Universal modal — skill opens modal (not single-click) ---");
 
   await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 10000 });
-  console.log("Dashboard loaded for input-gate test.");
+  console.log("Dashboard loaded for modal test.");
 
-  // Find the needs-input chip for deep-research
-  const needsInputForm = page.locator("form.skill-chip-form.needs-input").first();
-  await needsInputForm.waitFor({ timeout: 5000 });
-  console.log("Found needs-input form ✓");
+  const anyChip = page.locator("button.skill-chip").first();
+  await anyChip.waitFor({ timeout: 5000 });
+  console.log("Found skill chip ✓");
 
-  const inputField = needsInputForm.locator("input[name=text]");
-  const runButton = needsInputForm.locator("button.skill-chip-run");
+  const urlBefore3 = page.url();
 
-  // Assert input is required attribute
-  const isRequired = await inputField.getAttribute("required");
-  assert(isRequired !== null, "needs-input field should have required attribute");
-  console.log("Input has required attribute ✓");
-
-  await page.screenshot({ path: "/tmp/vos-186-03-input-gate.png", fullPage: false });
-  console.log("Screenshot saved: /tmp/vos-186-03-input-gate.png");
-
-  // Try clicking Run with empty field — URL should not change (browser blocks required)
-  const urlBefore = page.url();
-  await runButton.click();
+  // Click chip — should open modal, NOT navigate
+  await anyChip.click({ timeout: 5000 });
   await new Promise<void>((r) => setTimeout(r, 300));
-  const urlAfterEmpty = page.url();
-  assert(urlAfterEmpty === urlBefore, `Submit with empty required field should not navigate. Was: ${urlBefore}, now: ${urlAfterEmpty}`);
-  console.log("Empty submit blocked by required attribute ✓");
+  const urlAfter3 = page.url();
+  assert(urlAfter3 === urlBefore3, `Clicking chip should not navigate (opens modal). Was: ${urlBefore3}, now: ${urlAfter3}`);
+  console.log("Chip click did NOT navigate (modal opens) ✓");
 
-  // Now fill the field with a query and submit
+  // Assert modal is visible
+  await page.waitForSelector("#launch-modal:not([hidden])", { timeout: 5000 });
+  console.log("Modal visible ✓");
+
+  // Assert modal has skill name and textarea (NOT required)
+  const lmText = await page.$("#lm-text");
+  assert(lmText !== null, "#lm-text textarea must be present in modal");
+  const isRequired3 = await lmText!.getAttribute("required");
+  assert(isRequired3 === null, "Modal text field must NOT be required (optional for all skills)");
+  console.log("Modal has optional text field ✓");
+
+  // Fill query and launch
   const query = "What is the current state of AI alignment research?";
-  await inputField.fill(query);
+  await page.fill("#lm-text", query);
   console.log("Filled query:", query);
 
   await Promise.all([
     page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 10000 }),
-    runButton.click(),
+    page.click("button.modal-launch", { timeout: 5000 }),
   ]);
 
   const inputSessionUrl = page.url();
-  // Must land on /s/:uuid shell — NOT bare /s/:uuid/send (VOS-186 v2 fix)
   const inputMatch = inputSessionUrl.match(/^http:\/\/[^/]+\/s\/([0-9a-f-]{36})$/);
-  assert(
-    !!inputMatch,
-    `Expected navigation to /s/:uuid (shell), got: ${inputSessionUrl} — wrapper would be missing if URL ends in /send`,
-  );
+  assert(!!inputMatch, `Expected navigation to /s/:uuid (shell), got: ${inputSessionUrl}`);
   const inputUuid = inputMatch![1];
   console.log("Navigated to session shell:", inputSessionUrl, "✓");
 
-  // Assert exactly one .shell-header — shell wrapper must be present after /send flow
+  // Assert exactly one .shell-header
   const shellHeaders = await page.$$(".shell-header");
-  assert(
-    shellHeaders.length === 1,
-    `Expected exactly 1 .shell-header on running-session view, got ${shellHeaders.length} (wrapper missing or stacked!)`,
-  );
+  assert(shellHeaders.length === 1, `Expected 1 .shell-header, got ${shellHeaders.length}`);
   console.log("Shell wrapper present (1 .shell-header) ✓");
 
-  // Assert Stop control is visible inside the wrapper
-  const stopBtn = await page.$("form.stop-form button");
-  assert(stopBtn !== null, "Stop button (form.stop-form button) must be present in the shell wrapper");
+  const stopBtn3 = await page.$("form.stop-form button");
+  assert(stopBtn3 !== null, "Stop button must be present in shell wrapper");
   console.log("Stop control present in wrapper ✓");
 
   // Assert back-nav link is present
-  const backLink = await page.$("a.back-link");
-  assert(backLink !== null, "Back-nav link (a.back-link) must be present");
+  const backLink3 = await page.$("a.back-link");
+  assert(backLink3 !== null, "Back-nav link (a.back-link) must be present");
   console.log("Back-nav link present ✓");
 
-  console.log("Input session UUID:", inputUuid);
-
-  // Wait a moment for session-meta to be written
+  // Wait for session-meta to be written
   await new Promise<void>((r) => setTimeout(r, 500));
 
-  // Assert the session-meta.json has the typed query as text
   const inputMetaPath = join(VAULT, "sessions", inputUuid, "session-meta.json");
-  assert(existsSync(inputMetaPath), `session-meta.json not found for input session ${inputUuid}`);
+  assert(existsSync(inputMetaPath), `session-meta.json not found for ${inputUuid}`);
   const inputMeta = JSON.parse(readFileSync(inputMetaPath, "utf8"));
   console.log("Session meta text:", inputMeta.text);
   assert(
     inputMeta.text === query || inputMeta.text.includes("AI alignment"),
-    `Expected query "${query}" in session-meta.text, got: "${inputMeta.text}"`,
+    `Expected query in session-meta.text, got: "${inputMeta.text}"`,
   );
   console.log("Query reached session-meta.json ✓");
 
-  await page.screenshot({ path: "/tmp/vos-186-03-input-launched.png", fullPage: false });
-  console.log("Screenshot saved: /tmp/vos-186-03-input-launched.png");
-  console.log("Fix 3 PASSED: deep-research gates run behind input + Run button; running-session view retains wrapper + Stop control.");
+  await page.screenshot({ path: "/tmp/vos-186-03-modal-launched.png", fullPage: false });
+  console.log("Screenshot saved: /tmp/vos-186-03-modal-launched.png");
+  console.log("Fix 3 PASSED: Modal opens on chip click; launch with text works; wrapper + Stop retained.");
 
   // =========================================================================
-  // Fix 4: No regression — smoke-test (non-flagged) still runs immediately
+  // Fix 4 (VOS-187): Empty text launch works — no required block
   // =========================================================================
-  console.log("\n--- Fix 4: No regression (smoke-test runs immediately) ---");
+  console.log("\n--- Fix 4: Modal launch with empty text is allowed ---");
 
   await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 10000 });
-  console.log("Dashboard loaded for regression test.");
+  console.log("Dashboard loaded for empty-launch test.");
 
-  // Find a plain (non-gated) chip — should have class="skill-chip" button
-  const plainChip = page.locator("button.skill-chip").first();
-  await plainChip.waitFor({ timeout: 5000 });
-  console.log("Found plain skill-chip ✓");
+  const chip4 = page.locator("button.skill-chip").first();
+  await chip4.click({ timeout: 5000 });
+  await page.waitForSelector("#launch-modal:not([hidden])", { timeout: 5000 });
+  console.log("Modal opened ✓");
 
-  // Click it — should navigate without needing a query field
+  // Launch without any text — should still navigate (not blocked by required)
   await Promise.all([
     page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 10000 }),
-    plainChip.click(),
+    page.click("button.modal-launch", { timeout: 5000 }),
   ]);
 
-  const regressionUrl = page.url();
-  const regressionMatch = regressionUrl.match(/\/s\/([0-9a-f-]{36})/);
-  assert(!!regressionMatch, `Expected navigation to /s/:uuid on plain chip click, got: ${regressionUrl}`);
-  console.log("Plain chip navigated to session:", regressionUrl, "✓");
+  const emptyUrl = page.url();
+  const emptyMatch = emptyUrl.match(/\/s\/([0-9a-f-]{36})/);
+  assert(!!emptyMatch, `Expected navigation to /s/:uuid on empty-text launch, got: ${emptyUrl}`);
+  console.log("Empty-text modal launch navigated to session ✓");
 
-  await page.screenshot({ path: "/tmp/vos-186-04-no-regression.png", fullPage: false });
-  console.log("Screenshot saved: /tmp/vos-186-04-no-regression.png");
-  console.log("Fix 4 PASSED: Non-flagged skill still runs immediately on click.");
+  await page.screenshot({ path: "/tmp/vos-186-04-empty-launch.png", fullPage: false });
+  console.log("Screenshot saved: /tmp/vos-186-04-empty-launch.png");
+  console.log("Fix 4 PASSED: Modal launch with empty text navigates to /s/:uuid (not blocked).");
 
   ok = true;
-  console.log("\n=== SUCCESS: All three VOS-186 fixes verified via Playwright ===");
-  console.log("  Fix 1: Stop control kills child + marks session stopped");
+  console.log("\n=== SUCCESS: All VOS-186+187 fixes verified via Playwright ===");
+  console.log("  Fix 1: Stop control kills process group + marks session stopped");
   console.log("  Fix 2: Back-nav yields single root dashboard (no stacked wrapper headers)");
-  console.log("  Fix 3: deep-research gates run behind input field + Run button");
-  console.log("  Fix 4: Non-flagged skill (smoke-test) still runs immediately (no regression)");
+  console.log("  Fix 3: Universal modal opens on chip click; launch with text works");
+  console.log("  Fix 4: Modal launch with empty text is allowed (not blocked by required)");
 
 } finally {
   await browser.close();
