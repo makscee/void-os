@@ -25,8 +25,11 @@ export function buildDrainOptsFor(vault: string, issueNum: number, worktree: str
     const out = await new Response(p.stdout).text();
     return { code: await p.exited, out };
   };
+  const skillPath = join(catalogRoot, "skills", "ralph", "SKILL.md");
   return {
-    vault, worktree, issueNum, runner, skill: "ralph", max,
+    vault, worktree, issueNum, runner, skill: "ralph",
+    skillPath: existsSync(skillPath) ? skillPath : undefined,
+    max,
     fetchBody: async () => (await sh(["gh", "issue", "view", String(issueNum), "--json", "body", "-q", ".body"])).out.trim(),
     writeBody: async (body) => {
       const p = Bun.spawn(["gh", "issue", "edit", String(issueNum), "--body-file", "-"], { cwd: worktree, stdin: "pipe" });

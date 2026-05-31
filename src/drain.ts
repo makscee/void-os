@@ -15,6 +15,7 @@ export interface DrainOpts {
   issueNum: number;
   runner: string;              // "vc --"
   skill?: string;              // Decision B: the drainable skill; defaults to "ralph"
+  skillPath?: string;          // Absolute path to the skill's SKILL.md — when set, passed as --append-system-prompt-file instead of /skill slash-command
   max: number;                 // MANDATORY backstop
   autoRetries?: number;        // N inline re-spawns on a red auto gate (default 3)
   fetchBody: () => Promise<string>;                 // gh issue view --json body -q .body (re-fetch each iter)
@@ -144,7 +145,13 @@ export async function drain(opts: DrainOpts): Promise<DrainResult> {
   async function spawnBox(uuid: string, box: Box, progress: string, extra?: string): Promise<void> {
     const base = buildDrainPrompt(opts.issueNum, box, progress);
     const prompt = extra ? `${base}\n--- note ---\n${extra}` : base;
-    const argv = ["--session-id", uuid, "-p", `/${skill} ${prompt}`, "--permission-mode", "bypassPermissions"];
+    // If skillPath is provided, inject the SKILL.md as a system prompt appendage and pass the
+    // drain prompt directly as -p <text>. This avoids the /skill slash-command mechanism which
+    // requires a Claude Code plugin registration — the void-os catalog format (SKILL.md) is not
+    // a Claude Code plugin. Decision B: the skill parameter is still threaded through for labeling.
+    const argv = opts.skillPath
+      ? ["--session-id", uuid, "--append-system-prompt-file", opts.skillPath, "-p", prompt, "--permission-mode", "bypassPermissions"]
+      : ["--session-id", uuid, "-p", `/${skill} ${prompt}`, "--permission-mode", "bypassPermissions"];
     await runTurn(opts.worktree, opts.vault, uuid, argv, opts.runner);
   }
 
