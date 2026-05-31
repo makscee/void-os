@@ -283,6 +283,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
   text-overflow:ellipsis;white-space:nowrap;user-select:none}
 .copy-btn:hover{border-color:hsl(var(--ring));color:hsl(var(--foreground))}
 .copy-btn.copied{border-color:hsl(142 70% 45%);color:hsl(142 70% 65%);background:hsl(142 70% 8%)}
+.stop-btn{font-size:11px;padding:2px 8px;border:1px solid hsl(0 60% 40%);background:transparent;
+  color:hsl(0 70% 65%);border-radius:calc(var(--radius) - 4px);cursor:pointer;flex-shrink:0}
+.stop-btn:hover{background:hsl(0 60% 12%)}
 iframe{border:0;width:100%;height:calc(100vh - 36px);display:block}
 body.drawer-open iframe{height:calc(100vh - 36px - 40vh - 28px)}
 #drawer-bar{position:fixed;left:0;right:0;bottom:0;height:28px;z-index:10;
@@ -308,6 +311,9 @@ body.drawer-open #drawer-panel{display:block}
   <span class="session-name">${esc(headerName)}</span>
   <button class="copy-btn" id="copybtn" title="Copy resume command"
     data-cmd="${resumeCmdAttr}" data-label="${displayLabelAttr}">${displayLabelAttr}</button>
+  <form action="/s/${esc(uuid)}/stop" method="POST" class="stop-form" style="flex-shrink:0">
+    <button type="submit" class="stop-btn" title="Stop this session">■ Stop</button>
+  </form>
 </div>
 <iframe id="f" src="/s/${esc(uuid)}/body"></iframe>
 <div id="drawer-panel"></div>

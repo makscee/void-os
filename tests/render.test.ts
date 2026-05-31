@@ -142,3 +142,10 @@ test("shell header escapes name to prevent XSS", () => {
   expect(html).not.toContain('<script>bad</script>');
   expect(html).toContain("&lt;script&gt;");
 });
+
+test("renderShell includes a Stop control posting to /s/:uuid/stop", () => {
+  const html = renderShell("abc-uuid", "/tmp/v", "deep-research");
+  expect(html).toContain('action="/s/abc-uuid/stop"');
+  expect(html.toLowerCase()).toContain("stop");
+  expect(html).toContain("stop-btn");
+});
