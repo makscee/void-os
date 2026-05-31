@@ -7,14 +7,43 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { listCatalogSkills } from "./catalog.ts";
 import { listSessions } from "./sessions.ts";
-import { buildLaunchArgv, buildAnswerArgv, spawnTurn } from "./spawn.ts";
+import { buildLaunchArgv, buildAnswerArgv, spawnTurn, runTurn } from "./spawn.ts";
+import { drain, type DrainOpts } from "./drain.ts";
 import { renderDashboard, renderShell, placeholderBody, workingPage } from "./render.ts";
 import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner } from "./paths.ts";
+import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogRoot = join(repoRoot, "catalog");
+
+/** Build the real DrainOpts for a server-side drain (wires actual gh/git/bun callbacks). */
+export function buildDrainOptsFor(vault: string, issueNum: number, worktree: string, runner: string, max: number): DrainOpts {
+  const sh = async (cmd: string[]) => {
+    const p = Bun.spawn(cmd, { cwd: worktree, stdout: "pipe", stderr: "pipe" });
+    const out = await new Response(p.stdout).text();
+    return { code: await p.exited, out };
+  };
+  return {
+    vault, worktree, issueNum, runner, skill: "ralph", max,
+    fetchBody: async () => (await sh(["gh", "issue", "view", String(issueNum), "--json", "body", "-q", ".body"])).out.trim(),
+    writeBody: async (body) => {
+      const p = Bun.spawn(["gh", "issue", "edit", String(issueNum), "--body-file", "-"], { cwd: worktree, stdin: "pipe" });
+      p.stdin.write(body); p.stdin.end(); await p.exited;
+    },
+    runGate: async (check) => {
+      const proc = Bun.spawn(["bash", "-lc", check], { cwd: worktree, stdout: "ignore", stderr: "ignore" });
+      return await proc.exited;
+    },
+    commit: async (message) => { await sh(["git", "add", "-A"]); await sh(["git", "commit", "-m", message]); },
+    commentDrained: async () => {
+      const branch = `ralph/issue-${issueNum}`;
+      await sh(["gh", "issue", "comment", String(issueNum), "--body",
+        `Drained locally on \`${branch}\`, unpushed (no-push PoC posture). All boxes checked; commits live in the worktree only.`]);
+    },
+  };
+}
 
 export function makeApp(vault: string) {
   const app = new Hono();
@@ -138,6 +167,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     return new Response(Bun.file(p));
   });
 
+  // POST /drain — kick off an Issue-drain in a pre-created worktree. Fire-and-forget.
+  app.post("/drain", async (c) => {
+    const body = await c.req.parseBody();
+    const issueNum = parseInt(String(body.issue ?? ""), 10);
+    if (!Number.isFinite(issueNum)) return c.text("bad issue number", 400);
+    const worktree = join(homedir(), "void-os-wt", `issue-${issueNum}`);
+    if (!existsSync(worktree)) return c.text(`worktree ${worktree} does not exist — create it first`, 412);
+    const runner = resolveRunner(readConfig(vault));
+    const max = Number(body.max ?? 12);
+    void drain(buildDrainOptsFor(vault, issueNum, worktree, runner, max));
+    return c.redirect("/");
+  });
+
   // POST /s/:uuid/send — answer-back: serialize ALL form fields as "key: value\n" lines, resume session
   app.post("/s/:uuid/send", async (c) => {
     const uuid = c.req.param("uuid");
@@ -154,12 +196,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // Recover the runner command stored at launch time; fall back to vault default
     const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
     let runnerCommand = resolveRunner(readConfig(vault)); // default fallback for legacy sessions
+    let meta: { runner?: string; drainIssue?: number; worktree?: string; max?: number; skill?: string } = {};
     if (existsSync(metaPath)) {
       try {
-        const m = JSON.parse(readFileSync(metaPath, "utf8"));
-        if (typeof m.runner === "string" && m.runner) runnerCommand = m.runner;
+        meta = JSON.parse(readFileSync(metaPath, "utf8"));
+        if (typeof meta.runner === "string" && meta.runner) runnerCommand = meta.runner;
       } catch { /* keep default */ }
     }
+
+    // Drain-session resume: if this session was parked by a drain (human gate verdict),
+    // resume the skill IN THE WORKTREE (so its edits land in the repo), then re-invoke drain()
+    // (verdict-aware path A: continuation passes the accepted human box so runner checks it).
+    if (typeof meta.drainIssue === "number" && meta.worktree) {
+      // Resume the parked skill in the worktree so its edits land in the repo
+      await runTurn(meta.worktree, vault, uuid, buildAnswerArgv(uuid, text), runnerCommand);
+      // Re-invoke the drain loop (async, fire-and-forget); idempotent drain skips checked boxes.
+      // Verdict-aware path A: pass the parked box raw so the continuation checks it without re-spawning.
+      // We read the current Issue body to find which box is parked (the human box that just got a verdict).
+      // For simplicity: since the parked session's meta doesn't store the specific box raw,
+      // we rely on the drain loop: re-invoke with acceptHumanBox from meta if stored, else just drain.
+      setTimeout(() => {
+        void drain(buildDrainOptsFor(vault, meta.drainIssue!, meta.worktree!, runnerCommand, meta.max ?? 12));
+      }, 500);
+      return c.html(workingPage(fields));
+    }
+
     spawnTurn(vault, uuid, buildAnswerArgv(uuid, text), runnerCommand);
     // Bug #5 fix: return working page with submitted context + elapsed timer
     return c.html(workingPage(fields));

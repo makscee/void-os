@@ -153,6 +153,19 @@ export function renderDashboard(
     )
     .join("");
 
+  // Agent inbox: sessions awaiting a human verdict (skill rendered a <form> into body.html)
+  const awaitingRows = sessions
+    .filter((s) => s.status === "awaiting")
+    .map(
+      (s) => `
+    <a href="/s/${esc(s.uuid)}" class="session-row">
+      <span class="session-dot await"></span>
+      <span class="session-title">${esc(s.title)}</span>
+      <span class="session-uuid">${esc(s.uuid.slice(0, 8))}… — awaiting verdict</span>
+    </a>`,
+    )
+    .join("");
+
   const rows = sessions
     .map(
       (s) => `
@@ -222,7 +235,9 @@ ${runnerScript}
 ${runnerBar}
 <div class="section-label">Skills</div>
 <div class="skill-chips">${skillChips}</div>
-<div class="section-label">Sessions</div>
+<div class="section-label">Agent inbox — pending verdicts</div>
+<div class="session-list">${awaitingRows || '<span style="font-size:13px;color:hsl(var(--muted-foreground));padding:.5rem .625rem">no pending verdicts</span>'}</div>
+<div class="section-label" style="margin-top:1.25rem">Sessions</div>
 <div class="session-list">${rows || '<span style="font-size:13px;color:hsl(var(--muted-foreground));padding:.5rem .625rem">no sessions yet</span>'}</div>
 </div>`;
 }
