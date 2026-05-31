@@ -367,6 +367,37 @@ test("idempotent re-run: all boxes already checked → complete with zero spawns
   expect(commitCalled).toBe(false);
 }, 30000);
 
+// --- 8b. drain.stop halt ---
+
+test("drain halts when drain.stop flag is present — no box spawned, status=stopped", async () => {
+  const vault = makeVault("drain-stop");
+  const worktree = makeWorktree("drain-stop");
+  writeFileSync(join(worktree, "drain.stop"), "1");
+
+  let spawnCalled = false;
+  let writeBodyCalled = false;
+
+  const opts: DrainOpts = {
+    vault,
+    worktree,
+    issueNum: 99,
+    runner: `bun ${fakeSkillPath} --`,
+    skill: "ralph",
+    max: 5,
+    autoRetries: 1,
+    fetchBody: async () => AUTO_BODY,
+    writeBody: async () => { writeBodyCalled = true; },
+    runGate: async () => { spawnCalled = true; return 0; },
+    commit: async () => {},
+    commentDrained: async () => {},
+  };
+
+  const result = await drain(opts);
+  expect(result.status).toBe("stopped");
+  expect(spawnCalled).toBe(false);
+  expect(writeBodyCalled).toBe(false);
+}, 10000);
+
 // --- 8. dirty-worktree guard ---
 
 test("dirty-worktree guard: untracked file in worktree → status=dirty-worktree, no spawn", async () => {

@@ -29,7 +29,7 @@ export interface DrainOpts {
 }
 
 export interface DrainResult {
-  status: "complete" | "parked-human" | "failed" | "max-reached" | "stalled" | "dirty-worktree";
+  status: "complete" | "parked-human" | "failed" | "max-reached" | "stalled" | "dirty-worktree" | "stopped";
   parkedUuid?: string;         // session awaiting a human verdict
   failedBox?: string;          // the auto box that stayed red after autoRetries
   iterations: number;
@@ -65,6 +65,12 @@ export async function drain(opts: DrainOpts): Promise<DrainResult> {
   // before the clean-tree guard runs on iteration 1. appendProgress creates it lazily.
 
   for (let i = 1; i <= opts.max; i++) {
+    // Stop control: if a Stop was issued for this drain, halt — do NOT auto-advance.
+    // The stopped box stays unchecked; a manual re-trigger resumes (idempotent: checked boxes skipped).
+    if (existsSync(join(opts.worktree, "drain.stop"))) {
+      return { status: "stopped", iterations: i - 1 };
+    }
+
     // Clean-tree guard: each Box starts from a committed tree so the runner's
     // `git add -A` captures only its own changes — never stray scratch from a crash.
     // Exception: skip the guard on the first iteration of an acceptHumanBox continuation —
