@@ -6,6 +6,8 @@ import { join, dirname } from "node:path";
 import { makeApp } from "./server.ts";
 import { readConfig, writeConfig, registryDbPath } from "./paths.ts";
 import { openRegistry } from "./registry.ts";
+import { reapIdleRuns } from "./reaper.ts";
+import { killSession } from "./tmux.ts";
 
 /** Resolve the port: --port <n> flag > VOID_OS_PORT env > void-os.json > 4317. */
 export function resolvePort(argv: string[], env: Record<string, string | undefined>, cfgPort: number): number {
@@ -52,6 +54,13 @@ export async function runServe(): Promise<void> {
 
   const app = makeApp(vault, db);
   const url = `http://localhost:${port}`;
+
+  // Idle-reaper: kill + exit any 'idle' Run older than 5 minutes, every 60 seconds.
+  const IDLE_TTL_MS = 5 * 60 * 1000;
+  const REAP_INTERVAL_MS = 60_000;
+  setInterval(() => {
+    try { reapIdleRuns(db, { killSession }, Date.now(), IDLE_TTL_MS); } catch { /* never crash serve */ }
+  }, REAP_INTERVAL_MS).unref();
 
   // idleTimeout:255 prevents Bun's 10s default from killing long-lived SSE connections
   // during cold starts. 255 is Bun's max; the SSE loop also sends periodic keepalive

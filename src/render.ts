@@ -288,9 +288,9 @@ ${modalScript}`;
  * session name, and click-to-copy resume command. Option 1 style.
  * @param name Human-readable session name (e.g. skill name). Falls back to short uuid.
  */
-export function renderShell(uuid: string, vault: string, name?: string): string {
+export function renderShell(uuid: string, vault: string, name?: string, attachCmd?: string): string {
   // The resume command must be run from the vault dir because CC uses cwd to locate sessions.
-  const resumeCmd = `cd ${vault} && vc -- --resume ${uuid}`;
+  const resumeCmd = attachCmd ?? `cd ${vault} && vc -- --resume ${uuid}`;
   // Truncated display label for the copy-button (max ~40 chars from end)
   const shortVault = vault.length > 20 ? "…" + vault.slice(-18) : vault;
   const displayLabel = `${shortVault} — resume ${uuid.slice(0, 8)}…`;

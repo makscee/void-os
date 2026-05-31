@@ -1,7 +1,11 @@
 // sessions.ts — list sessions sorted by body.html mtime (Task 5)
+// Phase VOS-188: extended to read run.state + attach command from the registry.
 import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Database } from "bun:sqlite";
 import { sessionsRoot, sessionDir, bodyPath, errorPath, stopPath } from "./paths.ts";
+import { latestRunForSession, type RunState } from "./registry.ts";
+import { attachCommand } from "./tmux.ts";
 
 /** Status derived purely from filesystem state — no process lookup needed. */
 export type SessionStatus = "error" | "stopped" | "awaiting" | "complete";
@@ -13,6 +17,8 @@ export interface SessionInfo {
   error: boolean;
   status: SessionStatus;
   skill: string;
+  runState?: RunState;   // latest Run's registry state (undefined when no Run exists)
+  attach?: string;       // `tmux attach -t vos-run-<id>` (undefined when no Run exists)
 }
 
 function extractTitle(html: string): string {
@@ -30,7 +36,7 @@ function deriveStatus(vault: string, uuid: string, html: string): SessionStatus 
 
 const GENERIC_TITLES = new Set(["session starting…", "working…", "void-os", ""]);
 
-export function listSessions(vault: string): SessionInfo[] {
+export function listSessions(vault: string, db?: Database): SessionInfo[] {
   const root = sessionsRoot(vault);
   if (!existsSync(root)) return [];
 
@@ -65,6 +71,17 @@ export function listSessions(vault: string): SessionInfo[] {
       ? `${skill} — ${new Date(stat.mtimeMs).toLocaleDateString()}`
       : rawTitle || (skill ? skill : uuid.slice(0, 8));
 
+    // Registry-derived run state + attach command (Phase VOS-188).
+    let runState: RunState | undefined;
+    let attach: string | undefined;
+    if (db) {
+      const run = latestRunForSession(db, uuid);
+      if (run) {
+        runState = run.state;
+        attach = attachCommand(run.tmux_session);
+      }
+    }
+
     sessions.push({
       uuid,
       title,
@@ -72,6 +89,8 @@ export function listSessions(vault: string): SessionInfo[] {
       error: existsSync(errorPath(vault, uuid)),
       status: deriveStatus(vault, uuid, html),
       skill,
+      runState,
+      attach,
     });
   }
 

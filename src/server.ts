@@ -61,7 +61,7 @@ export function makeApp(vault: string, db: Database) {
     const status = await realDeps.vcStatus();
     const cfg = readConfig(vault);
     return c.html(
-      renderDashboard(listCatalogSkills(catalogRoot), listSessions(vault), { authed: status.ok }, cfg),
+      renderDashboard(listCatalogSkills(catalogRoot), listSessions(vault, db), { authed: status.ok }, cfg),
     );
   });
 
@@ -126,7 +126,10 @@ a{color:#93c5fd}</style>
         if (m.skill) sessionName = m.text ? `${m.skill} — ${m.text.slice(0, 40)}` : m.skill;
       } catch { /* use fallback */ }
     }
-    return c.html(renderShell(uuid, vault, sessionName));
+    // Look up the latest Run's attach command from the registry (for the shell to display).
+    const run = latestRunForSession(db, uuid);
+    const attachCmd = run ? `tmux attach -t ${run.tmux_session}` : undefined;
+    return c.html(renderShell(uuid, vault, sessionName, attachCmd));
   });
 
   // GET /s/:uuid/body — serves the session's body.html, appends error banner if error.txt present.
