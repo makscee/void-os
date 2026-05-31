@@ -231,10 +231,33 @@ try {
   ]);
 
   const inputSessionUrl = page.url();
-  const inputMatch = inputSessionUrl.match(/\/s\/([0-9a-f-]{36})/);
-  assert(!!inputMatch, `Expected navigation to /s/:uuid, got: ${inputSessionUrl}`);
+  // Must land on /s/:uuid shell — NOT bare /s/:uuid/send (VOS-186 v2 fix)
+  const inputMatch = inputSessionUrl.match(/^http:\/\/[^/]+\/s\/([0-9a-f-]{36})$/);
+  assert(
+    !!inputMatch,
+    `Expected navigation to /s/:uuid (shell), got: ${inputSessionUrl} — wrapper would be missing if URL ends in /send`,
+  );
   const inputUuid = inputMatch![1];
-  console.log("Navigated to session:", inputSessionUrl);
+  console.log("Navigated to session shell:", inputSessionUrl, "✓");
+
+  // Assert exactly one .shell-header — shell wrapper must be present after /send flow
+  const shellHeaders = await page.$$(".shell-header");
+  assert(
+    shellHeaders.length === 1,
+    `Expected exactly 1 .shell-header on running-session view, got ${shellHeaders.length} (wrapper missing or stacked!)`,
+  );
+  console.log("Shell wrapper present (1 .shell-header) ✓");
+
+  // Assert Stop control is visible inside the wrapper
+  const stopBtn = await page.$("form.stop-form button");
+  assert(stopBtn !== null, "Stop button (form.stop-form button) must be present in the shell wrapper");
+  console.log("Stop control present in wrapper ✓");
+
+  // Assert back-nav link is present
+  const backLink = await page.$("a.back-link");
+  assert(backLink !== null, "Back-nav link (a.back-link) must be present");
+  console.log("Back-nav link present ✓");
+
   console.log("Input session UUID:", inputUuid);
 
   // Wait a moment for session-meta to be written
@@ -253,7 +276,7 @@ try {
 
   await page.screenshot({ path: "/tmp/vos-186-03-input-launched.png", fullPage: false });
   console.log("Screenshot saved: /tmp/vos-186-03-input-launched.png");
-  console.log("Fix 3 PASSED: deep-research gates run behind input + Run button.");
+  console.log("Fix 3 PASSED: deep-research gates run behind input + Run button; running-session view retains wrapper + Stop control.");
 
   // =========================================================================
   // Fix 4: No regression — smoke-test (non-flagged) still runs immediately

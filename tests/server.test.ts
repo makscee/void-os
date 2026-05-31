@@ -133,12 +133,14 @@ test("POST /s/:uuid/send serializes ALL form fields (Bug #1 fix)", async () => {
   form.append("name", "Alice");
   form.append("skill_deep-research", "on");
   const res = await app.request("/s/multi-uuid/send", { method: "POST", body: form });
-  expect(res.status).toBe(200);
-  const html = await res.text();
-  // Working page must echo submitted fields (Bug #5 fix)
-  expect(html).toContain("Alice");
-  expect(html).toContain("skill_deep-research");
-  expect(html).toContain("elapsed");
+  // Fix: redirect to /s/:uuid (not inline 200) so the shell wrapper stays visible
+  expect(res.status).toBe(302);
+  expect(res.headers.get("location")).toContain("/s/multi-uuid");
+  // Working page content must be written to body.html (not returned inline)
+  const bodyHtml = readFileSync(bodyPath(vault, "multi-uuid"), "utf8");
+  expect(bodyHtml).toContain("Alice");
+  expect(bodyHtml).toContain("skill_deep-research");
+  expect(bodyHtml).toContain("elapsed");
   // Spawned argv must include ALL fields
   expect(spawnCalls.length).toBe(before + 1);
   const lastArgv = spawnCalls[spawnCalls.length - 1].argv;
@@ -147,7 +149,7 @@ test("POST /s/:uuid/send serializes ALL form fields (Bug #1 fix)", async () => {
   expect(promptArg).toContain("Alice");
 });
 
-test("POST /s/:uuid/send calls stubbed spawnTurn and returns working page", async () => {
+test("POST /s/:uuid/send redirects to shell and writes working page into body.html", async () => {
   mkdirSync(sessionDir(vault, "send-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "send-uuid"), "<title>s</title>hi");
   const before = spawnCalls.length;
@@ -155,9 +157,12 @@ test("POST /s/:uuid/send calls stubbed spawnTurn and returns working page", asyn
   const form = new FormData();
   form.append("text", "my answer");
   const res = await app.request("/s/send-uuid/send", { method: "POST", body: form });
-  expect(res.status).toBe(200);
-  const html = await res.text();
-  expect(html).toContain("received");
+  // Fix (VOS-186 v2): redirect to /s/:uuid so back-nav + Stop control stay visible
+  expect(res.status).toBe(302);
+  expect(res.headers.get("location")).toContain("/s/send-uuid");
+  // Working page is written to body.html so the iframe shows it
+  const bodyHtml = readFileSync(bodyPath(vault, "send-uuid"), "utf8");
+  expect(bodyHtml).toContain("received");
   expect(spawnCalls.length).toBe(before + 1);
   expect(spawnCalls[spawnCalls.length - 1].uuid).toBe("send-uuid");
 });
@@ -319,7 +324,7 @@ test("POST /s/:uuid/send reuses runner from session-meta on resume", async () =>
   const form = new FormData();
   form.append("text", "echo: hello");
   const res = await app.request(`/s/${id}/send`, { method: "POST", body: form });
-  expect(res.status).toBe(200);
+  expect(res.status).toBe(302);
   expect(spawnCalls[spawnCalls.length - 1].command).toBe("claude_artem");
 });
 
@@ -432,7 +437,7 @@ test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktr
   const form = new FormData();
   form.append("verdict", "accept");
   const res = await app.request(`/s/${parkedId}/send`, { method: "POST", body: form });
-  expect(res.status).toBe(200);
+  expect(res.status).toBe(302);
 
   // runTurn must have been called with cwd = the worktree (NOT the vault)
   const newRunTurnCalls = runTurnCalls.slice(runTurnBefore);

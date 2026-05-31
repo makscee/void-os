@@ -263,17 +263,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       // Clear body.html <form> after verdict so the session exits the agent-inbox
       if (acceptHumanBox) {
         writeFileSync(bodyPath(vault, uuid), "<p>Verdict accepted — drain continuing.</p>");
+      } else {
+        // Write working-page into body.html so the iframe shows it while the skill runs.
+        // Redirect to the shell (/s/:uuid) keeps back-nav and Stop control visible.
+        writeFileSync(bodyPath(vault, uuid), workingPage(fields));
       }
       setTimeout(() => {
         const drainOpts = buildDrainOptsFor(vault, meta.drainIssue!, meta.worktree!, runnerCommand, meta.max ?? 12);
         void drain({ ...drainOpts, acceptHumanBox });
       }, 500);
-      return c.html(workingPage(fields));
+      return c.redirect(`/s/${uuid}`);
     }
 
     spawnTurn(vault, uuid, buildAnswerArgv(uuid, text), runnerCommand);
-    // Bug #5 fix: return working page with submitted context + elapsed timer
-    return c.html(workingPage(fields));
+    // Write working-page into body.html so the iframe shows "received — working…"
+    // while the skill runs, then redirect to the shell so the wrapper (back-nav +
+    // Stop control) stays visible — avoids landing bare on /s/:uuid/send.
+    writeFileSync(bodyPath(vault, uuid), workingPage(fields));
+    return c.redirect(`/s/${uuid}`);
   });
 
   // GET /s/:uuid/stream — SSE: emits "reload" whenever body.html mtime advances.
