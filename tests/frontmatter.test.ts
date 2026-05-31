@@ -3,11 +3,16 @@ import { parseFrontmatter } from "../src/frontmatter.ts";
 
 test("extracts name and description from front matter", () => {
   const md = `---\nname: deep-research\ndescription: Fan-out research harness.\n---\n# body`;
-  expect(parseFrontmatter(md)).toEqual({ name: "deep-research", description: "Fan-out research harness." });
+  const r = parseFrontmatter(md);
+  expect(r.name).toBe("deep-research");
+  expect(r.description).toBe("Fan-out research harness.");
 });
 
 test("missing front matter returns empty fields", () => {
-  expect(parseFrontmatter("# no front matter")).toEqual({ name: "", description: "" });
+  const r = parseFrontmatter("# no front matter");
+  expect(r.name).toBe("");
+  expect(r.description).toBe("");
+  expect(r.needsInput).toBe(false);
 });
 
 test("handles quoted values", () => {
@@ -19,5 +24,20 @@ test("handles quoted values", () => {
 
 test("ignores unknown keys", () => {
   const md = `---\nname: test\nauthor: Alice\ndescription: Hello.\n---\n`;
-  expect(parseFrontmatter(md)).toEqual({ name: "test", description: "Hello." });
+  const r = parseFrontmatter(md);
+  expect(r.name).toBe("test");
+  expect(r.description).toBe("Hello.");
+});
+
+test("parseFrontmatter reads needs_input + input_label", () => {
+  const md = `---\nname: deep-research\ndescription: x\nneeds_input: true\ninput_label: "Research query"\n---\nbody`;
+  const m = parseFrontmatter(md);
+  expect(m.needsInput).toBe(true);
+  expect(m.inputLabel).toBe("Research query");
+});
+
+test("parseFrontmatter defaults needsInput false when absent", () => {
+  const m = parseFrontmatter("---\nname: x\ndescription: y\n---\n");
+  expect(m.needsInput).toBe(false);
+  expect(m.inputLabel).toBe("");
 });
