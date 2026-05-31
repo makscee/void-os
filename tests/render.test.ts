@@ -33,7 +33,7 @@ test("working page escapes XSS in field values", () => {
 
 test("dashboard shows skill chips and session rows in Option 1 style", () => {
   const html = renderDashboard(
-    [{ dir: "/c/skills/deep-research", name: "deep-research", description: "Research." }],
+    [{ dir: "/c/skills/deep-research", name: "deep-research", description: "Research.", needsInput: false, inputLabel: "" }],
     [{ uuid: "u1", title: "T1", mtimeMs: 1, error: false, status: "complete", skill: "deep-research" }],
     { authed: true },
   );
