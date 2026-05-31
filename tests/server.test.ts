@@ -399,9 +399,12 @@ test("POST /s/:uuid/stop kills the child, marks stopped, and halts a drain", asy
   const dir = sessionDir(vault, uuid);
   mkdirSync(dir, { recursive: true });
   writeFileSync(bodyPath(vault, uuid), "<title>running</title><p>running</p>");
-  // Spawn a real child to kill
-  const child = Bun.spawn(["sleep", "30"]);
-  writeFileSync(pidPath(vault, uuid), String(child.pid));
+  // Spawn a detached child (group leader) so killProcessTree(-pid) can kill the whole group.
+  // This matches the production spawn path (node:child_process.spawn { detached: true }).
+  const { spawn: nodeSpawn } = await import("node:child_process");
+  const child = nodeSpawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  const childPid = child.pid!;
+  writeFileSync(pidPath(vault, uuid), String(childPid));
   const wt = "/tmp/void-os-stop-wt";
   mkdirSync(wt, { recursive: true });
   writeFileSync(join(dir, "session-meta.json"), JSON.stringify({ skill: "x", drainIssue: 7, worktree: wt }));
@@ -412,11 +415,61 @@ test("POST /s/:uuid/stop kills the child, marks stopped, and halts a drain", asy
   expect(existsSync(join(wt, "drain.stop"))).toBe(true);
   expect(existsSync(pidPath(vault, uuid))).toBe(false);
   // Give the OS a moment to reap the killed process
-  await new Promise((r) => setTimeout(r, 100));
-  // Verify child is no longer alive
+  await new Promise((r) => setTimeout(r, 200));
+  // Verify child process group is gone
   let alive = true;
-  try { process.kill(child.pid!, 0); } catch { alive = false; }
+  try { process.kill(-childPid, 0); } catch { alive = false; }
   expect(alive).toBe(false);
+});
+
+test("POST /stop writes a clean stopped body.html and clears a stale error.txt", async () => {
+  const uuid = "stop-body-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<title>x</title><p>running…</p>");
+  writeFileSync(errorPath(vault, uuid), "exit 143; body.html NOT updated"); // the stale banner
+  const app = makeApp(vault);
+  await app.request(`/s/${uuid}/stop`, { method: "POST" });
+  expect(existsSync(stopPath(vault, uuid))).toBe(true);
+  expect(existsSync(errorPath(vault, uuid))).toBe(false);          // banner cleared
+  expect(readFileSync(bodyPath(vault, uuid), "utf8")).toContain("stopped"); // clean terminal body
+});
+
+test("GET /body suppresses the exit-143 banner when stopped.txt exists", async () => {
+  const uuid = "banner-suppress-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<title>x</title><p>stopped</p>");
+  writeFileSync(errorPath(vault, uuid), "exit 143; body.html NOT updated");
+  writeFileSync(stopPath(vault, uuid), "stopped\n");
+  const app = makeApp(vault);
+  const res = await app.request(`/s/${uuid}/body`);
+  const body = await res.text();
+  expect(body).not.toContain("NOT updated");
+});
+
+test("POST /stop on an already-stopped session is a no-op (idempotent)", async () => {
+  const uuid = "restop-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>x</p>");
+  const app = makeApp(vault);
+  const r1 = await app.request(`/s/${uuid}/stop`, { method: "POST" });
+  const r2 = await app.request(`/s/${uuid}/stop`, { method: "POST" }); // second stop
+  expect(r1.status).toBeLessThan(400);
+  expect(r2.status).toBeLessThan(400); // idempotent — no 500
+  expect(existsSync(stopPath(vault, uuid))).toBe(true);
+});
+
+test("GET /s/:uuid/status returns 'stopped' when stopped.txt present", async () => {
+  const uuid = "status-stopped-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>done</p>");
+  writeFileSync(stopPath(vault, uuid), "stopped\n");
+  const app = makeApp(vault);
+  const res = await app.request(`/s/${uuid}/status`);
+  expect(await res.text()).toBe("stopped");
 });
 
 test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktree and triggers drain continuation", async () => {

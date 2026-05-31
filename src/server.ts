@@ -9,7 +9,8 @@ import { listCatalogSkills } from "./catalog.ts";
 import { listSessions } from "./sessions.ts";
 import { buildLaunchArgv, buildAnswerArgv, spawnTurn, runTurn } from "./spawn.ts";
 import { drain, type DrainOpts } from "./drain.ts";
-import { renderDashboard, renderShell, placeholderBody, workingPage } from "./render.ts";
+import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody } from "./render.ts";
+import { killProcessTree } from "./kill.ts";
 import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, stopPath } from "./paths.ts";
 import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
@@ -141,7 +142,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       }
     }
     const ep = errorPath(vault, uuid);
-    if (existsSync(ep)) {
+    // Never show the error banner for stopped sessions — the banner is a live-run artifact.
+    const isStopped = existsSync(stopPath(vault, uuid));
+    if (existsSync(ep) && !isStopped) {
       const errContent = readFileSync(ep, "utf8");
       const bodyMtime = statSync(bp).mtimeMs;
       const errMtime = statSync(ep).mtimeMs;
@@ -196,27 +199,48 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   // POST /s/:uuid/stop — kill the vc child, mark the session stopped, and halt any drain it belongs to.
   // "Stop means stop": no respawn. A drain-owned stop writes <worktree>/drain.stop so the loop
   // returns status:"stopped" on its next iteration check (the stopped box stays unchecked).
-  app.post("/s/:uuid/stop", (c) => {
+  app.post("/s/:uuid/stop", async (c) => {
     const uuid = c.req.param("uuid");
+    // Idempotent: stopping an already-stopped session is a no-op.
+    if (existsSync(stopPath(vault, uuid))) return c.redirect("/");
+    // Write the terminal marker FIRST so the race guard in spawn.ts sees it
+    // before the killed child's late exit handler can fire.
+    writeFileSync(stopPath(vault, uuid), "stopped\n");
     const pp = pidPath(vault, uuid);
     if (existsSync(pp)) {
       const pid = parseInt(readFileSync(pp, "utf8"), 10);
-      if (Number.isFinite(pid)) { try { process.kill(pid); } catch { /* already gone */ } }
+      if (Number.isFinite(pid)) await killProcessTree(pid); // tree kill + SIGTERM→SIGKILL
       try { rmSync(pp); } catch { /* ignore */ }
     }
-    // Mark stopped (sessions.ts deriveStatus reads this first).
-    writeFileSync(stopPath(vault, uuid), "stopped\n");
-    // Halt the drain if this session belongs to one.
+    // Clean terminal view: clear the stale error banner + write a stopped body so
+    // re-open shows "stopped" (never the placeholder spinner) and the SSE swaps it in.
+    try { rmSync(errorPath(vault, uuid)); } catch { /* none */ }
+    // Halt the drain if this session belongs to one; read skill name for stopped body.
+    let skill = "";
     const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
     if (existsSync(metaPath)) {
       try {
-        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { drainIssue?: number; worktree?: string };
+        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { skill?: string; drainIssue?: number; worktree?: string };
+        skill = m.skill ?? "";
         if (typeof m.drainIssue === "number" && m.worktree) {
           writeFileSync(join(m.worktree, "drain.stop"), "1");
         }
       } catch { /* ignore malformed meta */ }
     }
+    // Write a clean stopped body so re-open shows true terminal state (not placeholder spinner).
+    // Advancing mtime also triggers the SSE reload → spinner replaced with stopped view.
+    writeFileSync(bodyPath(vault, uuid), stoppedBody(skill));
     return c.redirect("/");
+  });
+
+  // GET /s/:uuid/status — plain-text SessionStatus for the SSE client to decide when to stop reloading.
+  app.get("/s/:uuid/status", (c) => {
+    const uuid = c.req.param("uuid");
+    if (existsSync(stopPath(vault, uuid))) return c.text("stopped");
+    if (existsSync(errorPath(vault, uuid))) return c.text("error");
+    const bp = bodyPath(vault, uuid);
+    const html = existsSync(bp) ? readFileSync(bp, "utf8") : "";
+    return c.text(html.includes("<form") ? "awaiting" : "complete");
   });
 
   // POST /s/:uuid/send — answer-back: serialize ALL form fields as "key: value\n" lines, resume session

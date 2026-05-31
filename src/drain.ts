@@ -64,6 +64,10 @@ export async function drain(opts: DrainOpts): Promise<DrainResult> {
   // NOTE: do NOT pre-create progress.txt here — creating it would make the worktree dirty
   // before the clean-tree guard runs on iteration 1. appendProgress creates it lazily.
 
+  // A fresh drain run (manual re-trigger) clears any stale Stop flag from a prior halt.
+  // The in-loop check below still halts THIS run if a Stop arrives mid-drain.
+  try { rmSync(join(opts.worktree, "drain.stop")); } catch { /* none present */ }
+
   for (let i = 1; i <= opts.max; i++) {
     // Stop control: if a Stop was issued for this drain, halt — do NOT auto-advance.
     // The stopped box stays unchecked; a manual re-trigger resumes (idempotent: checked boxes skipped).
