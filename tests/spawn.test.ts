@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand } from "../src/spawn.ts";
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand, spawnTurn } from "../src/spawn.ts";
+import { pidPath, sessionDir } from "../src/paths.ts";
 
 test("buildLaunchArgv has no leading -- (separator now lives in runner command)", () => {
   const a = buildLaunchArgv("uuid-1", "deep-research", "hello");
@@ -50,4 +52,15 @@ test("tokenizeCommand splits prefix into argv head", () => {
   expect(tokenizeCommand("vc --")).toEqual(["vc", "--"]);
   expect(tokenizeCommand("claude_artem")).toEqual(["claude_artem"]);
   expect(tokenizeCommand("  vc   -- ")).toEqual(["vc", "--"]);
+});
+
+test("spawnTurn persists the child pid to vc.pid", async () => {
+  const vault = "/tmp/void-os-spawn-pid-test";
+  const uuid = "pid-uuid-1";
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  // Use 'sleep 2' so the child stays alive long enough to observe the pid file
+  spawnTurn(vault, uuid, ["2"], "sleep");
+  const p = pidPath(vault, uuid);
+  expect(existsSync(p)).toBe(true);
+  expect(parseInt(readFileSync(p, "utf8"), 10)).toBeGreaterThan(0);
 });

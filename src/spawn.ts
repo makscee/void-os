@@ -1,6 +1,6 @@
 // spawn.ts — argv builders (Task 6) + spawnTurn fire-and-forget integration (Task 8)
-import { openSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
-import { sessionDir, errorPath, bodyPath, runLogPath } from "./paths.ts";
+import { openSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { sessionDir, errorPath, bodyPath, runLogPath, pidPath } from "./paths.ts";
 
 const PERM = ["--permission-mode", "bypassPermissions"] as const;
 const RENDER_PREAMBLE = "[render contract: rewrite body.html, no terminal reply]";
@@ -73,6 +73,9 @@ export function spawnTurn(vault: string, uuid: string, argv: string[], command: 
     stderr: logFd,
   });
 
+  // Persist the child pid so the Stop route can kill it.
+  writeFileSync(pidPath(vault, uuid), String(proc.pid));
+
   // R4: timeout watchdog — kills and surfaces error if vc hangs
   let timedOut = false;
   const watchdog = setTimeout(() => {
@@ -86,6 +89,8 @@ export function spawnTurn(vault: string, uuid: string, argv: string[], command: 
 
   proc.exited.then((code) => {
     clearTimeout(watchdog);
+    // Clear the pid file — process has exited.
+    try { rmSync(pidPath(vault, uuid)); } catch { /* already gone */ }
     // If the watchdog already killed + recorded the timeout, keep that clearer message
     // rather than clobbering it with the generic SIGTERM exit below.
     if (timedOut) return;

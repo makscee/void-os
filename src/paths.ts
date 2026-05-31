@@ -8,6 +8,8 @@ export const bodyPath = (vault: string, uuid: string) => join(sessionDir(vault, 
 export const errorPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "error.txt");
 export const runLogPath = (vault: string, uuid: string, n: number) =>
   join(sessionDir(vault, uuid), `run-${n}.log`);
+export const pidPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "vc.pid");
+export const stopPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "stopped.txt");
 export const configPath = (vault: string) => join(vault, "void-os.json");
 export const vaultRoot = () => process.env.VOID_OS_VAULT ?? join(process.env.HOME ?? "/tmp", ".void-os");
 
