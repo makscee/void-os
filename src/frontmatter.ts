@@ -4,11 +4,12 @@ export interface SkillMeta {
   description: string;
   needsInput: boolean;
   inputLabel: string;
+  outputTarget: string; // vault-relative path/glob the execution must mutate (VOS-191)
 }
 
 export function parseFrontmatter(md: string): SkillMeta {
   const m = md.match(/^---\n([\s\S]*?)\n---/);
-  const out: SkillMeta = { name: "", description: "", needsInput: false, inputLabel: "" };
+  const out: SkillMeta = { name: "", description: "", needsInput: false, inputLabel: "", outputTarget: "" };
   if (!m) return out;
   for (const line of m[1].split("\n")) {
     const kv = line.match(/^(\w+):\s*(.*)$/);
@@ -19,6 +20,7 @@ export function parseFrontmatter(md: string): SkillMeta {
     if (k === "description") out.description = val;
     if (k === "needs_input") out.needsInput = val === "true";
     if (k === "input_label") out.inputLabel = val;
+    if (k === "output_target") out.outputTarget = val;
   }
   return out;
 }
