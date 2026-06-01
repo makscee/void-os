@@ -77,8 +77,8 @@ export async function runServe(): Promise<void> {
       }
       // Then reconcile (picks up newly-added/edited files; doesn't overwrite live next_fire_at)
       reconcileTriggers(db, vault, now);
-      drainInbox(db, vault, inboxOffsets, (name, input) =>
-        fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input }));
+      drainInbox(db, vault, inboxOffsets, (name, input, inputRef) =>
+        fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input, inputRef }));
     } catch { /* never crash serve */ }
   }, TRIGGER_TICK_MS).unref();
 

@@ -26,7 +26,7 @@ export function openRegistry(path: string): Database {
     CREATE INDEX IF NOT EXISTS idx_exec_started ON executions(started_at);
   `);
 
-  // Triggers table — UNCHANGED from VOS-189 (preserved wholesale per plan)
+  // Triggers table — event_kind added in VOS-192 (optional kind filter for event triggers)
   db.exec(`
     CREATE TABLE IF NOT EXISTS triggers (
       name          TEXT PRIMARY KEY,
@@ -35,6 +35,7 @@ export function openRegistry(path: string): Database {
       agent         TEXT NOT NULL,
       cron_expr     TEXT,
       inbox         TEXT,
+      event_kind    TEXT,
       step_ceiling  INTEGER NOT NULL,
       enabled       INTEGER NOT NULL DEFAULT 1,
       next_fire_at  INTEGER,
@@ -43,6 +44,8 @@ export function openRegistry(path: string): Database {
       updated_at    INTEGER NOT NULL
     );
   `);
+  // Add event_kind to pre-existing DBs that were created before VOS-192 (no-op if column exists).
+  try { db.exec(`ALTER TABLE triggers ADD COLUMN event_kind TEXT;`); } catch { /* already present */ }
 
   return db;
 }
@@ -72,6 +75,7 @@ export interface TriggerRow {
   agent: string;
   cron_expr: string | null;
   inbox: string | null;
+  event_kind: string | null; // optional kind filter for event triggers (VOS-192)
   step_ceiling: number;
   enabled: number;
   next_fire_at: number | null;
@@ -137,16 +141,18 @@ export function setOutputResult(
 export function upsertTrigger(
   db: Database,
   a: { name: string; kind: string; skill: string; agent: string;
-       cronExpr: string | null; inbox: string | null; stepCeiling: number; now: number },
+       cronExpr: string | null; inbox: string | null; eventKind?: string | null;
+       stepCeiling: number; now: number },
 ): void {
   db.query(`
-    INSERT INTO triggers (name, kind, skill, agent, cron_expr, inbox, step_ceiling, enabled, next_fire_at, last_fired_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)
+    INSERT INTO triggers (name, kind, skill, agent, cron_expr, inbox, event_kind, step_ceiling, enabled, next_fire_at, last_fired_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)
     ON CONFLICT(name) DO UPDATE SET
       kind=excluded.kind, skill=excluded.skill, agent=excluded.agent,
       cron_expr=excluded.cron_expr, inbox=excluded.inbox,
+      event_kind=excluded.event_kind,
       step_ceiling=excluded.step_ceiling, updated_at=excluded.updated_at
-  `).run(a.name, a.kind, a.skill, a.agent, a.cronExpr, a.inbox, a.stepCeiling, a.now, a.now);
+  `).run(a.name, a.kind, a.skill, a.agent, a.cronExpr, a.inbox, a.eventKind ?? null, a.stepCeiling, a.now, a.now);
 }
 
 export function getTrigger(db: Database, name: string): TriggerRow | null {

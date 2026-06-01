@@ -24,6 +24,7 @@ export function reconcileTriggers(db: Database, vault: string, now: number): voi
         agent: spec.agent,
         cronExpr: spec.cronExpr,
         inbox: spec.inbox,
+        eventKind: spec.eventKind,
         stepCeiling: spec.stepCeiling,
         now,
       });

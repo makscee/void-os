@@ -295,8 +295,10 @@ for i in $(seq 1 35); do
   [[ $i -eq 35 ]] && fail "event-demo not reconciled within 35s"
 done
 
-bash "$REPO/scripts/vos-inbox-append.sh" "$VAULT" demo '{"msg":"vos189-e2e"}'
-log "Appended event to demo inbox"
+# VOS-192: drainInbox now requires bus-format lines (channel/kind/payload).
+# Use vos-bus-append.sh (file channel, kindless trigger matches any kind).
+bash "$REPO/scripts/vos-bus-append.sh" "$VAULT" demo idea "vos189-e2e-idea"
+log "Appended bus-format event to demo inbox"
 
 EVENT_RUN="none"
 for i in $(seq 1 60); do
