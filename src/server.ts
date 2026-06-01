@@ -16,7 +16,7 @@ import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, st
 import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
-import { handleHookEvent, type HookPayload } from "./hooks-endpoint.ts";
+import { handleHookEvent, type HookPayload, type HookDecision } from "./hooks-endpoint.ts";
 import { getExecution, setExecutionFail, upsertTrigger, getTrigger } from "./registry.ts";
 import { killSession } from "./tmux.ts";
 import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
@@ -68,13 +68,17 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
 
   // POST /hook?run=<run-id> — CC HTTP hook sink. Maps a lifecycle event to a registry
   // transition. Always 200 (a hook must never see a 5xx — it would stall the Run).
+  // Stop-hook nudge: if handleHookEvent returns a HookDecision, relay it so the command-hook
+  // relay can echo it to CC stdout (causing CC to block the stop and re-prompt the agent).
   app.post("/hook", async (c) => {
     const runId = c.req.query("run") ?? "";
     let payload: HookPayload;
     try { payload = (await c.req.json()) as HookPayload; }
     catch { return c.json({ ok: false }, 200); }
-    try { handleHookEvent(db, vault, runId, payload, Date.now(), killSession); }
+    let decision: HookDecision | undefined;
+    try { decision = handleHookEvent(db, vault, runId, payload, Date.now(), killSession); }
     catch { /* never fail a hook */ }
+    if (decision) return c.json(decision, 200);
     return c.json({ ok: true }, 200);
   });
 
