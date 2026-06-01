@@ -1,14 +1,17 @@
-// sessions.ts — list sessions sorted by body.html mtime (Task 5)
-// Phase VOS-188: extended to read run.state + attach command from the registry.
+// sessions.ts — list executions sorted by body.html mtime (VOS-190)
+// Stateless: run state derived from executions table (ended_at / reason).
 import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { sessionsRoot, sessionDir, bodyPath, errorPath, stopPath } from "./paths.ts";
-import { latestRunForSession, type RunState } from "./registry.ts";
+import { getExecution } from "./registry.ts";
 import { attachCommand } from "./tmux.ts";
 
 /** Status derived purely from filesystem state — no process lookup needed. */
 export type SessionStatus = "error" | "stopped" | "awaiting" | "complete";
+
+/** Execution status derived from executions row (ended_at / reason). */
+export type ExecStatus = "running" | "failed" | "complete";
 
 export interface SessionInfo {
   uuid: string;
@@ -17,8 +20,8 @@ export interface SessionInfo {
   error: boolean;
   status: SessionStatus;
   skill: string;
-  runState?: RunState;   // latest Run's registry state (undefined when no Run exists)
-  attach?: string;       // `tmux attach -t vos-run-<id>` (undefined when no Run exists)
+  execStatus?: ExecStatus;  // execution status from registry (undefined when no execution exists)
+  attach?: string;          // `tmux attach -t vos-run-<id>` (undefined when no execution exists)
 }
 
 function extractTitle(html: string): string {
@@ -71,14 +74,14 @@ export function listSessions(vault: string, db?: Database): SessionInfo[] {
       ? `${skill} — ${new Date(stat.mtimeMs).toLocaleDateString()}`
       : rawTitle || (skill ? skill : uuid.slice(0, 8));
 
-    // Registry-derived run state + attach command (Phase VOS-188).
-    let runState: RunState | undefined;
+    // Registry-derived execution status + attach command (VOS-190: executions table).
+    let execStatus: ExecStatus | undefined;
     let attach: string | undefined;
     if (db) {
-      const run = latestRunForSession(db, uuid);
-      if (run) {
-        runState = run.state;
-        attach = attachCommand(run.tmux_session);
+      const exec = getExecution(db, uuid);
+      if (exec) {
+        execStatus = exec.ended_at == null ? "running" : exec.reason ? "failed" : "complete";
+        attach = attachCommand(exec.tmux_session);
       }
     }
 
@@ -89,7 +92,7 @@ export function listSessions(vault: string, db?: Database): SessionInfo[] {
       error: existsSync(errorPath(vault, uuid)),
       status: deriveStatus(vault, uuid, html),
       skill,
-      runState,
+      execStatus,
       attach,
     });
   }

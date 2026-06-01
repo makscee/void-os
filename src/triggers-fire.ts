@@ -6,8 +6,9 @@ import { nextFireAt } from "./cron.ts";
 
 /** Minimal spawn surface fireTrigger needs (real impl = spawnRun from spawn.ts). */
 export interface SpawnFn {
-  (o: { skill: string; agent: string; triggerId: string; stepCeiling: number; input: string | null }):
-    { runId: string; sessionId: string; tmuxSession: string };
+  (o: { skill: string; agent: string; triggerId: string; stepCeiling: number; input: string | null;
+         inputRef?: string | null }):
+    { runId: string; tmuxSession: string };
 }
 
 export function fireTrigger(

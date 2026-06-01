@@ -15,6 +15,8 @@ export const registryDbPath = (vault: string) => join(vault, ".void-os", "regist
 export const hookSettingsDir = (vault: string) => join(vault, ".void-os", "cc");
 export const triggersDir = (vault: string) => join(vault, "triggers");
 export const inboxPath = (vault: string, name: string) => join(vault, "inbox", `${name}.jsonl`);
+export const eventsDir = (vault: string) => join(vault, ".void-os", "events");
+export const eventLogPath = (vault: string, execId: string) => join(eventsDir(vault), `${execId}.jsonl`);
 export const vaultRoot = () => process.env.VOID_OS_VAULT ?? join(process.env.HOME ?? "/tmp", ".void-os");
 
 export interface Runner {

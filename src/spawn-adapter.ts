@@ -17,6 +17,7 @@ export function makeSpawnFn(db: Database, vault: string, daemonUrl: string): Spa
       skill,
       agent: o.agent,
       runnerCommand,
+      inputRef: o.inputRef ?? null, // wire inbox line ref for files-first input tracking
       triggerId: o.triggerId,
       stepCeiling: o.stepCeiling,
     });

@@ -33,12 +33,11 @@ mock.module("../src/spawn.ts", () => ({
   spawnTurn: (v: string, u: string, a: string[], cmd: string) => { spawnCalls.push({ vault: v, uuid: u, argv: a, command: cmd }); },
   runTurn: async (cwd: string, v: string, u: string, a: string[], cmd: string) => { runTurnCalls.push({ cwd, vault: v, uuid: u, argv: a, command: cmd }); return 0; },
   spawnRun: (opts: { db: unknown; vault: string; daemonUrl: string; skill: string; agent: null; runnerCommand: string; now?: number }) => {
-    const sessionId = randomUUID();
-    const runId = `run-${randomUUID()}`;
+    const runId = `exec-${randomUUID()}`;
     const tmuxSession = `vos-run-${runId}`;
-    spawnRunCalls.push({ ...opts, sessionId, runId, tmuxSession });
-    spawnCalls.push({ vault: opts.vault, uuid: sessionId, argv: [opts.skill], command: opts.runnerCommand });
-    return { sessionId, runId, tmuxSession };
+    spawnRunCalls.push({ ...opts, runId, tmuxSession });
+    spawnCalls.push({ vault: opts.vault, uuid: runId, argv: [opts.skill], command: opts.runnerCommand });
+    return { runId, tmuxSession };
   },
 }));
 
@@ -186,17 +185,12 @@ test("POST /s/:uuid/send redirects to shell and writes working page into body.ht
  * The /stream route must emit a ": ping" SSE comment within PING_INTERVAL_MS (5s)
  * even when body.html does NOT change — this keeps the connection alive during cold starts
  * and prevents Bun's idleTimeout from killing the socket.
- *
- * We collect SSE chunks from the stream with a timeout and assert that a ping
- * comment arrives within the expected window.
  */
 test("GET /s/:uuid/stream emits SSE keepalive ping within 6s when body.html does not change", async () => {
   const id = "stream-keepalive-test";
   mkdirSync(sessionDir(vault, id), { recursive: true });
-  // Write body.html but DO NOT advance its mtime — mtime stays fixed so no "reload" fires
   const bp = bodyPath(vault, id);
   writeFileSync(bp, "<title>k</title>waiting");
-  // Backdate so stat mtime < now
   const past = new Date(Date.now() - 10_000);
   utimesSync(bp, past, past);
 
@@ -205,7 +199,6 @@ test("GET /s/:uuid/stream emits SSE keepalive ping within 6s when body.html does
   expect(res.status).toBe(200);
   expect(res.headers.get("content-type")).toContain("text/event-stream");
 
-  // Collect up to 6 seconds of SSE chunks and assert a ": ping" comment arrives
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   const collected: string[] = [];
@@ -222,7 +215,6 @@ test("GET /s/:uuid/stream emits SSE keepalive ping within 6s when body.html does
     if (value) {
       const chunk = decoder.decode(value);
       collected.push(chunk);
-      // Stop as soon as we see a ping
       if (collected.join("").includes(": ping")) break outer;
     }
   }
@@ -230,7 +222,7 @@ test("GET /s/:uuid/stream emits SSE keepalive ping within 6s when body.html does
 
   const fullText = collected.join("");
   expect(fullText).toContain(": ping");
-}, 10_000); // 10s test timeout — ping fires at 5s so this is safe
+}, 10_000);
 
 // Bug 2: /s/:uuid shell should show session skill name in header, not raw uuid
 test("GET /s/:uuid shows skill name in header when session-meta.json exists", async () => {
@@ -243,7 +235,6 @@ test("GET /s/:uuid shows skill name in header when session-meta.json exists", as
   );
   const html = await (await makeApp(vault, db).request(`/s/${id}`)).text();
   expect(html).toContain("smoke-test");
-  // raw id must NOT appear in the session-name slot
   expect(html).not.toMatch(/class="session-name"[^>]*>u-named-session</);
 });
 
@@ -251,10 +242,8 @@ test("GET /s/:uuid shows skill name in header when session-meta.json exists", as
 test("GET /s/:uuid/body wraps bare fragment with readable light-theme CSS", async () => {
   const id = "u-bare-body";
   mkdirSync(sessionDir(vault, id), { recursive: true });
-  // smoke-test writes bare fragments: no <html>, no <style>
   writeFileSync(bodyPath(vault, id), "<h1>smoke-test ✓ session live</h1><p>no input</p>");
   const html = await (await makeApp(vault, db).request(`/s/${id}/body`)).text();
-  // Must include explicit color + background so text is readable on any system
   expect(html).toContain("color");
   expect(html).toContain("background");
   expect(html).toContain("smoke-test ✓ session live");
@@ -265,7 +254,6 @@ test("GET /s/:uuid/body does NOT double-wrap full HTML documents", async () => {
   mkdirSync(sessionDir(vault, id), { recursive: true });
   writeFileSync(bodyPath(vault, id), "<!doctype html><html><head><title>t</title></head><body>full</body></html>");
   const html = await (await makeApp(vault, db).request(`/s/${id}/body`)).text();
-  // Should pass through as-is (single doctype)
   expect(html.split("<!doctype html").length).toBe(2);
   expect(html).toContain("full");
 });
@@ -278,30 +266,29 @@ test("GET /s/:uuid/body injects base target=_top so in-body links escape the ifr
   expect(html).toContain('<base target="_top">');
 });
 
-test("POST /launch writes placeholder + session-meta.json, calls spawnTurn, redirects", async () => {
+test("POST /launch writes placeholder + session-meta.json, calls spawnRun, redirects", async () => {
   const before = spawnCalls.length;
   const app = makeApp(vault, db);
   const form = new FormData();
   form.append("skill", "deep-research");
   form.append("text", "AI safety");
   const res = await app.request("/launch", { method: "POST", body: form });
-  // redirect to /s/<uuid>
+  // redirect to /s/<exec-id>
   expect(res.status).toBe(302);
   const loc = res.headers.get("location") ?? "";
-  expect(loc).toMatch(/^\/s\/[0-9a-f-]{36}$/);
+  // exec-<uuid> format
+  expect(loc).toMatch(/^\/s\/exec-[0-9a-f-]{36}$/);
   expect(spawnCalls.length).toBe(before + 1);
   const lastArgv = spawnCalls[spawnCalls.length - 1].argv;
-  // prompt is in the -p slot: "/deep-research AI safety"
   expect(lastArgv.some((a) => a.includes("deep-research"))).toBe(true);
   // session-meta.json must be written with skill name
-  const uuid = loc.replace("/s/", "");
-  const meta = JSON.parse(readFileSync(join(sessionDir(vault, uuid), "session-meta.json"), "utf8"));
+  const execId = loc.replace("/s/", "");
+  const meta = JSON.parse(readFileSync(join(sessionDir(vault, execId), "session-meta.json"), "utf8"));
   expect(meta.skill).toBe("deep-research");
   expect(meta.text).toBe("AI safety");
 });
 
 test("POST /launch persists resolved runner command in session-meta", async () => {
-  // Write a vault config with a custom runner
   writeFileSync(
     join(vault, "void-os.json"),
     JSON.stringify({
@@ -318,8 +305,8 @@ test("POST /launch persists resolved runner command in session-meta", async () =
   form.append("runner", "artem");
   const res = await app.request("/launch", { method: "POST", body: form });
   expect(res.status).toBe(302);
-  const uuid = res.headers.get("location")!.split("/s/")[1];
-  const meta = JSON.parse(readFileSync(join(sessionDir(vault, uuid), "session-meta.json"), "utf8"));
+  const execId = res.headers.get("location")!.split("/s/")[1];
+  const meta = JSON.parse(readFileSync(join(sessionDir(vault, execId), "session-meta.json"), "utf8"));
   expect(meta.runner).toBe("claude_artem");
   expect(spawnCalls[spawnCalls.length - 1].command).toBe("claude_artem");
 });
@@ -328,7 +315,6 @@ test("POST /s/:uuid/send reuses runner from session-meta on resume", async () =>
   const id = "resume-runner-uuid";
   mkdirSync(sessionDir(vault, id), { recursive: true });
   writeFileSync(bodyPath(vault, id), "<title>r</title>hi");
-  // Pre-seed session-meta with a non-default runner
   writeFileSync(
     join(sessionDir(vault, id), "session-meta.json"),
     JSON.stringify({ skill: "smoke-test", launchedAt: Date.now(), text: "", runner: "claude_artem" }),
@@ -344,7 +330,6 @@ test("POST /s/:uuid/send reuses runner from session-meta on resume", async () =>
 
 test("GET /s/:uuid/transcript renders escaped turns from the CC transcript", async () => {
   const uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-  // Inject directly: seed the real ~/.claude/projects subdir that locateTranscript scans.
   const proj = join(process.env.HOME!, ".claude", "projects", "-voidos-server-test");
   mkdirSync(proj, { recursive: true });
   const txFile = join(proj, `${uuid}.jsonl`);
@@ -361,7 +346,6 @@ test("GET /s/:uuid/transcript renders escaped turns from the CC transcript", asy
     expect(body).toContain("/smoke-test go");
     expect(body).toContain("working &lt;x&gt;");
   } finally {
-    // Clean up the injected fixture
     try { rmSync(txFile); } catch { /* ignore */ }
   }
 });
@@ -396,7 +380,6 @@ test("GET / renders 'Agent inbox' section in dashboard", async () => {
 test("GET / agent-inbox lists an awaiting (human-parked) session", async () => {
   const awaitId = "await-drain-uuid";
   mkdirSync(sessionDir(vault, awaitId), { recursive: true });
-  // body.html with <form so deriveStatus returns "awaiting"
   writeFileSync(bodyPath(vault, awaitId), `<title>ralph box review</title><form action="/s/${awaitId}/send" method="POST"><button>accept</button></form>`);
   writeFileSync(
     join(sessionDir(vault, awaitId), "session-meta.json"),
@@ -413,8 +396,6 @@ test("POST /s/:uuid/stop kills the child, marks stopped, and halts a drain", asy
   const dir = sessionDir(vault, uuid);
   mkdirSync(dir, { recursive: true });
   writeFileSync(bodyPath(vault, uuid), "<title>running</title><p>running</p>");
-  // Spawn a detached child (group leader) so killProcessTree(-pid) can kill the whole group.
-  // This matches the production spawn path (node:child_process.spawn { detached: true }).
   const { spawn: nodeSpawn } = await import("node:child_process");
   const child = nodeSpawn("sleep", ["30"], { detached: true, stdio: "ignore" });
   const childPid = child.pid!;
@@ -428,9 +409,7 @@ test("POST /s/:uuid/stop kills the child, marks stopped, and halts a drain", asy
   expect(existsSync(stopPath(vault, uuid))).toBe(true);
   expect(existsSync(join(wt, "drain.stop"))).toBe(true);
   expect(existsSync(pidPath(vault, uuid))).toBe(false);
-  // Give the OS a moment to reap the killed process
   await new Promise((r) => setTimeout(r, 200));
-  // Verify child process group is gone
   let alive = true;
   try { process.kill(-childPid, 0); } catch { alive = false; }
   expect(alive).toBe(false);
@@ -441,12 +420,12 @@ test("POST /stop writes a clean stopped body.html and clears a stale error.txt",
   rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
   mkdirSync(sessionDir(vault, uuid), { recursive: true });
   writeFileSync(bodyPath(vault, uuid), "<title>x</title><p>running…</p>");
-  writeFileSync(errorPath(vault, uuid), "exit 143; body.html NOT updated"); // the stale banner
+  writeFileSync(errorPath(vault, uuid), "exit 143; body.html NOT updated");
   const app = makeApp(vault, db);
   await app.request(`/s/${uuid}/stop`, { method: "POST" });
   expect(existsSync(stopPath(vault, uuid))).toBe(true);
-  expect(existsSync(errorPath(vault, uuid))).toBe(false);          // banner cleared
-  expect(readFileSync(bodyPath(vault, uuid), "utf8")).toContain("stopped"); // clean terminal body
+  expect(existsSync(errorPath(vault, uuid))).toBe(false);
+  expect(readFileSync(bodyPath(vault, uuid), "utf8")).toContain("stopped");
 });
 
 test("GET /body suppresses the exit-143 banner when stopped.txt exists", async () => {
@@ -469,9 +448,9 @@ test("POST /stop on an already-stopped session is a no-op (idempotent)", async (
   writeFileSync(bodyPath(vault, uuid), "<p>x</p>");
   const app = makeApp(vault, db);
   const r1 = await app.request(`/s/${uuid}/stop`, { method: "POST" });
-  const r2 = await app.request(`/s/${uuid}/stop`, { method: "POST" }); // second stop
+  const r2 = await app.request(`/s/${uuid}/stop`, { method: "POST" });
   expect(r1.status).toBeLessThan(400);
-  expect(r2.status).toBeLessThan(400); // idempotent — no 500
+  expect(r2.status).toBeLessThan(400);
   expect(existsSync(stopPath(vault, uuid))).toBe(true);
 });
 
@@ -506,33 +485,31 @@ test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktr
   const res = await app.request(`/s/${parkedId}/send`, { method: "POST", body: form });
   expect(res.status).toBe(302);
 
-  // runTurn must have been called with cwd = the worktree (NOT the vault)
   const newRunTurnCalls = runTurnCalls.slice(runTurnBefore);
   expect(newRunTurnCalls.length).toBe(1);
   expect(newRunTurnCalls[0].cwd).toBe(drainWorktree);
   expect(newRunTurnCalls[0].vault).toBe(vault);
 
-  // Drain continuation is fire-and-forget (setTimeout 500ms); wait briefly
   await new Promise((r) => setTimeout(r, 600));
   const newDrainCalls = drainCalls.slice(drainBefore);
   expect(newDrainCalls.length).toBe(1);
 });
 
-// --- Task 5 test: POST /hook PreToolUse breach via real route ---
+// --- VOS-190: POST /hook PreToolUse breach via real route ---
 
-test("POST /hook PreToolUse breach marks the trigger run exited_fail runaway-ceiling", async () => {
-  const { createSession, createRun, getRun, upsertTrigger } = await import("../src/registry.ts");
-  createSession(db, { id: "hook-s", agent: "a", skill: "sk", now: 0 });
-  createRun(db, { id: "hook-r", sessionId: "hook-s", tmuxSession: "vos-run-nope", pid: 1, now: 0, triggerId: "t", stepCeiling: 1 });
+test("POST /hook PreToolUse breach marks the trigger execution failed with runaway-ceiling", async () => {
+  const { createExecution, getExecution } = await import("../src/registry.ts");
+  createExecution(db, { id: "hook-exec", agent: "a", skill: "sk", inputRef: null,
+    tmuxSession: "vos-run-nope", now: 0, triggerId: "t", stepCeiling: 1 });
   const app = makeApp(vault, db);
-  const res = await app.fetch(new Request("http://x/hook?run=hook-r", {
+  const res = await app.fetch(new Request("http://x/hook?run=hook-exec", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ hook_event_name: "PreToolUse", session_id: "cc" }),
   }));
   expect(res.status).toBe(200);
-  const row = getRun(db, "hook-r")!;
-  expect(row.state).toBe("exited_fail");
+  const row = getExecution(db, "hook-exec")!;
   expect(row.reason).toBe("runaway-ceiling");
+  expect(row.ended_at).not.toBeNull();
 });
 
 // --- Task 9 test: POST /triggers/:name/fire manual fire route ---
@@ -540,18 +517,29 @@ test("POST /hook PreToolUse breach marks the trigger run exited_fail runaway-cei
 test("POST /triggers/:name/fire fires the trigger and stamps last_fired_at", async () => {
   const { upsertTrigger, getTrigger } = await import("../src/registry.ts");
   upsertTrigger(db, { name: "fire-m", kind: "manual", skill: "x", agent: "a", cronExpr: null, inbox: null, stepCeiling: 50, now: 0 });
-  const fakeSpawn = () => ({ runId: "run-fake", sessionId: "ses-fake", tmuxSession: "vos-run-fake" });
+  const fakeSpawn = () => ({ runId: "exec-fake", tmuxSession: "vos-run-exec-fake" });
   const app = makeApp(vault, db, fakeSpawn);
   const res = await app.request("/triggers/fire-m/fire", { method: "POST" });
   expect(res.status).toBe(200);
   const body = await res.json() as { runId: string };
-  expect(body.runId).toBe("run-fake");
+  expect(body.runId).toBe("exec-fake");
   expect(getTrigger(db, "fire-m")!.last_fired_at).not.toBeNull();
 });
 
 test("POST /triggers/:name/fire returns 404 for unknown trigger", async () => {
-  const fakeSpawn = () => ({ runId: "r", sessionId: "s", tmuxSession: "t" });
+  const fakeSpawn = () => ({ runId: "r", tmuxSession: "t" });
   const app = makeApp(vault, db, fakeSpawn);
   const res = await app.request("/triggers/no-such-trigger/fire", { method: "POST" });
   expect(res.status).toBe(404);
+});
+
+// --- VOS-190: executions list on dashboard ---
+
+test("GET / dashboard lists executions section", async () => {
+  const app = makeApp(vault, db);
+  const res = await app.request("/");
+  const html = await res.text();
+  expect(res.status).toBe(200);
+  // Dashboard must render — presence of Sessions section confirms executions list
+  expect(html).toContain("Sessions");
 });

@@ -7,7 +7,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Database } from "bun:sqlite";
 import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath, hookSettingsDir } from "./paths.ts";
-import { createSession, createRun, getSession } from "./registry.ts";
+import { createExecution } from "./registry.ts";
+import { appendEvent } from "./events.ts";
 import { newRunSession } from "./tmux.ts";
 import { writeHookSettings } from "./hooks-endpoint.ts";
 
@@ -146,44 +147,36 @@ export interface SpawnRunOpts {
   vault: string;
   daemonUrl: string;    // e.g. "http://127.0.0.1:4317"
   skill: string | null; // slash-command to pass (omit for raw interactive)
-  agent: string | null; // agent label for the session row
+  agent: string | null; // agent label
   runnerCommand: string;
   now?: number;
-  sessionId?: string;   // if provided, spawn a second Run on an existing Session (resume path)
-  triggerId?: string | null;   // set for trigger-fired Runs
-  stepCeiling?: number | null; // set for trigger-fired Runs
+  inputRef?: string | null;    // file-level input reference (inbox line ref for trigger-fired)
+  triggerId?: string | null;   // set for trigger-fired executions
+  stepCeiling?: number | null; // set for trigger-fired executions
 }
 
 export interface SpawnRunResult {
   runId: string;
-  sessionId: string;
   tmuxSession: string;
 }
 
 /**
- * Create a Run row + a named tmux session containing a live CC/vc subprocess.
- * Writes per-Run hook settings so CC fires `type:"command"` hooks to the relay
+ * Create an executions row + a named tmux session containing a live CC/vc subprocess.
+ * Stateless (ADR-0003): always fresh --session-id, never --resume.
+ * Writes per-execution hook settings so CC fires `type:"command"` hooks to the relay
  * script, which POSTs lifecycle events to /hook?run=<runId>.
  *
- * - Fresh session: spawns `<runner> --session-id <ccSeed> --settings <settingsPath>`
- * - Resume:        spawns `<runner> --resume <resume_token> --settings <settingsPath>`
- *
- * The runner command is wrapped in vos-run-wrapper.sh, which fires a synthetic
- * ProcessExit hook after the CC process exits so the daemon can detect non-zero exits.
+ * Also appends the `start` event to the file-level event log so the executions
+ * table is rebuildable from files (files-first requirement).
  *
  * The tmux session name is `vos-run-<runId>`.
  */
 export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   const now = opts.now ?? Date.now();
-  const runId = `run-${randomUUID()}`;
-  let sessionId = opts.sessionId ?? randomUUID();
+  const runId = `exec-${randomUUID()}`;
+  const ccSeed = randomUUID(); // fresh CC thread every time — NO --resume (ADR-0003 §1)
 
-  // Ensure the Session row exists (create on fresh launch; skip on resume).
-  if (!opts.sessionId) {
-    createSession(opts.db, { id: sessionId, agent: opts.agent, skill: opts.skill, now });
-  }
-
-  // Write per-Run hook settings file (type:"command" hooks → relay script → daemon).
+  // Write per-execution hook settings file (type:"command" hooks → relay script → daemon).
   const settingsPath = writeHookSettings(
     hookSettingsDir(opts.vault),
     hookRelayScriptPath,
@@ -191,22 +184,13 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     runId,
   );
 
-  // Determine whether to resume an existing CC session.
-  const ses = opts.sessionId ? getSession(opts.db, opts.sessionId) : null;
-  const ccSeed = randomUUID(); // CC's own session uuid for a fresh thread
-  const sessionArg: string[] = ses?.resume_token
-    ? ["--resume", ses.resume_token]
-    : ["--session-id", ccSeed];
-
-  // Trigger-fired runs use print mode (-p): CC runs the skill as a headless turn and exits.
-  // Print mode skips the workspace trust dialog (CC skips it for non-interactive sessions),
-  // fires all hooks (SessionStart, PreToolUse per tool call, Stop, SessionEnd), and exits
-  // cleanly without waiting for user input. Interactive (no -p) sessions remain for /launch.
-  // --settings scopes hooks to this Run. --add-dir vault: pre-authorize the vault directory.
+  // Trigger-fired executions use print mode (-p): CC runs the skill as a headless turn and exits.
+  // Print mode skips the workspace trust dialog, fires all hooks, and exits cleanly.
+  // --settings scopes hooks to this execution. --add-dir vault: pre-authorize the vault directory.
   const skillArg = opts.skill ? (opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`) : null;
-  const isPrint = !!(opts.triggerId && skillArg); // trigger-fired runs with a skill → print mode
+  const isPrint = !!(opts.triggerId && skillArg); // trigger-fired executions with a skill → print mode
   const argv: string[] = [
-    ...sessionArg,
+    "--session-id", ccSeed,
     "--settings", settingsPath,
     "--permission-mode", "bypassPermissions",
     "--add-dir", opts.vault,
@@ -225,17 +209,24 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
 
   const tmuxSession = `vos-run-${runId}`;
   const pid = newRunSession(tmuxSession, opts.vault, fullCommand, {
-    VOID_OS_SESSION: sessionId,
+    VOID_OS_SESSION: runId,
     VOS_RUN_ID: runId,
   });
 
-  createRun(opts.db, {
-    id: runId, sessionId, tmuxSession, pid, now,
-    triggerId: opts.triggerId ?? null,
-    stepCeiling: opts.stepCeiling ?? null,
+  // Write to executions table (runtime read-model)
+  createExecution(opts.db, {
+    id: runId, agent: opts.agent, skill: opts.skill, inputRef: opts.inputRef ?? null,
+    tmuxSession, now, triggerId: opts.triggerId ?? null, stepCeiling: opts.stepCeiling ?? null,
   });
 
-  return { runId, sessionId, tmuxSession };
+  // Append start event to file log (files-first source of truth — makes table rebuildable)
+  appendEvent(opts.vault, runId, {
+    type: "start", agent: opts.agent, skill: opts.skill,
+    input_ref: opts.inputRef ?? null, tmux_session: tmuxSession, at: now,
+    trigger_id: opts.triggerId ?? null, step_ceiling: opts.stepCeiling ?? null,
+  });
+
+  return { runId, tmuxSession };
 }
 
 /**
