@@ -6,12 +6,14 @@ import { mkdirSync, appendFileSync, existsSync, readdirSync, readFileSync } from
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { eventsDir, eventLogPath } from "./paths.ts";
-import { createExecution, setExecutionEnded, setExecutionFail, incrementStep } from "./registry.ts";
+import { createExecution, setExecutionEnded, setExecutionFail, incrementStep, setOutputResult } from "./registry.ts";
 
 export type ExecEvent =
   | { type: "start"; agent: string | null; skill: string | null; input_ref: string | null;
-      tmux_session: string; at: number; trigger_id: string | null; step_ceiling: number | null }
+      tmux_session: string; at: number; trigger_id: string | null; step_ceiling: number | null;
+      output_target?: string | null }
   | { type: "step"; at: number }
+  | { type: "output-check"; produced_change: boolean; nudged: boolean; at: number }
   | { type: "end"; at: number }
   | { type: "fail"; reason: string; at: number };
 
@@ -19,6 +21,21 @@ export type ExecEvent =
 export function appendEvent(vault: string, execId: string, ev: ExecEvent): void {
   mkdirSync(eventsDir(vault), { recursive: true });
   appendFileSync(eventLogPath(vault, execId), JSON.stringify(ev) + "\n");
+}
+
+/** Read the start event for an execution (output_target + started_at live here, files-first). */
+export function readStartEvent(
+  vault: string,
+  execId: string,
+): Extract<ExecEvent, { type: "start" }> | null {
+  const p = eventLogPath(vault, execId);
+  if (!existsSync(p)) return null;
+  for (const line of readFileSync(p, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    const ev = JSON.parse(line) as ExecEvent;
+    if (ev.type === "start") return ev;
+  }
+  return null;
 }
 
 /** Reconstruct the executions table purely from the event-log files. Idempotent on a fresh db. */
@@ -36,6 +53,9 @@ export function rebuildExecutions(db: Database, vault: string): void {
             tmuxSession: ev.tmux_session, now: ev.at, triggerId: ev.trigger_id, stepCeiling: ev.step_ceiling });
           break;
         case "step": incrementStep(db, execId); break;
+        case "output-check":
+          setOutputResult(db, execId, { producedChange: ev.produced_change, nudged: ev.nudged });
+          break;
         case "end": setExecutionEnded(db, execId, ev.at); break;
         case "fail": setExecutionFail(db, execId, ev.reason, ev.at); break;
       }

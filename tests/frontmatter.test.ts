@@ -41,3 +41,13 @@ test("parseFrontmatter defaults needsInput false when absent", () => {
   expect(m.needsInput).toBe(false);
   expect(m.inputLabel).toBe("");
 });
+
+test("parses output_target when present", () => {
+  const md = `---\nname: w\ndescription: d\noutput_target: reports/out.html\n---\n# body`;
+  expect(parseFrontmatter(md).outputTarget).toBe("reports/out.html");
+});
+
+test("output_target defaults to empty string when absent", () => {
+  const md = `---\nname: w\ndescription: d\n---\n# body`;
+  expect(parseFrontmatter(md).outputTarget).toBe("");
+});

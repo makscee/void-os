@@ -21,13 +21,21 @@ RUN_ID="${2:-}"
 # Read full stdin (CC hook JSON payload).
 PAYLOAD="$(cat 2>/dev/null || true)"
 
-# POST to daemon; suppress all output; always succeed.
-VOS_HOOK_PAYLOAD="$PAYLOAD" bun --eval "
+# POST to daemon; AWAIT the response. If the daemon returns a Stop-hook decision
+# ({"decision":"block",...}), echo EXACTLY that JSON to stdout so CC blocks the stop and
+# re-prompts. For any other response ({"ok":...}) print nothing. Always exit 0 (a 5xx or
+# network error must never stall CC — treat as "no decision").
+RELAY_OUT="$(VOS_HOOK_PAYLOAD="$PAYLOAD" bun --eval "
   const body = process.env.VOS_HOOK_PAYLOAD ?? '{}';
-  fetch('$DAEMON_URL/hook?run=$RUN_ID', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body,
-  }).catch(() => {}).finally(() => process.exit(0));
-" 2>/dev/null
+  try {
+    const r = await fetch('$DAEMON_URL/hook?run=$RUN_ID', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j && j.decision === 'block') process.stdout.write(JSON.stringify({ decision: j.decision, reason: j.reason }));
+  } catch { /* network/daemon down — no decision */ }
+  process.exit(0);
+" 2>/dev/null)"
+# Emit ONLY the decision JSON (or nothing) on stdout — CC parses stdout as the hook result.
+printf '%s' "$RELAY_OUT"
 exit 0

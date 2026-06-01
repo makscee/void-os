@@ -3,8 +3,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { getExecution, setExecutionEnded, setExecutionFail, incrementStep } from "./registry.ts";
-import { appendEvent } from "./events.ts";
+import { getExecution, setExecutionEnded, setExecutionFail, incrementStep, setOutputResult } from "./registry.ts";
+import { appendEvent, readStartEvent } from "./events.ts";
+import { wasMutatedSince } from "./output-target.ts";
 
 // --- Hook payload types (CC lifecycle events + daemon-synthetic events) ---
 
@@ -18,16 +19,22 @@ export interface HookPayload {
   [key: string]: unknown;
 }
 
+/** A CC Stop-hook block decision relayed back to CC via the hook's stdout. */
+export interface HookDecision { decision: "block"; reason: string; }
+
 /**
  * Map a hook payload to an executions state transition + append to event log.
  * The execution is attributed by `runId` (embedded in the hook URL: /hook?run=<id>).
  *
  * Stateless model (ADR-0003): no resume_token, no idle state.
  *   SessionStart  → no state mutation (stateless; start event written at spawn); log-only
- *   Stop          → no state mutation (no idle); VOS-191 will add output-target nudge here
+ *   Stop          → output-target mutation check (VOS-191); may return a block decision
  *   SessionEnd    → setExecutionEnded
  *   ProcessExit   → setExecutionEnded (exit_code=0) or setExecutionFail (exit_code≠0)
  *   PreToolUse    → incrementStep; if step_count ≥ step_ceiling → killSession + setExecutionFail
+ *
+ * Returns a HookDecision when the Stop hook should block the stop (nudge the agent).
+ * Returns undefined to allow the stop/continue normally.
  */
 export function handleHookEvent(
   db: Database,
@@ -36,25 +43,71 @@ export function handleHookEvent(
   payload: HookPayload,
   now: number,
   killSession: (tmuxSession: string) => void = () => {},
-): void {
+): HookDecision | undefined {
   const exec = getExecution(db, runId);
-  if (!exec) return; // unknown execution — no-op
-  if (exec.ended_at != null) return; // already terminal — no-op
+  if (!exec) return undefined; // unknown execution — no-op
+  if (exec.ended_at != null) return undefined; // already terminal — no-op
 
   switch (payload.hook_event_name) {
     case "SessionStart":
       // No state mutation (stateless); SessionStart is implicit in the 'start' event written at spawn.
       // SessionStart carries no lifecycle meaning in the stateless model — no-op.
       break;
-    case "Stop":
-      // No idle state. (VOS-191 will add the output-target nudge here.)
-      break;
-    case "SessionEnd":
+    case "Stop": {
+      const start = readStartEvent(vault, runId);
+      const target = start?.output_target ?? null;
+      if (!target) break; // no declared output → nothing to enforce; allow stop
+      const startedAt = start!.at;
+      const mutated = wasMutatedSince(vault, target, startedAt);
+      const alreadyNudged = exec.nudged === 1 || payload.stop_hook_active === true;
+      if (mutated) {
+        setOutputResult(db, runId, { producedChange: true, nudged: exec.nudged === 1 });
+        appendEvent(vault, runId, { type: "output-check", produced_change: true, nudged: exec.nudged === 1, at: now });
+        break; // produced output → allow stop
+      }
+      // clean target
+      if (alreadyNudged) {
+        setOutputResult(db, runId, { producedChange: false, nudged: true });
+        appendEvent(vault, runId, { type: "output-check", produced_change: false, nudged: true, at: now });
+        break; // give up after one nudge → allow stop
+      }
+      // first clean Stop → nudge once
+      setOutputResult(db, runId, { producedChange: false, nudged: true });
+      appendEvent(vault, runId, { type: "output-check", produced_change: false, nudged: true, at: now });
+      return {
+        decision: "block",
+        reason: `You have not yet written your declared output target (${target}). ` +
+          `Your output is the FILE, not this message. Write/modify ${target} now, then stop.`,
+      };
+    }
+    case "SessionEnd": {
+      // Record produced_change at session end if Stop did not already do so.
+      // Needed for print-mode executions where CC does not fire Stop before SessionEnd.
+      if (exec.produced_change === 0 && exec.nudged === 0) {
+        const start = readStartEvent(vault, runId);
+        const target = start?.output_target ?? null;
+        if (target) {
+          const mutated = wasMutatedSince(vault, target, start!.at);
+          setOutputResult(db, runId, { producedChange: mutated, nudged: false });
+          appendEvent(vault, runId, { type: "output-check", produced_change: mutated, nudged: false, at: now });
+        }
+      }
       setExecutionEnded(db, runId, now);
       appendEvent(vault, runId, { type: "end", at: now });
       break;
+    }
     case "ProcessExit": {
       const exitCode = typeof payload.exit_code === "number" ? payload.exit_code : 0;
+      // Record produced_change at process exit if not already done (print-mode path).
+      if (exec.produced_change === 0 && exec.nudged === 0 && exitCode === 0) {
+        const start = readStartEvent(vault, runId);
+        const target = start?.output_target ?? null;
+        if (target) {
+          const mutated = wasMutatedSince(vault, target, start!.at);
+          setOutputResult(db, runId, { producedChange: mutated, nudged: false });
+          appendEvent(vault, runId, { type: "output-check", produced_change: mutated, nudged: false, at: now });
+        }
+      }
       if (exitCode !== 0) {
         setExecutionFail(db, runId, "process-exit-nonzero", now);
         appendEvent(vault, runId, { type: "fail", reason: "process-exit-nonzero", at: now });

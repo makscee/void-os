@@ -1,6 +1,6 @@
 // hooks-endpoint.test.ts — unit tests for hook→executions mapping + settings writer.
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   createExecution,
   getExecution,
 } from "../src/registry.ts";
+import { appendEvent } from "../src/events.ts";
 import { handleHookEvent, buildHookSettings } from "../src/hooks-endpoint.ts";
 
 function tmpVault() { return mkdtempSync(join(tmpdir(), "vos-hook-")); }
@@ -113,10 +114,92 @@ test("SessionStart is a no-op (stateless model — no state mutation)", () => {
   expect(e.ended_at).toBeNull();
 });
 
-test("Stop is a no-op (stateless model — no idle state)", () => {
+test("Stop with no declared output_target is a pass-through (no nudge, allow stop)", () => {
+  // setup() uses createExecution only (no start event → no output_target) = empty target
   const { vault, db } = setup();
-  handleHookEvent(db, vault, "exec-1", { hook_event_name: "Stop", session_id: "" }, 20);
+  const decision = handleHookEvent(db, vault, "exec-1", { hook_event_name: "Stop", session_id: "" }, 20);
+  expect(decision).toBeUndefined();
+  expect(getExecution(db, "exec-1")!.nudged).toBe(0);
   expect(getExecution(db, "exec-1")!.ended_at).toBeNull();
+});
+
+test("SessionEnd records produced_change when output was written (print-mode path)", () => {
+  const { vault, db } = setupWithTarget("reports/out.html");
+  mkdirSync(join(vault, "reports"), { recursive: true });
+  const f = join(vault, "reports/out.html");
+  writeFileSync(f, "done");
+  utimesSync(f, new Date(1500), new Date(1500)); // mtime after start(1000)
+  handleHookEvent(db, vault, "exec-1", { hook_event_name: "SessionEnd", session_id: "" }, 2000);
+  const e = getExecution(db, "exec-1")!;
+  expect(e.produced_change).toBe(1);
+  expect(e.nudged).toBe(0);
+  expect(e.ended_at).toBe(2000);
+});
+
+test("SessionEnd records produced_change=0 when output was NOT written (print-mode path)", () => {
+  const { vault, db } = setupWithTarget("reports/out.html"); // file not created
+  handleHookEvent(db, vault, "exec-1", { hook_event_name: "SessionEnd", session_id: "" }, 2000);
+  const e = getExecution(db, "exec-1")!;
+  expect(e.produced_change).toBe(0);
+  expect(e.nudged).toBe(0);
+  expect(e.ended_at).toBe(2000);
+});
+
+// ---- Stop-branch: output-target tests (VOS-191) ----
+
+function setupWithTarget(target: string) {
+  const vault = mkdtempSync(join(tmpdir(), "vos-stop-"));
+  const db = openRegistry(":memory:");
+  createExecution(db, { id: "exec-1", agent: null, skill: "s", inputRef: null,
+    tmuxSession: "vos-run-exec-1", now: 1000, triggerId: null, stepCeiling: null });
+  appendEvent(vault, "exec-1", { type: "start", agent: null, skill: "s", input_ref: null,
+    tmux_session: "vos-run-exec-1", at: 1000, trigger_id: null, step_ceiling: null, output_target: target });
+  return { vault, db };
+}
+
+test("Stop on a clean target nudges once: produced_change=false, nudged=true, returns block decision", () => {
+  const { vault, db } = setupWithTarget("reports/out.html");
+  const decision = handleHookEvent(db, vault, "exec-1",
+    { hook_event_name: "Stop", session_id: "", stop_hook_active: false }, 2000);
+  const e = getExecution(db, "exec-1")!;
+  expect(e.produced_change).toBe(0);
+  expect(e.nudged).toBe(1);
+  expect(e.ended_at).toBeNull(); // stop was blocked — still alive
+  expect(decision?.decision).toBe("block");
+  expect(typeof decision?.reason).toBe("string");
+});
+
+test("Stop on a mutated target: produced_change=true, no nudge, allows stop", () => {
+  const { vault, db } = setupWithTarget("reports/out.html");
+  mkdirSync(join(vault, "reports"), { recursive: true });
+  const f = join(vault, "reports/out.html");
+  writeFileSync(f, "done");
+  utimesSync(f, new Date(1500), new Date(1500)); // mtime after start(1000)
+  const decision = handleHookEvent(db, vault, "exec-1",
+    { hook_event_name: "Stop", session_id: "", stop_hook_active: false }, 2000);
+  const e = getExecution(db, "exec-1")!;
+  expect(e.produced_change).toBe(1);
+  expect(e.nudged).toBe(0);
+  expect(decision).toBeUndefined();
+});
+
+test("second Stop after a nudge gives up: still clean, no second block, allows stop", () => {
+  const { vault, db } = setupWithTarget("reports/out.html");
+  // First Stop → nudge
+  handleHookEvent(db, vault, "exec-1", { hook_event_name: "Stop", session_id: "", stop_hook_active: false }, 2000);
+  // Second Stop (stop_hook_active = true) → give up
+  const decision = handleHookEvent(db, vault, "exec-1",
+    { hook_event_name: "Stop", session_id: "", stop_hook_active: true }, 3000);
+  expect(getExecution(db, "exec-1")!.nudged).toBe(1);
+  expect(decision).toBeUndefined(); // give-up, no second nudge
+});
+
+test("Stop with empty declared output_target is a pass-through (no nudge, allow stop)", () => {
+  const { vault, db } = setupWithTarget(""); // empty target
+  const decision = handleHookEvent(db, vault, "exec-1",
+    { hook_event_name: "Stop", session_id: "", stop_hook_active: false }, 2000);
+  expect(decision).toBeUndefined();
+  expect(getExecution(db, "exec-1")!.nudged).toBe(0);
 });
 
 test("buildHookSettings wires SessionStart/Stop/SessionEnd/PreToolUse via type:command relay", () => {

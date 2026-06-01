@@ -58,3 +58,20 @@ test("rebuildExecutions is idempotent on an empty events dir", () => {
   rebuildExecutions(db, vault); // events dir doesn't exist yet
   expect(listExecutions(db)).toHaveLength(0);
 });
+
+test("start event carries output_target and rebuild restores produced_change/nudged from output-check", () => {
+  const vault = tmpVault();
+  const db = openRegistry(":memory:");
+  appendEvent(vault, "exec-ot", {
+    type: "start", agent: null, skill: "s", input_ref: null,
+    tmux_session: "vos-run-exec-ot", at: 1000, trigger_id: null, step_ceiling: null,
+    output_target: "reports/out.html",
+  });
+  appendEvent(vault, "exec-ot", { type: "output-check", produced_change: true, nudged: false, at: 2000 });
+  appendEvent(vault, "exec-ot", { type: "end", at: 2001 });
+  rebuildExecutions(db, vault);
+  const row = getExecution(db, "exec-ot")!;
+  expect(row.produced_change).toBe(1);
+  expect(row.nudged).toBe(0);
+  expect(row.ended_at).toBe(2001);
+});

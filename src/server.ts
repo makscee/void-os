@@ -16,8 +16,9 @@ import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, st
 import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
-import { handleHookEvent, type HookPayload } from "./hooks-endpoint.ts";
+import { handleHookEvent, type HookPayload, type HookDecision } from "./hooks-endpoint.ts";
 import { getExecution, setExecutionFail, upsertTrigger, getTrigger } from "./registry.ts";
+import { appendEvent } from "./events.ts";
 import { killSession } from "./tmux.ts";
 import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
 
@@ -68,13 +69,17 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
 
   // POST /hook?run=<run-id> — CC HTTP hook sink. Maps a lifecycle event to a registry
   // transition. Always 200 (a hook must never see a 5xx — it would stall the Run).
+  // Stop-hook nudge: if handleHookEvent returns a HookDecision, relay it so the command-hook
+  // relay can echo it to CC stdout (causing CC to block the stop and re-prompt the agent).
   app.post("/hook", async (c) => {
     const runId = c.req.query("run") ?? "";
     let payload: HookPayload;
     try { payload = (await c.req.json()) as HookPayload; }
     catch { return c.json({ ok: false }, 200); }
-    try { handleHookEvent(db, vault, runId, payload, Date.now(), killSession); }
+    let decision: HookDecision | undefined;
+    try { decision = handleHookEvent(db, vault, runId, payload, Date.now(), killSession); }
     catch { /* never fail a hook */ }
+    if (decision) return c.json(decision, 200);
     return c.json({ ok: true }, 200);
   });
 
@@ -101,8 +106,12 @@ a{color:#93c5fd}</style>
     const cfg = readConfig(vault);
     const runnerCommand = resolveRunner(cfg, runnerLabel || undefined);
     const daemonUrl = `http://127.0.0.1:${cfg.port}`;
+    // Look up the skill's declared output_target so interactive launches also track it.
+    const catalogSkills = listCatalogSkills(catalogRoot);
+    const skillMeta = catalogSkills.find((s) => s.name === skill);
+    const outputTarget = skillMeta?.outputTarget ?? null;
     const { runId, tmuxSession } = spawnRun({
-      db, vault, daemonUrl, skill, agent: null, runnerCommand, now: Date.now(),
+      db, vault, daemonUrl, skill, agent: null, runnerCommand, now: Date.now(), outputTarget,
     });
     // Keep the body.html render shell working: seed a placeholder + meta under the runId key.
     const dir = sessionDir(vault, runId);
@@ -230,8 +239,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // Kill the execution's tmux session + mark the execution ended in the registry.
     const exec = getExecution(db, sessionId);
     if (exec && exec.ended_at == null) {
+      const stopNow = Date.now();
       killSession(exec.tmux_session); // tmux kill-session = stop (folds VOS-187 stop semantics)
-      setExecutionFail(db, sessionId, "operator-stopped", Date.now()); // operator-stopped = non-clean exit
+      setExecutionFail(db, sessionId, "operator-stopped", stopNow); // operator-stopped = non-clean exit
+      // Append fail event so the execution is rebuildable from the file-level event log.
+      try { appendEvent(vault, sessionId, { type: "fail", reason: "operator-stopped", at: stopNow }); } catch { /* never fail stop */ }
     }
 
     // Drain-owned Runs are headless (runTurn), not tmux — keep the VOS-187 tree-kill for the in-flight child.
@@ -338,11 +350,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   });
 
   // POST /triggers/:name/fire — manually fire a named Trigger, spawning a real Run.
+  // ?interactive=1 forces non-print (interactive tmux) mode — needed when Stop hooks must fire.
   // Returns { runId } on success, 404 if trigger not found or disabled.
   app.post("/triggers/:name/fire", (c) => {
     const name = c.req.param("name");
     if (!spawnFn) return c.json({ error: "no spawn function configured" }, 503);
-    const res = fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input: null });
+    const interactive = c.req.query("interactive") === "1";
+    const forcePrint = interactive ? false : null; // null = default (print for trigger-fired)
+    const res = fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input: null, forcePrint });
     if (!res) return c.json({ error: "no such trigger or disabled" }, 404);
     return c.json({ runId: res.runId });
   });
