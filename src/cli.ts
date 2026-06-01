@@ -63,8 +63,17 @@ if (cmd === "init") {
       }
     }
   }
+} else if (cmd === "trigger-fire") {
+  const name = process.argv[3];
+  if (!name) { console.error("usage: void-os trigger-fire <name>"); process.exit(1); }
+  const { resolveVault } = await import("./serve.ts");
+  const { readConfig } = await import("./paths.ts");
+  const vault = resolveVault(process.env as Record<string, string | undefined>, process.cwd());
+  const port = readConfig(vault).port;
+  const res = await fetch(`http://127.0.0.1:${port}/triggers/${name}/fire`, { method: "POST" });
+  console.log(await res.text());
 } else {
   console.error(`unknown command: ${cmd}`);
-  console.error("usage: void-os <init|serve|list-sessions> [options]");
+  console.error("usage: void-os <init|serve|list-sessions|trigger-fire> [options]");
   process.exit(2);
 }

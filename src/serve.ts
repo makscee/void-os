@@ -8,6 +8,10 @@ import { readConfig, writeConfig, registryDbPath } from "./paths.ts";
 import { openRegistry } from "./registry.ts";
 import { reapIdleRuns } from "./reaper.ts";
 import { killSession } from "./tmux.ts";
+import { reconcileTriggers } from "./triggers-reconcile.ts";
+import { fireTrigger, dueTriggers } from "./triggers-fire.ts";
+import { drainInbox } from "./inbox-watch.ts";
+import { makeSpawnFn } from "./spawn-adapter.ts";
 
 /** Resolve the port: --port <n> flag > VOID_OS_PORT env > void-os.json > 4317. */
 export function resolvePort(argv: string[], env: Record<string, string | undefined>, cfgPort: number): number {
@@ -52,8 +56,14 @@ export async function runServe(): Promise<void> {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = openRegistry(dbPath);
 
-  const app = makeApp(vault, db);
+  const daemonUrl = `http://127.0.0.1:${port}`;
+  const spawnFn = makeSpawnFn(db, vault, daemonUrl);
+  const app = makeApp(vault, db, spawnFn);
   const url = `http://localhost:${port}`;
+
+  // Reconcile Trigger files on boot so daemon picks up any existing Trigger files.
+  try { reconcileTriggers(db, vault, Date.now()); } catch { /* never crash serve */ }
+  const inboxOffsets = new Map<string, number>();
 
   // Idle-reaper: kill + exit any 'idle' Run older than 5 minutes, every 60 seconds.
   const IDLE_TTL_MS = 5 * 60 * 1000;
@@ -61,6 +71,21 @@ export async function runServe(): Promise<void> {
   setInterval(() => {
     try { reapIdleRuns(db, { killSession }, Date.now(), IDLE_TTL_MS); } catch { /* never crash serve */ }
   }, REAP_INTERVAL_MS).unref();
+
+  // Trigger scheduler tick: reconcile files + fire due schedule triggers + drain event inboxes.
+  // 30s resolution is fine for cron-minute schedules.
+  const TRIGGER_TICK_MS = 30_000;
+  setInterval(() => {
+    try {
+      const now = Date.now();
+      reconcileTriggers(db, vault, now); // pick up newly-added/edited Trigger files
+      for (const t of dueTriggers(db, now)) {
+        fireTrigger(db, t.name, { spawn: spawnFn, now, input: null });
+      }
+      drainInbox(db, vault, inboxOffsets, (name, input) =>
+        fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input }));
+    } catch { /* never crash serve */ }
+  }, TRIGGER_TICK_MS).unref();
 
   // idleTimeout:255 prevents Bun's 10s default from killing long-lived SSE connections
   // during cold starts. 255 is Bun's max; the SSE loop also sends periodic keepalive

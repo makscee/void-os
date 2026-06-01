@@ -17,8 +17,9 @@ import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
 import { handleHookEvent, type HookPayload } from "./hooks-endpoint.ts";
-import { latestRunForSession, setRunState } from "./registry.ts";
+import { latestRunForSession, setRunState, upsertTrigger, getTrigger } from "./registry.ts";
 import { killSession } from "./tmux.ts";
+import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogRoot = join(repoRoot, "catalog");
@@ -53,7 +54,7 @@ export function buildDrainOptsFor(vault: string, issueNum: number, worktree: str
   };
 }
 
-export function makeApp(vault: string, db: Database) {
+export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
   const app = new Hono();
 
   // GET / — dashboard: skill buttons + session list + relay status banner
@@ -334,6 +335,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // Stop control) stays visible — avoids landing bare on /s/:uuid/send.
     writeFileSync(bodyPath(vault, uuid), workingPage(fields));
     return c.redirect(`/s/${uuid}`);
+  });
+
+  // POST /triggers/:name/fire — manually fire a named Trigger, spawning a real Run.
+  // Returns { runId } on success, 404 if trigger not found or disabled.
+  app.post("/triggers/:name/fire", (c) => {
+    const name = c.req.param("name");
+    if (!spawnFn) return c.json({ error: "no spawn function configured" }, 503);
+    const res = fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input: null });
+    if (!res) return c.json({ error: "no such trigger or disabled" }, 404);
+    return c.json({ runId: res.runId });
   });
 
   // GET /s/:uuid/stream — SSE: emits "reload" whenever body.html mtime advances.

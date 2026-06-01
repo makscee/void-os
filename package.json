@@ -6,7 +6,7 @@
     "void-os": "./bin/void-os"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun test --isolate",
     "serve": "bun run src/cli.ts serve",
     "verify": "bash scripts/verify.sh"
   },

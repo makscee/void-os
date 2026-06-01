@@ -534,3 +534,24 @@ test("POST /hook PreToolUse breach marks the trigger run exited_fail runaway-cei
   expect(row.state).toBe("exited_fail");
   expect(row.reason).toBe("runaway-ceiling");
 });
+
+// --- Task 9 test: POST /triggers/:name/fire manual fire route ---
+
+test("POST /triggers/:name/fire fires the trigger and stamps last_fired_at", async () => {
+  const { upsertTrigger, getTrigger } = await import("../src/registry.ts");
+  upsertTrigger(db, { name: "fire-m", kind: "manual", skill: "x", agent: "a", cronExpr: null, inbox: null, stepCeiling: 50, now: 0 });
+  const fakeSpawn = () => ({ runId: "run-fake", sessionId: "ses-fake", tmuxSession: "vos-run-fake" });
+  const app = makeApp(vault, db, fakeSpawn);
+  const res = await app.request("/triggers/fire-m/fire", { method: "POST" });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { runId: string };
+  expect(body.runId).toBe("run-fake");
+  expect(getTrigger(db, "fire-m")!.last_fired_at).not.toBeNull();
+});
+
+test("POST /triggers/:name/fire returns 404 for unknown trigger", async () => {
+  const fakeSpawn = () => ({ runId: "r", sessionId: "s", tmuxSession: "t" });
+  const app = makeApp(vault, db, fakeSpawn);
+  const res = await app.request("/triggers/no-such-trigger/fire", { method: "POST" });
+  expect(res.status).toBe(404);
+});

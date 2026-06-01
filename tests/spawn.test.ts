@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand, spawnTurn, runTurn } from "../src/spawn.ts";
+import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand, spawnTurn, runTurn, spawnRun } from "../src/spawn.ts";
 import { pidPath, sessionDir, bodyPath, errorPath, stopPath } from "../src/paths.ts";
+import { openRegistry, getRun } from "../src/registry.ts";
+import { killSession } from "../src/tmux.ts";
 
 test("buildLaunchArgv has no leading -- (separator now lives in runner command)", () => {
   const a = buildLaunchArgv("uuid-1", "deep-research", "hello");
@@ -111,15 +113,11 @@ test("spawnTurn exit handler is a no-op once stopped.txt is present (race guard)
 });
 
 // --- Task 5: spawnRun stamps trigger_id + step_ceiling on the run row ---
-import { spawnRun } from "../src/spawn.ts";
-import { openRegistry, getRun } from "../src/registry.ts";
-import { killSession } from "../src/tmux.ts";
 
 test("spawnRun stamps trigger_id + step_ceiling on the run row", () => {
   const db = openRegistry(":memory:");
   const vault = "/tmp/void-os-spawn-trigger-test";
-  const { mkdirSync: mk } = require("node:fs");
-  mk(vault, { recursive: true });
+  mkdirSync(vault, { recursive: true });
   const { runId, tmuxSession } = spawnRun({
     db, vault, daemonUrl: "http://127.0.0.1:4317",
     skill: null, agent: "default",
