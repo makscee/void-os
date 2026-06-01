@@ -5,12 +5,16 @@
 # Usage: bash scripts/vos-proof-vos190.sh
 #
 # What it proves:
-#   1. spawnRun (via POST /launch) creates an executions row with started_at set
+#   1. spawnRun (via trigger-fired POST /triggers/<name>/fire) creates an executions row
+#      with started_at set — uses print mode (-p) so CC exits cleanly without trust dialog
 #   2. Real CC hooks (SessionStart, SessionEnd/ProcessExit) walk the row start→end
-#   3. The file-level event log (.void-os/events/<execId>.jsonl) has start+end lines
-#   4. rebuildExecutions on a fresh :memory: db deep-equals the live row
+#   3. The file-level event log (.void-os/events/<execId>.jsonl) has start AND end lines
+#   4. rebuildExecutions on a fresh :memory: db deep-equals the live row (id, skill,
+#      started_at, ended_at, step_count, trigger_id all match)
+#   5. Schema hygiene: no runs/sessions tables in registry DB
 #
 # MANDATORY genuine real-path: a real CC process fires the hooks — no hand-firing.
+# NO partial-proof fallback: if ended_at is never set or end event never written, exits NON-ZERO.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,7 +36,6 @@ log() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
 fail() { log "FAIL: $*"; exit 1; }
 pass() { log "PASS: $*"; }
 
-# Query executions table
 query_exec() {
   bun --eval "
     const { Database } = require('bun:sqlite');
@@ -42,6 +45,8 @@ query_exec() {
   " 2>/dev/null
 }
 
+# Wait for execution ended_at to be non-null. Returns 0 on success, 1 on timeout.
+# Does NOT self-downgrade — caller must treat non-zero return as hard failure.
 wait_exec_ended() {
   local exec_id="$1" deadline=$((SECONDS + $2))
   while [[ $SECONDS -lt $deadline ]]; do
@@ -58,28 +63,39 @@ wait_exec_ended() {
   return 1
 }
 
+fire_trigger() {
+  local name="$1"
+  local resp
+  resp=$(bun --eval "
+    const r = await fetch('$DAEMON_URL/triggers/$name/fire', { method: 'POST' });
+    const j = await r.json();
+    console.log(JSON.stringify(j));
+  " 2>/dev/null)
+  echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('runId','null'))" 2>/dev/null
+}
+
 rm -f "$LOG"
 log "=== VOS-190 real-path proof ==="
 log "Repo: $REPO"
 log "Vault: $VAULT"
+log "Using trigger-fired (print-mode) execution to guarantee start→end without trust dialog"
 
 # ---- Preflight: vc auth check ----
 log "Checking vc auth..."
 if ! vc status 2>/dev/null | grep -q "authenticated\|authed\|ok"; then
-  # Try a quicker check via the auth endpoint
   if ! curl -sf "https://auth.makscee.ru/v1/auth-check" -H "Authorization: Bearer $(cat ~/.claudev/token 2>/dev/null)" 2>/dev/null | grep -q "ok\|valid\|true"; then
-    log "WARNING: vc may not be authenticated — proceeding anyway (daemon will show auth error on /launch)"
+    log "WARNING: vc may not be authenticated — proceeding anyway (daemon will show auth error on /fire)"
   fi
 fi
 
-# ---- Setup: create vault with void-os.json ----
+# ---- Setup: create vault with void-os.json + smoke-test trigger ----
 log "Setting up vault at $VAULT..."
-mkdir -p "$VAULT"
+mkdir -p "$VAULT/triggers"
 cat > "$VAULT/void-os.json" <<VAULTEOF
 {
   "vault": "$VAULT",
   "onboarded": true,
-  "skills": [],
+  "skills": ["smoke-test"],
   "answers": {},
   "port": $PORT,
   "runners": [{"label": "vc (relay)", "command": "vc --"}],
@@ -87,44 +103,48 @@ cat > "$VAULT/void-os.json" <<VAULTEOF
 }
 VAULTEOF
 
+# Write trigger BEFORE daemon starts (boot reconcile loads it).
+# kind:manual + skill:smoke-test → trigger-fired → isPrint=true → CC uses -p → exits cleanly.
+cat > "$VAULT/triggers/vos190-smoke.md" << 'EOF'
+---
+kind: manual
+skill: smoke-test
+agent: default
+step_ceiling: 30
+---
+EOF
+
 # ---- Start daemon ----
 log "Starting daemon (port $PORT)..."
 VOID_OS_VAULT="$VAULT" bun run "$REPO/src/cli.ts" serve --no-open >> "$LOG" 2>&1 &
 DAEMON_PID=$!
-sleep 3
 
-# Verify daemon is up
-if ! curl -sf "$DAEMON_URL/" > /dev/null 2>&1; then
-  fail "Daemon failed to start — check $LOG"
-fi
-log "Daemon up (pid $DAEMON_PID)"
+for i in $(seq 1 20); do
+  if bun --eval "const r = await fetch('$DAEMON_URL/').catch(()=>null); process.exit(r ? 0 : 1);" 2>/dev/null; then
+    log "Daemon ready (pid $DAEMON_PID)"
+    break
+  fi
+  sleep 1
+  [[ $i -eq 20 ]] && fail "Daemon did not start within 20s"
+done
 
-# ---- Proof 1: spawnRun via POST /launch creates execution row ----
-log "--- Proof 1: POST /launch → executions row ---"
-LAUNCH_RESP=$(curl -sf -X POST "$DAEMON_URL/launch" \
-  -F "skill=smoke-test" \
-  -F "text=vos190-proof" \
-  2>&1) || fail "POST /launch failed: $LAUNCH_RESP"
-
-# curl -L would follow redirect; instead capture location header
-LAUNCH_LOC=$(curl -sf -X POST "$DAEMON_URL/launch" \
-  -F "skill=smoke-test" \
-  -F "text=vos190-proof" \
-  -D - -o /dev/null 2>/dev/null | grep -i "^location:" | tr -d '\r' | sed 's/location: //i') || true
-
-if [[ -z "$LAUNCH_LOC" ]]; then
-  # Alternative: get exec ID from DB
-  EXEC_ID=$(bun --eval "
+# Verify boot reconcile loaded trigger
+for i in $(seq 1 5); do
+  TCOUNT=$(bun --eval "
     const { Database } = require('bun:sqlite');
     const db = new Database('$DB');
-    const r = db.query('SELECT id FROM executions ORDER BY started_at DESC LIMIT 1').get();
-    console.log(r ? r.id : '');
-  " 2>/dev/null)
-else
-  EXEC_ID=$(echo "$LAUNCH_LOC" | sed 's|/s/||')
-fi
+    console.log(db.query('SELECT count(*) as n FROM triggers').get().n);
+  " 2>/dev/null) || TCOUNT=0
+  [[ "$TCOUNT" -ge 1 ]] && { log "Boot reconcile loaded $TCOUNT trigger(s)"; break; }
+  sleep 1
+  [[ $i -eq 5 ]] && fail "Boot reconcile did not load triggers within 5s"
+done
 
-[[ -z "$EXEC_ID" ]] && fail "Could not determine execution ID"
+# ---- Proof 1: Trigger-fired spawnRun creates execution row ----
+log "--- Proof 1: POST /triggers/vos190-smoke/fire → executions row ---"
+
+EXEC_ID=$(fire_trigger "vos190-smoke")
+[[ "$EXEC_ID" == "null" || -z "$EXEC_ID" ]] && fail "trigger fire returned no runId"
 log "Execution ID: $EXEC_ID"
 
 # Verify execution row exists with started_at set
@@ -140,37 +160,33 @@ pass "Execution row exists: started_at=$STARTED"
 
 # ---- Proof 2: Wait for real CC hooks to walk start→end ----
 log "--- Proof 2: Waiting for real CC hooks (start→end, max 120s) ---"
-if wait_exec_ended "$EXEC_ID" 120; then
-  pass "Execution ended via real CC hooks"
-else
-  log "WARNING: Execution did not complete within 120s (cold start?)"
-  log "Checking if started_at is set (partial proof of real hooks)..."
-  # Partial proof: if started_at is set, the execution was created
-  [[ -n "$STARTED" && "$STARTED" != "null" ]] && pass "started_at set — real hooks reached daemon (partial proof)"
+# NO fallback — if CC does not fire SessionEnd/ProcessExit within the timeout, this is a genuine
+# failure. Trigger-fired (print-mode) execution exits after the skill completes — no trust dialog.
+if ! wait_exec_ended "$EXEC_ID" 120; then
+  LIVE_ROW=$(query_exec "SELECT id, skill, started_at, ended_at, step_count, trigger_id FROM executions WHERE id='$EXEC_ID'")
+  log "Live row at timeout: $LIVE_ROW"
+  fail "Execution did not complete within 120s — ended_at never set. Real CC hooks did not fire start→end. See daemon log: $LOG"
 fi
+
+pass "Execution ended via real CC hooks"
 
 # Print the live row
 log "Live execution row:"
 query_exec "SELECT id, skill, started_at, ended_at, step_count, trigger_id FROM executions WHERE id='$EXEC_ID'" | tee -a "$LOG"
 
-# ---- Proof 3: Event log file exists with start line ----
+# ---- Proof 3: Event log file exists with BOTH start AND end lines ----
 log "--- Proof 3: Event log files-first check ---"
 EVENT_LOG="$VAULT/.void-os/events/$EXEC_ID.jsonl"
-if [[ ! -f "$EVENT_LOG" ]]; then
-  fail "Event log file not found: $EVENT_LOG"
-fi
+[[ ! -f "$EVENT_LOG" ]] && fail "Event log file not found: $EVENT_LOG"
 pass "Event log file exists: $EVENT_LOG"
 
 START_LINE=$(grep '"type":"start"' "$EVENT_LOG" || echo "")
-[[ -z "$START_LINE" ]] && fail "No start event in event log"
+[[ -z "$START_LINE" ]] && fail "No start event in event log $EVENT_LOG"
 pass "Event log has start event: $START_LINE"
 
 END_LINE=$(grep '"type":"end"\|"type":"fail"' "$EVENT_LOG" || echo "")
-if [[ -n "$END_LINE" ]]; then
-  pass "Event log has end/fail event: $END_LINE"
-else
-  log "Note: end event not yet in log (execution may still be running)"
-fi
+[[ -z "$END_LINE" ]] && fail "No end/fail event in event log $EVENT_LOG — real CC hooks did not fire end event. Log: $(cat "$EVENT_LOG")"
+pass "Event log has end/fail event: $END_LINE"
 
 log "Full event log:"
 cat "$EVENT_LOG" | tee -a "$LOG"
@@ -190,9 +206,9 @@ REBUILD_RESULT=$(bun --eval "
   const rebuilt = openRegistry(':memory:');
   rebuildExecutions(rebuilt, '$VAULT');
   const rebuiltRow = getExecution(rebuilt, '$EXEC_ID');
-  if (!rebuiltRow) { console.log('ERROR: rebuilt row not found (event log may be incomplete)'); process.exit(1); }
+  if (!rebuiltRow) { console.log('ERROR: rebuilt row not found — event log did not produce a row'); process.exit(1); }
 
-  // Compare key fields
+  // Compare key fields — ALL must match (ended_at must be non-null in both)
   const fields = ['id', 'skill', 'started_at', 'ended_at', 'step_count', 'trigger_id', 'input_ref'];
   const mismatches = [];
   for (const f of fields) {
@@ -204,19 +220,20 @@ REBUILD_RESULT=$(bun --eval "
     console.log('MISMATCH: ' + mismatches.join(', '));
     process.exit(1);
   }
+  if (rebuiltRow.ended_at == null) {
+    console.log('ERROR: rebuilt row ended_at is null — rebuild did not reproduce the end event');
+    process.exit(1);
+  }
   console.log('MATCH: id=' + rebuiltRow.id + ' skill=' + rebuiltRow.skill + ' started_at=' + rebuiltRow.started_at + ' ended_at=' + rebuiltRow.ended_at + ' step_count=' + rebuiltRow.step_count);
 " 2>&1)
 
 if echo "$REBUILD_RESULT" | grep -q "^MATCH:"; then
   pass "rebuildExecutions matches live row: $REBUILD_RESULT"
-elif echo "$REBUILD_RESULT" | grep -q "^ERROR:"; then
-  log "Rebuild partial (execution may not have ended yet): $REBUILD_RESULT"
-  pass "Rebuild attempted — start event present confirms files-first path works"
 elif echo "$REBUILD_RESULT" | grep -q "^MISMATCH:"; then
   fail "rebuildExecutions MISMATCH: $REBUILD_RESULT"
 else
-  log "Rebuild result: $REBUILD_RESULT"
-  pass "Rebuild ran without error"
+  # ERROR: or unexpected output — hard fail, no silent pass
+  fail "rebuildExecutions failed: $REBUILD_RESULT"
 fi
 
 # ---- Proof 5: No resume token, no sessions/runs tables ----
@@ -231,13 +248,15 @@ log "Tables in registry: $TABLES"
 if echo "$TABLES" | grep -q "runs\|sessions"; then
   fail "Old tables (runs/sessions) still present in registry"
 fi
-pass "Schema clean: no runs/sessions tables"
+pass "Schema clean: no runs/sessions tables (found: $TABLES)"
 
 # ---- Summary ----
 log ""
 log "=== VOS-190 PROOF SUMMARY ==="
 log "Execution ID:     $EXEC_ID"
 log "started_at:       $STARTED"
-log "Event log:        $EVENT_LOG"
+log "ended_at:         set (real CC hooks confirmed)"
+log "Event log:        $EVENT_LOG (start + end lines present)"
+log "Rebuild:          MATCH (all key fields equal)"
 log "Tables:           $TABLES"
-log "All checks passed — VOS-190 executions model proven end-to-end"
+log "All checks passed — VOS-190 executions model proven end-to-end with real CC start→end"

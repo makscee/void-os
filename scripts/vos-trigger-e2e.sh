@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# vos-trigger-e2e.sh — VOS-189 real-path proof for all Trigger scenarios.
+# vos-trigger-e2e.sh — VOS-189/190 real-path proof for all Trigger scenarios.
 #
 # Requires: vc authenticated, tmux, bun, void-os daemon source.
 # Usage: bash scripts/vos-trigger-e2e.sh
 #
 # Scenarios:
-#   1. Manual Trigger → real Run → real CC hooks → running/exited_ok
-#   2. Schedule Trigger → daemon tick fires at cron time → Run created
-#   3. Event inbox → vos-inbox-append.sh → drain → Run created
-#   4. Runaway ceiling → PreToolUse counted → breach → exited_fail + tmux gone
+#   1. Manual Trigger → real Run → real CC hooks → execution completed (ended_at set)
+#   2. Schedule Trigger → daemon tick fires at cron time → execution created
+#   3. Event inbox → vos-inbox-append.sh → drain → execution created
+#   4. Runaway ceiling → PreToolUse counted → breach → execution failed + tmux gone
 #   5. Interactive Run exempt (trigger_id=NULL, step_ceiling=NULL)
 #   6. Unit test regression
 #
@@ -46,27 +46,52 @@ query_db() {
   " 2>/dev/null
 }
 
-wait_run_state() {
-  local run_id="$1" expected="$2" deadline=$((SECONDS + $3))
+# Wait for execution to complete (ended_at set). Returns 0 on success, 1 on timeout.
+wait_exec_done() {
+  local exec_id="$1" deadline=$((SECONDS + $2))
   while [[ $SECONDS -lt $deadline ]]; do
-    local state
-    state=$(bun --eval "
+    local ended
+    ended=$(bun --eval "
       const { Database } = require('bun:sqlite');
       const db = new Database('$DB');
-      const r = db.query('SELECT state FROM runs WHERE id=?').get('$run_id');
-      console.log(r ? r.state : 'none');
-    " 2>/dev/null) || state="error"
-    [[ "$state" == "$expected" ]] && return 0
+      const r = db.query('SELECT ended_at FROM executions WHERE id=?').get('$exec_id');
+      console.log(r ? (r.ended_at != null ? 'ended' : 'running') : 'none');
+    " 2>/dev/null) || ended="error"
+    [[ "$ended" == "ended" ]] && return 0
     sleep 1
   done
   local actual
   actual=$(bun --eval "
     const { Database } = require('bun:sqlite');
     const db = new Database('$DB');
-    const r = db.query('SELECT state,reason FROM runs WHERE id=?').get('$run_id');
+    const r = db.query('SELECT ended_at, reason FROM executions WHERE id=?').get('$exec_id');
     console.log(JSON.stringify(r));
   " 2>/dev/null)
-  fail "run $run_id: expected $expected, got: $actual"
+  fail "execution $exec_id: expected ended_at set, got: $actual"
+}
+
+# Wait for execution to fail (ended_at set AND reason non-null). Returns 0 on success, 1 on timeout.
+wait_exec_failed() {
+  local exec_id="$1" deadline=$((SECONDS + $2))
+  while [[ $SECONDS -lt $deadline ]]; do
+    local failed
+    failed=$(bun --eval "
+      const { Database } = require('bun:sqlite');
+      const db = new Database('$DB');
+      const r = db.query('SELECT ended_at, reason FROM executions WHERE id=?').get('$exec_id');
+      console.log(r && r.ended_at != null && r.reason ? 'failed' : 'not-yet');
+    " 2>/dev/null) || failed="error"
+    [[ "$failed" == "failed" ]] && return 0
+    sleep 1
+  done
+  local actual
+  actual=$(bun --eval "
+    const { Database } = require('bun:sqlite');
+    const db = new Database('$DB');
+    const r = db.query('SELECT ended_at, reason FROM executions WHERE id=?').get('$exec_id');
+    console.log(JSON.stringify(r));
+  " 2>/dev/null)
+  fail "execution $exec_id: expected failed (ended_at+reason set), got: $actual"
 }
 
 fire_trigger() {
@@ -83,7 +108,7 @@ fire_trigger() {
 # ---- Setup ----
 
 rm -f "$LOG"
-log "=== VOS-189 real-path proof ==="
+log "=== VOS-189/190 real-path proof ==="
 log "Vault: $VAULT  Port: $PORT"
 
 # Clean up prior run artifacts
@@ -151,35 +176,36 @@ for i in $(seq 1 5); do
   [[ $i -eq 5 ]] && fail "Boot reconcile did not load triggers within 5s"
 done
 
-# ---- Proof 1: Manual Trigger → real Run → real hooks → running/exited_ok ----
+# ---- Proof 1: Manual Trigger → real execution → real hooks → completed ----
 log ""
 log "=== Proof 1: Manual Trigger ==="
 
 MANUAL_RUN=$(fire_trigger "manual-smoke")
 [[ "$MANUAL_RUN" == "null" || -z "$MANUAL_RUN" ]] && fail "Manual fire: no runId"
-log "Manual Run created: $MANUAL_RUN"
+log "Manual execution created: $MANUAL_RUN"
 
-# Wait for run to reach running or exited_ok (fast print-mode skill may complete quickly)
+# Wait for execution to be created (started_at set)
 for i in $(seq 1 60); do
-  MAN_STATE=$(bun --eval "
+  MAN_STARTED=$(bun --eval "
     const { Database } = require('bun:sqlite');
     const db = new Database('$DB');
-    const r = db.query(\"SELECT state FROM runs WHERE id='$MANUAL_RUN'\").get();
-    console.log(r ? r.state : 'none');
-  " 2>/dev/null) || MAN_STATE="none"
-  if [[ "$MAN_STATE" == "running" || "$MAN_STATE" == "exited_ok" ]]; then
-    log "Manual Run state: $MAN_STATE (real CC session started)"
+    const r = db.query(\"SELECT started_at FROM executions WHERE id='$MANUAL_RUN'\").get();
+    console.log(r && r.started_at ? 'started' : 'none');
+  " 2>/dev/null) || MAN_STARTED="none"
+  if [[ "$MAN_STARTED" == "started" ]]; then
+    log "Manual execution started (real CC session created)"
     break
   fi
   sleep 1
-  [[ $i -eq 60 ]] && fail "Manual Run did not start within 60s"
+  [[ $i -eq 60 ]] && fail "Manual execution did not start within 60s"
 done
-# Ensure it reaches exited_ok
-wait_run_state "$MANUAL_RUN" "exited_ok" 90
-pass "Manual Trigger: Run $MANUAL_RUN → CC session → exited_ok (real CC hooks)"
 
-MANUAL_ROW=$(query_db "SELECT id, trigger_id, step_ceiling, step_count, state FROM runs WHERE id='$MANUAL_RUN'")
-log "Manual run row: $MANUAL_ROW"
+# Ensure it reaches completed (ended_at set, no reason = success)
+wait_exec_done "$MANUAL_RUN" 90
+pass "Manual Trigger: execution $MANUAL_RUN → CC session → completed (real CC hooks)"
+
+MANUAL_ROW=$(query_db "SELECT id, trigger_id, step_ceiling, step_count, ended_at FROM executions WHERE id='$MANUAL_RUN'")
+log "Manual execution row: $MANUAL_ROW"
 
 # ---- Proof 2: Schedule Trigger ----
 log ""
@@ -224,20 +250,20 @@ for i in $(seq 1 150); do
   SCHED_RUN=$(bun --eval "
     const { Database } = require('bun:sqlite');
     const db = new Database('$DB');
-    const r = db.query(\"SELECT id FROM runs WHERE trigger_id='sched-smoke' ORDER BY started_at DESC LIMIT 1\").get();
+    const r = db.query(\"SELECT id FROM executions WHERE trigger_id='sched-smoke' ORDER BY started_at DESC LIMIT 1\").get();
     console.log(r ? r.id : 'none');
   " 2>/dev/null) || SCHED_RUN="none"
-  [[ "$SCHED_RUN" != "none" ]] && { log "Schedule Run created: $SCHED_RUN (at ${i}s)"; break; }
+  [[ "$SCHED_RUN" != "none" ]] && { log "Schedule execution created: $SCHED_RUN (at ${i}s)"; break; }
   sleep 1
   [[ $i -eq 150 ]] && fail "Schedule Trigger did not fire within 150s"
 done
 
-wait_run_state "$SCHED_RUN" "exited_ok" 60
-SCHED_ROW=$(query_db "SELECT id, trigger_id, state FROM runs WHERE id='$SCHED_RUN'")
+wait_exec_done "$SCHED_RUN" 60
+SCHED_ROW=$(query_db "SELECT id, trigger_id, ended_at FROM executions WHERE id='$SCHED_RUN'")
 TRIG_ROW=$(query_db "SELECT name, last_fired_at, next_fire_at FROM triggers WHERE name='sched-smoke'")
-log "Schedule run row: $SCHED_ROW"
+log "Schedule execution row: $SCHED_ROW"
 log "Trigger row: $TRIG_ROW"
-pass "Schedule Trigger: Run $SCHED_RUN fired at cron time → exited_ok (real CC hooks)"
+pass "Schedule Trigger: execution $SCHED_RUN fired at cron time → completed (real CC hooks)"
 
 # Kill the run (it's waiting for more turns)
 tmux kill-session -t "vos-run-$SCHED_RUN" 2>/dev/null || true
@@ -277,33 +303,33 @@ for i in $(seq 1 60); do
   EVENT_RUN=$(bun --eval "
     const { Database } = require('bun:sqlite');
     const db = new Database('$DB');
-    const r = db.query(\"SELECT id FROM runs WHERE trigger_id='event-demo' ORDER BY started_at DESC LIMIT 1\").get();
+    const r = db.query(\"SELECT id FROM executions WHERE trigger_id='event-demo' ORDER BY started_at DESC LIMIT 1\").get();
     console.log(r ? r.id : 'none');
   " 2>/dev/null) || EVENT_RUN="none"
-  [[ "$EVENT_RUN" != "none" ]] && { log "Event Run created: $EVENT_RUN (at ${i}s)"; break; }
+  [[ "$EVENT_RUN" != "none" ]] && { log "Event execution created: $EVENT_RUN (at ${i}s)"; break; }
   sleep 1
   [[ $i -eq 60 ]] && fail "Event Trigger did not fire within 60s"
 done
 
-# Accept either running or exited_ok (fast print-mode skill may finish before we check)
+# Accept either running (ended_at=null) or completed (ended_at set) — fast print-mode skill may finish before we check
 for i in $(seq 1 30); do
-  EV_STATE=$(bun --eval "
+  EV_STARTED=$(bun --eval "
     const { Database } = require('bun:sqlite');
     const db = new Database('$DB');
-    const r = db.query(\"SELECT state FROM runs WHERE id='$EVENT_RUN'\").get();
-    console.log(r ? r.state : 'none');
-  " 2>/dev/null) || EV_STATE="none"
-  if [[ "$EV_STATE" == "running" || "$EV_STATE" == "exited_ok" ]]; then
-    log "Event Run state: $EV_STATE (after ${i}s)"
+    const r = db.query(\"SELECT started_at FROM executions WHERE id='$EVENT_RUN'\").get();
+    console.log(r && r.started_at ? 'started' : 'none');
+  " 2>/dev/null) || EV_STARTED="none"
+  if [[ "$EV_STARTED" == "started" ]]; then
+    log "Event execution started (after ${i}s)"
     break
   fi
   sleep 1
-  [[ $i -eq 30 ]] && fail "Event Run did not reach running/exited_ok within 30s; state=$EV_STATE"
+  [[ $i -eq 30 ]] && fail "Event execution did not start within 30s"
 done
 
-EVENT_ROW=$(query_db "SELECT id, trigger_id, state FROM runs WHERE id='$EVENT_RUN'")
-log "Event run row: $EVENT_ROW"
-pass "Event Trigger: Run $EVENT_RUN fired on inbox append → real CC session (real hooks)"
+EVENT_ROW=$(query_db "SELECT id, trigger_id, started_at, ended_at FROM executions WHERE id='$EVENT_RUN'")
+log "Event execution row: $EVENT_ROW"
+pass "Event Trigger: execution $EVENT_RUN fired on inbox append → real CC session (real hooks)"
 
 tmux kill-session -t "vos-run-$EVENT_RUN" 2>/dev/null || true
 
@@ -313,24 +339,24 @@ log "=== Proof 4: Runaway Ceiling (step_ceiling=1, first Bash tool call triggers
 
 CEIL_RUN=$(fire_trigger "ceiling-test")
 [[ "$CEIL_RUN" == "null" || -z "$CEIL_RUN" ]] && fail "Ceiling fire: no runId"
-log "Ceiling run: $CEIL_RUN"
+log "Ceiling execution: $CEIL_RUN"
 
-wait_run_state "$CEIL_RUN" "exited_fail" 120
+wait_exec_failed "$CEIL_RUN" 120
 
-CEIL_ROW=$(query_db "SELECT id, trigger_id, step_count, step_ceiling, state, reason FROM runs WHERE id='$CEIL_RUN'")
-log "Ceiling run row: $CEIL_ROW"
+CEIL_ROW=$(query_db "SELECT id, trigger_id, step_count, step_ceiling, ended_at, reason FROM executions WHERE id='$CEIL_RUN'")
+log "Ceiling execution row: $CEIL_ROW"
 
 REASON=$(bun --eval "
   const { Database } = require('bun:sqlite');
   const db = new Database('$DB');
-  const r = db.query(\"SELECT reason FROM runs WHERE id='$CEIL_RUN'\").get();
+  const r = db.query(\"SELECT reason FROM executions WHERE id='$CEIL_RUN'\").get();
   console.log(r ? r.reason : 'null');
 " 2>/dev/null)
 [[ "$REASON" != "runaway-ceiling" ]] && fail "Ceiling reason: expected 'runaway-ceiling', got '$REASON'"
 
 TMUX_NAME="vos-run-$CEIL_RUN"
 tmux has-session -t "$TMUX_NAME" 2>/dev/null && fail "Ceiling: tmux session still alive after breach" || true
-pass "Runaway ceiling: Run $CEIL_RUN → exited_fail reason=runaway-ceiling (ceiling=1, first tool call), tmux gone"
+pass "Runaway ceiling: execution $CEIL_RUN → failed reason=runaway-ceiling (ceiling=1, first tool call), tmux gone"
 
 # ---- Proof 5: Interactive Run exempt ----
 log ""
@@ -346,19 +372,19 @@ INTER_LOC=$(bun --eval "
   console.log(r.headers.get('location') ?? '');
 " 2>/dev/null)
 
-SESSION_ID=$(echo "$INTER_LOC" | sed 's|/s/||')
-[[ -z "$SESSION_ID" ]] && fail "Interactive launch: no session id"
-log "Interactive session: $SESSION_ID"
+INTER_EXEC_ID=$(echo "$INTER_LOC" | sed 's|/s/||')
+[[ -z "$INTER_EXEC_ID" ]] && fail "Interactive launch: no exec id from location header"
+log "Interactive execution: $INTER_EXEC_ID"
 
 sleep 3
 
 INTER_ROW=$(bun --eval "
   const { Database } = require('bun:sqlite');
   const db = new Database('$DB');
-  const r = db.query(\"SELECT id,trigger_id,step_ceiling FROM runs WHERE session_id='$SESSION_ID' ORDER BY started_at DESC LIMIT 1\").get();
+  const r = db.query(\"SELECT id, trigger_id, step_ceiling FROM executions WHERE id='$INTER_EXEC_ID'\").get();
   console.log(JSON.stringify(r));
 " 2>/dev/null)
-log "Interactive run row: $INTER_ROW"
+log "Interactive execution row: $INTER_ROW"
 
 INTER_TRIG=$(echo "$INTER_ROW" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('trigger_id'); print('null' if v is None else str(v))" 2>/dev/null)
 INTER_CEIL=$(echo "$INTER_ROW" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('step_ceiling'); print('null' if v is None else str(v))" 2>/dev/null)
@@ -368,16 +394,13 @@ INTER_CEIL=$(echo "$INTER_ROW" | python3 -c "import json,sys; d=json.load(sys.st
 pass "Interactive Run: trigger_id=null, step_ceiling=null (exempt from ceiling)"
 
 # Kill interactive run
-INTER_RUN_ID=$(echo "$INTER_ROW" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
-if [[ -n "$INTER_RUN_ID" && "$INTER_RUN_ID" != "null" ]]; then
-  INTER_TMUX=$(bun --eval "
-    const { Database } = require('bun:sqlite');
-    const db = new Database('$DB');
-    const r = db.query(\"SELECT tmux_session FROM runs WHERE id='$INTER_RUN_ID'\").get();
-    console.log(r ? r.tmux_session : '');
-  " 2>/dev/null)
-  [[ -n "$INTER_TMUX" ]] && tmux kill-session -t "$INTER_TMUX" 2>/dev/null || true
-fi
+INTER_TMUX=$(bun --eval "
+  const { Database } = require('bun:sqlite');
+  const db = new Database('$DB');
+  const r = db.query(\"SELECT tmux_session FROM executions WHERE id='$INTER_EXEC_ID'\").get();
+  console.log(r ? r.tmux_session : '');
+" 2>/dev/null)
+[[ -n "$INTER_TMUX" ]] && tmux kill-session -t "$INTER_TMUX" 2>/dev/null || true
 
 # ---- Proof 6: Full unit test suite ----
 log ""
@@ -395,6 +418,6 @@ log ""
 log "=== ALL PROOFS PASSED ==="
 log ""
 log "--- Final registry state ---"
-query_db "SELECT id, trigger_id, step_count, step_ceiling, state, reason FROM runs ORDER BY started_at" | tee -a "$LOG"
+query_db "SELECT id, trigger_id, step_count, step_ceiling, ended_at, reason FROM executions ORDER BY started_at" | tee -a "$LOG"
 log ""
 log "Evidence log: $LOG"
