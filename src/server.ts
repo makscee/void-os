@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
 import { handleHookEvent, type HookPayload } from "./hooks-endpoint.ts";
-import { latestRunForSession, setRunState, upsertTrigger, getTrigger } from "./registry.ts";
+import { getExecution, setExecutionFail, upsertTrigger, getTrigger } from "./registry.ts";
 import { killSession } from "./tmux.ts";
 import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
 
@@ -73,7 +73,7 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
     let payload: HookPayload;
     try { payload = (await c.req.json()) as HookPayload; }
     catch { return c.json({ ok: false }, 200); }
-    try { handleHookEvent(db, runId, payload, Date.now(), killSession); }
+    try { handleHookEvent(db, vault, runId, payload, Date.now(), killSession); }
     catch { /* never fail a hook */ }
     return c.json({ ok: true }, 200);
   });
@@ -101,18 +101,18 @@ a{color:#93c5fd}</style>
     const cfg = readConfig(vault);
     const runnerCommand = resolveRunner(cfg, runnerLabel || undefined);
     const daemonUrl = `http://127.0.0.1:${cfg.port}`;
-    const { sessionId, tmuxSession } = spawnRun({
+    const { runId, tmuxSession } = spawnRun({
       db, vault, daemonUrl, skill, agent: null, runnerCommand, now: Date.now(),
     });
-    // Keep the body.html render shell working: seed a placeholder + meta under the sessionId key.
-    const dir = sessionDir(vault, sessionId);
+    // Keep the body.html render shell working: seed a placeholder + meta under the runId key.
+    const dir = sessionDir(vault, runId);
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, "session-meta.json"),
       JSON.stringify({ skill, launchedAt: Date.now(), text, tmuxSession, runner: runnerCommand }),
     );
-    writeFileSync(bodyPath(vault, sessionId), placeholderBody(skill));
-    return c.redirect(`/s/${sessionId}`);
+    writeFileSync(bodyPath(vault, runId), placeholderBody(skill));
+    return c.redirect(`/s/${runId}`);
   });
 
   // GET /s/:uuid — iframe shell wrapping the session body
@@ -127,9 +127,9 @@ a{color:#93c5fd}</style>
         if (m.skill) sessionName = m.text ? `${m.skill} — ${m.text.slice(0, 40)}` : m.skill;
       } catch { /* use fallback */ }
     }
-    // Look up the latest Run's attach command from the registry (for the shell to display).
-    const run = latestRunForSession(db, uuid);
-    const attachCmd = run ? `tmux attach -t ${run.tmux_session}` : undefined;
+    // Look up the execution's attach command from the registry (for the shell to display).
+    const exec = getExecution(db, uuid);
+    const attachCmd = exec ? `tmux attach -t ${exec.tmux_session}` : undefined;
     return c.html(renderShell(uuid, vault, sessionName, attachCmd));
   });
 
@@ -227,11 +227,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // before the killed child's late exit handler can fire.
     writeFileSync(stopPath(vault, sessionId), "stopped\n");
 
-    // Kill the latest Run's tmux session + mark the run exited in the registry.
-    const run = latestRunForSession(db, sessionId);
-    if (run && run.state !== "exited_ok" && run.state !== "exited_fail") {
-      killSession(run.tmux_session); // tmux kill-session = stop (folds VOS-187 stop semantics)
-      setRunState(db, run.id, "exited_fail", Date.now()); // operator-stopped = non-clean exit
+    // Kill the execution's tmux session + mark the execution ended in the registry.
+    const exec = getExecution(db, sessionId);
+    if (exec && exec.ended_at == null) {
+      killSession(exec.tmux_session); // tmux kill-session = stop (folds VOS-187 stop semantics)
+      setExecutionFail(db, sessionId, "operator-stopped", Date.now()); // operator-stopped = non-clean exit
     }
 
     // Drain-owned Runs are headless (runTurn), not tmux — keep the VOS-187 tree-kill for the in-flight child.

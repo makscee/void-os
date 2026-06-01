@@ -6,7 +6,6 @@ import { join, dirname } from "node:path";
 import { makeApp } from "./server.ts";
 import { readConfig, writeConfig, registryDbPath } from "./paths.ts";
 import { openRegistry } from "./registry.ts";
-import { reapIdleRuns } from "./reaper.ts";
 import { killSession } from "./tmux.ts";
 import { reconcileTriggers } from "./triggers-reconcile.ts";
 import { fireTrigger, dueTriggers } from "./triggers-fire.ts";
@@ -64,13 +63,6 @@ export async function runServe(): Promise<void> {
   // Reconcile Trigger files on boot so daemon picks up any existing Trigger files.
   try { reconcileTriggers(db, vault, Date.now()); } catch { /* never crash serve */ }
   const inboxOffsets = new Map<string, number>();
-
-  // Idle-reaper: kill + exit any 'idle' Run older than 5 minutes, every 60 seconds.
-  const IDLE_TTL_MS = 5 * 60 * 1000;
-  const REAP_INTERVAL_MS = 60_000;
-  setInterval(() => {
-    try { reapIdleRuns(db, { killSession }, Date.now(), IDLE_TTL_MS); } catch { /* never crash serve */ }
-  }, REAP_INTERVAL_MS).unref();
 
   // Trigger scheduler tick: reconcile files + fire due schedule triggers + drain event inboxes.
   // 30s resolution is fine for cron-minute schedules.
