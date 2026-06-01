@@ -1,39 +1,32 @@
-// registry.ts — SQLite runs+sessions schema, open/migrate, typed insert/update/query helpers.
-// One responsibility: registry persistence + state-transition writes.
-// Pure: unit-testable against :memory: or tmp-file DB.
+// registry.ts — SQLite executions schema (ADR-0003 §2): one row per skill-execution.
+// Stateless: no sessions, no resume_token, no idle state. The executions table is the
+// ONE runtime read-model and is rebuildable from the file-level event log (events.ts).
 import { Database } from "bun:sqlite";
-
-export type RunState = "spawning" | "running" | "idle" | "exited_ok" | "exited_fail";
-export type SessionState = "open" | "resumable" | "closed";
 
 export function openRegistry(path: string): Database {
   const db = new Database(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id           TEXT PRIMARY KEY,
-      resume_token TEXT,
-      state        TEXT NOT NULL DEFAULT 'open',
-      agent        TEXT,
-      skill        TEXT,
-      created_at   INTEGER NOT NULL,
-      last_run_at  INTEGER
+    CREATE TABLE IF NOT EXISTS executions (
+      id              TEXT PRIMARY KEY,
+      agent           TEXT,
+      skill           TEXT,
+      input_ref       TEXT,
+      tmux_session    TEXT NOT NULL,
+      started_at      INTEGER NOT NULL,
+      ended_at        INTEGER,
+      produced_change INTEGER NOT NULL DEFAULT 0,
+      nudged          INTEGER NOT NULL DEFAULT 0,
+      trigger_id      TEXT,
+      step_count      INTEGER NOT NULL DEFAULT 0,
+      step_ceiling    INTEGER,
+      reason          TEXT
     );
-    CREATE TABLE IF NOT EXISTS runs (
-      id            TEXT PRIMARY KEY,
-      session_id    TEXT NOT NULL REFERENCES sessions(id),
-      tmux_session  TEXT NOT NULL,
-      pid           INTEGER,
-      state         TEXT NOT NULL DEFAULT 'spawning',
-      started_at    INTEGER NOT NULL,
-      ended_at      INTEGER,
-      idle_since    INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
-    CREATE INDEX IF NOT EXISTS idx_runs_state ON runs(state);
+    CREATE INDEX IF NOT EXISTS idx_exec_tmux ON executions(tmux_session);
+    CREATE INDEX IF NOT EXISTS idx_exec_started ON executions(started_at);
   `);
 
-  // Triggers table (phase-2)
+  // Triggers table — UNCHANGED from VOS-189 (preserved wholesale per plan)
   db.exec(`
     CREATE TABLE IF NOT EXISTS triggers (
       name          TEXT PRIMARY KEY,
@@ -51,33 +44,21 @@ export function openRegistry(path: string): Database {
     );
   `);
 
-  // Additive migration of runs (idempotent): each ALTER throws if the column
-  // already exists — swallow that specific case.
-  for (const ddl of [
-    "ALTER TABLE runs ADD COLUMN trigger_id TEXT",
-    "ALTER TABLE runs ADD COLUMN step_count INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE runs ADD COLUMN step_ceiling INTEGER",
-    "ALTER TABLE runs ADD COLUMN reason TEXT",
-  ]) {
-    try { db.exec(ddl); } catch (e) {
-      if (!String(e).includes("duplicate column")) throw e;
-    }
-  }
-
   return db;
 }
 
 // --- Types ---
 
-export interface RunRow {
+export interface ExecutionRow {
   id: string;
-  session_id: string;
+  agent: string | null;
+  skill: string | null;
+  input_ref: string | null;
   tmux_session: string;
-  pid: number | null;
-  state: RunState;
   started_at: number;
   ended_at: number | null;
-  idle_since: number | null;
+  produced_change: number; // 0|1 — populated by VOS-191
+  nudged: number;          // 0|1 — populated by VOS-191
   trigger_id: string | null;
   step_count: number;
   step_ceiling: number | null;
@@ -99,89 +80,49 @@ export interface TriggerRow {
   updated_at: number;
 }
 
-export interface SessionRow {
-  id: string;
-  resume_token: string | null;
-  state: SessionState;
-  agent: string | null;
-  skill: string | null;
-  created_at: number;
-  last_run_at: number | null;
-}
+// --- Execution helpers ---
 
-// --- Helpers ---
-
-const TERMINAL: ReadonlySet<RunState> = new Set(["exited_ok", "exited_fail"]);
-
-export function createSession(
+export function createExecution(
   db: Database,
-  a: { id: string; agent: string | null; skill: string | null; now: number },
+  a: { id: string; agent: string | null; skill: string | null; inputRef: string | null;
+       tmuxSession: string; now: number; triggerId: string | null; stepCeiling: number | null },
 ): void {
   db.query(
-    "INSERT INTO sessions (id, resume_token, state, agent, skill, created_at, last_run_at) VALUES (?, NULL, 'open', ?, ?, ?, ?)",
-  ).run(a.id, a.agent, a.skill, a.now, a.now);
+    "INSERT INTO executions (id, agent, skill, input_ref, tmux_session, started_at, ended_at, " +
+    "produced_change, nudged, trigger_id, step_count, step_ceiling, reason) " +
+    "VALUES (?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, 0, ?, NULL)",
+  ).run(a.id, a.agent, a.skill, a.inputRef, a.tmuxSession, a.now, a.triggerId, a.stepCeiling);
 }
 
-export function createRun(
-  db: Database,
-  a: { id: string; sessionId: string; tmuxSession: string; pid: number | null; now: number;
-       triggerId?: string | null; stepCeiling?: number | null },
-): void {
-  db.query(
-    "INSERT INTO runs (id, session_id, tmux_session, pid, state, started_at, ended_at, idle_since, trigger_id, step_count, step_ceiling, reason) " +
-    "VALUES (?, ?, ?, ?, 'spawning', ?, NULL, NULL, ?, 0, ?, NULL)",
-  ).run(a.id, a.sessionId, a.tmuxSession, a.pid, a.now, a.triggerId ?? null, a.stepCeiling ?? null);
-  // Update last_run_at on the parent session
-  db.query("UPDATE sessions SET last_run_at = ? WHERE id = ?").run(a.now, a.sessionId);
+export function setExecutionEnded(db: Database, id: string, now: number): void {
+  db.query("UPDATE executions SET ended_at = ? WHERE id = ? AND ended_at IS NULL").run(now, id);
 }
 
-export function setRunState(db: Database, runId: string, state: RunState, now: number): void {
-  if (TERMINAL.has(state)) {
-    db.query(
-      "UPDATE runs SET state = ?, ended_at = ?, idle_since = NULL WHERE id = ?",
-    ).run(state, now, runId);
-  } else if (state === "idle") {
-    db.query(
-      "UPDATE runs SET state = 'idle', idle_since = ? WHERE id = ?",
-    ).run(now, runId);
-  } else {
-    db.query("UPDATE runs SET state = ?, idle_since = NULL WHERE id = ?").run(state, runId);
-  }
+export function getExecution(db: Database, id: string): ExecutionRow | null {
+  return (db.query("SELECT * FROM executions WHERE id = ?").get(id) as ExecutionRow) ?? null;
 }
 
-/**
- * Set the session's resume_token only if it is currently NULL (first SessionStart wins).
- * Returns true if the token was written, false if it was already set.
- */
-export function setResumeToken(db: Database, sessionId: string, token: string, now: number): boolean {
-  const result = db.query(
-    "UPDATE sessions SET resume_token = ?, last_run_at = ? WHERE id = ? AND resume_token IS NULL",
-  ).run(token, now, sessionId);
-  return (result as { changes: number }).changes > 0;
+export function executionByTmuxSession(db: Database, tmux: string): ExecutionRow | null {
+  return (db.query("SELECT * FROM executions WHERE tmux_session = ?").get(tmux) as ExecutionRow) ?? null;
 }
 
-export function getRun(db: Database, id: string): RunRow | null {
-  return (db.query("SELECT * FROM runs WHERE id = ?").get(id) as RunRow) ?? null;
+export function listExecutions(db: Database): ExecutionRow[] {
+  return db.query("SELECT * FROM executions ORDER BY started_at DESC").all() as ExecutionRow[];
 }
 
-export function getSession(db: Database, id: string): SessionRow | null {
-  return (db.query("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow) ?? null;
+/** Increment an execution's step_count and return the new value. */
+export function incrementStep(db: Database, id: string): number {
+  db.query("UPDATE executions SET step_count = step_count + 1 WHERE id = ?").run(id);
+  const row = db.query("SELECT step_count FROM executions WHERE id = ?").get(id) as { step_count: number } | null;
+  return row?.step_count ?? 0;
 }
 
-export function latestRunForSession(db: Database, sessionId: string): RunRow | null {
-  return (
-    (db.query(
-      "SELECT * FROM runs WHERE session_id = ? ORDER BY started_at DESC LIMIT 1",
-    ).get(sessionId) as RunRow) ?? null
-  );
+/** Terminal fail with a reason (e.g. "runaway-ceiling"). */
+export function setExecutionFail(db: Database, id: string, reason: string, now: number): void {
+  db.query("UPDATE executions SET ended_at = ?, reason = ? WHERE id = ?").run(now, reason, id);
 }
 
-/** Run lookup by the tmux session name. */
-export function runByTmuxSession(db: Database, tmux: string): RunRow | null {
-  return (db.query("SELECT * FROM runs WHERE tmux_session = ?").get(tmux) as RunRow) ?? null;
-}
-
-// --- Trigger helpers ---
+// --- Trigger helpers (UNCHANGED from VOS-189) ---
 
 export function upsertTrigger(
   db: Database,
@@ -221,17 +162,4 @@ export function setTriggerFireTimes(
 
 export function setTriggerEnabled(db: Database, name: string, enabled: boolean): void {
   db.query("UPDATE triggers SET enabled = ? WHERE name = ?").run(enabled ? 1 : 0, name);
-}
-
-/** Increment a Run's step_count and return the new value. */
-export function incrementStep(db: Database, runId: string): number {
-  db.query("UPDATE runs SET step_count = step_count + 1 WHERE id = ?").run(runId);
-  const row = db.query("SELECT step_count FROM runs WHERE id = ?").get(runId) as { step_count: number } | null;
-  return row?.step_count ?? 0;
-}
-
-/** Terminal fail with a reason (e.g. "runaway-ceiling"). */
-export function setRunFail(db: Database, runId: string, reason: string, now: number): void {
-  db.query("UPDATE runs SET state = 'exited_fail', ended_at = ?, idle_since = NULL, reason = ? WHERE id = ?")
-    .run(now, reason, runId);
 }
