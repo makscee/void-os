@@ -14,12 +14,13 @@ export interface SpawnFn {
 export function fireTrigger(
   db: Database,
   name: string,
-  ctx: { spawn: SpawnFn; now: number; input: string | null },
+  ctx: { spawn: SpawnFn; now: number; input: string | null; inputRef?: string | null },
 ): { runId: string } | null {
   const t = getTrigger(db, name);
   if (!t || !t.enabled) return null;
   const { runId } = ctx.spawn({
-    skill: t.skill, agent: t.agent, triggerId: t.name, stepCeiling: t.step_ceiling, input: ctx.input,
+    skill: t.skill, agent: t.agent, triggerId: t.name, stepCeiling: t.step_ceiling,
+    input: ctx.input, inputRef: ctx.inputRef ?? null,
   });
   const nextAt = t.kind === "schedule" && t.cron_expr ? nextFireAt(t.cron_expr, ctx.now) : t.next_fire_at;
   setTriggerFireTimes(db, name, { nextFireAt: nextAt, lastFiredAt: ctx.now });
