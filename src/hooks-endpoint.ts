@@ -3,7 +3,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { setRunState, setResumeToken, getRun, getSession } from "./registry.ts";
+import { setRunState, setResumeToken, getRun, getSession, incrementStep, setRunFail } from "./registry.ts";
 
 // --- Hook payload types (CC lifecycle events + daemon-synthetic events) ---
 
@@ -39,6 +39,7 @@ export function handleHookEvent(
   runId: string,
   payload: HookPayload,
   now: number,
+  killSession: (tmuxSession: string) => void = () => {},
 ): void {
   const run = getRun(db, runId);
   if (!run) return; // unknown run — no-op
@@ -70,6 +71,18 @@ export function handleHookEvent(
       }
       break;
     }
+    case "PreToolUse": {
+      // Step-ceiling applies ONLY to trigger-fired runs (step_ceiling non-null).
+      // Interactive runs have null ceiling → never counted, never killed.
+      if (run.step_ceiling == null) break;
+      if (run.state === "exited_ok" || run.state === "exited_fail") break; // already terminal
+      const count = incrementStep(db, runId);
+      if (count >= run.step_ceiling) {
+        killSession(run.tmux_session);         // tmux kill-session = stop the runaway
+        setRunFail(db, runId, "runaway-ceiling", now);
+      }
+      break;
+    }
     default:
       // Unknown event — no-op; hooks must never cause a 5xx
       break;
@@ -82,7 +95,9 @@ export function handleHookEvent(
 // SessionStart, Stop, SessionEnd are the three we wire. SubagentStop, PreToolUse,
 // PostToolUse, UserPromptSubmit, PreCompact, Notification are also valid CC events but
 // are not needed for the run state machine.
-const LIFECYCLE_EVENTS = ["SessionStart", "Stop", "SessionEnd"] as const;
+// PreToolUse is included so the step counter fires for every tool invocation.
+// The counter is a no-op for interactive runs (null step_ceiling guard in handleHookEvent).
+const LIFECYCLE_EVENTS = ["SessionStart", "Stop", "SessionEnd", "PreToolUse"] as const;
 
 export interface CcHookEntry {
   type: "command";

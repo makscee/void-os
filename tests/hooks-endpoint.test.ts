@@ -102,3 +102,38 @@ test("buildHookSettings wires SessionStart/Stop/SessionEnd via type:command rela
   expect(h.command).toContain("http://127.0.0.1:4317");
   expect(h.command).toContain("run-1");
 });
+
+// --- Task 4 tests: PreToolUse step counter + runaway-ceiling kill ---
+
+test("PreToolUse increments step_count for a trigger-fired run", () => {
+  const db = openRegistry(":memory:");
+  createSession(db, { id: "s", agent: "a", skill: "sk", now: 0 });
+  createRun(db, { id: "r", sessionId: "s", tmuxSession: "vos-run-r", pid: 1, now: 0, triggerId: "t", stepCeiling: 3 });
+  handleHookEvent(db, "r", { hook_event_name: "PreToolUse", session_id: "cc" }, 10);
+  expect(getRun(db, "r")!.step_count).toBe(1);
+});
+
+test("PreToolUse breach kills the tmux session + marks exited_fail reason runaway-ceiling", () => {
+  const db = openRegistry(":memory:");
+  createSession(db, { id: "s", agent: "a", skill: "sk", now: 0 });
+  createRun(db, { id: "r", sessionId: "s", tmuxSession: "vos-run-r", pid: 1, now: 0, triggerId: "t", stepCeiling: 2 });
+  const killed: string[] = [];
+  const kill = (sess: string) => { killed.push(sess); };
+  handleHookEvent(db, "r", { hook_event_name: "PreToolUse", session_id: "cc" }, 10, kill); // count=1
+  handleHookEvent(db, "r", { hook_event_name: "PreToolUse", session_id: "cc" }, 20, kill); // count=2 == ceiling → breach
+  expect(killed).toEqual(["vos-run-r"]);
+  const r = getRun(db, "r")!;
+  expect(r.state).toBe("exited_fail");
+  expect(r.reason).toBe("runaway-ceiling");
+});
+
+test("PreToolUse on an interactive run (null ceiling) never counts or kills", () => {
+  const db = openRegistry(":memory:");
+  createSession(db, { id: "s", agent: null, skill: null, now: 0 });
+  createRun(db, { id: "r", sessionId: "s", tmuxSession: "vos-run-r", pid: 1, now: 0 });
+  const killed: string[] = [];
+  for (let i = 0; i < 100; i++) handleHookEvent(db, "r", { hook_event_name: "PreToolUse", session_id: "cc" }, i, (s) => killed.push(s));
+  expect(getRun(db, "r")!.step_count).toBe(0);
+  expect(killed).toEqual([]);
+  expect(getRun(db, "r")!.state).toBe("spawning");
+});
