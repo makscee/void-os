@@ -153,6 +153,7 @@ export interface SpawnRunOpts {
   inputRef?: string | null;    // file-level input reference (inbox line ref for trigger-fired)
   triggerId?: string | null;   // set for trigger-fired executions
   stepCeiling?: number | null; // set for trigger-fired executions
+  outputTarget?: string | null; // declared output target (vault-relative path/glob), from the skill
 }
 
 export interface SpawnRunResult {
@@ -224,6 +225,7 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     type: "start", agent: opts.agent, skill: opts.skill,
     input_ref: opts.inputRef ?? null, tmux_session: tmuxSession, at: now,
     trigger_id: opts.triggerId ?? null, step_ceiling: opts.stepCeiling ?? null,
+    output_target: opts.outputTarget ?? null,
   });
 
   return { runId, tmuxSession };

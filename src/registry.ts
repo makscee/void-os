@@ -122,6 +122,16 @@ export function setExecutionFail(db: Database, id: string, reason: string, now: 
   db.query("UPDATE executions SET ended_at = ?, reason = ? WHERE id = ?").run(now, reason, id);
 }
 
+/** Record the Stop-time output-target result (VOS-191). */
+export function setOutputResult(
+  db: Database,
+  id: string,
+  a: { producedChange: boolean; nudged: boolean },
+): void {
+  db.query("UPDATE executions SET produced_change = ?, nudged = ? WHERE id = ?")
+    .run(a.producedChange ? 1 : 0, a.nudged ? 1 : 0, id);
+}
+
 // --- Trigger helpers (UNCHANGED from VOS-189) ---
 
 export function upsertTrigger(
