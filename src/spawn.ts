@@ -180,10 +180,12 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
 
   // Interactive launch (NO -p): CC stays attached in the tmux pane.
   // --settings scopes hooks to this Run. Skill is passed as a slash-command for the first turn.
+  // --add-dir vault: pre-authorize the vault directory so CC skips the trust prompt.
   const argv: string[] = [
     ...sessionArg,
     "--settings", settingsPath,
     "--permission-mode", "bypassPermissions",
+    "--add-dir", opts.vault,
     ...(opts.skill ? [opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`] : []),
   ];
   const toks = tokenizeCommand(opts.runnerCommand);

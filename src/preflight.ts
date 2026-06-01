@@ -65,7 +65,7 @@ export function productionDeps(): PreflightDeps {
           env: { ...process.env },
         });
         // Enforce a short timeout — never block
-        const timeoutId = setTimeout(() => proc.kill(), 5000);
+        const timeoutId = setTimeout(() => proc.kill(), 15000);
         const code = await proc.exited;
         clearTimeout(timeoutId);
         const text = await new Response(proc.stdout).text();
