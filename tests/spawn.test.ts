@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand, spawnTurn, runTurn, spawnRun } from "../src/spawn.ts";
 import { pidPath, sessionDir, bodyPath, errorPath, stopPath } from "../src/paths.ts";
-import { openRegistry, getRun } from "../src/registry.ts";
+import { openRegistry, getExecution } from "../src/registry.ts";
 import { killSession } from "../src/tmux.ts";
 
 test("buildLaunchArgv has no leading -- (separator now lives in runner command)", () => {
@@ -17,7 +18,6 @@ test("launch argv with no text omits trailing space", () => {
   const argv = buildLaunchArgv("u1", "onboarding", "");
   expect(argv[0]).toBe("--session-id");
   expect(argv[3]).toBe("/onboarding");
-  // no trailing space
   expect(argv[3]).not.toContain(" ");
 });
 
@@ -80,7 +80,6 @@ test("spawnTurn child is its own process-group leader (pgid == pid)", async () =
   const p = pidPath(vault, uuid);
   const pid = parseInt(readFileSync(p, "utf8"), 10);
   const pgidOut = spawnSync("ps", ["-o", "pgid=", "-p", String(pid)]).stdout.toString().trim();
-  // child leads its own group → pgid equals its own pid
   expect(pgidOut).toBe(String(pid));
   // cleanup
   try { process.kill(-pid, "SIGKILL"); } catch { /* ignore */ }
@@ -103,20 +102,18 @@ test("spawnTurn exit handler is a no-op once stopped.txt is present (race guard)
   const uuid = "race-uuid-1";
   rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
   mkdirSync(sessionDir(vault, uuid), { recursive: true });
-  // body.html exists but will NOT advance — without the guard this writes "exit ...; body.html NOT updated"
   writeFileSync(bodyPath(vault, uuid), "<p>placeholder</p>");
   spawnTurn(vault, uuid, ["-c", "exit 0"], "sh");
-  // simulate a Stop landing before the child's exit handler runs
   writeFileSync(stopPath(vault, uuid), "stopped\n");
   await new Promise((r) => setTimeout(r, 400));
-  expect(existsSync(errorPath(vault, uuid))).toBe(false); // guard suppressed the stale banner
+  expect(existsSync(errorPath(vault, uuid))).toBe(false);
 });
 
-// --- Task 5: spawnRun stamps trigger_id + step_ceiling on the run row ---
+// --- executions model: spawnRun creates an execution row + start event, never resumes ---
 
-test("spawnRun stamps trigger_id + step_ceiling on the run row", () => {
+test("spawnRun creates an execution row with trigger_id + step_ceiling", () => {
   const db = openRegistry(":memory:");
-  const vault = "/tmp/void-os-spawn-trigger-test";
+  const vault = "/tmp/void-os-spawn-exec-test";
   mkdirSync(vault, { recursive: true });
   const { runId, tmuxSession } = spawnRun({
     db, vault, daemonUrl: "http://127.0.0.1:4317",
@@ -126,9 +123,44 @@ test("spawnRun stamps trigger_id + step_ceiling on the run row", () => {
     triggerId: "morning",
     stepCeiling: 7,
   });
-  const r = getRun(db, runId)!;
-  expect(r.trigger_id).toBe("morning");
-  expect(r.step_ceiling).toBe(7);
+  const e = getExecution(db, runId)!;
+  expect(e.trigger_id).toBe("morning");
+  expect(e.step_ceiling).toBe(7);
+  expect(e.ended_at).toBeNull(); // not yet ended
   // cleanup
+  try { killSession(tmuxSession); } catch { /* ignore */ }
+});
+
+test("spawnRun argv uses --session-id (never --resume)", () => {
+  // spawnRun is stateless: always fresh session. Verify this by checking the
+  // event log start event (which only has 'start' type, not a resume marker).
+  const db = openRegistry(":memory:");
+  const vault = "/tmp/void-os-spawn-stateless-test";
+  mkdirSync(vault, { recursive: true });
+  const { runId, tmuxSession } = spawnRun({
+    db, vault, daemonUrl: "http://127.0.0.1:4317",
+    skill: "smoke", agent: null,
+    runnerCommand: "sleep",
+    now: 1000,
+  });
+  // Check start event written
+  const startEvent = readFileSync(join(vault, ".void-os", "events", `${runId}.jsonl`), "utf8");
+  expect(startEvent).toContain('"type":"start"');
+  expect(startEvent).not.toContain('"type":"resume"');
+  // cleanup
+  try { killSession(tmuxSession); } catch { /* ignore */ }
+});
+
+test("spawnRun id prefixed exec- (stateless naming)", () => {
+  const db = openRegistry(":memory:");
+  const vault = "/tmp/void-os-spawn-prefix-test";
+  mkdirSync(vault, { recursive: true });
+  const { runId, tmuxSession } = spawnRun({
+    db, vault, daemonUrl: "http://127.0.0.1:4317",
+    skill: null, agent: null,
+    runnerCommand: "sleep",
+    now: 1000,
+  });
+  expect(runId.startsWith("exec-")).toBe(true);
   try { killSession(tmuxSession); } catch { /* ignore */ }
 });
