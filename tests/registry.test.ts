@@ -9,6 +9,13 @@ import {
   getRun,
   getSession,
   latestRunForSession,
+  upsertTrigger,
+  getTrigger,
+  listTriggers,
+  setTriggerFireTimes,
+  setTriggerEnabled,
+  incrementStep,
+  setRunFail,
 } from "../src/registry.ts";
 
 test("openRegistry creates runs + sessions tables with expected columns", () => {
@@ -77,4 +84,65 @@ test("setRunState sets idle_since when transitioning to idle", () => {
   expect(r!.state).toBe("idle");
   expect(r!.idle_since).toBe(10);
   db.close();
+});
+
+// --- Task 3 tests: triggers table + runs trigger_id/step_count/step_ceiling/reason ---
+
+test("upsertTrigger inserts then updates idempotently; row carries runtime fields", () => {
+  const db = openRegistry(":memory:");
+  upsertTrigger(db, { name: "morning", kind: "schedule", skill: "morning-report", agent: "default", cronExpr: "0 9 * * *", inbox: null, stepCeiling: 40, now: 1000 });
+  let row = getTrigger(db, "morning")!;
+  expect(row.kind).toBe("schedule");
+  expect(row.step_ceiling).toBe(40);
+  expect(row.enabled).toBe(1);
+  expect(row.next_fire_at).toBeNull(); // set separately by the scheduler
+  // upsert again with a changed ceiling — same row, updated
+  upsertTrigger(db, { name: "morning", kind: "schedule", skill: "morning-report", agent: "default", cronExpr: "0 9 * * *", inbox: null, stepCeiling: 99, now: 2000 });
+  row = getTrigger(db, "morning")!;
+  expect(row.step_ceiling).toBe(99);
+  expect(listTriggers(db).length).toBe(1);
+});
+
+test("setTriggerFireTimes + setTriggerEnabled update runtime projection", () => {
+  const db = openRegistry(":memory:");
+  upsertTrigger(db, { name: "m", kind: "manual", skill: "s", agent: "a", cronExpr: null, inbox: null, stepCeiling: 50, now: 0 });
+  setTriggerFireTimes(db, "m", { nextFireAt: 5000, lastFiredAt: 4000 });
+  const row = getTrigger(db, "m")!;
+  expect(row.next_fire_at).toBe(5000);
+  expect(row.last_fired_at).toBe(4000);
+  setTriggerEnabled(db, "m", false);
+  expect(getTrigger(db, "m")!.enabled).toBe(0);
+});
+
+test("a Run created for a Trigger carries trigger_id + step_ceiling; incrementStep counts", () => {
+  const db = openRegistry(":memory:");
+  createSession(db, { id: "s1", agent: "a", skill: "sk", now: 0 });
+  createRun(db, { id: "r1", sessionId: "s1", tmuxSession: "vos-run-r1", pid: 1, now: 0, triggerId: "morning", stepCeiling: 3 });
+  const r = getRun(db, "r1")!;
+  expect(r.trigger_id).toBe("morning");
+  expect(r.step_ceiling).toBe(3);
+  expect(r.step_count).toBe(0);
+  expect(incrementStep(db, "r1")).toBe(1);
+  expect(incrementStep(db, "r1")).toBe(2);
+  expect(getRun(db, "r1")!.step_count).toBe(2);
+});
+
+test("an interactive Run has null trigger_id + null step_ceiling", () => {
+  const db = openRegistry(":memory:");
+  createSession(db, { id: "s2", agent: null, skill: null, now: 0 });
+  createRun(db, { id: "r2", sessionId: "s2", tmuxSession: "vos-run-r2", pid: 2, now: 0 });
+  const r = getRun(db, "r2")!;
+  expect(r.trigger_id).toBeNull();
+  expect(r.step_ceiling).toBeNull();
+});
+
+test("setRunFail records terminal state + reason", () => {
+  const db = openRegistry(":memory:");
+  createSession(db, { id: "s3", agent: null, skill: null, now: 0 });
+  createRun(db, { id: "r3", sessionId: "s3", tmuxSession: "t", pid: 3, now: 0 });
+  setRunFail(db, "r3", "runaway-ceiling", 1234);
+  const r = getRun(db, "r3")!;
+  expect(r.state).toBe("exited_fail");
+  expect(r.reason).toBe("runaway-ceiling");
+  expect(r.ended_at).toBe(1234);
 });
