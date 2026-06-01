@@ -150,6 +150,8 @@ export interface SpawnRunOpts {
   runnerCommand: string;
   now?: number;
   sessionId?: string;   // if provided, spawn a second Run on an existing Session (resume path)
+  triggerId?: string | null;   // set for trigger-fired Runs
+  stepCeiling?: number | null; // set for trigger-fired Runs
 }
 
 export interface SpawnRunResult {
@@ -223,7 +225,11 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     VOS_RUN_ID: runId,
   });
 
-  createRun(opts.db, { id: runId, sessionId, tmuxSession, pid, now });
+  createRun(opts.db, {
+    id: runId, sessionId, tmuxSession, pid, now,
+    triggerId: opts.triggerId ?? null,
+    stepCeiling: opts.stepCeiling ?? null,
+  });
 
   return { runId, sessionId, tmuxSession };
 }

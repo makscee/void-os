@@ -109,3 +109,28 @@ test("spawnTurn exit handler is a no-op once stopped.txt is present (race guard)
   await new Promise((r) => setTimeout(r, 400));
   expect(existsSync(errorPath(vault, uuid))).toBe(false); // guard suppressed the stale banner
 });
+
+// --- Task 5: spawnRun stamps trigger_id + step_ceiling on the run row ---
+import { spawnRun } from "../src/spawn.ts";
+import { openRegistry, getRun } from "../src/registry.ts";
+import { killSession } from "../src/tmux.ts";
+
+test("spawnRun stamps trigger_id + step_ceiling on the run row", () => {
+  const db = openRegistry(":memory:");
+  const vault = "/tmp/void-os-spawn-trigger-test";
+  const { mkdirSync: mk } = require("node:fs");
+  mk(vault, { recursive: true });
+  const { runId, tmuxSession } = spawnRun({
+    db, vault, daemonUrl: "http://127.0.0.1:4317",
+    skill: null, agent: "default",
+    runnerCommand: "sleep",
+    now: Date.now(),
+    triggerId: "morning",
+    stepCeiling: 7,
+  });
+  const r = getRun(db, runId)!;
+  expect(r.trigger_id).toBe("morning");
+  expect(r.step_ceiling).toBe(7);
+  // cleanup
+  try { killSession(tmuxSession); } catch { /* ignore */ }
+});

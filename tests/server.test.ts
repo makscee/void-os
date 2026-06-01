@@ -517,3 +517,20 @@ test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktr
   const newDrainCalls = drainCalls.slice(drainBefore);
   expect(newDrainCalls.length).toBe(1);
 });
+
+// --- Task 5 test: POST /hook PreToolUse breach via real route ---
+
+test("POST /hook PreToolUse breach marks the trigger run exited_fail runaway-ceiling", async () => {
+  const { createSession, createRun, getRun, upsertTrigger } = await import("../src/registry.ts");
+  createSession(db, { id: "hook-s", agent: "a", skill: "sk", now: 0 });
+  createRun(db, { id: "hook-r", sessionId: "hook-s", tmuxSession: "vos-run-nope", pid: 1, now: 0, triggerId: "t", stepCeiling: 1 });
+  const app = makeApp(vault, db);
+  const res = await app.fetch(new Request("http://x/hook?run=hook-r", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hook_event_name: "PreToolUse", session_id: "cc" }),
+  }));
+  expect(res.status).toBe(200);
+  const row = getRun(db, "hook-r")!;
+  expect(row.state).toBe("exited_fail");
+  expect(row.reason).toBe("runaway-ceiling");
+});

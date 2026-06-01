@@ -72,7 +72,7 @@ export function makeApp(vault: string, db: Database) {
     let payload: HookPayload;
     try { payload = (await c.req.json()) as HookPayload; }
     catch { return c.json({ ok: false }, 200); }
-    try { handleHookEvent(db, runId, payload, Date.now()); }
+    try { handleHookEvent(db, runId, payload, Date.now(), killSession); }
     catch { /* never fail a hook */ }
     return c.json({ ok: true }, 200);
   });
