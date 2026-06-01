@@ -1,16 +1,17 @@
 // serve.ts — start the Hono server + open browser (Task 12)
 // F5: port 4317 hardcoded; --port flag or VOID_OS_PORT env override.
 // --no-open: skip browser-open (required for G6 headless E2E).
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { makeApp } from "./server.ts";
-import { readConfig, writeConfig, registryDbPath } from "./paths.ts";
+import { readConfig, writeConfig, registryDbPath, chatThreadPath } from "./paths.ts";
 import { openRegistry } from "./registry.ts";
 import { killSession } from "./tmux.ts";
 import { reconcileTriggers } from "./triggers-reconcile.ts";
 import { fireTrigger, dueTriggers } from "./triggers-fire.ts";
 import { drainInbox } from "./inbox-watch.ts";
 import { makeSpawnFn } from "./spawn-adapter.ts";
+import { appendUserMessage } from "./chat.ts";
 
 /** Resolve the port: --port <n> flag > VOID_OS_PORT env > void-os.json > 4317. */
 export function resolvePort(argv: string[], env: Record<string, string | undefined>, cfgPort: number): number {
@@ -77,8 +78,30 @@ export async function runServe(): Promise<void> {
       }
       // Then reconcile (picks up newly-added/edited files; doesn't overwrite live next_fire_at)
       reconcileTriggers(db, vault, now);
-      drainInbox(db, vault, inboxOffsets, (name, input, inputRef) =>
-        fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input, inputRef }));
+      drainInbox(db, vault, inboxOffsets, (name, input, inputRef) => {
+        // Chat lines: deposit the user turn + set input to the thread file path, so the fresh
+        // /chat execution reads the running transcript (ADR-0003 §4).
+        if (inputRef) {
+          try {
+            const bl = JSON.parse(readFileSync(inputRef, "utf8")) as Record<string, unknown>;
+            if (bl.kind === "chat") {
+              const routing = (bl.routing ?? {}) as Record<string, unknown>;
+              const thread = typeof routing.thread === "string" ? routing.thread : "";
+              if (thread) {
+                const at = typeof bl.ts === "number" ? bl.ts : Date.now();
+                appendUserMessage(vault, thread, typeof bl.payload === "string" ? bl.payload : input, at);
+                const threadFile = chatThreadPath(vault, thread);
+                fireTrigger(db, name, {
+                  spawn: spawnFn, now: Date.now(),
+                  input: threadFile, inputRef: threadFile,
+                });
+                return;
+              }
+            }
+          } catch { /* fall through to default fire */ }
+        }
+        fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input, inputRef });
+      });
     } catch { /* never crash serve */ }
   }, TRIGGER_TICK_MS).unref();
 
