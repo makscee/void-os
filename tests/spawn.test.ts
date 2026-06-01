@@ -164,3 +164,21 @@ test("spawnRun id prefixed exec- (stateless naming)", () => {
   expect(runId.startsWith("exec-")).toBe(true);
   try { killSession(tmuxSession); } catch { /* ignore */ }
 });
+
+test("spawnRun writes declared outputTarget into start event", () => {
+  const db = openRegistry(":memory:");
+  const vault = "/tmp/void-os-spawn-ot-test";
+  mkdirSync(vault, { recursive: true });
+  const { runId, tmuxSession } = spawnRun({
+    db, vault, daemonUrl: "http://127.0.0.1:4317",
+    skill: "smoke", agent: null,
+    runnerCommand: "sleep",
+    now: 1000,
+    outputTarget: "out/report.html",
+  });
+  const startEvent = JSON.parse(
+    readFileSync(join(vault, ".void-os", "events", `${runId}.jsonl`), "utf8").split("\n")[0],
+  );
+  expect(startEvent.output_target).toBe("out/report.html");
+  try { killSession(tmuxSession); } catch { /* ignore */ }
+});

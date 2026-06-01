@@ -1,7 +1,12 @@
 // tests/triggers-fire.test.ts
 import { expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openRegistry, upsertTrigger, getTrigger } from "../src/registry.ts";
 import { fireTrigger, dueTriggers } from "../src/triggers-fire.ts";
+import { makeSpawnFn } from "../src/spawn-adapter.ts";
+import { readStartEvent } from "../src/events.ts";
 
 test("fireTrigger calls spawn with the trigger's skill/agent/ceiling and stamps last_fired_at", () => {
   const db = openRegistry(":memory:");
@@ -40,4 +45,36 @@ test("dueTriggers excludes disabled triggers", () => {
   upsertTrigger(db, { name: "off", kind: "schedule", skill: "x", agent: "a", cronExpr: "0 9 * * *", inbox: null, stepCeiling: 50, now: 0 });
   db.query("UPDATE triggers SET next_fire_at = 500, enabled = 0 WHERE name = 'off'").run();
   expect(dueTriggers(db, 1000)).toEqual([]);
+});
+
+test("trigger-fired execution persists the skill's declared output_target on the start event", () => {
+  // Arrange: create a tmp vault with void-os.json + a catalog skill with output_target
+  const vault = mkdtempSync(join(tmpdir(), "vos-tf-ot-"));
+  writeFileSync(join(vault, "void-os.json"), JSON.stringify({
+    vault, onboarded: true, skills: [], answers: {}, port: 4317,
+    runners: [{ label: "vc (relay)", command: "sleep" }], defaultRunner: "vc (relay)",
+  }));
+  const catalogRoot = join(vault, "catalog");
+  mkdirSync(join(catalogRoot, "skills", "ot-skill"), { recursive: true });
+  writeFileSync(join(catalogRoot, "skills", "ot-skill", "SKILL.md"),
+    "---\nname: ot-skill\ndescription: test\noutput_target: out/result.txt\n---\n# body\n");
+
+  const db = openRegistry(":memory:");
+  upsertTrigger(db, { name: "ot-trig", kind: "manual", skill: "ot-skill", agent: "default",
+    cronExpr: null, inbox: null, stepCeiling: 5, now: 0 });
+
+  const spawnFn = makeSpawnFn(db, vault, "http://127.0.0.1:4317", catalogRoot);
+  let runId!: string;
+  fireTrigger(db, "ot-trig", {
+    spawn: (o) => {
+      const r = spawnFn(o);
+      runId = r.runId;
+      return r;
+    },
+    now: 1000,
+    input: null,
+  });
+
+  const startEv = readStartEvent(vault, runId);
+  expect(startEv?.output_target).toBe("out/result.txt");
 });
