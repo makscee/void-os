@@ -3,11 +3,20 @@
 import { openSync, closeSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Database } from "bun:sqlite";
 import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath, hookSettingsDir } from "./paths.ts";
 import { createSession, createRun, getSession } from "./registry.ts";
 import { newRunSession } from "./tmux.ts";
 import { writeHookSettings } from "./hooks-endpoint.ts";
+
+// Absolute paths to the helper scripts shipped with void-os.
+const _repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+/** Path to the CC command hook relay script (reads stdin JSON, POSTs to daemon). */
+export const hookRelayScriptPath = join(_repoRoot, "scripts", "vos-hook-relay.sh");
+/** Path to the tmux Run wrapper script (runs CC, fires ProcessExit on exit). */
+export const runWrapperScriptPath = join(_repoRoot, "scripts", "vos-run-wrapper.sh");
 
 const PERM = ["--permission-mode", "bypassPermissions"] as const;
 const RENDER_PREAMBLE = "[render contract: rewrite body.html, no terminal reply]";
@@ -151,10 +160,14 @@ export interface SpawnRunResult {
 
 /**
  * Create a Run row + a named tmux session containing a live CC/vc subprocess.
- * Writes per-Run hook settings so CC POSTs lifecycle events to /hook?run=<runId>.
+ * Writes per-Run hook settings so CC fires `type:"command"` hooks to the relay
+ * script, which POSTs lifecycle events to /hook?run=<runId>.
  *
  * - Fresh session: spawns `<runner> --session-id <ccSeed> --settings <settingsPath>`
  * - Resume:        spawns `<runner> --resume <resume_token> --settings <settingsPath>`
+ *
+ * The runner command is wrapped in vos-run-wrapper.sh, which fires a synthetic
+ * ProcessExit hook after the CC process exits so the daemon can detect non-zero exits.
  *
  * The tmux session name is `vos-run-<runId>`.
  */
@@ -168,8 +181,13 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     createSession(opts.db, { id: sessionId, agent: opts.agent, skill: opts.skill, now });
   }
 
-  // Write per-Run hook settings file.
-  const settingsPath = writeHookSettings(hookSettingsDir(opts.vault), opts.daemonUrl, runId);
+  // Write per-Run hook settings file (type:"command" hooks → relay script → daemon).
+  const settingsPath = writeHookSettings(
+    hookSettingsDir(opts.vault),
+    hookRelayScriptPath,
+    opts.daemonUrl,
+    runId,
+  );
 
   // Determine whether to resume an existing CC session.
   const ses = opts.sessionId ? getSession(opts.db, opts.sessionId) : null;
@@ -189,7 +207,15 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     ...(opts.skill ? [opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`] : []),
   ];
   const toks = tokenizeCommand(opts.runnerCommand);
-  const fullCommand = [...toks, ...argv].map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ");
+  const ccCommand = [...toks, ...argv].map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ");
+
+  // Wrap in vos-run-wrapper.sh so ProcessExit fires after CC exits.
+  const fullCommand = [
+    `"${runWrapperScriptPath}"`,
+    `"${opts.daemonUrl}"`,
+    `"${runId}"`,
+    ccCommand,
+  ].join(" ");
 
   const tmuxSession = `vos-run-${runId}`;
   const pid = newRunSession(tmuxSession, opts.vault, fullCommand, {

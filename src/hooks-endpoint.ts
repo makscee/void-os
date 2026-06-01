@@ -5,28 +5,34 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { setRunState, setResumeToken, getRun, getSession } from "./registry.ts";
 
-// --- Hook payload types (CC lifecycle events) ---
+// --- Hook payload types (CC lifecycle events + daemon-synthetic events) ---
 
 export interface HookPayload {
   hook_event_name: string;
   session_id: string;
-  source?: string;         // SessionStart: "startup" | "resume"
+  source?: string;           // SessionStart: "startup" | "resume"
   stop_hook_active?: boolean; // Stop hook field
-  reason?: string;         // SessionEnd reason
-  error?: string;          // StopFailure error
+  reason?: string;           // SessionEnd reason
+  exit_code?: number;        // ProcessExit (daemon-synthetic, not a CC event)
   [key: string]: unknown;
 }
 
 /**
- * Map a CC hook payload to a registry state transition.
+ * Map a hook payload to a registry state transition.
  * The run is attributed by `runId` (embedded in the hook URL: /hook?run=<id>).
  * `session_id` in the payload is used only to fill sessions.resume_token.
  *
- * State machine:
+ * CC lifecycle events handled (real CC hook event names):
  *   SessionStart → run.state = running; fill session.resume_token if null
  *   Stop         → run.state = idle
  *   SessionEnd   → run.state = exited_ok
- *   StopFailure  → run.state = exited_fail
+ *
+ * Daemon-synthetic events (fired by vos-run-wrapper.sh, NOT CC):
+ *   ProcessExit  → run.state = exited_fail when exit_code != 0 AND run is not
+ *                  already in a terminal state (SessionEnd already fired → no-op).
+ *
+ * NOTE: StopFailure is NOT a real CC hook event. It was removed. The correct
+ * way to detect non-zero CC exit is via the vos-run-wrapper.sh ProcessExit event.
  */
 export function handleHookEvent(
   db: Database,
@@ -52,8 +58,16 @@ export function handleHookEvent(
       setRunState(db, runId, "exited_ok", now);
       break;
     }
-    case "StopFailure": {
-      setRunState(db, runId, "exited_fail", now);
+    case "ProcessExit": {
+      // Daemon-synthetic event fired by vos-run-wrapper.sh AFTER CC exits.
+      // Only transition to exited_fail if exit_code != 0 AND the run has not
+      // already been moved to a terminal state by SessionEnd (CC fires SessionEnd
+      // before the process fully exits on normal exit paths).
+      const exitCode = typeof payload.exit_code === "number" ? payload.exit_code : 0;
+      const alreadyTerminal = run.state === "exited_ok" || run.state === "exited_fail";
+      if (exitCode !== 0 && !alreadyTerminal) {
+        setRunState(db, runId, "exited_fail", now);
+      }
       break;
     }
     default:
@@ -64,11 +78,15 @@ export function handleHookEvent(
 
 // --- Per-Run CC settings writer ---
 
-const LIFECYCLE_EVENTS = ["SessionStart", "Stop", "SessionEnd", "StopFailure"] as const;
+// Real CC lifecycle hook event names (subset used for state machine; others pass through).
+// SessionStart, Stop, SessionEnd are the three we wire. SubagentStop, PreToolUse,
+// PostToolUse, UserPromptSubmit, PreCompact, Notification are also valid CC events but
+// are not needed for the run state machine.
+const LIFECYCLE_EVENTS = ["SessionStart", "Stop", "SessionEnd"] as const;
 
 export interface CcHookEntry {
-  type: "http";
-  url: string;
+  type: "command";
+  command: string;
 }
 
 export interface CcHookSettings {
@@ -76,13 +94,23 @@ export interface CcHookSettings {
 }
 
 /**
- * Build a CC settings.json `hooks` block: every lifecycle event POSTs to /hook?run=<runId>.
+ * Build a CC settings.json `hooks` block.
+ * Each lifecycle event runs the vos-hook-relay.sh script, which reads the hook
+ * JSON payload from stdin (as CC provides it) and POSTs it to /hook?run=<runId>.
+ *
+ * @param relayScript - absolute path to vos-hook-relay.sh
+ * @param daemonUrl   - e.g. "http://127.0.0.1:4317"
+ * @param runId       - the Run ID to embed in the hook URL
  */
-export function buildHookSettings(daemonUrl: string, runId: string): CcHookSettings {
-  const url = `${daemonUrl}/hook?run=${runId}`;
+export function buildHookSettings(
+  relayScript: string,
+  daemonUrl: string,
+  runId: string,
+): CcHookSettings {
+  const command = `"${relayScript}" "${daemonUrl}" "${runId}"`;
   const hooks: CcHookSettings["hooks"] = {};
   for (const ev of LIFECYCLE_EVENTS) {
-    hooks[ev] = [{ hooks: [{ type: "http", url }] }];
+    hooks[ev] = [{ hooks: [{ type: "command", command }] }];
   }
   return { hooks };
 }
@@ -90,10 +118,20 @@ export function buildHookSettings(daemonUrl: string, runId: string): CcHookSetti
 /**
  * Write a per-Run settings.json into `dir` and return its path.
  * The Run is launched with `claude --settings <path>` so hooks are scoped to this Run.
+ *
+ * @param dir          - directory to write the settings file (hookSettingsDir)
+ * @param relayScript  - absolute path to vos-hook-relay.sh
+ * @param daemonUrl    - daemon base URL, e.g. "http://127.0.0.1:4317"
+ * @param runId        - unique Run ID
  */
-export function writeHookSettings(dir: string, daemonUrl: string, runId: string): string {
+export function writeHookSettings(
+  dir: string,
+  relayScript: string,
+  daemonUrl: string,
+  runId: string,
+): string {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${runId}.settings.json`);
-  writeFileSync(path, JSON.stringify(buildHookSettings(daemonUrl, runId), null, 2));
+  writeFileSync(path, JSON.stringify(buildHookSettings(relayScript, daemonUrl, runId), null, 2));
   return path;
 }

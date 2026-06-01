@@ -36,10 +36,30 @@ test("SessionEnd → run exited_ok", () => {
   expect(getRun(db, "run-1")!.state).toBe("exited_ok");
 });
 
-test("StopFailure → run exited_fail", () => {
+// StopFailure is NOT a real CC hook event — removed.
+// exited_fail is detected via the daemon-synthetic ProcessExit event fired by vos-run-wrapper.sh.
+
+test("ProcessExit with non-zero exit code → run exited_fail (when not already terminal)", () => {
   const db = seed();
-  handleHookEvent(db, "run-1", { hook_event_name: "StopFailure", session_id: "cc-1", error: "rate_limit" }, 40);
+  // Run is in spawning state; non-zero exit → exited_fail
+  handleHookEvent(db, "run-1", { hook_event_name: "ProcessExit", session_id: "", exit_code: 1 }, 40);
   expect(getRun(db, "run-1")!.state).toBe("exited_fail");
+});
+
+test("ProcessExit with exit code 0 → no-op (state unchanged)", () => {
+  const db = seed();
+  // Run is in spawning state; zero exit → no state change
+  handleHookEvent(db, "run-1", { hook_event_name: "ProcessExit", session_id: "", exit_code: 0 }, 40);
+  expect(getRun(db, "run-1")!.state).toBe("spawning"); // unchanged
+});
+
+test("ProcessExit after SessionEnd → no-op (already terminal, must not clobber exited_ok)", () => {
+  const db = seed();
+  // Normal exit: SessionEnd fires first (exited_ok), then wrapper fires ProcessExit.
+  // The terminal-state guard must prevent overwriting exited_ok with exited_fail.
+  handleHookEvent(db, "run-1", { hook_event_name: "SessionEnd", session_id: "cc-1" }, 30);
+  handleHookEvent(db, "run-1", { hook_event_name: "ProcessExit", session_id: "", exit_code: 1 }, 35);
+  expect(getRun(db, "run-1")!.state).toBe("exited_ok"); // must NOT become exited_fail
 });
 
 test("a second Run on the same session reuses the existing resume_token (setResumeToken NULL-guard)", () => {
@@ -66,13 +86,19 @@ test("handleHookEvent with unknown event type is a no-op (no throw)", () => {
   ).not.toThrow();
 });
 
-test("buildHookSettings wires SessionStart/Stop/SessionEnd/StopFailure to the daemon /hook url for this run", () => {
-  const s = buildHookSettings("http://127.0.0.1:4317", "run-1");
+test("buildHookSettings wires SessionStart/Stop/SessionEnd via type:command relay to the daemon", () => {
+  const relayScript = "/opt/void-os/scripts/vos-hook-relay.sh";
+  const s = buildHookSettings(relayScript, "http://127.0.0.1:4317", "run-1");
   const events = Object.keys(s.hooks);
-  expect(events).toEqual(
-    expect.arrayContaining(["SessionStart", "Stop", "SessionEnd", "StopFailure"]),
-  );
+  // Must include the three lifecycle events used for state transitions
+  expect(events).toEqual(expect.arrayContaining(["SessionStart", "Stop", "SessionEnd"]));
+  // Must NOT include the fake StopFailure event
+  expect(events).not.toContain("StopFailure");
   const h = s.hooks.SessionStart[0].hooks[0];
-  expect(h.type).toBe("http");
-  expect(h.url).toBe("http://127.0.0.1:4317/hook?run=run-1");
+  // Must use type:"command" (not type:"http")
+  expect(h.type).toBe("command");
+  // The command must embed the relay script, daemon URL, and run ID
+  expect(h.command).toContain(relayScript);
+  expect(h.command).toContain("http://127.0.0.1:4317");
+  expect(h.command).toContain("run-1");
 });
