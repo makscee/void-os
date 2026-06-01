@@ -56,7 +56,12 @@ export function handleHookEvent(
       break;
     }
     case "SessionEnd": {
-      setRunState(db, runId, "exited_ok", now);
+      // Do not overwrite a terminal state (e.g. exited_fail from runaway-ceiling).
+      // The kill-session races with CC's final hook delivery; if the run is already
+      // terminal, leave it alone.
+      if (run.state !== "exited_ok" && run.state !== "exited_fail") {
+        setRunState(db, runId, "exited_ok", now);
+      }
       break;
     }
     case "ProcessExit": {

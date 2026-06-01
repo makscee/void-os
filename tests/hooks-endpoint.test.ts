@@ -137,3 +137,16 @@ test("PreToolUse on an interactive run (null ceiling) never counts or kills", ()
   expect(killed).toEqual([]);
   expect(getRun(db, "r")!.state).toBe("spawning");
 });
+
+test("SessionEnd does not overwrite exited_fail (runaway-ceiling terminal state guard)", () => {
+  const db = openRegistry(":memory:");
+  createSession(db, { id: "s", agent: "a", skill: "sk", now: 0 });
+  createRun(db, { id: "r", sessionId: "s", tmuxSession: "vos-run-r", pid: 1, now: 0, triggerId: "t", stepCeiling: 1 });
+  // Ceiling breach sets exited_fail
+  handleHookEvent(db, "r", { hook_event_name: "PreToolUse", session_id: "cc" }, 10, () => {});
+  expect(getRun(db, "r")!.state).toBe("exited_fail");
+  // SessionEnd must NOT overwrite exited_fail
+  handleHookEvent(db, "r", { hook_event_name: "SessionEnd", session_id: "cc" }, 20);
+  expect(getRun(db, "r")!.state).toBe("exited_fail");
+  expect(getRun(db, "r")!.reason).toBe("runaway-ceiling");
+});

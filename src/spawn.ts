@@ -198,15 +198,19 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     ? ["--resume", ses.resume_token]
     : ["--session-id", ccSeed];
 
-  // Interactive launch (NO -p): CC stays attached in the tmux pane.
-  // --settings scopes hooks to this Run. Skill is passed as a slash-command for the first turn.
-  // --add-dir vault: pre-authorize the vault directory so CC skips the trust prompt.
+  // Trigger-fired runs use print mode (-p): CC runs the skill as a headless turn and exits.
+  // Print mode skips the workspace trust dialog (CC skips it for non-interactive sessions),
+  // fires all hooks (SessionStart, PreToolUse per tool call, Stop, SessionEnd), and exits
+  // cleanly without waiting for user input. Interactive (no -p) sessions remain for /launch.
+  // --settings scopes hooks to this Run. --add-dir vault: pre-authorize the vault directory.
+  const skillArg = opts.skill ? (opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`) : null;
+  const isPrint = !!(opts.triggerId && skillArg); // trigger-fired runs with a skill → print mode
   const argv: string[] = [
     ...sessionArg,
     "--settings", settingsPath,
     "--permission-mode", "bypassPermissions",
     "--add-dir", opts.vault,
-    ...(opts.skill ? [opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`] : []),
+    ...(isPrint ? ["-p", skillArg!] : skillArg ? [skillArg] : []),
   ];
   const toks = tokenizeCommand(opts.runnerCommand);
   const ccCommand = [...toks, ...argv].map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ");
