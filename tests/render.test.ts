@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody } from "../src/render.ts";
+import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread } from "../src/render.ts";
 
 test("placeholder body has a title so it lists + sorts", () => {
   expect(placeholderBody()).toContain("<title>");
@@ -210,4 +210,17 @@ test("renderDashboard non-flagged skill renders modal-trigger chip (no old chip 
   // Old forms are gone
   expect(html).not.toContain('class="skill-chip-form needs-input"');
   expect(html).not.toContain('class="skill-chip-run"');
+});
+
+test("renderChatThread shows the transcript turns and the cold-context size", () => {
+  const html = renderChatThread({
+    thread: "general",
+    transcript: "## user (t)\n\nhi\n\n## assistant (t)\n\nhello\n",
+    cold: { bytes: 40, tokenEstimate: 10 },
+  });
+  expect(html).toContain("general");
+  expect(html).toContain("hi");
+  expect(html).toContain("hello");
+  expect(html).toContain("10"); // token estimate surfaced
+  expect(html).toContain("40"); // bytes surfaced
 });
