@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { sessionsRoot, sessionDir, bodyPath, errorPath, runLogPath, readConfig, resolveRunner, DEFAULT_RUNNER_LABEL } from "../src/paths.ts";
+import { sessionsRoot, sessionDir, bodyPath, errorPath, runLogPath, readConfig, resolveRunner, DEFAULT_RUNNER_LABEL, busLinePath } from "../src/paths.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,4 +40,8 @@ test("resolveRunner returns matching command, falls back to default on unknown/m
   expect(resolveRunner(cfg, "artem")).toBe("claude_artem");
   expect(resolveRunner(cfg, "nope")).toBe("vc --");
   expect(resolveRunner(cfg)).toBe("vc --");
+});
+
+test("busLinePath is under .void-os/bus", () => {
+  expect(busLinePath("/v", "bl-1")).toBe("/v/.void-os/bus/bl-1.json");
 });
