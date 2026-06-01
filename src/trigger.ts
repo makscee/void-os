@@ -15,6 +15,7 @@ export interface TriggerSpec {
   agent: string;         // bound Agent label
   cronExpr: string | null; // schedule only
   inbox: string | null;    // event only
+  eventKind: string | null; // event only — optional kind filter (ADR-0003 §8); null = match any
   stepCeiling: number;
 }
 
@@ -61,14 +62,16 @@ export function parseTrigger(name: string, text: string): TriggerSpec {
     if (!cronExpr) throw new Error(`trigger ${name}: schedule kind requires cron_expr`);
     if (!isValidCron(cronExpr)) throw new Error(`trigger ${name}: invalid cron "${cronExpr}"`);
   }
+  let eventKind: string | null = null;
   if (kind === "event") {
     inbox = data.inbox != null ? String(data.inbox) : null;
     if (!inbox) throw new Error(`trigger ${name}: event kind requires inbox`);
+    eventKind = data.event_kind != null ? String(data.event_kind) : null;
   }
 
   const rawCeiling = data.step_ceiling;
   const stepCeiling =
     typeof rawCeiling === "number" && rawCeiling > 0 ? rawCeiling : DEFAULT_STEP_CEILING;
 
-  return { name, kind: kind as TriggerKind, skill, agent, cronExpr, inbox, stepCeiling };
+  return { name, kind: kind as TriggerKind, skill, agent, cronExpr, inbox, eventKind, stepCeiling };
 }

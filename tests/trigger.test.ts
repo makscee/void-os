@@ -69,3 +69,16 @@ test("parseTrigger throws on an unknown kind", () => {
   const bad = `---\nkind: webhook\nskill: x\nagent: default\n---\n`;
   expect(() => parseTrigger("bad", bad)).toThrow(/kind/);
 });
+
+test("event trigger parses optional event_kind", () => {
+  const text = `---\nkind: event\nskill: intake\nagent: default\ninbox: bus\nevent_kind: idea\n---\n`;
+  const t = parseTrigger("idea-t", text);
+  expect(t.kind).toBe("event");
+  expect(t.inbox).toBe("bus");
+  expect(t.eventKind).toBe("idea");
+});
+
+test("event trigger without event_kind has null eventKind", () => {
+  const text = `---\nkind: event\nskill: s\nagent: a\ninbox: bus\n---\n`;
+  expect(parseTrigger("t", text).eventKind).toBeNull();
+});
