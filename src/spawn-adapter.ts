@@ -36,6 +36,7 @@ export function makeSpawnFn(
       triggerId: o.triggerId,
       stepCeiling: o.stepCeiling,
       outputTarget,
+      forcePrint: o.forcePrint ?? null,
     });
   };
 }

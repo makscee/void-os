@@ -154,6 +154,7 @@ export interface SpawnRunOpts {
   triggerId?: string | null;   // set for trigger-fired executions
   stepCeiling?: number | null; // set for trigger-fired executions
   outputTarget?: string | null; // declared output target (vault-relative path/glob), from the skill
+  forcePrint?: boolean | null;  // override print-mode decision (true = force print, false = force interactive)
 }
 
 export interface SpawnRunResult {
@@ -189,7 +190,11 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   // Print mode skips the workspace trust dialog, fires all hooks, and exits cleanly.
   // --settings scopes hooks to this execution. --add-dir vault: pre-authorize the vault directory.
   const skillArg = opts.skill ? (opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`) : null;
-  const isPrint = !!(opts.triggerId && skillArg); // trigger-fired executions with a skill → print mode
+  // Trigger-fired executions with a skill use print mode (-p) by default.
+  // forcePrint allows callers to override (e.g. interactive proof runs that need Stop to fire).
+  const isPrint = opts.forcePrint != null
+    ? !!(opts.forcePrint && skillArg)
+    : !!(opts.triggerId && skillArg);
   const argv: string[] = [
     "--session-id", ccSeed,
     "--settings", settingsPath,

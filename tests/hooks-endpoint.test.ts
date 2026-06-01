@@ -123,6 +123,28 @@ test("Stop with no declared output_target is a pass-through (no nudge, allow sto
   expect(getExecution(db, "exec-1")!.ended_at).toBeNull();
 });
 
+test("SessionEnd records produced_change when output was written (print-mode path)", () => {
+  const { vault, db } = setupWithTarget("reports/out.html");
+  mkdirSync(join(vault, "reports"), { recursive: true });
+  const f = join(vault, "reports/out.html");
+  writeFileSync(f, "done");
+  utimesSync(f, new Date(1500), new Date(1500)); // mtime after start(1000)
+  handleHookEvent(db, vault, "exec-1", { hook_event_name: "SessionEnd", session_id: "" }, 2000);
+  const e = getExecution(db, "exec-1")!;
+  expect(e.produced_change).toBe(1);
+  expect(e.nudged).toBe(0);
+  expect(e.ended_at).toBe(2000);
+});
+
+test("SessionEnd records produced_change=0 when output was NOT written (print-mode path)", () => {
+  const { vault, db } = setupWithTarget("reports/out.html"); // file not created
+  handleHookEvent(db, vault, "exec-1", { hook_event_name: "SessionEnd", session_id: "" }, 2000);
+  const e = getExecution(db, "exec-1")!;
+  expect(e.produced_change).toBe(0);
+  expect(e.nudged).toBe(0);
+  expect(e.ended_at).toBe(2000);
+});
+
 // ---- Stop-branch: output-target tests (VOS-191) ----
 
 function setupWithTarget(target: string) {
