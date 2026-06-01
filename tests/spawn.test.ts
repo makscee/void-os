@@ -166,9 +166,10 @@ test("spawnRun id prefixed exec- (stateless naming)", () => {
 });
 
 test("spawnRun writes declared outputTarget into start event", () => {
+  const { mkdtempSync } = require("node:fs");
+  const { tmpdir } = require("node:os");
   const db = openRegistry(":memory:");
-  const vault = "/tmp/void-os-spawn-ot-test";
-  mkdirSync(vault, { recursive: true });
+  const vault = mkdtempSync(join(tmpdir(), "vos-spawn-ot-"));
   const { runId, tmuxSession } = spawnRun({
     db, vault, daemonUrl: "http://127.0.0.1:4317",
     skill: "smoke", agent: null,

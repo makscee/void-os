@@ -80,12 +80,34 @@ export function handleHookEvent(
           `Your output is the FILE, not this message. Write/modify ${target} now, then stop.`,
       };
     }
-    case "SessionEnd":
+    case "SessionEnd": {
+      // Record produced_change at session end if Stop did not already do so.
+      // Needed for print-mode executions where CC does not fire Stop before SessionEnd.
+      if (exec.produced_change === 0 && exec.nudged === 0) {
+        const start = readStartEvent(vault, runId);
+        const target = start?.output_target ?? null;
+        if (target) {
+          const mutated = wasMutatedSince(vault, target, start!.at);
+          setOutputResult(db, runId, { producedChange: mutated, nudged: false });
+          appendEvent(vault, runId, { type: "output-check", produced_change: mutated, nudged: false, at: now });
+        }
+      }
       setExecutionEnded(db, runId, now);
       appendEvent(vault, runId, { type: "end", at: now });
       break;
+    }
     case "ProcessExit": {
       const exitCode = typeof payload.exit_code === "number" ? payload.exit_code : 0;
+      // Record produced_change at process exit if not already done (print-mode path).
+      if (exec.produced_change === 0 && exec.nudged === 0 && exitCode === 0) {
+        const start = readStartEvent(vault, runId);
+        const target = start?.output_target ?? null;
+        if (target) {
+          const mutated = wasMutatedSince(vault, target, start!.at);
+          setOutputResult(db, runId, { producedChange: mutated, nudged: false });
+          appendEvent(vault, runId, { type: "output-check", produced_change: mutated, nudged: false, at: now });
+        }
+      }
       if (exitCode !== 0) {
         setExecutionFail(db, runId, "process-exit-nonzero", now);
         appendEvent(vault, runId, { type: "fail", reason: "process-exit-nonzero", at: now });
