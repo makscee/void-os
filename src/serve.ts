@@ -78,10 +78,13 @@ export async function runServe(): Promise<void> {
   setInterval(() => {
     try {
       const now = Date.now();
-      reconcileTriggers(db, vault, now); // pick up newly-added/edited Trigger files
+      // Fire due triggers BEFORE reconciling — reconcile can advance next_fire_at
+      // which would skip a fire that's currently due.
       for (const t of dueTriggers(db, now)) {
         fireTrigger(db, t.name, { spawn: spawnFn, now, input: null });
       }
+      // Then reconcile (picks up newly-added/edited files; doesn't overwrite live next_fire_at)
+      reconcileTriggers(db, vault, now);
       drainInbox(db, vault, inboxOffsets, (name, input) =>
         fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input }));
     } catch { /* never crash serve */ }

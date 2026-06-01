@@ -28,9 +28,11 @@ export function reconcileTriggers(db: Database, vault: string, now: number): voi
         now,
       });
       if (spec.kind === "schedule" && spec.cronExpr) {
-        // Only (re)compute next_fire_at if the row doesn't already have a future one.
+        // Only set next_fire_at when null (first-time load or after file was edited).
+        // The scheduler tick fires the run and advances next_fire_at after each fire.
+        // We must NOT overwrite a past-due next_fire_at here — that would skip the due fire.
         const existing = getTrigger(db, name);
-        if (!existing?.next_fire_at || existing.next_fire_at <= now) {
+        if (!existing?.next_fire_at) {
           setTriggerFireTimes(db, name, { nextFireAt: nextFireAt(spec.cronExpr, now) });
         }
       }
