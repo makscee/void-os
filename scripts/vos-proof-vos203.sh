@@ -109,19 +109,8 @@ command -v bun >/dev/null 2>&1 || fail "bun not found in PATH"
 log "bun found: $(command -v bun)"
 
 lsof -ti :$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true
-
-# Pre-trust the vault directory so claude does not prompt for trust on first run.
-# Claude reads ~/.claude/projects/<path-encoded>/ — if a .jsonl session file exists,
-# the folder is considered previously-visited/trusted (no interactive prompt).
-# Encoding: replace each '/' with '-' (leading slash → leading '-').
-# The real path may differ from $VAULT if /tmp → /private/tmp on macOS.
-VAULT_REAL=$(realpath "$VAULT" 2>/dev/null || echo "$VAULT")
-VAULT_PROJ_KEY=$(echo "$VAULT_REAL" | sed 's|/|-|g')
-# Do NOT strip the leading '-' — Claude's encoding keeps it (e.g. /private/tmp → -private-tmp)
-mkdir -p "$HOME/.claude/projects/$VAULT_PROJ_KEY"
-# Write a sentinel .jsonl to mark as trusted (Claude checks for presence of any .jsonl file)
-echo '{}' > "$HOME/.claude/projects/$VAULT_PROJ_KEY/vos203-trust-sentinel.jsonl"
-log "Pre-trusted vault path for CC sessions: $HOME/.claude/projects/$VAULT_PROJ_KEY"
+# No trust-sentinel needed: all CC sessions run via the daemon /launch seam which uses
+# spawnRun print mode (-p). Print mode skips the workspace trust dialog entirely.
 
 # ============================================================
 log ""
@@ -310,8 +299,10 @@ log "=== Phase 3: Author organize skill via skill-author → decision → approv
 command -v claude >/dev/null 2>&1 || fail "claude binary not found in PATH — required for Phase 3 real CC session"
 log "claude found: $(command -v claude)"
 
-# Seed the organize-author-proxy agent in the proof vault
-ORGANIZE_INTENT='Author an `organize` skill (invoke-only) that maintains a files-first knowledge system in this vault. When run it (a) DRAINS the ingest inbox `inbox/ingest.jsonl` — reads each JSONL line; (b) SORTS each item into `knowledge/<category>/<slug>.md` where category is derived from the item'\''s `kind` field (`note`→`notes/`, `link`→`links/`, `task`→`tasks/`, `snippet`→`snippets/`, default→`misc/`) and `<slug>` is a stable kebab-case slug of the item'\''s title-or-content (so the same item always maps to the same file); (c) regenerates `knowledge/index.md` as a categorized table of contents linking every note; (d) is idempotent and MAINTAINS safely — on re-run it skips any item whose target `knowledge/<category>/<slug>.md` already exists (no dupes) and rewrites `index.md` deterministically. After draining, truncate `inbox/ingest.jsonl` to empty. Output target: `knowledge/`. Submit via the gated `skill_manage` pipeline; do not write the catalog directly.'
+# Seed the organize-author-proxy agent in the proof vault.
+# NOTE: no backtick chars in the intent — tmux passes fullCommand through bash and backticks
+# are interpreted as command substitution even inside double-quoted strings.
+ORGANIZE_INTENT='Author an organize skill (invoke-only) that maintains a files-first knowledge system in this vault. When run it: (a) DRAINS the ingest inbox at inbox/ingest.jsonl — reads each JSONL line; (b) SORTS each item into knowledge/<category>/<slug>.md where category comes from the item'"'"'s "kind" field (note->notes/, link->links/, task->tasks/, snippet->snippets/, anything else->misc/) and slug is a stable kebab-case slug of the item'"'"'s title or content (so the same item always maps to the same file); (c) regenerates knowledge/index.md as a categorized table of contents; (d) is idempotent — on re-run it skips any item whose target file already exists and rewrites index.md deterministically. After draining, truncate inbox/ingest.jsonl to empty. Output target: knowledge/. Submit via the gated skill_manage pipeline; do not write the catalog directly.'
 
 mkdir -p "$VAULT/agents"
 cat > "$VAULT/agents/organize-author-proxy.md" <<AGENTEOF
