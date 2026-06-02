@@ -5,6 +5,7 @@ export interface SkillMeta {
   needsInput: boolean;
   inputLabel: string;
   outputTarget: string; // vault-relative path/glob the execution must mutate (VOS-191)
+  version?: string;     // semver — optional (VOS-199 skill-manage rollback)
 }
 
 export function parseFrontmatter(md: string): SkillMeta {
@@ -21,6 +22,7 @@ export function parseFrontmatter(md: string): SkillMeta {
     if (k === "needs_input") out.needsInput = val === "true";
     if (k === "input_label") out.inputLabel = val;
     if (k === "output_target") out.outputTarget = val;
+    if (k === "version") out.version = val;
   }
   return out;
 }

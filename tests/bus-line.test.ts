@@ -27,8 +27,14 @@ test("rejects unknown channel", () => {
   expect(() => parseBusLine(JSON.stringify({ channel: "carrier-pigeon", kind: "idea", payload: "x" }))).toThrow(/channel/);
 });
 
-test("rejects unknown kind", () => {
-  expect(() => parseBusLine(JSON.stringify({ channel: "file", kind: "shout", payload: "x" }))).toThrow(/kind/);
+test("accepts custom (non-built-in) kind for extensible routing", () => {
+  // parseBusLine accepts any non-empty kind; routeBusLine is the sole gate for routability.
+  const bl = parseBusLine(JSON.stringify({ channel: "file", kind: "stdio-proof", payload: "fire" }));
+  expect(bl.kind).toBe("stdio-proof");
+});
+
+test("rejects missing kind (empty string)", () => {
+  expect(() => parseBusLine(JSON.stringify({ channel: "file", kind: "", payload: "x" }))).toThrow(/kind/);
 });
 
 test("rejects missing payload", () => {

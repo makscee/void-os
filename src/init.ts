@@ -12,6 +12,26 @@ import { hookRelayScriptPath } from "./spawn.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+/** Write vault-level .mcp.json so CC sessions in the vault can call the MCP server (VOS-199).
+ *  The MCP server runs as a stdio process with VOID_OS_MCP_DIRECT=1 for direct vault access. */
+export function writeMcpConfig(vault: string, repoRootOverride?: string): void {
+  const rr = repoRootOverride ?? repoRoot;
+  const mcpConfig = {
+    mcpServers: {
+      "void-os-skill-manage": {
+        type: "stdio",
+        command: "bun",
+        args: ["run", join(rr, "src", "mcp-server.ts")],
+        env: {
+          VOID_OS_VAULT: vault,
+          VOID_OS_MCP_DIRECT: "1",
+        },
+      },
+    },
+  };
+  writeFileSync(join(vault, ".mcp.json"), JSON.stringify(mcpConfig, null, 2) + "\n");
+}
+
 /** Seed vault floor: directory structure + files from templates + catalog.
  *  Writes vault-level .claude/settings.json with lifecycle hooks (VOS-197 vault-native). */
 export function seedVault(vault: string): void {
@@ -55,6 +75,9 @@ export function seedVault(vault: string): void {
   if (existsSync(catalogSkillsDir)) {
     cpSync(catalogSkillsDir, skillsPath, { recursive: true });
   }
+
+  // Write .mcp.json so CC sessions in this vault can reach the skill_manage MCP server (VOS-199).
+  writeMcpConfig(vault);
 }
 
 /** Resolve vault dir: positional arg[0] > VOID_OS_VAULT env > interactive pick. */
