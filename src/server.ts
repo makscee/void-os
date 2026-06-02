@@ -375,17 +375,37 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       return c.redirect(`/s/${uuid}`);
     }
 
-    // Read the actual CC session ID written by hooks-endpoint on SessionStart.
-    // Claude ignores the --session-id hint and assigns its own UUID; cc-actual-session.txt
-    // is the reliable source. --resume <actualId> resumes the right CC thread so the skill
-    // receives the form data in context (see hooks-endpoint.ts SessionStart handler).
-    const ccSessionId = readCcSessionId(vault, uuid);
-    spawnTurn(vault, uuid, buildAnswerArgv(uuid, text, ccSessionId), runnerCommand);
-    // Write working-page into body.html so the iframe shows "received — working…"
-    // while the skill runs, then redirect to the shell so the wrapper (back-nav +
-    // Stop control) stays visible — avoids landing bare on /s/:uuid/send.
-    writeFileSync(bodyPath(vault, uuid), workingPage(fields));
-    return c.redirect(`/s/${uuid}`);
+    // Form-resume: launch a fresh print-mode CC session that invokes the same skill
+    // with the form data as the input text. This is the stateless ADR-0003 path:
+    // - The skill's SKILL.md is loaded from vault .claude/skills/ context
+    // - The form fields arrive in the -p text: "[render contract]\n<fields>"
+    // - The skill detects form fields and processes them (step 3 / form-reply path)
+    // Using spawnRun (fresh session) instead of spawnTurn (--resume):
+    //   spawnTurn's buildAnswerArgv emits --resume which is ignored by the claude -- runner
+    //   (the runner passes all argv as user-message text, where --resume looks like a flag).
+    //   A fresh launch via spawnRun correctly puts the form data in the -p prompt.
+    const formPrompt = `[render contract: rewrite body.html, no terminal reply]\n${text}`;
+    const cfg = readConfig(vault);
+    const daemonUrlForRespawn = `http://127.0.0.1:${cfg.port}`;
+    const { runId: formRunId } = spawnRun({
+      db, vault, daemonUrl: daemonUrlForRespawn,
+      skill: meta.skill ?? null, agent: null,
+      runnerCommand, now: Date.now(),
+      // forcePrint ensures the form-reply session runs headlessly (print mode);
+      // bodyMessage carries the form fields as the initial prompt.
+      forcePrint: true,
+      bodyMessage: formPrompt,
+    });
+    // Seed the session dir for the new run and redirect to it.
+    const formDir = sessionDir(vault, formRunId);
+    mkdirSync(formDir, { recursive: true });
+    writeFileSync(
+      join(formDir, "session-meta.json"),
+      JSON.stringify({ skill: meta.skill ?? null, agent: null, launchedAt: Date.now(),
+        text: formPrompt.slice(0, 200), tmuxSession: `vos-run-${formRunId}`, runner: runnerCommand }),
+    );
+    writeFileSync(bodyPath(vault, formRunId), workingPage(fields));
+    return c.redirect(`/s/${formRunId}`);
   });
 
   // POST /triggers/:name/fire — manually fire a named Trigger, spawning a real Run.
