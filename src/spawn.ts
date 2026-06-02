@@ -242,8 +242,10 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   const skillArg = opts.skill ? (opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`) : null;
   // Trigger-fired executions with a skill use print mode (-p) by default.
   // forcePrint allows callers to override (e.g. interactive proof runs that need Stop to fire).
+  // Agent launches with a bodyMessage also use print mode (body is a -p prompt; no skill needed).
+  const hasPrompt = !!(skillArg || opts.bodyMessage);
   const isPrint = opts.forcePrint != null
-    ? !!(opts.forcePrint && skillArg)
+    ? !!(opts.forcePrint && hasPrompt)
     : !!(opts.triggerId && skillArg);
   const argv = buildSpawnArgv(ccSeed, settingsPath, opts.vault, {
     skill: opts.skill,
