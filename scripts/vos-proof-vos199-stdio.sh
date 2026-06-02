@@ -222,21 +222,29 @@ BEFORE_INVOKE=$(($(date +%s) * 1000))
 bash "$REPO/scripts/vos-bus-append.sh" "$VAULT" bus stdio-proof "fire the newly-created stdio-proof-skill" >/dev/null
 log "Appended kind=stdio-proof bus line to invoke the new skill..."
 
-EXEC_NEW=$(poll_exec_for_trigger "stdio-proof-t" "$BEFORE_INVOKE" 180)
+# Trigger name in DB = skill name (activateStaged writes vault/triggers/<name>.md where
+# name = skill name, so reconcileTriggers stores it as "stdio-proof-skill").
+EXEC_NEW=$(poll_exec_for_trigger "stdio-proof-skill" "$BEFORE_INVOKE" 180)
 [[ "$EXEC_NEW" != "none" && -n "$EXEC_NEW" ]] || { q "SELECT name,event_kind FROM triggers" | tee -a "$LOG"; fail "Newly-created skill did not fire an execution — it is not live"; }
 pass "Newly-created skill fired a real execution: $EXEC_NEW"
 wait_exec_ended "$EXEC_NEW" 240 || fail "New-skill execution did not complete"
 pass "New-skill execution completed (the new skill RAN)"
 
-# rebuildExecutions deep-equals live rows
-MATCH=$(bun --eval "
+# rebuildExecutions deep-equals live rows:
+# Build a fresh in-memory DB from event-log files; query and compare to the live DB.
+MATCH=$(REPO="$REPO" VAULT="$VAULT" DB="$DB" bun --eval "
   const {Database}=require('bun:sqlite');
-  const {rebuildExecutions}=await import('$REPO/src/events.ts');
-  const db=new Database('$DB');
-  const live=db.query('SELECT id,skill,trigger_id,started_at,ended_at,input_ref FROM executions ORDER BY id').all();
-  const rebuilt=rebuildExecutions(db).map(r=>({id:r.id,skill:r.skill,trigger_id:r.trigger_id,started_at:r.started_at,ended_at:r.ended_at,input_ref:r.input_ref})).sort((a,b)=>a.id<b.id?-1:1);
-  const liveS=[...live].sort((a,b)=>a.id<b.id?-1:1);
-  console.log(JSON.stringify(liveS)===JSON.stringify(rebuilt)?'MATCH':'MISMATCH:'+JSON.stringify({live:liveS.length,rebuilt:rebuilt.length}));
+  const {rebuildExecutions}=await import(process.env.REPO+'/src/events.ts');
+  const {openRegistry}=await import(process.env.REPO+'/src/registry.ts');
+  const live=new Database(process.env.DB);
+  const liveRows=live.query('SELECT id,skill,trigger_id,started_at,ended_at,input_ref FROM executions ORDER BY id').all();
+  // Rebuild into a fresh in-memory DB from event files
+  const fresh=openRegistry(':memory:');
+  rebuildExecutions(fresh, process.env.VAULT);
+  const rebuiltRows=fresh.query('SELECT id,skill,trigger_id,started_at,ended_at,input_ref FROM executions ORDER BY id').all();
+  const liveS=JSON.stringify(liveRows);
+  const rebS=JSON.stringify(rebuiltRows);
+  console.log(liveS===rebS?'MATCH':'MISMATCH:'+JSON.stringify({live:liveRows.length,rebuilt:rebuiltRows.length}));
 " 2>>"$LOG") || MATCH="error"
 [[ "$MATCH" == "MATCH" ]] || fail "rebuildExecutions did not deep-equal live rows: $MATCH"
 pass "rebuildExecutions MATCH live rows"
