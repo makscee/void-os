@@ -155,6 +155,56 @@ export interface SpawnRunOpts {
   stepCeiling?: number | null; // set for trigger-fired executions
   outputTarget?: string | null; // declared output target (vault-relative path/glob), from the skill
   forcePrint?: boolean | null;  // override print-mode decision (true = force print, false = force interactive)
+  // Agent-launch extras (VOS-200): all optional; absent = no change to existing behavior.
+  addDirs?: string[];              // extra --add-dir per agent folder (enforced scope)
+  mcpConfigPath?: string | null;   // --mcp-config path (agent-restricted MCP servers)
+  appendSystemPrompt?: string;     // STABLE identity → --append-system-prompt (system tier, cached)
+  bodyMessage?: string;            // VOLATILE memory → injected into the -p user prompt (messages tier)
+}
+
+/**
+ * Build the CC argv array for a spawnRun launch (pure function, no side effects).
+ * Exported for unit testing. Used internally by spawnRun.
+ *
+ * Cache split (VOS-200):
+ *   - appendSystemPrompt → --append-system-prompt (system tier, cacheable prefix)
+ *   - bodyMessage        → included in the -p user prompt (messages tier, volatile)
+ * Editing the body does NOT change --append-system-prompt bytes → cache hit.
+ */
+export function buildSpawnArgv(
+  ccSeed: string,
+  settingsPath: string,
+  vault: string,
+  o: {
+    skill: string | null;
+    isPrint: boolean;
+    addDirs?: string[];
+    mcpConfigPath?: string | null;
+    appendSystemPrompt?: string;
+    bodyMessage?: string;
+  },
+): string[] {
+  const skillArg = o.skill ? (o.skill.startsWith("/") ? o.skill : `/${o.skill}`) : null;
+  const argv: string[] = [
+    "--session-id", ccSeed,
+    "--settings", settingsPath,
+    "--permission-mode", "bypassPermissions",
+    "--add-dir", vault,
+  ];
+  // Extra dirs from agent folder scope (each one an additional --add-dir)
+  for (const d of o.addDirs ?? []) argv.push("--add-dir", d);
+  // MCP restriction: only those servers loaded for this agent
+  if (o.mcpConfigPath) argv.push("--mcp-config", o.mcpConfigPath, "--strict-mcp-config");
+  // STABLE identity → system tier (cacheable prefix). Body MUST NOT appear here.
+  if (o.appendSystemPrompt) argv.push("--append-system-prompt", o.appendSystemPrompt);
+  // Prompt: agent body (+ optional skill) OR skill alone → -p user message (volatile tier).
+  // Falls back to today's skill-only behavior when no body.
+  const userPrompt = o.bodyMessage
+    ? (skillArg ? `${skillArg}\n\n${o.bodyMessage}` : o.bodyMessage)
+    : skillArg;
+  if (o.isPrint && userPrompt) argv.push("-p", userPrompt);
+  else if (!o.isPrint && userPrompt) argv.push(userPrompt);
+  return argv;
 }
 
 export interface SpawnRunResult {
@@ -195,13 +245,14 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   const isPrint = opts.forcePrint != null
     ? !!(opts.forcePrint && skillArg)
     : !!(opts.triggerId && skillArg);
-  const argv: string[] = [
-    "--session-id", ccSeed,
-    "--settings", settingsPath,
-    "--permission-mode", "bypassPermissions",
-    "--add-dir", opts.vault,
-    ...(isPrint ? ["-p", skillArg!] : skillArg ? [skillArg] : []),
-  ];
+  const argv = buildSpawnArgv(ccSeed, settingsPath, opts.vault, {
+    skill: opts.skill,
+    isPrint,
+    addDirs: opts.addDirs,
+    mcpConfigPath: opts.mcpConfigPath,
+    appendSystemPrompt: opts.appendSystemPrompt,
+    bodyMessage: opts.bodyMessage,
+  });
   const toks = tokenizeCommand(opts.runnerCommand);
   const ccCommand = [...toks, ...argv].map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ");
 
