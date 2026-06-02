@@ -330,25 +330,48 @@ test("POST /s/:uuid/send reuses runner from session-meta on form-reply", async (
   expect(lastRun.runnerCommand).toBe("claude_artem");
 });
 
-test("GET /s/:uuid/transcript renders escaped turns from the CC transcript", async () => {
-  const uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-  const proj = join(process.env.HOME!, ".claude", "projects", "-voidos-server-test");
+// VOS-204: transcript route must translate void-os runId → CC session id via cc-actual-session.txt.
+// Test 1: runId (exec-...) with cc-actual-session.txt → renders turns from the CC jsonl.
+test("GET /s/:uuid/transcript renders turns when uuid is a runId and cc-actual-session.txt is present", async () => {
+  const runId = `exec-vos204-test-${Date.now()}`;
+  const ccId = "bb22c3d4-e5f6-7890-abcd-ef1234560204";
+  const dir = sessionDir(vault, runId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "cc-actual-session.txt"), ccId);
+  const proj = join(process.env.HOME!, ".claude", "projects", "-voidos-server-test-vos204");
   mkdirSync(proj, { recursive: true });
-  const txFile = join(proj, `${uuid}.jsonl`);
+  const txFile = join(proj, `${ccId}.jsonl`);
   writeFileSync(
     txFile,
-    `{"type":"user","message":{"role":"user","content":"/smoke-test go"}}\n` +
-    `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working <x>"}]}}\n`,
+    `{"type":"user","message":{"role":"user","content":"hello from vos204"}}\n` +
+    `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reply <ok>"}]}}\n`,
   );
   try {
     const app = makeApp(vault, db);
-    const res = await app.request(`/s/${uuid}/transcript`);
+    const res = await app.request(`/s/${runId}/transcript`);
     expect(res.status).toBe(200);
     const body = await res.text();
-    expect(body).toContain("/smoke-test go");
-    expect(body).toContain("working &lt;x&gt;");
+    expect(body).toContain("hello from vos204");
+    expect(body).toContain("reply &lt;ok&gt;");
   } finally {
     try { rmSync(txFile); } catch { /* ignore */ }
+    try { rmSync(dir, { recursive: true }); } catch { /* ignore */ }
+  }
+});
+
+// VOS-204: when cc-actual-session.txt is absent (run not yet started), return empty HTML.
+test("GET /s/:uuid/transcript returns empty body when cc-actual-session.txt is missing", async () => {
+  const runId = `exec-vos204-no-cc-${Date.now()}`;
+  const dir = sessionDir(vault, runId);
+  mkdirSync(dir, { recursive: true });
+  // No cc-actual-session.txt written
+  try {
+    const app = makeApp(vault, db);
+    const res = await app.request(`/s/${runId}/transcript`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("");
+  } finally {
+    try { rmSync(dir, { recursive: true }); } catch { /* ignore */ }
   }
 });
 

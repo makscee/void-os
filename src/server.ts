@@ -225,8 +225,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
 
   // GET /s/:uuid/transcript — minimal escaped HTML fragment of the CC conversation.
   // Empty body when no transcript exists yet (run not started) or uuid is malformed.
+  // The route param is a void-os runId (exec-...); the CC session id is stored in
+  // <sessionDir>/cc-actual-session.txt and is written by hooks-endpoint on SessionStart.
   app.get("/s/:uuid/transcript", (c) => {
-    const path = locateTranscript(c.req.param("uuid"));
+    const uuid = c.req.param("uuid");
+    const ccSessionFile = join(sessionDir(vault, uuid), "cc-actual-session.txt");
+    let ccId: string;
+    try {
+      ccId = readFileSync(ccSessionFile, "utf8").trim();
+    } catch {
+      return c.html("");
+    }
+    const path = locateTranscript(ccId);
     if (!path) return c.html("");
     let raw: string;
     try {
