@@ -9,6 +9,7 @@ import type { Database } from "bun:sqlite";
 import { listCatalogSkills } from "./catalog.ts";
 import { listSessions } from "./sessions.ts";
 import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn } from "./spawn.ts";
+import { buildAgentLaunch, type AgentLaunch } from "./agents.ts";
 import { drain, type DrainOpts } from "./drain.ts";
 import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody } from "./render.ts";
 import { killProcessTree } from "./kill.ts";
@@ -118,16 +119,36 @@ a{color:#93c5fd}</style>
     // Look up the skill's declared output_target so interactive launches also track it.
     const catalogSkills = listCatalogSkills(catalogRoot);
     const skillMeta = catalogSkills.find((s) => s.name === skill);
-    const outputTarget = skillMeta?.outputTarget ?? null;
+
+    // Optional agent param (VOS-200): wrap the launch with the agent's config.
+    const agentName = String(body.agent ?? "").trim() || null;
+    let agentLaunch: AgentLaunch | null = null;
+    if (agentName) {
+      try {
+        agentLaunch = buildAgentLaunch(vault, agentName);
+      } catch {
+        return c.html(`<!doctype html><meta charset=utf8><title>agent not found</title>
+<body><p>agent <code>${agentName}</code> not found — create <code>agents/${agentName}.md</code> first.</p></body>`, 404);
+      }
+    }
+
+    const outputTarget = agentLaunch ? agentLaunch.outputTarget : (skillMeta?.outputTarget ?? null);
     const { runId, tmuxSession } = spawnRun({
-      db, vault, daemonUrl, skill, agent: null, runnerCommand, now: Date.now(), outputTarget,
+      db, vault, daemonUrl, skill: skill || null, agent: agentName,
+      runnerCommand, now: Date.now(), outputTarget,
+      // forcePrint: agent launches use print mode so Stop hook fires for write-back (VOS-191)
+      forcePrint: agentLaunch ? true : null,
+      addDirs: agentLaunch?.addDirs,
+      mcpConfigPath: agentLaunch?.mcpConfigPath ?? null,
+      appendSystemPrompt: agentLaunch?.appendSystemPrompt,
+      bodyMessage: agentLaunch?.bodyMessage,
     });
     // Keep the body.html render shell working: seed a placeholder + meta under the runId key.
     const dir = sessionDir(vault, runId);
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, "session-meta.json"),
-      JSON.stringify({ skill, launchedAt: Date.now(), text, tmuxSession, runner: runnerCommand }),
+      JSON.stringify({ skill: skill || null, agent: agentName, launchedAt: Date.now(), text, tmuxSession, runner: runnerCommand }),
     );
     writeFileSync(bodyPath(vault, runId), placeholderBody(skill));
     return c.redirect(`/s/${runId}`);

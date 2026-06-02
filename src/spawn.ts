@@ -1,6 +1,6 @@
 // spawn.ts — argv builders (Task 6) + spawnTurn fire-and-forget integration (Task 8)
 // + spawnRun: create Run row + tmux session + per-Run hook settings
-import { openSync, closeSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { openSync, closeSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
@@ -155,6 +155,56 @@ export interface SpawnRunOpts {
   stepCeiling?: number | null; // set for trigger-fired executions
   outputTarget?: string | null; // declared output target (vault-relative path/glob), from the skill
   forcePrint?: boolean | null;  // override print-mode decision (true = force print, false = force interactive)
+  // Agent-launch extras (VOS-200): all optional; absent = no change to existing behavior.
+  addDirs?: string[];              // extra --add-dir per agent folder (enforced scope)
+  mcpConfigPath?: string | null;   // --mcp-config path (agent-restricted MCP servers)
+  appendSystemPrompt?: string;     // STABLE identity → --append-system-prompt (system tier, cached)
+  bodyMessage?: string;            // VOLATILE memory → injected into the -p user prompt (messages tier)
+}
+
+/**
+ * Build the CC argv array for a spawnRun launch (pure function, no side effects).
+ * Exported for unit testing. Used internally by spawnRun.
+ *
+ * Cache split (VOS-200):
+ *   - appendSystemPrompt → --append-system-prompt (system tier, cacheable prefix)
+ *   - bodyMessage        → included in the -p user prompt (messages tier, volatile)
+ * Editing the body does NOT change --append-system-prompt bytes → cache hit.
+ */
+export function buildSpawnArgv(
+  ccSeed: string,
+  settingsPath: string,
+  vault: string,
+  o: {
+    skill: string | null;
+    isPrint: boolean;
+    addDirs?: string[];
+    mcpConfigPath?: string | null;
+    appendSystemPrompt?: string;
+    bodyMessage?: string;
+  },
+): string[] {
+  const skillArg = o.skill ? (o.skill.startsWith("/") ? o.skill : `/${o.skill}`) : null;
+  const argv: string[] = [
+    "--session-id", ccSeed,
+    "--settings", settingsPath,
+    "--permission-mode", "bypassPermissions",
+    "--add-dir", vault,
+  ];
+  // Extra dirs from agent folder scope (each one an additional --add-dir)
+  for (const d of o.addDirs ?? []) argv.push("--add-dir", d);
+  // MCP restriction: only those servers loaded for this agent
+  if (o.mcpConfigPath) argv.push("--mcp-config", o.mcpConfigPath, "--strict-mcp-config");
+  // STABLE identity → system tier (cacheable prefix). Body MUST NOT appear here.
+  if (o.appendSystemPrompt) argv.push("--append-system-prompt", o.appendSystemPrompt);
+  // Prompt: agent body (+ optional skill) OR skill alone → -p user message (volatile tier).
+  // Falls back to today's skill-only behavior when no body.
+  const userPrompt = o.bodyMessage
+    ? (skillArg ? `${skillArg}\n\n${o.bodyMessage}` : o.bodyMessage)
+    : skillArg;
+  if (o.isPrint && userPrompt) argv.push("-p", userPrompt);
+  else if (!o.isPrint && userPrompt) argv.push(userPrompt);
+  return argv;
 }
 
 export interface SpawnRunResult {
@@ -192,16 +242,19 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   const skillArg = opts.skill ? (opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`) : null;
   // Trigger-fired executions with a skill use print mode (-p) by default.
   // forcePrint allows callers to override (e.g. interactive proof runs that need Stop to fire).
+  // Agent launches with a bodyMessage also use print mode (body is a -p prompt; no skill needed).
+  const hasPrompt = !!(skillArg || opts.bodyMessage);
   const isPrint = opts.forcePrint != null
-    ? !!(opts.forcePrint && skillArg)
+    ? !!(opts.forcePrint && hasPrompt)
     : !!(opts.triggerId && skillArg);
-  const argv: string[] = [
-    "--session-id", ccSeed,
-    "--settings", settingsPath,
-    "--permission-mode", "bypassPermissions",
-    "--add-dir", opts.vault,
-    ...(isPrint ? ["-p", skillArg!] : skillArg ? [skillArg] : []),
-  ];
+  const argv = buildSpawnArgv(ccSeed, settingsPath, opts.vault, {
+    skill: opts.skill,
+    isPrint,
+    addDirs: opts.addDirs,
+    mcpConfigPath: opts.mcpConfigPath,
+    appendSystemPrompt: opts.appendSystemPrompt,
+    bodyMessage: opts.bodyMessage,
+  });
   const toks = tokenizeCommand(opts.runnerCommand);
   const ccCommand = [...toks, ...argv].map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ");
 
@@ -214,6 +267,15 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   ].join(" ");
 
   const tmuxSession = `vos-run-${runId}`;
+
+  // Persist the assembled CC argv for files-first observability + proof scripts (VOS-200).
+  // Written before the session starts so proofs can assert on the actual command line.
+  const execDir = sessionDir(opts.vault, runId);
+  try {
+    mkdirSync(execDir, { recursive: true });
+    writeFileSync(join(execDir, "cc-command.txt"), ccCommand + "\n", "utf8");
+  } catch { /* non-fatal — proof asserts it exists; any write failure must not abort the spawn */ }
+
   const pid = newRunSession(tmuxSession, opts.vault, fullCommand, {
     VOID_OS_SESSION: runId,
     VOS_RUN_ID: runId,
