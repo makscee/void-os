@@ -136,8 +136,11 @@ a{color:#93c5fd}</style>
     const { runId, tmuxSession } = spawnRun({
       db, vault, daemonUrl, skill: skill || null, agent: agentName,
       runnerCommand, now: Date.now(), outputTarget,
-      // forcePrint: agent launches use print mode so Stop hook fires for write-back (VOS-191)
-      forcePrint: agentLaunch ? true : null,
+      // forcePrint: all /launch sessions use print mode so hooks fire and body.html is the output.
+      // Print mode: CC runs the skill, fires hooks (SessionStart → cc-actual-session.txt written),
+      // renders body.html, and exits. Form-resume (/s/:uuid/send) resumes via --resume actualId.
+      // Interactive (forcePrint:false) broke form-resume: hooks didn't fire reliably in tmux TUI.
+      forcePrint: true,
       addDirs: agentLaunch?.addDirs,
       mcpConfigPath: agentLaunch?.mcpConfigPath ?? null,
       appendSystemPrompt: agentLaunch?.appendSystemPrompt,

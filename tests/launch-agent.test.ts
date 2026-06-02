@@ -103,7 +103,7 @@ test("POST /launch without agent: spawnRun receives agent=null, no addDirs/appen
   expect(call.agent).toBeNull();
   expect(call.addDirs).toBeUndefined();
   expect(call.appendSystemPrompt).toBeUndefined();
-  expect(call.forcePrint).toBeNull();
+  expect(call.forcePrint).toBe(true); // VOS-203: all /launch sessions use print mode (hook-based session-id capture)
 });
 
 test("POST /launch with unknown agent returns 404", async () => {
