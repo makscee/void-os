@@ -96,8 +96,8 @@ test("gateCreate stages SKILL.md in quarantine + appends a pending Decision", ()
   const dec = pending.find((d) => d.id === result.decisionId)!;
   expect(dec.question).toContain("test-skill");
 
-  // Resumption intent must be written
-  const intent = readResumptionIntent(vault, execId);
+  // Resumption intent must be written (keyed by decisionId, not execId)
+  const intent = readResumptionIntent(vault, result.decisionId);
   expect(intent.decisionId).toBe(result.decisionId);
   const payload = JSON.parse(intent.resumePayload);
   expect(payload.txnId).toBe(result.txnId);

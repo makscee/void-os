@@ -3,7 +3,9 @@
 import { randomUUID } from "node:crypto";
 
 export type BusChannel = "file" | "tg" | "web";
-export type BusKind = "idea" | "chat" | "decision-reply" | "work";
+/** BusKind is open/extensible: the 4 built-in kinds + any custom kind authored by a skill.
+ *  Routability (no matching trigger) is determined by routeBusLine, not at parse time. */
+export type BusKind = string;
 
 /** Routing hints. `skill`/`agent` override the trigger's bound pair (rare); decision-reply
  *  carries refs to the parked Decision + origin Execution it answers (consumer is VOS-194).
@@ -27,9 +29,10 @@ export interface BusLine {
 }
 
 const CHANNELS: ReadonlySet<string> = new Set(["file", "tg", "web"]);
-const KINDS: ReadonlySet<string> = new Set(["idea", "chat", "decision-reply", "work"]);
 
-/** Parse + validate one bus line. `now` seeds a default ts. Throws on invalid input. */
+/** Parse + validate one bus line. `now` seeds a default ts. Throws on invalid input.
+ *  Kind is open-ended: any non-empty string is accepted; routeBusLine is the sole gate
+ *  for routability (it returns null + logs "no trigger for kind" for unmatched kinds). */
 export function parseBusLine(line: string, now: number = Date.now()): BusLine {
   let data: Record<string, unknown>;
   try {
@@ -40,7 +43,7 @@ export function parseBusLine(line: string, now: number = Date.now()): BusLine {
   const channel = String(data.channel ?? "");
   if (!CHANNELS.has(channel)) throw new Error(`bus line: unknown channel "${channel}" (expected file|tg|web)`);
   const kind = String(data.kind ?? "");
-  if (!KINDS.has(kind)) throw new Error(`bus line: unknown kind "${kind}" (expected idea|chat|decision-reply|work)`);
+  if (!kind) throw new Error(`bus line: missing or empty kind`);
   if (typeof data.payload !== "string" || data.payload.length === 0) {
     throw new Error(`bus line: missing or empty payload`);
   }
@@ -51,5 +54,5 @@ export function parseBusLine(line: string, now: number = Date.now()): BusLine {
   }
   const id = typeof data.id === "string" && data.id ? data.id : `bl-${randomUUID()}`;
   const ts = typeof data.ts === "number" ? data.ts : now;
-  return { channel: channel as BusChannel, kind: kind as BusKind, payload: data.payload, routing, id, ts, raw: line };
+  return { channel: channel as BusChannel, kind, payload: data.payload, routing, id, ts, raw: line };
 }

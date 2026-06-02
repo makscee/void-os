@@ -36,16 +36,18 @@ export function emitDecisionAndPark(
     resumeSkill: a.resumeSkill, resumeAgent: a.resumeAgent,
     resumePayload: a.resumePayload, createdAt: a.now,
   };
-  const intentPath = resumptionIntentPath(vault, a.execId);
+  // Key by decisionId (not execId) so a single execution emitting multiple decisions
+  // (e.g. skill-author submitting 2+ drafts) never clobbers earlier intent files.
+  const intentPath = resumptionIntentPath(vault, decision.id);
   mkdirSync(dirname(intentPath), { recursive: true });
   writeFileSync(intentPath, JSON.stringify(intent) + "\n");
   notifyDecision(vault, decision); // surface on the TG channel (stub; seam for real adapter)
   return { decision, intentPath };
 }
 
-/** Read a resumption-intent file by emitting execId. Throws if absent. */
-export function readResumptionIntent(vault: string, execId: string): ResumptionIntent {
-  const path = resumptionIntentPath(vault, execId);
-  if (!existsSync(path)) throw new Error(`resumption intent not found for exec ${execId}: ${path}`);
+/** Read a resumption-intent file by decisionId. Throws if absent. */
+export function readResumptionIntent(vault: string, decisionId: string): ResumptionIntent {
+  const path = resumptionIntentPath(vault, decisionId);
+  if (!existsSync(path)) throw new Error(`resumption intent not found for decision ${decisionId}: ${path}`);
   return JSON.parse(readFileSync(path, "utf8")) as ResumptionIntent;
 }

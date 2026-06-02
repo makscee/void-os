@@ -9,7 +9,7 @@ output_target: .void-os/skill-apply-done/*.json
 You are a continuation execution fired because an operator replied to a parked skill_manage Decision.
 Your cwd is the vault. The operator's reply text is your prompt input. The bus line that fired
 you is persisted at the path in `$VOID_OS_INPUT_REF` (a `.void-os/bus/<id>.json` file); its
-`routing.decisionRef` is the Decision id and `routing.execRef` is the origin execution id.
+`routing.decisionRef` is the Decision id.
 The void-os repo root is in `$VOID_OS_REPO`.
 
 Run exactly this — it reads the parked resumption-intent, checks the reply, validates + activates
@@ -32,9 +32,9 @@ import { applyApprovedTxn, dropTxn, validateStaged } from '$REPO/src/skill-manag
 
 const busLine = JSON.parse(readFileSync('$INPUT_REF', 'utf8'));
 const decisionId = busLine.routing.decisionRef;
-const originExec = busLine.routing.execRef;
 const vault = '$VAULT';
-const intent = readResumptionIntent(vault, originExec);
+// Intent is keyed by decisionId (not execRef) so multiple decisions from one execution never collide.
+const intent = readResumptionIntent(vault, decisionId);
 const payload = JSON.parse(intent.resumePayload);
 const { txnId } = payload;
 

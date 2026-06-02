@@ -21,8 +21,11 @@ export const busDir = (vault: string) => join(vault, ".void-os", "bus");
 export const busLinePath = (vault: string, id: string) => join(busDir(vault), `${id}.json`);
 export const chatDir = (vault: string) => join(vault, "chat");
 export const decisionsFilePath = (vault: string) => join(vault, ".void-os", "decisions.jsonl");
-export const resumptionIntentPath = (vault: string, execId: string) =>
-  join(vault, ".void-os", "resume", `${execId}.json`);
+/** Resumption-intent keyed by decisionId (stable, one file per parked decision).
+ *  Supersedes the old execId-keyed path — a single execution may emit multiple decisions
+ *  (e.g. skill-author submitting 2+ drafts), and each must have its own intent file. */
+export const resumptionIntentPath = (vault: string, decisionId: string) =>
+  join(vault, ".void-os", "resume", `${decisionId}.json`);
 export const tgOutboxPath = (vault: string) => join(vault, ".void-os", "tg-outbox.jsonl");
 /** Resolve a thread id to its history-file path; sanitizes so a thread id can never escape chatDir. */
 export const chatThreadPath = (vault: string, thread: string) => {
