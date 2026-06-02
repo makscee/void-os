@@ -399,13 +399,17 @@ pass "Organize skill gated (not live pre-approval)"
 # Approve via decision-reply bus
 log ""
 log "=== Proof: Approve organize via decision-reply bus ==="
+mkdir -p "$VAULT/inbox"
 BEFORE_REPLY=$(($(date +%s) * 1000))
 REPLY_ID="bl-$(uuidgen | tr 'A-Z' 'a-z')"
 bun --eval "
   const fs=require('fs'),path=require('path');
   const line=JSON.stringify({channel:'file',kind:'decision-reply',payload:'approve',routing:{decisionRef:'$DEC',execRef:'$AUTHOR_RUN_ID'},id:'$REPLY_ID',ts:$(($(date +%s)*1000))});
   fs.appendFileSync(path.join('$VAULT','inbox','bus.jsonl'),line+'\n');
-" 2>/dev/null || fail "Could not append approve bus line"
+  // Verify the write succeeded
+  const content=fs.readFileSync(path.join('$VAULT','inbox','bus.jsonl'),'utf8');
+  if(!content.includes('$REPLY_ID'))process.exit(1);
+" 2>/dev/null || fail "Could not append approve bus line to $VAULT/inbox/bus.jsonl"
 pass "Approve bus line appended: $REPLY_ID"
 
 log "Waiting for skill-manage-apply continuation execution (up to 180s)..."
