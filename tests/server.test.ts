@@ -3,7 +3,7 @@
  * spawnTurn is stubbed via mock.module so no real `vc` process is spawned.
  * Tests: GET /, GET /s/:uuid, GET /s/:uuid/body (with + without error.txt), POST /s/:uuid/send.
  */
-import { expect, test, beforeAll, mock } from "bun:test";
+import { expect, test, beforeAll, afterAll, mock } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync } from "node:fs";
 import { bodyPath, sessionDir, errorPath, pidPath, stopPath } from "../src/paths.ts";
 import { join } from "node:path";
@@ -25,10 +25,11 @@ mock.module("../src/spawn.ts", () => ({
     "--session-id", uuid, "-p", text ? `/${skill} ${text}` : `/${skill}`,
     "--permission-mode", "bypassPermissions",
   ],
-  buildAnswerArgv: (uuid: string, text: string) => [
-    "--resume", uuid, "-p", `[render contract: rewrite body.html, no terminal reply]\n${text}`,
+  buildAnswerArgv: (uuid: string, text: string, ccSessionId?: string | null) => [
+    "--resume", ccSessionId ?? uuid, "-p", `[render contract: rewrite body.html, no terminal reply]\n${text}`,
     "--permission-mode", "bypassPermissions",
   ],
+  readCcSessionId: (_vault: string, _execId: string) => null, // stub — no cc-command.txt in unit tests
   tokenizeCommand: (cmd: string) => cmd.trim().split(/\s+/).filter(Boolean),
   spawnTurn: (v: string, u: string, a: string[], cmd: string) => { spawnCalls.push({ vault: v, uuid: u, argv: a, command: cmd }); },
   runTurn: async (cwd: string, v: string, u: string, a: string[], cmd: string) => { runTurnCalls.push({ cwd, vault: v, uuid: u, argv: a, command: cmd }); return 0; },
@@ -140,44 +141,42 @@ test("GET /s/:uuid returns the iframe shell with correct src and vault-anchored 
 test("POST /s/:uuid/send serializes ALL form fields (Bug #1 fix)", async () => {
   mkdirSync(sessionDir(vault, "multi-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "multi-uuid"), "<title>s</title>hi");
-  const before = spawnCalls.length;
+  const before = spawnRunCalls.length;
   const app = makeApp(vault, db);
   const form = new FormData();
   form.append("name", "Alice");
   form.append("skill_deep-research", "on");
   const res = await app.request("/s/multi-uuid/send", { method: "POST", body: form });
-  // Fix: redirect to /s/:uuid (not inline 200) so the shell wrapper stays visible
+  // VOS-203: /send creates a fresh form-reply run; redirect goes to the NEW run, not multi-uuid
   expect(res.status).toBe(302);
-  expect(res.headers.get("location")).toContain("/s/multi-uuid");
-  // Working page content must be written to body.html (not returned inline)
-  const bodyHtml = readFileSync(bodyPath(vault, "multi-uuid"), "utf8");
-  expect(bodyHtml).toContain("Alice");
-  expect(bodyHtml).toContain("skill_deep-research");
-  expect(bodyHtml).toContain("elapsed");
-  // Spawned argv must include ALL fields
-  expect(spawnCalls.length).toBe(before + 1);
-  const lastArgv = spawnCalls[spawnCalls.length - 1].argv;
-  const promptArg = lastArgv.find((a) => a.includes("name:"));
-  expect(promptArg).toBeDefined();
-  expect(promptArg).toContain("Alice");
+  // Should redirect to /s/<new-run-id> (a fresh exec-xxx)
+  const newLoc = res.headers.get("location") ?? "";
+  expect(newLoc).toMatch(/\/s\/exec-[0-9a-f-]+/);
+  // spawnRun was called (fresh session for form-reply)
+  expect(spawnRunCalls.length).toBe(before + 1);
+  const lastRun = spawnRunCalls[spawnRunCalls.length - 1] as Record<string, unknown>;
+  // The bodyMessage must include the form fields
+  const msg = String(lastRun.bodyMessage ?? "");
+  expect(msg).toContain("name: Alice");
+  expect(msg).toContain("skill_deep-research: on");
+  expect(msg).toContain("[render contract: rewrite body.html, no terminal reply]");
 });
 
-test("POST /s/:uuid/send redirects to shell and writes working page into body.html", async () => {
+test("POST /s/:uuid/send redirects to new form-reply run and writes working page", async () => {
   mkdirSync(sessionDir(vault, "send-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "send-uuid"), "<title>s</title>hi");
-  const before = spawnCalls.length;
+  const before = spawnRunCalls.length;
   const app = makeApp(vault, db);
   const form = new FormData();
   form.append("text", "my answer");
   const res = await app.request("/s/send-uuid/send", { method: "POST", body: form });
-  // Fix (VOS-186 v2): redirect to /s/:uuid so back-nav + Stop control stay visible
+  // VOS-203: fresh form-reply run created; redirect to new exec-xxx (not original send-uuid)
   expect(res.status).toBe(302);
-  expect(res.headers.get("location")).toContain("/s/send-uuid");
-  // Working page is written to body.html so the iframe shows it
-  const bodyHtml = readFileSync(bodyPath(vault, "send-uuid"), "utf8");
-  expect(bodyHtml).toContain("received");
-  expect(spawnCalls.length).toBe(before + 1);
-  expect(spawnCalls[spawnCalls.length - 1].uuid).toBe("send-uuid");
+  const newLoc = res.headers.get("location") ?? "";
+  expect(newLoc).toMatch(/\/s\/exec-[0-9a-f-]+/);
+  expect(newLoc).not.toContain("/s/send-uuid");
+  // spawnRun was called (not spawnTurn — fresh session)
+  expect(spawnRunCalls.length).toBe(before + 1);
 });
 
 /**
@@ -311,7 +310,7 @@ test("POST /launch persists resolved runner command in session-meta", async () =
   expect(spawnCalls[spawnCalls.length - 1].command).toBe("claude_artem");
 });
 
-test("POST /s/:uuid/send reuses runner from session-meta on resume", async () => {
+test("POST /s/:uuid/send reuses runner from session-meta on form-reply", async () => {
   const id = "resume-runner-uuid";
   mkdirSync(sessionDir(vault, id), { recursive: true });
   writeFileSync(bodyPath(vault, id), "<title>r</title>hi");
@@ -319,13 +318,16 @@ test("POST /s/:uuid/send reuses runner from session-meta on resume", async () =>
     join(sessionDir(vault, id), "session-meta.json"),
     JSON.stringify({ skill: "smoke-test", launchedAt: Date.now(), text: "", runner: "claude_artem" }),
   );
-  const before = spawnCalls.length;
+  const beforeRun = spawnRunCalls.length;
   const app = makeApp(vault, db);
   const form = new FormData();
   form.append("text", "echo: hello");
   const res = await app.request(`/s/${id}/send`, { method: "POST", body: form });
   expect(res.status).toBe(302);
-  expect(spawnCalls[spawnCalls.length - 1].command).toBe("claude_artem");
+  // VOS-203: form-reply uses spawnRun (fresh session) with the runner from session-meta
+  expect(spawnRunCalls.length).toBe(beforeRun + 1);
+  const lastRun = spawnRunCalls[spawnRunCalls.length - 1] as Record<string, unknown>;
+  expect(lastRun.runnerCommand).toBe("claude_artem");
 });
 
 test("GET /s/:uuid/transcript renders escaped turns from the CC transcript", async () => {
@@ -589,4 +591,38 @@ test("/hook uses ?run= param when present (daemon-spawned path unaffected)", asy
   // Row must be closed by SessionEnd (daemon path unchanged)
   const row = getExecution(db, runId);
   expect(row!.ended_at).not.toBeNull();
+});
+
+// VOS-203: dashboard reads vault .claude/skills/, not the repo catalog
+test("GET / dashboard shows vault-installed skills, not catalog-only skills", async () => {
+  const testVault = "/tmp/voidos-server-test-vos203";
+  rmSync(testVault, { recursive: true, force: true });
+  mkdirSync(`${testVault}/sessions`, { recursive: true });
+  // Seed two vault skills
+  mkdirSync(`${testVault}/.claude/skills/vault-skill-one`, { recursive: true });
+  writeFileSync(`${testVault}/.claude/skills/vault-skill-one/SKILL.md`,
+    "---\nname: vault-skill-one\ndescription: First vault skill.\nversion: 0.0.0\n---\n");
+  mkdirSync(`${testVault}/.claude/skills/vault-skill-two`, { recursive: true });
+  writeFileSync(`${testVault}/.claude/skills/vault-skill-two/SKILL.md`,
+    "---\nname: vault-skill-two\ndescription: Second vault skill.\nversion: 0.0.0\n---\n");
+
+  const testDb = openRegistry(":memory:");
+  const app = makeApp(testVault, testDb);
+  const res = await app.request("/");
+  expect(res.status).toBe(200);
+  const text = await res.text();
+  // Must show vault-installed skills
+  expect(text).toContain('data-skill="vault-skill-one"');
+  expect(text).toContain('data-skill="vault-skill-two"');
+  // Must NOT show catalog-only skills that were not installed in vault
+  expect(text).not.toContain('data-skill="deep-research"');
+  expect(text).not.toContain('data-skill="work"');
+
+  rmSync(testVault, { recursive: true, force: true });
+});
+
+// Restore mock.module registrations so sibling test files (e.g. spawn.test.ts) that import
+// ../src/spawn.ts directly get the real implementation, not this file's stubs.
+afterAll(() => {
+  mock.restore();
 });

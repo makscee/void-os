@@ -39,14 +39,46 @@ export function buildLaunchArgv(uuid: string, skill: string, text: string): stri
 }
 
 /**
+ * Read the ACTUAL CC session ID for a given execution.
+ *
+ * Primary source: cc-actual-session.txt — written by hooks-endpoint.ts on the first
+ * SessionStart hook. This contains the real CC session UUID (the file name in
+ * ~/.claude/projects/<proj>/<uuid>.jsonl) which Claude assigns independently of the
+ * --session-id hint passed at launch. This is the only reliable source for --resume.
+ *
+ * Fallback: cc-command.txt — the --session-id value passed at launch. Claude's
+ * internal session ID differs, so this fallback only works if CC respects --session-id
+ * (which is not guaranteed; kept for compatibility).
+ *
+ * Returns null if neither file is present or the pattern is not found.
+ */
+export function readCcSessionId(vault: string, execId: string): string | null {
+  const actualPath = join(sessionDir(vault, execId), "cc-actual-session.txt");
+  if (existsSync(actualPath)) {
+    const id = readFileSync(actualPath, "utf8").trim();
+    if (/^[0-9a-f-]{36}$/.test(id)) return id;
+  }
+  // Fallback: parse the --session-id hint from cc-command.txt
+  const ccCmdPath = join(sessionDir(vault, execId), "cc-command.txt");
+  if (!existsSync(ccCmdPath)) return null;
+  const text = readFileSync(ccCmdPath, "utf8");
+  const m = text.match(/--session-id\s+([0-9a-f-]{36})/);
+  return m ? m[1] : null;
+}
+
+/**
  * Build argv suffix for resuming a session and injecting an answer.
  * Prompt is the render-contract preamble + newline + the user-supplied text.
  *
- * Shape: --resume <uuid> -p <preamble\ntext> --permission-mode bypassPermissions
+ * ccSessionId: the Claude session ID (from --session-id at launch, readable via readCcSessionId).
+ * Falls back to execId if ccSessionId is not available (legacy / hand-launched sessions).
+ *
+ * Shape: --resume <ccSessionId> -p <preamble\ntext> --permission-mode bypassPermissions
  */
-export function buildAnswerArgv(uuid: string, text: string): string[] {
+export function buildAnswerArgv(execId: string, text: string, ccSessionId?: string | null): string[] {
+  const resumeId = ccSessionId ?? execId;
   const prompt = `${RENDER_PREAMBLE}\n${text}`;
-  return ["--resume", uuid, "-p", prompt, ...PERM];
+  return ["--resume", resumeId, "-p", prompt, ...PERM];
 }
 
 /** Split a runner command prefix into argv tokens (whitespace-separated). */
@@ -256,7 +288,15 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     bodyMessage: opts.bodyMessage,
   });
   const toks = tokenizeCommand(opts.runnerCommand);
-  const ccCommand = [...toks, ...argv].map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ");
+  // Build shell-safe command string for tmux. JSON.stringify wraps args with spaces in double
+  // quotes, but backtick characters inside double-quoted strings ARE interpreted by sh as
+  // command substitution (even inside double quotes). Escape backticks to prevent expansion.
+  const ccCommand = [...toks, ...argv].map((a) => {
+    if (!a.includes(" ") && !a.includes("`")) return a;
+    // Double-quote the arg; escape backticks and $ to prevent sh/bash expansion.
+    const escaped = a.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$").replace(/"/g, '\\"');
+    return `"${escaped}"`;
+  }).join(" ");
 
   // Wrap in vos-run-wrapper.sh so ProcessExit fires after CC exits.
   const fullCommand = [

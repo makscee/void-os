@@ -18,7 +18,9 @@ questions into `body.html` and installing what they choose.
    - a text field `name` ("what should I call you?"),
    - a checkbox per installable skill (`skill_<name>`), each beside its description,
    - one submit button.
-3. When resumed with the answers: for each checked skill, copy
+3. **If your input contains `name:` and `skill_` field lines** (form-submit reply), you are
+   in this step — do NOT re-render the form. Read the `name:` value for the user's name
+   and the `skill_<name>: on` lines for the selected skills. For each selected skill, copy
    `<repo>/catalog/skills/<name>/` into this vault's `.claude/skills/<name>/`. Record the
    user's name and chosen skills into `void-os.json` (merge; set `"onboarded": true`).
 4. Rewrite `body.html` to a "you're all set" summary listing the installed skills and telling

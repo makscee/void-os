@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { listCatalogSkills } from "./catalog.ts";
 import { listSessions } from "./sessions.ts";
-import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn } from "./spawn.ts";
+import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn, readCcSessionId } from "./spawn.ts";
 import { buildAgentLaunch, type AgentLaunch } from "./agents.ts";
 import { drain, type DrainOpts } from "./drain.ts";
 import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody } from "./render.ts";
@@ -69,7 +69,7 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
     const status = await realDeps.vcStatus();
     const cfg = readConfig(vault);
     return c.html(
-      renderDashboard(listCatalogSkills(catalogRoot), listSessions(vault, db), { authed: status.ok }, cfg, listPendingDecisions(vault)),
+      renderDashboard(listVaultSkills(vault), listSessions(vault, db), { authed: status.ok }, cfg, listPendingDecisions(vault)),
     );
   });
 
@@ -136,8 +136,11 @@ a{color:#93c5fd}</style>
     const { runId, tmuxSession } = spawnRun({
       db, vault, daemonUrl, skill: skill || null, agent: agentName,
       runnerCommand, now: Date.now(), outputTarget,
-      // forcePrint: agent launches use print mode so Stop hook fires for write-back (VOS-191)
-      forcePrint: agentLaunch ? true : null,
+      // forcePrint: all /launch sessions use print mode so hooks fire and body.html is the output.
+      // Print mode: CC runs the skill, fires hooks (SessionStart → cc-actual-session.txt written),
+      // renders body.html, and exits. Form-resume (/s/:uuid/send) resumes via --resume actualId.
+      // Interactive (forcePrint:false) broke form-resume: hooks didn't fire reliably in tmux TUI.
+      forcePrint: true,
       addDirs: agentLaunch?.addDirs,
       mcpConfigPath: agentLaunch?.mcpConfigPath ?? null,
       appendSystemPrompt: agentLaunch?.appendSystemPrompt,
@@ -344,7 +347,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // (verdict-aware path A: continuation passes the accepted human box so runner checks it).
     if (typeof meta.drainIssue === "number" && meta.worktree) {
       // Resume the parked skill in the worktree so its edits land in the repo
-      await runTurn(meta.worktree, vault, uuid, buildAnswerArgv(uuid, text), runnerCommand);
+      const ccSessionIdDrain = readCcSessionId(vault, uuid);
+      await runTurn(meta.worktree, vault, uuid, buildAnswerArgv(uuid, text, ccSessionIdDrain), runnerCommand);
       // Re-invoke the drain loop (async, fire-and-forget); idempotent drain skips checked boxes.
       // Verdict-aware path A: pass the parked box raw so the continuation checks it without re-spawning.
       // We read the current Issue body to find which box is parked (the human box that just got a verdict).
@@ -371,12 +375,37 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       return c.redirect(`/s/${uuid}`);
     }
 
-    spawnTurn(vault, uuid, buildAnswerArgv(uuid, text), runnerCommand);
-    // Write working-page into body.html so the iframe shows "received — working…"
-    // while the skill runs, then redirect to the shell so the wrapper (back-nav +
-    // Stop control) stays visible — avoids landing bare on /s/:uuid/send.
-    writeFileSync(bodyPath(vault, uuid), workingPage(fields));
-    return c.redirect(`/s/${uuid}`);
+    // Form-resume: launch a fresh print-mode CC session that invokes the same skill
+    // with the form data as the input text. This is the stateless ADR-0003 path:
+    // - The skill's SKILL.md is loaded from vault .claude/skills/ context
+    // - The form fields arrive in the -p text: "[render contract]\n<fields>"
+    // - The skill detects form fields and processes them (step 3 / form-reply path)
+    // Using spawnRun (fresh session) instead of spawnTurn (--resume):
+    //   spawnTurn's buildAnswerArgv emits --resume which is ignored by the claude -- runner
+    //   (the runner passes all argv as user-message text, where --resume looks like a flag).
+    //   A fresh launch via spawnRun correctly puts the form data in the -p prompt.
+    const formPrompt = `[render contract: rewrite body.html, no terminal reply]\n${text}`;
+    const cfg = readConfig(vault);
+    const daemonUrlForRespawn = `http://127.0.0.1:${cfg.port}`;
+    const { runId: formRunId } = spawnRun({
+      db, vault, daemonUrl: daemonUrlForRespawn,
+      skill: meta.skill ?? null, agent: null,
+      runnerCommand, now: Date.now(),
+      // forcePrint ensures the form-reply session runs headlessly (print mode);
+      // bodyMessage carries the form fields as the initial prompt.
+      forcePrint: true,
+      bodyMessage: formPrompt,
+    });
+    // Seed the session dir for the new run and redirect to it.
+    const formDir = sessionDir(vault, formRunId);
+    mkdirSync(formDir, { recursive: true });
+    writeFileSync(
+      join(formDir, "session-meta.json"),
+      JSON.stringify({ skill: meta.skill ?? null, agent: null, launchedAt: Date.now(),
+        text: formPrompt.slice(0, 200), tmuxSession: `vos-run-${formRunId}`, runner: runnerCommand }),
+    );
+    writeFileSync(bodyPath(vault, formRunId), workingPage(fields));
+    return c.redirect(`/s/${formRunId}`);
   });
 
   // POST /triggers/:name/fire — manually fire a named Trigger, spawning a real Run.

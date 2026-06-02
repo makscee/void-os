@@ -2,10 +2,17 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand, spawnTurn, runTurn, spawnRun } from "../src/spawn.ts";
 import { pidPath, sessionDir, bodyPath, errorPath, stopPath } from "../src/paths.ts";
 import { openRegistry, getExecution } from "../src/registry.ts";
 import { killSession } from "../src/tmux.ts";
+
+// Use a query-string specifier to bypass any mock.module("../src/spawn.ts", ...)
+// registration from server.test.ts. Bun 1.3.14 matches mock.module paths by exact
+// specifier, so adding ?real loads the actual source even without --isolate.
+const {
+  buildLaunchArgv, buildAnswerArgv, readCcSessionId, tokenizeCommand,
+  spawnTurn, runTurn, spawnRun,
+} = await import("../src/spawn.ts?real");
 
 test("buildLaunchArgv has no leading -- (separator now lives in runner command)", () => {
   const a = buildLaunchArgv("uuid-1", "deep-research", "hello");
@@ -49,6 +56,40 @@ test("answer argv from form fields: key: value lines", () => {
   const a = buildAnswerArgv("sess-1", prompt);
   expect(a[3]).toContain("name: Alice");
   expect(a[3]).toContain("goal: learn TypeScript");
+});
+
+// VOS-203: readCcSessionId reads the ACTUAL CC session ID from cc-actual-session.txt.
+// Claude ignores --session-id for its file name; the hooks-endpoint writes the real ID
+// from the SessionStart hook payload to cc-actual-session.txt.
+test("readCcSessionId reads actual session ID from cc-actual-session.txt (primary source)", () => {
+  const vault = "/tmp/void-os-spawn-ccsess-actual-test";
+  const execId = "exec-test-actual-cc";
+  const actualSessionId = "bc32d01a-76c0-4047-a876-5326c5f71895";
+  const dir = join(vault, "sessions", execId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "cc-actual-session.txt"), actualSessionId);
+  expect(readCcSessionId(vault, execId)).toBe(actualSessionId);
+  rmSync(vault, { recursive: true });
+});
+
+test("readCcSessionId falls back to cc-command.txt --session-id when cc-actual-session.txt absent", () => {
+  const vault = "/tmp/void-os-spawn-ccsess-fallback-test";
+  const execId = "exec-test-fallback-cc";
+  const hintId = "34a64638-8625-4930-9377-51ca49490ac1";
+  const dir = join(vault, "sessions", execId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "cc-command.txt"),
+    `claude -- --session-id ${hintId} --settings /tmp/x.json --permission-mode bypassPermissions /onboarding\n`);
+  expect(readCcSessionId(vault, execId)).toBe(hintId);
+  rmSync(vault, { recursive: true });
+});
+
+test("readCcSessionId returns null when neither cc-actual-session.txt nor cc-command.txt is present", () => {
+  const vault = "/tmp/void-os-spawn-ccsess-absent-test";
+  const execId = "exec-absent-cc-v2";
+  mkdirSync(join(vault, "sessions", execId), { recursive: true });
+  expect(readCcSessionId(vault, execId)).toBeNull();
+  rmSync(vault, { recursive: true });
 });
 
 test("tokenizeCommand splits prefix into argv head", () => {

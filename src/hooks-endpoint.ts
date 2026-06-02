@@ -6,6 +6,7 @@ import type { Database } from "bun:sqlite";
 import { getExecution, createExecution, setExecutionEnded, setExecutionFail, incrementStep, setOutputResult } from "./registry.ts";
 import { appendEvent, readStartEvent } from "./events.ts";
 import { wasMutatedSince } from "./output-target.ts";
+import { sessionDir } from "./paths.ts";
 
 /** Stable runId for a hand-launched CC session. SessionStart fires once per session;
  *  deriving the id from session_id makes row-creation idempotent and lets every later
@@ -73,6 +74,16 @@ export function handleHookEvent(
     case "SessionStart":
       // Row already exists (daemon-spawned path) — no state mutation; no-op (idempotent).
       // SessionStart is implicit in the 'start' event written at spawn.
+      // Write the ACTUAL CC session ID (from the hook payload) so the form-resume path
+      // can --resume the correct session. Claude ignores --session-id for its file name;
+      // the hook payload's session_id is the only reliable source of the real session UUID.
+      if (payload.session_id && /^[0-9a-f-]{36}$/.test(payload.session_id)) {
+        try {
+          const dir = sessionDir(vault, runId);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "cc-actual-session.txt"), payload.session_id);
+        } catch { /* non-fatal — form-resume falls back to cc-command.txt */ }
+      }
       break;
     case "Stop": {
       const start = readStartEvent(vault, runId);

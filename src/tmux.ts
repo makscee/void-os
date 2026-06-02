@@ -16,6 +16,8 @@ function run(args: string[]): { code: number; stdout: string; stderr: string } {
  *
  * env vars are injected by prefixing the command with `env K=V ...` rather than
  * using `tmux -e` (the -e flag requires tmux ≥3.2; prefix works everywhere).
+ * The command string must already have special shell chars escaped (backticks, $, etc.)
+ * since tmux passes it to sh. See spawnRun in spawn.ts for the escaping contract.
  */
 export function newRunSession(
   name: string,

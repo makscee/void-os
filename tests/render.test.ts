@@ -240,3 +240,15 @@ test("renderDashboard omits the decisions section when none pending", () => {
   const html = renderDashboard([], [], { authed: true }, undefined, []);
   expect(html).not.toContain("Pending decisions");
 });
+
+// VOS-203: dashboard renders vault-installed skills (LiveSkillSummary shape, no inputLabel field)
+test("renderDashboard renders chips for vault-installed skills (no inputLabel field)", () => {
+  const skills = [
+    { name: "onboarding", description: "First-run setup", version: "0.0.0" },
+    { name: "organize", description: "Drain inbox into knowledge", version: "0.0.0" },
+  ];
+  const html = renderDashboard(skills as any, [], { authed: true });
+  expect(html).toContain('data-skill="onboarding"');
+  expect(html).toContain('data-skill="organize"');
+  expect(html).toContain('optional input…'); // inputLabel fallback used, no crash
+});

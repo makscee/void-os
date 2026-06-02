@@ -2,7 +2,7 @@
  * init.ts — tests for seedVault (file layout) and non-interactive vault resolution.
  */
 import { expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, lstatSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, lstatSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { seedVault } from "../src/init.ts";
@@ -108,6 +108,16 @@ test("seedVault is idempotent after settings.json exists — second call does no
   seedVault(vault);
   seedVault(vault);  // should not throw
   expect(existsSync(join(vault, ".claude", "settings.json"))).toBe(true);
+});
+
+// VOS-203: cold vault seeds only onboarding + authoring toolchain, NOT the full catalog
+test("cold vault seeds only onboarding + authoring toolchain, not the full catalog", () => {
+  seedVault(vault);
+  const installed = readdirSync(join(vault, ".claude", "skills")).sort();
+  expect(installed).toEqual(["onboarding", "skill-author", "skill-manage-apply"]);
+  expect(installed).not.toContain("work");
+  expect(installed).not.toContain("chat");
+  expect(installed).not.toContain("deep-research");
 });
 
 test("init seeding: void-os.json carries runners and defaultRunner after init path", () => {

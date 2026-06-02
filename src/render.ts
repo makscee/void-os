@@ -1,5 +1,4 @@
 // render.ts — HTML string templates for dashboard, iframe shell, placeholder, working page (Task 9)
-import type { CatalogSkill } from "./catalog.ts";
 import type { SessionInfo, SessionStatus } from "./sessions.ts";
 import { DEFAULT_RUNNERS, DEFAULT_RUNNER_LABEL } from "./paths.ts";
 import type { Runner } from "./paths.ts";
@@ -136,7 +135,7 @@ function dotClass(status: SessionStatus): string {
  * Option 1 — Compact Command-Center style.
  */
 export function renderDashboard(
-  skills: CatalogSkill[],
+  skills: { name: string; description: string; inputLabel?: string }[],
   sessions: SessionInfo[],
   relay: { authed: boolean },
   runnerCfg: { runners: Runner[]; defaultRunner: string } = { runners: DEFAULT_RUNNERS, defaultRunner: DEFAULT_RUNNER_LABEL },

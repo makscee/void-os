@@ -70,10 +70,12 @@ export function seedVault(vault: string): void {
     cpSync(agentsDir, join(claudeDir, "agents"), { recursive: true });
   }
 
-  // Sync all catalog skills to vault .claude/skills so CC slash-command routing finds them.
-  const catalogSkillsDir = join(repoRoot, "catalog", "skills");
-  if (existsSync(catalogSkillsDir)) {
-    cpSync(catalogSkillsDir, skillsPath, { recursive: true });
+  // Seed the self-extension toolchain (VOS-203): skill-author + skill-manage-apply are system
+  // primitives required for in-vault skill authoring. They are NOT user-installable catalog
+  // skills and must NOT come via a bulk catalog copy — seed them explicitly alongside onboarding.
+  for (const sk of ["skill-author", "skill-manage-apply"]) {
+    const src = join(repoRoot, "catalog", "skills", sk);
+    if (existsSync(src)) cpSync(src, join(claudeDir, "skills", sk), { recursive: true });
   }
 
   // Write .mcp.json so CC sessions in this vault can reach the skill_manage MCP server (VOS-199).
