@@ -114,7 +114,7 @@ pass ".mcp.json written"
 [[ -f "$VAULT/.claude/settings.json" ]] || fail "seedVault did not write .claude/settings.json"
 pass ".claude/settings.json written"
 
-# Confirm skill-author is present (seedVault cpSync copies all catalog/skills)
+# Confirm skill-author is present (seeded by targeted toolchain copy — VOS-203)
 [[ -f "$VAULT/.claude/skills/skill-author/SKILL.md" ]] || fail ".claude/skills/skill-author/SKILL.md not seeded by seedVault"
 pass "skill-author skill seeded: $VAULT/.claude/skills/skill-author/SKILL.md"
 
