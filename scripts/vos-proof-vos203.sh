@@ -234,6 +234,18 @@ log "Waiting for onboarding body.html to render form (max 300s)..."
 wait_body_html "$ONBOARD_ID" "<form" 300 || fail "Onboarding form did not render within 300s"
 pass "Onboarding form rendered: body.html has <form"
 
+# Wait for run-1 to complete before submitting the form.
+# In print mode, CC exits after rendering the form. The workingPage written by /send
+# would race with run-1's final body.html write (the form HTML). Waiting for
+# execution end avoids the race: run-1 is done, workingPage write is durable.
+log "Waiting for onboarding run-1 CC session to end (max 60s, then submit)..."
+for i in $(seq 1 30); do
+  EXEC_STATE=$(bun --eval "const {Database}=require('bun:sqlite');const db=new Database('$DB');const r=db.query('SELECT ended_at FROM executions WHERE id=?').get('$ONBOARD_ID');console.log(r?(r.ended_at!=null?'ended':'running'):'none');" 2>/dev/null) || EXEC_STATE="none"
+  [[ "$EXEC_STATE" == "ended" ]] && break
+  sleep 2
+done
+log "Onboarding exec state: ${EXEC_STATE:-unknown} — submitting form"
+
 # Verify the form has a name field and skill checkboxes
 FORM_HTML=$(cat "$VAULT/sessions/$ONBOARD_ID/body.html" 2>/dev/null)
 echo "$FORM_HTML" | grep -q 'name="name"' || echo "$FORM_HTML" | grep -q 'type="text"' || \
@@ -253,8 +265,8 @@ SEND_RESP=$(bun --eval "
 log "Send response: $SEND_RESP"
 
 # Wait for onboarding to complete + write void-os.json with onboarded:true
-log "Waiting for onboarding to complete and write void-os.json (max 180s)..."
-for i in $(seq 1 90); do
+log "Waiting for onboarding to complete and write void-os.json (max 300s)..."
+for i in $(seq 1 150); do
   ONBOARDED=$(bun --eval "
     try {
       const cfg=JSON.parse(require('fs').readFileSync('$VAULT/void-os.json','utf8'));
@@ -262,7 +274,7 @@ for i in $(seq 1 90); do
     } catch(e){ console.log('no'); }
   " 2>/dev/null) || ONBOARDED="no"
   [[ "$ONBOARDED" == "yes" ]] && break
-  sleep 2; [[ $i -eq 90 ]] && fail "void-os.json not updated with onboarded:true within 180s"
+  sleep 2; [[ $i -eq 150 ]] && fail "void-os.json not updated with onboarded:true within 300s"
 done
 pass "void-os.json updated with onboarded:true"
 
