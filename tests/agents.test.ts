@@ -2,8 +2,23 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseAgentFile, listAgents, buildAgentLaunch } from "../src/agents.ts";
+import { parseFrontmatter } from "../src/frontmatter.ts";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// ---- T5: invoke-agent skill static contract ----
+
+test("invoke-agent SKILL.md is parseable and has correct name", () => {
+  const skillPath = join(repoRoot, "catalog", "skills", "invoke-agent", "SKILL.md");
+  const md = readFileSync(skillPath, "utf8");
+  const meta = parseFrontmatter(md);
+  expect(meta.name).toBe("invoke-agent");
+  expect(meta.description).toContain("agent");
+  expect(meta.needsInput).toBe(true);
+});
 
 // ---- Task 1: parseAgentFile ----
 
