@@ -20,6 +20,10 @@ export const eventLogPath = (vault: string, execId: string) => join(eventsDir(va
 export const busDir = (vault: string) => join(vault, ".void-os", "bus");
 export const busLinePath = (vault: string, id: string) => join(busDir(vault), `${id}.json`);
 export const chatDir = (vault: string) => join(vault, "chat");
+export const decisionsFilePath = (vault: string) => join(vault, ".void-os", "decisions.jsonl");
+export const resumptionIntentPath = (vault: string, execId: string) =>
+  join(vault, ".void-os", "resume", `${execId}.json`);
+export const tgOutboxPath = (vault: string) => join(vault, ".void-os", "tg-outbox.jsonl");
 /** Resolve a thread id to its history-file path; sanitizes so a thread id can never escape chatDir. */
 export const chatThreadPath = (vault: string, thread: string) => {
   const safe = thread.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");

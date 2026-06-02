@@ -217,6 +217,8 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   const pid = newRunSession(tmuxSession, opts.vault, fullCommand, {
     VOID_OS_SESSION: runId,
     VOS_RUN_ID: runId,
+    VOID_OS_INPUT_REF: opts.inputRef ?? "",
+    VOID_OS_REPO: _repoRoot,
   });
 
   // Write to executions table (runtime read-model)
