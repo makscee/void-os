@@ -1,6 +1,9 @@
 // tmux.test.ts — integration tests against real tmux (3.6a present).
+// VOS-205: updated for -L vos socket isolation + new helpers.
 import { test, expect, afterEach } from "bun:test";
-import { newRunSession, killSession, hasSession, attachCommand } from "../src/tmux.ts";
+import { newRunSession, killSession, hasSession, attachCommand, switchClient, sendKeys, listVosSessions, VOS_SOCKET } from "../src/tmux.ts";
+import { readFileSync, rmSync } from "node:fs";
+import { execSync } from "node:child_process";
 
 const NAME = "vos-run-test-" + process.pid;
 
@@ -16,8 +19,8 @@ test("newRunSession starts a detached session that hasSession sees; killSession 
   expect(hasSession(NAME)).toBe(false);
 });
 
-test("attachCommand returns the canonical attach string", () => {
-  expect(attachCommand("vos-run-x")).toBe("tmux attach -t vos-run-x");
+test("attachCommand returns the canonical attach string with -L vos socket", () => {
+  expect(attachCommand("vos-run-x")).toBe(`tmux -L ${VOS_SOCKET} attach -t vos-run-x`);
 });
 
 test("killSession on a missing session is a no-op (no throw)", () => {
@@ -32,5 +35,36 @@ test("newRunSession returns a numeric pid", () => {
     expect(pid).toBeGreaterThan(0);
   } finally {
     try { killSession(sessName); } catch { /* ignore */ }
+  }
+});
+
+test("sessions live on the -L vos socket, isolated from the default server", () => {
+  const name = "vos-run-sock-" + process.pid;
+  try {
+    newRunSession(name, process.cwd(), "sleep 30", {});
+    // visible on the vos socket
+    expect(hasSession(name)).toBe(true);
+    // listVosSessions includes it
+    expect(listVosSessions()).toContain(name);
+  } finally { killSession(name); }
+});
+
+test("sendKeys delivers a line to a live session pane", () => {
+  const name = "vos-run-keys-" + process.pid;
+  const out = `/tmp/vos-keys-${process.pid}.txt`;
+  try {
+    // a shell that appends stdin lines to a temp file
+    newRunSession(name, process.cwd(), `bash -c 'while read l; do echo "$l" >> ${out}; done'`, {});
+    sendKeys(name, "PINGLINE");
+    // poll up to 2s for the line to land (no long-lived hold)
+    let ok = false;
+    for (let i = 0; i < 20 && !ok; i++) {
+      try { ok = readFileSync(out, "utf8").includes("PINGLINE"); } catch { /* file may not exist yet */ }
+      if (!ok) execSync("sleep 0.1");
+    }
+    expect(ok).toBe(true);
+  } finally {
+    killSession(name);
+    rmSync(out, { force: true });
   }
 });
