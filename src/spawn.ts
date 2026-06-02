@@ -39,12 +39,26 @@ export function buildLaunchArgv(uuid: string, skill: string, text: string): stri
 }
 
 /**
- * Read the CC session ID (the --session-id value passed at launch) from cc-command.txt.
- * spawnRun stores a fresh randomUUID() as --session-id; this is the value needed for
- * --resume (it differs from the execution ID, which is exec-<uuid>).
- * Returns null if cc-command.txt is absent or the pattern is not found.
+ * Read the ACTUAL CC session ID for a given execution.
+ *
+ * Primary source: cc-actual-session.txt — written by hooks-endpoint.ts on the first
+ * SessionStart hook. This contains the real CC session UUID (the file name in
+ * ~/.claude/projects/<proj>/<uuid>.jsonl) which Claude assigns independently of the
+ * --session-id hint passed at launch. This is the only reliable source for --resume.
+ *
+ * Fallback: cc-command.txt — the --session-id value passed at launch. Claude's
+ * internal session ID differs, so this fallback only works if CC respects --session-id
+ * (which is not guaranteed; kept for compatibility).
+ *
+ * Returns null if neither file is present or the pattern is not found.
  */
 export function readCcSessionId(vault: string, execId: string): string | null {
+  const actualPath = join(sessionDir(vault, execId), "cc-actual-session.txt");
+  if (existsSync(actualPath)) {
+    const id = readFileSync(actualPath, "utf8").trim();
+    if (/^[0-9a-f-]{36}$/.test(id)) return id;
+  }
+  // Fallback: parse the --session-id hint from cc-command.txt
   const ccCmdPath = join(sessionDir(vault, execId), "cc-command.txt");
   if (!existsSync(ccCmdPath)) return null;
   const text = readFileSync(ccCmdPath, "utf8");

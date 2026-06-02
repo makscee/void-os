@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand, spawnTurn, runTurn, spawnRun } from "../src/spawn.ts";
+import { buildLaunchArgv, buildAnswerArgv, readCcSessionId, tokenizeCommand, spawnTurn, runTurn, spawnRun } from "../src/spawn.ts";
 import { pidPath, sessionDir, bodyPath, errorPath, stopPath } from "../src/paths.ts";
 import { openRegistry, getExecution } from "../src/registry.ts";
 import { killSession } from "../src/tmux.ts";
@@ -51,23 +51,38 @@ test("answer argv from form fields: key: value lines", () => {
   expect(a[3]).toContain("goal: learn TypeScript");
 });
 
-// ADR-0003 §1: form-resume is stateless — buildAnswerArgv uses execId directly (no ccSeed lookup).
-// Each /send resumes via the execution ID as the CC session name, which starts a fresh CC context
-// that rebuilds from vault files. The server never reads readCcSessionId. This test locks that contract.
-test("buildAnswerArgv stateless exec-id resume: uses execId as --resume target (ADR-0003 §1)", () => {
-  const execId = "exec-abc123-stateless";
-  const a = buildAnswerArgv(execId, "name: Alice\nskill_work: on");
-  // --resume must reference the execution ID directly — no stored ccSeed needed
-  expect(a[0]).toBe("--resume");
-  expect(a[1]).toBe(execId);
-  // The form fields appear in the prompt payload (after the render-contract preamble)
-  expect(a[3]).toContain("name: Alice");
-  expect(a[3]).toContain("skill_work: on");
-  // Full stateless shape: 6 elements
-  expect(a).toHaveLength(6);
-  expect(a[2]).toBe("-p");
-  expect(a[4]).toBe("--permission-mode");
-  expect(a[5]).toBe("bypassPermissions");
+// VOS-203: readCcSessionId reads the ACTUAL CC session ID from cc-actual-session.txt.
+// Claude ignores --session-id for its file name; the hooks-endpoint writes the real ID
+// from the SessionStart hook payload to cc-actual-session.txt.
+test("readCcSessionId reads actual session ID from cc-actual-session.txt (primary source)", () => {
+  const vault = "/tmp/void-os-spawn-ccsess-actual-test";
+  const execId = "exec-test-actual-cc";
+  const actualSessionId = "bc32d01a-76c0-4047-a876-5326c5f71895";
+  const dir = join(vault, "sessions", execId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "cc-actual-session.txt"), actualSessionId);
+  expect(readCcSessionId(vault, execId)).toBe(actualSessionId);
+  rmSync(vault, { recursive: true });
+});
+
+test("readCcSessionId falls back to cc-command.txt --session-id when cc-actual-session.txt absent", () => {
+  const vault = "/tmp/void-os-spawn-ccsess-fallback-test";
+  const execId = "exec-test-fallback-cc";
+  const hintId = "34a64638-8625-4930-9377-51ca49490ac1";
+  const dir = join(vault, "sessions", execId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "cc-command.txt"),
+    `claude -- --session-id ${hintId} --settings /tmp/x.json --permission-mode bypassPermissions /onboarding\n`);
+  expect(readCcSessionId(vault, execId)).toBe(hintId);
+  rmSync(vault, { recursive: true });
+});
+
+test("readCcSessionId returns null when neither cc-actual-session.txt nor cc-command.txt is present", () => {
+  const vault = "/tmp/void-os-spawn-ccsess-absent-test";
+  const execId = "exec-absent-cc-v2";
+  mkdirSync(join(vault, "sessions", execId), { recursive: true });
+  expect(readCcSessionId(vault, execId)).toBeNull();
+  rmSync(vault, { recursive: true });
 });
 
 test("tokenizeCommand splits prefix into argv head", () => {

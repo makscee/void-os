@@ -1,8 +1,9 @@
 // hooks-endpoint.test.ts — unit tests for hook→executions mapping + settings writer.
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sessionDir } from "../src/paths.ts";
 import {
   openRegistry,
   createExecution,
@@ -292,4 +293,34 @@ test("buildVaultHookSettings emits lifecycle hooks with NO baked runId", () => {
     expect(cmd).toContain("http://127.0.0.1:4317");
     expect(cmd).not.toMatch(/exec-/);   // NO per-exec runId baked in
   }
+});
+
+// VOS-203: SessionStart writes cc-actual-session.txt so form-resume uses the real CC session ID.
+test("SessionStart writes cc-actual-session.txt with the payload session_id (form-resume fix)", () => {
+  const vault = mkdtempSync(join(tmpdir(), "vos203-sessstart-"));
+  const db = openRegistry(":memory:");
+  const runId = "exec-form-resume-test";
+  const actualSessionId = "bc32d01a-76c0-4047-a876-5326c5f71895";
+  mkdirSync(sessionDir(vault, runId), { recursive: true });
+  createExecution(db, { id: runId, agent: null, skill: "onboarding", inputRef: null,
+    tmuxSession: `vos-run-${runId}`, now: 1000, triggerId: null, stepCeiling: null });
+  handleHookEvent(db, vault, runId, {
+    hook_event_name: "SessionStart", session_id: actualSessionId, source: "startup",
+  }, 1000);
+  const actualFile = join(sessionDir(vault, runId), "cc-actual-session.txt");
+  expect(existsSync(actualFile)).toBe(true);
+  expect(readFileSync(actualFile, "utf8")).toBe(actualSessionId);
+});
+
+test("SessionStart does NOT write cc-actual-session.txt for non-UUID session_id (guard)", () => {
+  const vault = mkdtempSync(join(tmpdir(), "vos203-sessstart-guard-"));
+  const db = openRegistry(":memory:");
+  const runId = "exec-guard-test";
+  mkdirSync(sessionDir(vault, runId), { recursive: true });
+  createExecution(db, { id: runId, agent: null, skill: "s", inputRef: null,
+    tmuxSession: `vos-run-${runId}`, now: 1000, triggerId: null, stepCeiling: null });
+  handleHookEvent(db, vault, runId, {
+    hook_event_name: "SessionStart", session_id: "not-a-uuid", source: "startup",
+  }, 1000);
+  expect(existsSync(join(sessionDir(vault, runId), "cc-actual-session.txt"))).toBe(false);
 });
