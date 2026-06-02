@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { listCatalogSkills } from "./catalog.ts";
 import { listSessions } from "./sessions.ts";
-import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn, readCcSessionId } from "./spawn.ts";
+import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn } from "./spawn.ts";
 import { buildAgentLaunch, type AgentLaunch } from "./agents.ts";
 import { drain, type DrainOpts } from "./drain.ts";
 import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody } from "./render.ts";
@@ -344,8 +344,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // (verdict-aware path A: continuation passes the accepted human box so runner checks it).
     if (typeof meta.drainIssue === "number" && meta.worktree) {
       // Resume the parked skill in the worktree so its edits land in the repo
-      const ccSessionIdDrain = readCcSessionId(vault, uuid);
-      await runTurn(meta.worktree, vault, uuid, buildAnswerArgv(uuid, text, ccSessionIdDrain), runnerCommand);
+      await runTurn(meta.worktree, vault, uuid, buildAnswerArgv(uuid, text), runnerCommand);
       // Re-invoke the drain loop (async, fire-and-forget); idempotent drain skips checked boxes.
       // Verdict-aware path A: pass the parked box raw so the continuation checks it without re-spawning.
       // We read the current Issue body to find which box is parked (the human box that just got a verdict).
@@ -372,10 +371,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       return c.redirect(`/s/${uuid}`);
     }
 
-    // Read the CC session ID from cc-command.txt — spawnRun stores --session-id <ccSeed>
-    // which differs from the execution ID (exec-xxx). --resume needs the ccSeed, not the execId.
-    const ccSessionId = readCcSessionId(vault, uuid);
-    spawnTurn(vault, uuid, buildAnswerArgv(uuid, text, ccSessionId), runnerCommand);
+    // spawnTurn resumes using the execution ID as the session name.
+    // --resume exec-xxx starts a fresh CC session named exec-xxx (since the original session
+    // used a different ccSeed). The fresh session reads the skill from vault .claude/skills/
+    // and uses VOID_OS_SESSION to write body.html — correct stateless behavior (ADR-0003).
+    spawnTurn(vault, uuid, buildAnswerArgv(uuid, text), runnerCommand);
     // Write working-page into body.html so the iframe shows "received — working…"
     // while the skill runs, then redirect to the shell so the wrapper (back-nav +
     // Stop control) stays visible — avoids landing bare on /s/:uuid/send.
