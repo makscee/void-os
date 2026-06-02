@@ -2,9 +2,9 @@
 # vos-proof-vos201.sh — VOS-201 real-path proof. NO self-downgrade.
 #
 # What it proves:
-#   A. skill-author skill is installed in vault + frontmatter is valid + skill_manage(create)
-#      called via REAL stdio MCP transport → Decision parked; catalog untouched pre-approval;
-#      assert NO direct catalog/skills write path (only skill_manage route is present in SKILL.md).
+#   A. skill-author SKILL invoked via REAL claude session (/launch seam) with an authoring intent
+#      → CC session drafts SKILL.md + trigger + calls skill_manage(create) → Decision parked;
+#      catalog untouched pre-approval; NO direct catalog write by the session.
 #   B. REAL approve path — decision-reply bus → daemon drain → skill-manage-apply continuation
 #      CC execution → skill activated WITH NO daemon restart; trigger reconciled live;
 #      invoke the new bus-bound skill via its live trigger → exec row → rebuildExecutions MATCH.
@@ -177,48 +177,158 @@ done
 
 # ============================================================
 log ""
-log "=== Proof A: skill-author installed + skill_manage(create) via REAL stdio MCP → Decision parked ==="
+log "=== Proof A: skill-author invoked via REAL claude session (agent+print mode) → drafts + skill_manage(create) → Decision parked ==="
 # ============================================================
+# This proof exercises the skill-author SKILL itself through the daemon /launch seam —
+# a real CC session reads the intent, drafts SKILL.md + trigger, and calls skill_manage(create).
+# Agent launch (agent=skill-author-proxy) forces print mode so the headless session exits on its own.
+# We assert: Decision parked, quarantine staged, catalog untouched, NO direct catalog write.
 
-SKILL_BODY='---
-name: vos201-proof-skill
-description: VOS-201 proof skill — fires on kind=vos201-proof. Created via gated skill_manage.
+# Preflight: claude binary required for real CC session
+command -v claude >/dev/null 2>&1 || fail "claude binary not found in PATH — required for Proof A real CC session"
+log "claude found: $(command -v claude)"
+
+# Seed the skill-author-proxy agent in the proof vault.
+# Agent body = the authoring intent; the CC session gets "-p /skill-author\n\n<intent>" in print mode.
+# Skills list instructs the agent identity to invoke skill-author.
+INTENT="Create a bus-bound skill named vos201-proof-skill. It must be bus-bound: it should fire automatically on inbound bus events with kind=vos201-proof. When invoked, it appends a UTC timestamp to output. Make sure to also draft the trigger so it routes kind=vos201-proof events to this skill."
+mkdir -p "$VAULT/agents"
+cat > "$VAULT/agents/skill-author-proxy.md" <<AGENTEOF
 ---
-
-## Instructions
-
-This skill was authored via the skill-author + skill_manage gated path. When invoked by its
-trigger (kind=vos201-proof), write a timestamp to sessions output.
-'
-
-TRIGGER_BODY='---
-kind: event
-skill: vos201-proof-skill
-agent: default
-inbox: bus
-event_kind: vos201-proof
-step_ceiling: 30
+name: skill-author-proxy
+description: Proof agent — reads an authoring intent from body and invokes the skill-author skill to draft and submit it via the gated skill_manage pipeline.
+skills:
+  - skill-author
 ---
-vos201-proof-t: fires vos201-proof-skill on kind=vos201-proof (VOS-201 proof).'
+$INTENT
+AGENTEOF
+pass "skill-author-proxy agent seeded in proof vault"
 
-BODY_E=$(esc "$SKILL_BODY"); TRIG_E=$(esc "$TRIGGER_BODY")
-MCP_OUT=$(mcp_stdio_call "skill_manage" "{\"action\":\"create\",\"name\":\"vos201-proof-skill\",\"body\":$BODY_E,\"trigger\":$TRIG_E,\"exec_id\":\"vos201-proof-001\"}")
-log "MCP(stdio) result: $MCP_OUT"
-echo "$MCP_OUT" | grep -q "Decision parked" || fail "stdio MCP call did not return a parked Decision"
+# Snapshot quarantine dir before launch to detect new txns
+QBASE="$VAULT/.void-os/skill-quarantine"
+mkdir -p "$QBASE"
+BEFORE_QS=$(ls "$QBASE" 2>/dev/null | sort)
+BEFORE_DEC_COUNT=$(bun --eval "const {listPendingDecisions}=await import('$REPO/src/decision.ts');console.log(listPendingDecisions('$VAULT').length);" 2>/dev/null) || BEFORE_DEC_COUNT=0
+BEFORE_A_TS=$(($(date +%s) * 1000))
+BEFORE_QS_COUNT=$(echo "$BEFORE_QS" | grep -v '^$' | wc -l | tr -d ' ' || echo 0)
+log "Quarantine snapshot before launch (entries: $BEFORE_QS_COUNT); pending decisions: $BEFORE_DEC_COUNT"
 
-TXN=$(echo "$MCP_OUT" | grep -o 'txnId: [^ ]*' | awk '{print $2}' | head -1)
-DEC=$(echo "$MCP_OUT" | grep -o 'decisionId: [^ ]*' | awk '{print $2}' | head -1)
-[[ -n "$TXN" && -n "$DEC" ]] || fail "No txnId/decisionId from stdio MCP call"
-pass "REAL stdio MCP returned txnId=$TXN decisionId=$DEC"
+# POST /launch with agent=skill-author-proxy and skill=skill-author.
+# Agent launch sets forcePrint=true → CC runs headlessly in print mode and exits on its own.
+log "POST /launch agent=skill-author-proxy skill=skill-author..."
+LAUNCH_RESP=$(bun --eval "
+  const r = await fetch('$DAEMON_URL/launch', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({agent: 'skill-author-proxy', skill: 'skill-author'}).toString(),
+    redirect: 'manual',
+  }).catch((e) => { console.log('FETCH_ERROR: ' + e.message); process.exit(1); });
+  console.log('status=' + r.status + ' location=' + (r.headers.get('location') ?? 'none'));
+" 2>/dev/null) || fail "POST /launch agent=skill-author-proxy failed"
+log "Launch response: $LAUNCH_RESP"
 
-PEND=$(bun --eval "const {listPendingDecisions}=await import('$REPO/src/decision.ts');console.log(listPendingDecisions('$VAULT').some(d=>d.id==='$DEC')?'yes':'no');" 2>/dev/null) || PEND="no"
-[[ "$PEND" == "yes" ]] || fail "Decision $DEC not pending after stdio create"
-pass "Decision pending in decisions.jsonl"
+# Extract run ID from redirect location /s/<exec-id>
+AUTHOR_RUN_ID=$(echo "$LAUNCH_RESP" | grep -oE '/s/exec-[a-z0-9-]+' | sed 's|/s/||') || AUTHOR_RUN_ID=""
+if [[ -z "$AUTHOR_RUN_ID" ]]; then
+  log "No redirect location captured; polling DB for skill-author-proxy exec row..."
+  AUTHOR_RUN_ID=$(bun --eval "
+    const { Database } = require('bun:sqlite');
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      const db = new Database('$DB');
+      const r = db.query('SELECT id FROM executions WHERE agent=? AND started_at>=? ORDER BY started_at DESC LIMIT 1').get('skill-author-proxy', $BEFORE_A_TS);
+      if (r) { console.log(r.id); process.exit(0); }
+      await new Promise(res => setTimeout(res, 1000));
+    }
+    console.log('none');
+  " 2>/dev/null) || AUTHOR_RUN_ID="none"
+fi
+[[ "$AUTHOR_RUN_ID" == "none" || -z "$AUTHOR_RUN_ID" ]] && fail "No skill-author-proxy exec row appeared after /launch"
+log "skill-author exec row: $AUTHOR_RUN_ID"
+pass "skill-author exec row created via agent launch: $AUTHOR_RUN_ID"
 
-QDIR="$VAULT/.void-os/skill-quarantine/$TXN"
+# Confirm exec.agent=skill-author-proxy (agent field set)
+AGENT_FIELD=$(bun --eval "const {Database}=require('bun:sqlite');const db=new Database('$DB');const r=db.query('SELECT agent FROM executions WHERE id=?').get('$AUTHOR_RUN_ID');console.log(r?(r.agent??'null'):'missing');" 2>/dev/null) || AGENT_FIELD="error"
+[[ "$AGENT_FIELD" == "skill-author-proxy" ]] || fail "exec.agent should be skill-author-proxy, got: $AGENT_FIELD"
+pass "exec.agent=skill-author-proxy confirmed"
+
+# Confirm skill-author is in the CC command (print mode with /skill-author in -p)
+wait_cc_cmd() {
+  local exec_id="$1" deadline=$((SECONDS + $2))
+  while [[ $SECONDS -lt $deadline ]]; do
+    [[ -f "$VAULT/sessions/$exec_id/cc-command.txt" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+wait_cc_cmd "$AUTHOR_RUN_ID" 10 || fail "cc-command.txt not written for skill-author exec"
+CC_CMD=$(cat "$VAULT/sessions/$AUTHOR_RUN_ID/cc-command.txt")
+echo "$CC_CMD" | grep -q "skill-author" || fail "cc-command.txt does not contain skill-author — skill not invoked"
+echo "$CC_CMD" | grep -q "\-p" || fail "cc-command.txt missing -p flag (not in print mode — session will hang)"
+pass "cc-command.txt contains /skill-author with -p (print mode confirmed)"
+
+# Wait for the CC session to complete (max 300s — real CC session drafts + skill_manage + exits)
+log "Waiting for skill-author CC session to complete (max 300s)..."
+wait_exec_ended "$AUTHOR_RUN_ID" 300 || {
+  bun --eval "const {Database}=require('bun:sqlite');const db=new Database('$DB');console.log(JSON.stringify(db.query('SELECT id,agent,skill,started_at,ended_at FROM executions WHERE id=?').get('$AUTHOR_RUN_ID')));" 2>/dev/null | tee -a "$LOG"
+  fail "skill-author CC session did not complete within 300s"
+}
+pass "skill-author CC session completed"
+
+# Assert: a new quarantine txn was created (skill_manage(create) was called by the CC session)
+AFTER_QS=$(ls "$QBASE" 2>/dev/null | sort)
+NEW_TXNS=$(comm -13 <(echo "$BEFORE_QS" | grep -v '^$' 2>/dev/null | sort || true) <(echo "$AFTER_QS" | grep -v '^$' 2>/dev/null | sort || true) 2>/dev/null || true)
+[[ -n "$NEW_TXNS" ]] || fail "No new quarantine txn dir after skill-author session — skill_manage(create) was not called by the real CC session"
+# Pick the txn that contains vos201-proof-skill (from the txn.json's name field)
+TXN=$(echo "$NEW_TXNS" | while IFS= read -r t; do
+  [[ -f "$QBASE/$t/txn.json" ]] && grep -q '"vos201-proof-skill"' "$QBASE/$t/txn.json" 2>/dev/null && echo "$t" && break
+done)
+# Fall back to first new txn if name match fails
+[[ -n "$TXN" ]] || TXN=$(echo "$NEW_TXNS" | head -1)
+[[ -n "$TXN" ]] || fail "Could not identify quarantine txn for vos201-proof-skill"
+QDIR="$QBASE/$TXN"
 [[ -d "$QDIR" ]] || fail "Quarantine dir missing: $QDIR"
-[[ ! -f "$VAULT/.claude/skills/vos201-proof-skill/SKILL.md" ]] || fail "Skill live BEFORE approval"
-pass "Quarantine staged; catalog untouched pre-approval"
+pass "New quarantine txn staged by skill_manage(create) from real CC session: $TXN"
+
+# Assert: a new pending Decision exists (skill_manage was called → a Decision was parked)
+# Match by txnId in the decision's resumePayload (stored in context/question) or by skill name
+DEC=$(bun --eval "
+  const fs=require('fs'),path=require('path');
+  const {listPendingDecisions}=await import('$REPO/src/decision.ts');
+  const pend=listPendingDecisions('$VAULT');
+  // Try matching via the decisions.jsonl context (which contains the diff with skill name)
+  const d=pend.find(d=>(d.question+d.context).toLowerCase().includes('vos201-proof-skill'))
+    || pend.find(d=>d.state==='pending');
+  console.log(d?d.id:'none');
+" 2>/dev/null) || DEC="none"
+[[ "$DEC" != "none" && -n "$DEC" ]] || {
+  bun --eval "const {listPendingDecisions}=await import('$REPO/src/decision.ts');console.log(JSON.stringify(listPendingDecisions('$VAULT')));" 2>/dev/null | tee -a "$LOG"
+  fail "No pending Decision after real skill-author CC session — skill_manage(create) did not park a Decision"
+}
+# Confirm the decision references vos201-proof-skill (the expected skill name from the intent)
+DEC_DETAIL=$(bun --eval "
+  const {listPendingDecisions}=await import('$REPO/src/decision.ts');
+  const d=listPendingDecisions('$VAULT').find(d=>d.id==='$DEC');
+  console.log(d?JSON.stringify({question:d.question,context:d.context.slice(0,120)}):'not found');
+" 2>/dev/null) || DEC_DETAIL="{}"
+echo "$DEC_DETAIL" | grep -qi "vos201-proof-skill" || fail "Decision $DEC does not reference vos201-proof-skill — intent not followed. CC session likely created wrong skill name. Details: $DEC_DETAIL"
+pass "Decision parked for vos201-proof-skill by real CC session: $DEC"
+
+# Assert: catalog skill NOT yet live (gated — approval required)
+[[ ! -f "$VAULT/.claude/skills/vos201-proof-skill/SKILL.md" ]] || fail "Skill live BEFORE approval — gating broken"
+pass "Catalog untouched pre-approval — gating confirmed"
+
+# Assert: the skill-author session did NOT write catalog/skills directly
+# The CC session's output dir: check session events for raw catalog writes (must be absent)
+SESSION_DIR="$VAULT/sessions/$AUTHOR_RUN_ID"
+if [[ -d "$SESSION_DIR" ]]; then
+  if grep -rl "catalog/skills/vos201-proof-skill" "$SESSION_DIR" 2>/dev/null | xargs -r grep -lE "writeFile|cpSync|copyFile|mkdir" 2>/dev/null | grep -q .; then
+    fail "skill-author session wrote catalog/skills directly (bypassed gated path)"
+  fi
+fi
+pass "skill-author session used only skill_manage gated path (no direct catalog writes)"
+
+log "Proof A complete: REAL CC session (agent=skill-author-proxy) invoked skill-author → drafted + skill_manage(create) → Decision $DEC parked"
 
 # ============================================================
 log ""
@@ -229,7 +339,7 @@ BEFORE_REPLY=$(($(date +%s) * 1000))
 REPLY_ID="bl-$(uuidgen | tr 'A-Z' 'a-z')"
 bun --eval "
   const fs=require('fs'),path=require('path');
-  const line=JSON.stringify({channel:'file',kind:'decision-reply',payload:'approve',routing:{decisionRef:'$DEC',execRef:'vos201-proof-001'},id:'$REPLY_ID',ts:$(($(date +%s)*1000))});
+  const line=JSON.stringify({channel:'file',kind:'decision-reply',payload:'approve',routing:{decisionRef:'$DEC',execRef:'$AUTHOR_RUN_ID'},id:'$REPLY_ID',ts:$(($(date +%s)*1000))});
   fs.appendFileSync(path.join('$VAULT','inbox','bus.jsonl'),line+'\n');
 " 2>/dev/null || fail "Could not append approve bus line"
 log "Approve bus line appended: $REPLY_ID"
@@ -354,7 +464,7 @@ pass "Full test suite green"
 
 log ""
 log "=== VOS-201 REAL-PATH PROOF COMPLETE ==="
-log "  A. skill-author installed + frontmatter valid + skill_manage(create) via REAL stdio MCP → Decision parked [PASS]"
+log "  A. skill-author REAL CC session: invoked with intent → drafted + skill_manage(create) → Decision parked, catalog untouched [PASS]"
 log "  B. REAL decision-reply bus → daemon drain → continuation exec → activate, NO restart [PASS]"
 log "  B2. invoke new skill via live trigger → exec row → rebuildExecutions MATCH [PASS]"
 log "  C. REAL reject via decision-reply → drop cleanly, no activation [PASS]"

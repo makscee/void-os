@@ -32,8 +32,19 @@ description: <one-line trigger sentence>
 
 <Concise behavior — what the agent does when this skill runs.>
 ```
-If bus-bound, also draft the trigger body (a one-line markdown file:
-`Fires <name> skill on kind=<event>.`).
+If bus-bound, also draft the trigger body. Triggers REQUIRE frontmatter — use this exact shape:
+```
+---
+kind: event
+skill: <slug>
+agent: default
+inbox: bus
+event_kind: <kind-value>
+step_ceiling: 30
+---
+<slug>-t: fires <slug> skill on kind=<kind-value>.
+```
+Pass this trigger body as the `trigger` argument to `skill_manage`.
 
 **Step 3 — Check if the skill exists (new vs. evolve).**
 - New skill → use `action: create`.
