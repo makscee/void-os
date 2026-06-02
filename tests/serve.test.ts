@@ -1,9 +1,14 @@
 /**
- * serve.ts — unit tests for port + vault resolution logic.
+ * serve.ts — unit tests for port + vault resolution logic and the chat bus interceptor.
  * These test the pure exported functions without starting Bun.serve.
  */
 import { expect, test } from "bun:test";
-import { resolvePort, resolveVault } from "../src/serve.ts";
+import { resolvePort, resolveVault, handleChatBusLine } from "../src/serve.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openRegistry, upsertTrigger } from "../src/registry.ts";
+import { chatThreadPath } from "../src/paths.ts";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -60,4 +65,92 @@ test("resolveVault falls back to ~/void-os when no cwd marker", () => {
 test("resolveVault uses HOME fallback /tmp when HOME absent", () => {
   const result = resolveVault({}, "/cwd");
   expect(result).toBe("/tmp/void-os");
+});
+
+// --- handleChatBusLine — serve.ts bus interceptor ---
+
+function mkTestVault(): string {
+  const v = mkdtempSync(join(tmpdir(), "vos-serve-test-"));
+  mkdirSync(join(v, "chat"), { recursive: true });
+  mkdirSync(join(v, ".void-os", "bus"), { recursive: true });
+  return v;
+}
+
+function writeBusLineFile(vault: string, id: string, obj: Record<string, unknown>): string {
+  const path = join(vault, ".void-os", "bus", `${id}.json`);
+  writeFileSync(path, JSON.stringify(obj));
+  return path;
+}
+
+test("handleChatBusLine returns false when inputRef is null", () => {
+  const vault = mkTestVault();
+  const db = openRegistry(":memory:");
+  upsertTrigger(db, { name: "chat", kind: "event", skill: "chat", agent: "default", cronExpr: null, inbox: "bus", stepCeiling: 30, now: 0 });
+  const calls: unknown[] = [];
+  const fakeSpawn = (o: unknown) => { calls.push(o); return { runId: "r", sessionId: "s", tmuxSession: "t" }; };
+  const result = handleChatBusLine(vault, db, "chat", "some input", null, fakeSpawn as any, 1000);
+  expect(result).toBe(false);
+  expect(calls.length).toBe(0);
+});
+
+test("handleChatBusLine returns false for a non-chat kind=idea bus line", () => {
+  const vault = mkTestVault();
+  const db = openRegistry(":memory:");
+  upsertTrigger(db, { name: "idea", kind: "event", skill: "idea-capture", agent: "default", cronExpr: null, inbox: "bus", stepCeiling: 10, now: 0 });
+  const calls: unknown[] = [];
+  const fakeSpawn = (o: unknown) => { calls.push(o); return { runId: "r", sessionId: "s", tmuxSession: "t" }; };
+  const refPath = writeBusLineFile(vault, "bl-idea-1", { channel: "file", kind: "idea", payload: "interesting idea", routing: {}, id: "bl-idea-1", ts: 1000 });
+  const result = handleChatBusLine(vault, db, "idea", "interesting idea", refPath, fakeSpawn as any, 1000);
+  expect(result).toBe(false);
+  expect(calls.length).toBe(0);
+});
+
+test("handleChatBusLine deposits user turn and fires trigger for a valid kind=chat bus line", () => {
+  const vault = mkTestVault();
+  const db = openRegistry(":memory:");
+  upsertTrigger(db, { name: "chat", kind: "event", skill: "chat", agent: "default", cronExpr: null, inbox: "bus", stepCeiling: 30, now: 0 });
+  const calls: any[] = [];
+  const fakeSpawn = (o: any) => { calls.push(o); return { runId: "r", sessionId: "s", tmuxSession: "t" }; };
+  const refPath = writeBusLineFile(vault, "bl-chat-1", {
+    channel: "file", kind: "chat", payload: "hello from bus",
+    routing: { thread: "general" }, id: "bl-chat-1", ts: 5000,
+  });
+  const result = handleChatBusLine(vault, db, "chat", "hello from bus", refPath, fakeSpawn as any, 5000);
+  // Returns true: chat path taken
+  expect(result).toBe(true);
+  // User turn deposited into thread file BEFORE spawn
+  const threadContent = readFileSync(chatThreadPath(vault, "general"), "utf8");
+  expect(threadContent).toContain("## user");
+  expect(threadContent).toContain("hello from bus");
+  // fireTrigger called with input = thread file path (NOT the original payload)
+  expect(calls.length).toBe(1);
+  expect(calls[0].input).toBe(chatThreadPath(vault, "general"));
+  expect(calls[0].inputRef).toBe(chatThreadPath(vault, "general"));
+});
+
+test("handleChatBusLine returns false when routing.thread is missing", () => {
+  const vault = mkTestVault();
+  const db = openRegistry(":memory:");
+  upsertTrigger(db, { name: "chat", kind: "event", skill: "chat", agent: "default", cronExpr: null, inbox: "bus", stepCeiling: 30, now: 0 });
+  const calls: unknown[] = [];
+  const fakeSpawn = (o: unknown) => { calls.push(o); return { runId: "r", sessionId: "s", tmuxSession: "t" }; };
+  const refPath = writeBusLineFile(vault, "bl-chat-2", {
+    channel: "file", kind: "chat", payload: "no thread",
+    routing: {}, id: "bl-chat-2", ts: 6000,
+  });
+  const result = handleChatBusLine(vault, db, "chat", "no thread", refPath, fakeSpawn as any, 6000);
+  expect(result).toBe(false);
+  expect(calls.length).toBe(0);
+  expect(existsSync(chatThreadPath(vault, "general"))).toBe(false);
+});
+
+test("handleChatBusLine returns false when inputRef file is missing (no crash)", () => {
+  const vault = mkTestVault();
+  const db = openRegistry(":memory:");
+  upsertTrigger(db, { name: "chat", kind: "event", skill: "chat", agent: "default", cronExpr: null, inbox: "bus", stepCeiling: 30, now: 0 });
+  const calls: unknown[] = [];
+  const fakeSpawn = (o: unknown) => { calls.push(o); return { runId: "r", sessionId: "s", tmuxSession: "t" }; };
+  const result = handleChatBusLine(vault, db, "chat", "input", join(vault, ".void-os", "bus", "nonexistent.json"), fakeSpawn as any, 1000);
+  expect(result).toBe(false);
+  expect(calls.length).toBe(0);
 });

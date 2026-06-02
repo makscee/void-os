@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { sessionsRoot, sessionDir, bodyPath, errorPath, runLogPath, readConfig, resolveRunner, DEFAULT_RUNNER_LABEL, busLinePath } from "../src/paths.ts";
+import { sessionsRoot, sessionDir, bodyPath, errorPath, runLogPath, readConfig, resolveRunner, DEFAULT_RUNNER_LABEL, busLinePath, chatDir, chatThreadPath } from "../src/paths.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,4 +44,14 @@ test("resolveRunner returns matching command, falls back to default on unknown/m
 
 test("busLinePath is under .void-os/bus", () => {
   expect(busLinePath("/v", "bl-1")).toBe("/v/.void-os/bus/bl-1.json");
+});
+
+test("chatDir is <vault>/chat", () => {
+  expect(chatDir("/v")).toBe("/v/chat");
+});
+test("chatThreadPath is <vault>/chat/<thread>.md", () => {
+  expect(chatThreadPath("/v", "general")).toBe("/v/chat/general.md");
+});
+test("chatThreadPath sanitizes path separators in thread id", () => {
+  expect(chatThreadPath("/v", "../etc/passwd")).toBe("/v/chat/etc-passwd.md");
 });

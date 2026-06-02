@@ -397,3 +397,20 @@ dvBar.addEventListener("click",function(){
 });
 </script>`;
 }
+
+/**
+ * Render a chat thread transcript + its cold-context budget readout.
+ * Read-only view: chat input goes via the bus, not a form (ADR-0003 §6).
+ */
+export function renderChatThread(t: {
+  thread: string;
+  transcript: string;
+  cold: { bytes: number; tokenEstimate: number };
+}): string {
+  const body = esc(t.transcript).replace(/\n/g, "<br>");
+  return `<section class="chat-thread">
+  <h2>chat: ${esc(t.thread)}</h2>
+  <div class="cold-context">cold-context: ${t.cold.bytes} bytes · ~${t.cold.tokenEstimate} tokens</div>
+  <div class="transcript">${body}</div>
+</section>`;
+}

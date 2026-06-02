@@ -58,3 +58,11 @@ test("deep-research catalog skill is flagged needs_input", () => {
   expect(dr.needsInput).toBe(true);
   expect(dr.inputLabel.length).toBeGreaterThan(0);
 });
+
+test("catalog includes the chat skill with output_target declared", () => {
+  const skills = listCatalogSkills(realCatalogRoot);
+  const chat = skills.find((s) => s.name === "chat");
+  expect(chat).toBeDefined();
+  expect(chat!.outputTarget).toBe("chat/*.md");
+  expect(chat!.needsInput).toBe(true);
+});

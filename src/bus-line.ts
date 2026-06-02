@@ -6,12 +6,14 @@ export type BusChannel = "file" | "tg" | "web";
 export type BusKind = "idea" | "chat" | "decision-reply";
 
 /** Routing hints. `skill`/`agent` override the trigger's bound pair (rare); decision-reply
- *  carries refs to the parked Decision + origin Execution it answers (consumer is VOS-194). */
+ *  carries refs to the parked Decision + origin Execution it answers (consumer is VOS-194).
+ *  `thread` names the chat thread history file for kind="chat" lines (VOS-193). */
 export interface BusRouting {
   skill?: string;
   agent?: string;
   decisionRef?: string;
   execRef?: string;
+  thread?: string;
 }
 
 export interface BusLine {
@@ -44,7 +46,7 @@ export function parseBusLine(line: string, now: number = Date.now()): BusLine {
   }
   const routingRaw = (data.routing ?? {}) as Record<string, unknown>;
   const routing: BusRouting = {};
-  for (const k of ["skill", "agent", "decisionRef", "execRef"] as const) {
+  for (const k of ["skill", "agent", "decisionRef", "execRef", "thread"] as const) {
     if (typeof routingRaw[k] === "string") routing[k] = routingRaw[k] as string;
   }
   const id = typeof data.id === "string" && data.id ? data.id : `bl-${randomUUID()}`;

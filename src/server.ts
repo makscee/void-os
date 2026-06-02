@@ -352,12 +352,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   // POST /triggers/:name/fire — manually fire a named Trigger, spawning a real Run.
   // ?interactive=1 forces non-print (interactive tmux) mode — needed when Stop hooks must fire.
   // Returns { runId } on success, 404 if trigger not found or disabled.
-  app.post("/triggers/:name/fire", (c) => {
+  app.post("/triggers/:name/fire", async (c) => {
     const name = c.req.param("name");
     if (!spawnFn) return c.json({ error: "no spawn function configured" }, 503);
     const interactive = c.req.query("interactive") === "1";
     const forcePrint = interactive ? false : null; // null = default (print for trigger-fired)
-    const res = fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input: null, forcePrint });
+    // Accept optional input + inputRef from request body (e.g. chat trigger fire with thread file).
+    let bodyInput: string | null = null;
+    let bodyInputRef: string | null = null;
+    try {
+      const b = await c.req.json() as Record<string, unknown>;
+      if (typeof b.input === "string") bodyInput = b.input;
+      if (typeof b.inputRef === "string") bodyInputRef = b.inputRef;
+    } catch { /* no body or non-JSON body — fine */ }
+    const res = fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input: bodyInput, inputRef: bodyInputRef, forcePrint });
     if (!res) return c.json({ error: "no such trigger or disabled" }, 404);
     return c.json({ runId: res.runId });
   });
