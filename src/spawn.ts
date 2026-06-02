@@ -1,6 +1,6 @@
 // spawn.ts — argv builders (Task 6) + spawnTurn fire-and-forget integration (Task 8)
 // + spawnRun: create Run row + tmux session + per-Run hook settings
-import { openSync, closeSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { openSync, closeSync, existsSync, statSync, writeFileSync, readFileSync, readdirSync, rmSync, mkdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
@@ -267,6 +267,15 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   ].join(" ");
 
   const tmuxSession = `vos-run-${runId}`;
+
+  // Persist the assembled CC argv for files-first observability + proof scripts (VOS-200).
+  // Written before the session starts so proofs can assert on the actual command line.
+  const execDir = sessionDir(opts.vault, runId);
+  try {
+    mkdirSync(execDir, { recursive: true });
+    writeFileSync(join(execDir, "cc-command.txt"), ccCommand + "\n", "utf8");
+  } catch { /* non-fatal — proof asserts it exists; any write failure must not abort the spawn */ }
+
   const pid = newRunSession(tmuxSession, opts.vault, fullCommand, {
     VOID_OS_SESSION: runId,
     VOS_RUN_ID: runId,
