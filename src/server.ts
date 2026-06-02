@@ -69,7 +69,7 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
     const status = await realDeps.vcStatus();
     const cfg = readConfig(vault);
     return c.html(
-      renderDashboard(listCatalogSkills(catalogRoot), listSessions(vault, db), { authed: status.ok }, cfg, listPendingDecisions(vault)),
+      renderDashboard(listVaultSkills(vault), listSessions(vault, db), { authed: status.ok }, cfg, listPendingDecisions(vault)),
     );
   });
 

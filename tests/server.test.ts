@@ -590,3 +590,31 @@ test("/hook uses ?run= param when present (daemon-spawned path unaffected)", asy
   const row = getExecution(db, runId);
   expect(row!.ended_at).not.toBeNull();
 });
+
+// VOS-203: dashboard reads vault .claude/skills/, not the repo catalog
+test("GET / dashboard shows vault-installed skills, not catalog-only skills", async () => {
+  const testVault = "/tmp/voidos-server-test-vos203";
+  rmSync(testVault, { recursive: true, force: true });
+  mkdirSync(`${testVault}/sessions`, { recursive: true });
+  // Seed two vault skills
+  mkdirSync(`${testVault}/.claude/skills/vault-skill-one`, { recursive: true });
+  writeFileSync(`${testVault}/.claude/skills/vault-skill-one/SKILL.md`,
+    "---\nname: vault-skill-one\ndescription: First vault skill.\nversion: 0.0.0\n---\n");
+  mkdirSync(`${testVault}/.claude/skills/vault-skill-two`, { recursive: true });
+  writeFileSync(`${testVault}/.claude/skills/vault-skill-two/SKILL.md`,
+    "---\nname: vault-skill-two\ndescription: Second vault skill.\nversion: 0.0.0\n---\n");
+
+  const testDb = openRegistry(":memory:");
+  const app = makeApp(testVault, testDb);
+  const res = await app.request("/");
+  expect(res.status).toBe(200);
+  const text = await res.text();
+  // Must show vault-installed skills
+  expect(text).toContain('data-skill="vault-skill-one"');
+  expect(text).toContain('data-skill="vault-skill-two"');
+  // Must NOT show catalog-only skills that were not installed in vault
+  expect(text).not.toContain('data-skill="deep-research"');
+  expect(text).not.toContain('data-skill="work"');
+
+  rmSync(testVault, { recursive: true, force: true });
+});
