@@ -3,7 +3,7 @@
  * spawnTurn is stubbed via mock.module so no real `vc` process is spawned.
  * Tests: GET /, GET /s/:uuid, GET /s/:uuid/body (with + without error.txt), POST /s/:uuid/send.
  */
-import { expect, test, beforeAll, mock } from "bun:test";
+import { expect, test, beforeAll, afterAll, mock } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync } from "node:fs";
 import { bodyPath, sessionDir, errorPath, pidPath, stopPath } from "../src/paths.ts";
 import { join } from "node:path";
@@ -619,4 +619,10 @@ test("GET / dashboard shows vault-installed skills, not catalog-only skills", as
   expect(text).not.toContain('data-skill="work"');
 
   rmSync(testVault, { recursive: true, force: true });
+});
+
+// Restore mock.module registrations so sibling test files (e.g. spawn.test.ts) that import
+// ../src/spawn.ts directly get the real implementation, not this file's stubs.
+afterAll(() => {
+  mock.restore();
 });

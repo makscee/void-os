@@ -2,10 +2,17 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { buildLaunchArgv, buildAnswerArgv, readCcSessionId, tokenizeCommand, spawnTurn, runTurn, spawnRun } from "../src/spawn.ts";
 import { pidPath, sessionDir, bodyPath, errorPath, stopPath } from "../src/paths.ts";
 import { openRegistry, getExecution } from "../src/registry.ts";
 import { killSession } from "../src/tmux.ts";
+
+// Use a query-string specifier to bypass any mock.module("../src/spawn.ts", ...)
+// registration from server.test.ts. Bun 1.3.14 matches mock.module paths by exact
+// specifier, so adding ?real loads the actual source even without --isolate.
+const {
+  buildLaunchArgv, buildAnswerArgv, readCcSessionId, tokenizeCommand,
+  spawnTurn, runTurn, spawnRun,
+} = await import("../src/spawn.ts?real");
 
 test("buildLaunchArgv has no leading -- (separator now lives in runner command)", () => {
   const a = buildLaunchArgv("uuid-1", "deep-research", "hello");
