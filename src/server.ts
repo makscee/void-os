@@ -16,7 +16,7 @@ import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, st
 import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
-import { handleHookEvent, type HookPayload, type HookDecision } from "./hooks-endpoint.ts";
+import { handleHookEvent, runIdForSession, type HookPayload, type HookDecision } from "./hooks-endpoint.ts";
 import { getExecution, setExecutionFail, upsertTrigger, getTrigger } from "./registry.ts";
 import { appendEvent } from "./events.ts";
 import { killSession } from "./tmux.ts";
@@ -73,10 +73,14 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
   // Stop-hook nudge: if handleHookEvent returns a HookDecision, relay it so the command-hook
   // relay can echo it to CC stdout (causing CC to block the stop and re-prompt the agent).
   app.post("/hook", async (c) => {
-    const runId = c.req.query("run") ?? "";
     let payload: HookPayload;
     try { payload = (await c.req.json()) as HookPayload; }
     catch { return c.json({ ok: false }, 200); }
+    let runId = c.req.query("run") ?? "";
+    // Vault-level (hand-launched) path: no ?run= param → derive runId from session_id
+    if (!runId && typeof payload.session_id === "string" && payload.session_id) {
+      runId = runIdForSession(payload.session_id);
+    }
     let decision: HookDecision | undefined;
     try { decision = handleHookEvent(db, vault, runId, payload, Date.now(), killSession); }
     catch { /* never fail a hook */ }

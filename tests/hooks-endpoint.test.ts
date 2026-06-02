@@ -9,7 +9,7 @@ import {
   getExecution,
 } from "../src/registry.ts";
 import { appendEvent } from "../src/events.ts";
-import { handleHookEvent, buildHookSettings } from "../src/hooks-endpoint.ts";
+import { handleHookEvent, buildHookSettings, runIdForSession, buildVaultHookSettings } from "../src/hooks-endpoint.ts";
 
 function tmpVault() { return mkdtempSync(join(tmpdir(), "vos-hook-")); }
 
@@ -213,4 +213,83 @@ test("buildHookSettings wires SessionStart/Stop/SessionEnd/PreToolUse via type:c
   expect(h.command).toContain(relayScript);
   expect(h.command).toContain("http://127.0.0.1:4317");
   expect(h.command).toContain("exec-1");
+});
+
+// ---- VOS-197: vault-native (hand-launched claude) tests ----
+
+test("runIdForSession is deterministic and prefixed", () => {
+  const a = runIdForSession("sess-abc-123");
+  const b = runIdForSession("sess-abc-123");
+  expect(a).toBe(b);                       // same session_id → same runId (idempotent SessionStart)
+  expect(a.startsWith("exec-")).toBe(true); // same exec- namespace as spawnRun
+  expect(runIdForSession("other")).not.toBe(a);
+});
+
+test("SessionStart on an unknown run creates the row + start event (hand-launch)", () => {
+  const vault = mkdtempSync(join(tmpdir(), "vos197-"));
+  const db = openRegistry(":memory:");
+  const runId = runIdForSession("sess-handlaunch-1");
+  expect(getExecution(db, runId)).toBeNull();
+
+  handleHookEvent(db, vault, runId, {
+    hook_event_name: "SessionStart", session_id: "sess-handlaunch-1", source: "startup",
+  }, 1000);
+
+  const row = getExecution(db, runId);
+  expect(row).not.toBeNull();
+  expect(row!.started_at).toBe(1000);
+  expect(row!.ended_at).toBeNull();
+  expect(row!.trigger_id).toBeNull();       // hand-launched: no trigger
+  const { readStartEvent } = require("../src/events.ts");
+  const start = readStartEvent(vault, runId);
+  expect(start).not.toBeNull();
+  expect(start!.at).toBe(1000);
+});
+
+test("SessionStart is idempotent — second fire does not duplicate", () => {
+  const vault = mkdtempSync(join(tmpdir(), "vos197-"));
+  const db = openRegistry(":memory:");
+  const runId = runIdForSession("sess-handlaunch-2");
+  const p = { hook_event_name: "SessionStart", session_id: "sess-handlaunch-2", source: "startup" };
+  handleHookEvent(db, vault, runId, p, 2000);
+  handleHookEvent(db, vault, runId, p, 2050);
+  expect(getExecution(db, runId)!.started_at).toBe(2000); // first wins, not overwritten
+});
+
+test("SessionStart on an already-spawned row stays a no-op (daemon path unchanged)", () => {
+  const vault = mkdtempSync(join(tmpdir(), "vos197-"));
+  const db = openRegistry(":memory:");
+  // simulate daemon spawn: row already present
+  createExecution(db, { id: "exec-daemon", agent: null, skill: "x", inputRef: null,
+    tmuxSession: "vos-run-exec-daemon", now: 500, triggerId: "t-1", stepCeiling: null });
+  handleHookEvent(db, vault, "exec-daemon", {
+    hook_event_name: "SessionStart", session_id: "whatever", source: "startup",
+  }, 9999);
+  expect(getExecution(db, "exec-daemon")!.started_at).toBe(500); // untouched
+});
+
+test("hand-launch Stop with no declared target allows stop, no nudge", () => {
+  const vault = mkdtempSync(join(tmpdir(), "vos197-"));
+  const db = openRegistry(":memory:");
+  const runId = runIdForSession("sess-stop-1");
+  handleHookEvent(db, vault, runId, { hook_event_name: "SessionStart", session_id: "sess-stop-1" }, 1000);
+
+  const decision = handleHookEvent(db, vault, runId,
+    { hook_event_name: "Stop", session_id: "sess-stop-1" }, 1100);
+  expect(decision).toBeUndefined();                      // no block/nudge
+  expect(getExecution(db, runId)!.nudged).toBe(0);
+
+  handleHookEvent(db, vault, runId, { hook_event_name: "SessionEnd", session_id: "sess-stop-1", reason: "clear" }, 1200);
+  expect(getExecution(db, runId)!.ended_at).toBe(1200);  // closed cleanly
+});
+
+test("buildVaultHookSettings emits lifecycle hooks with NO baked runId", () => {
+  const s = buildVaultHookSettings("/abs/vos-hook-relay.sh", "http://127.0.0.1:4317");
+  for (const ev of ["SessionStart", "Stop", "SessionEnd", "PreToolUse"]) {
+    expect(s.hooks[ev]).toBeDefined();
+    const cmd = s.hooks[ev][0].hooks[0].command;
+    expect(cmd).toContain("/abs/vos-hook-relay.sh");
+    expect(cmd).toContain("http://127.0.0.1:4317");
+    expect(cmd).not.toMatch(/exec-/);   // NO per-exec runId baked in
+  }
 });

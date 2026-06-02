@@ -3,9 +3,16 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { getExecution, setExecutionEnded, setExecutionFail, incrementStep, setOutputResult } from "./registry.ts";
+import { getExecution, createExecution, setExecutionEnded, setExecutionFail, incrementStep, setOutputResult } from "./registry.ts";
 import { appendEvent, readStartEvent } from "./events.ts";
 import { wasMutatedSince } from "./output-target.ts";
+
+/** Stable runId for a hand-launched CC session. SessionStart fires once per session;
+ *  deriving the id from session_id makes row-creation idempotent and lets every later
+ *  lifecycle event (Stop/SessionEnd/PreToolUse) for the same session resolve the same row. */
+export function runIdForSession(sessionId: string): string {
+  return `exec-${sessionId}`;
+}
 
 // --- Hook payload types (CC lifecycle events + daemon-synthetic events) ---
 
@@ -45,13 +52,27 @@ export function handleHookEvent(
   killSession: (tmuxSession: string) => void = () => {},
 ): HookDecision | undefined {
   const exec = getExecution(db, runId);
-  if (!exec) return undefined; // unknown execution — no-op
-  if (exec.ended_at != null) return undefined; // already terminal — no-op
+
+  // Hand-launched session: no spawn step created the row. SessionStart self-registers it.
+  if (!exec && payload.hook_event_name === "SessionStart") {
+    const tmuxSession = `cc-handlaunch-${runId}`; // synthetic — no daemon tmux for hand-launch
+    appendEvent(vault, runId, {
+      type: "start", agent: null, skill: null, input_ref: null,
+      tmux_session: tmuxSession, at: now, trigger_id: null, step_ceiling: null,
+      output_target: null,
+    });
+    createExecution(db, { id: runId, agent: null, skill: null, inputRef: null,
+      tmuxSession, now, triggerId: null, stepCeiling: null });
+    return undefined;
+  }
+
+  if (!exec) return undefined;                  // unknown execution, non-SessionStart — no-op
+  if (exec.ended_at != null) return undefined;  // already terminal — no-op
 
   switch (payload.hook_event_name) {
     case "SessionStart":
-      // No state mutation (stateless); SessionStart is implicit in the 'start' event written at spawn.
-      // SessionStart carries no lifecycle meaning in the stateless model — no-op.
+      // Row already exists (daemon-spawned path) — no state mutation; no-op (idempotent).
+      // SessionStart is implicit in the 'start' event written at spawn.
       break;
     case "Stop": {
       const start = readStartEvent(vault, runId);
@@ -189,4 +210,25 @@ export function writeHookSettings(
   const path = join(dir, `${runId}.settings.json`);
   writeFileSync(path, JSON.stringify(buildHookSettings(relayScript, daemonUrl, runId), null, 2));
   return path;
+}
+
+/**
+ * Build vault-level CC settings.json hooks for a hand-launched `claude` (no spawn step,
+ * no per-exec runId). The relay forwards the CC payload verbatim; the daemon /hook route
+ * derives the runId from the payload's session_id (see runIdForSession).
+ * Two-arg relay command: <daemon-url> (no run-id).
+ *
+ * @param relayScript - absolute path to vos-hook-relay.sh
+ * @param daemonUrl   - daemon base URL, e.g. "http://127.0.0.1:4317"
+ */
+export function buildVaultHookSettings(
+  relayScript: string,
+  daemonUrl: string,
+): CcHookSettings {
+  const command = `"${relayScript}" "${daemonUrl}"`;
+  const hooks: CcHookSettings["hooks"] = {};
+  for (const ev of LIFECYCLE_EVENTS) {
+    hooks[ev] = [{ hooks: [{ type: "command", command }] }];
+  }
+  return { hooks };
 }

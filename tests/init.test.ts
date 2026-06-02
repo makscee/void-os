@@ -2,7 +2,7 @@
  * init.ts — tests for seedVault (file layout) and non-interactive vault resolution.
  */
 import { expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, lstatSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { seedVault } from "../src/init.ts";
@@ -73,6 +73,41 @@ test("readConfig repairs missing optional fields from old JSON", () => {
   expect(cfg.port).toBe(4317);
   expect(cfg.skills).toEqual([]);
   expect(cfg.answers).toEqual({});
+});
+
+// ---- VOS-197: vault-native seedVault tests ----
+
+test("seedVault writes a vault-level .claude/settings.json with lifecycle hooks", () => {
+  seedVault(vault);
+  const settingsPath = join(vault, ".claude", "settings.json");
+  expect(existsSync(settingsPath)).toBe(true);
+  const s = JSON.parse(readFileSync(settingsPath, "utf8"));
+  expect(s.hooks.SessionStart).toBeDefined();
+  expect(s.hooks.Stop).toBeDefined();
+  expect(s.hooks.SessionEnd).toBeDefined();
+  expect(s.hooks.PreToolUse).toBeDefined();
+  // Must not have a baked run id (vault-level = no per-exec runId)
+  const cmd = s.hooks.SessionStart[0].hooks[0].command;
+  expect(cmd).not.toMatch(/exec-/);
+});
+
+test("seedVault replaces stale skills symlink with a real directory", () => {
+  // Create a stale symlink as void-os used to have in ~/void/.claude/skills -> ../skills
+  mkdirSync(join(vault, ".claude"), { recursive: true });
+  symlinkSync("../skills", join(vault, ".claude", "skills"));
+  expect(lstatSync(join(vault, ".claude", "skills")).isSymbolicLink()).toBe(true);
+
+  seedVault(vault);
+
+  const stat = lstatSync(join(vault, ".claude", "skills"));
+  expect(stat.isSymbolicLink()).toBe(false);
+  expect(stat.isDirectory()).toBe(true);
+});
+
+test("seedVault is idempotent after settings.json exists — second call does not throw", () => {
+  seedVault(vault);
+  seedVault(vault);  // should not throw
+  expect(existsSync(join(vault, ".claude", "settings.json"))).toBe(true);
 });
 
 test("init seeding: void-os.json carries runners and defaultRunner after init path", () => {

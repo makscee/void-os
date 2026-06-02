@@ -543,3 +543,50 @@ test("GET / dashboard lists executions section", async () => {
   // Dashboard must render — presence of Sessions section confirms executions list
   expect(html).toContain("Sessions");
 });
+
+// --- VOS-197: /hook route derives runId from session_id (vault-level / hand-launch path) ---
+
+test("/hook derives runId from session_id when ?run= absent (vault-level hand-launch path)", async () => {
+  const { getExecution } = await import("../src/registry.ts");
+  const { runIdForSession } = await import("../src/hooks-endpoint.ts");
+
+  const app = makeApp(vault, db);
+  const sessionId = `sess-route-vos197-${Date.now()}`;
+  const expectedRunId = runIdForSession(sessionId);
+
+  // Pre-check: row does not exist yet
+  expect(getExecution(db, expectedRunId)).toBeNull();
+
+  const res = await app.request("/hook", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hook_event_name: "SessionStart", session_id: sessionId, source: "startup" }),
+  });
+  expect(res.status).toBe(200);
+
+  // Row must now exist (SessionStart created it via hand-launch path)
+  const row = getExecution(db, expectedRunId);
+  expect(row).not.toBeNull();
+  expect(row!.trigger_id).toBeNull();   // hand-launched: no trigger
+  expect(row!.ended_at).toBeNull();     // still running
+});
+
+test("/hook uses ?run= param when present (daemon-spawned path unaffected)", async () => {
+  const { createExecution, getExecution } = await import("../src/registry.ts");
+
+  const app = makeApp(vault, db);
+  const runId = `exec-daemon-server-test-${Date.now()}`;
+  createExecution(db, { id: runId, agent: null, skill: "x", inputRef: null,
+    tmuxSession: `vos-run-${runId}`, now: 1000, triggerId: null, stepCeiling: null });
+
+  const res = await app.request(`/hook?run=${runId}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hook_event_name: "SessionEnd", session_id: "does-not-matter" }),
+  });
+  expect(res.status).toBe(200);
+
+  // Row must be closed by SessionEnd (daemon path unchanged)
+  const row = getExecution(db, runId);
+  expect(row!.ended_at).not.toBeNull();
+});
