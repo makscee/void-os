@@ -274,7 +274,15 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     bodyMessage: opts.bodyMessage,
   });
   const toks = tokenizeCommand(opts.runnerCommand);
-  const ccCommand = [...toks, ...argv].map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ");
+  // Build shell-safe command string for tmux. JSON.stringify wraps args with spaces in double
+  // quotes, but backtick characters inside double-quoted strings ARE interpreted by sh as
+  // command substitution (even inside double quotes). Escape backticks to prevent expansion.
+  const ccCommand = [...toks, ...argv].map((a) => {
+    if (!a.includes(" ") && !a.includes("`")) return a;
+    // Double-quote the arg; escape backticks and $ to prevent sh/bash expansion.
+    const escaped = a.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$").replace(/"/g, '\\"');
+    return `"${escaped}"`;
+  }).join(" ");
 
   // Wrap in vos-run-wrapper.sh so ProcessExit fires after CC exits.
   const fullCommand = [
