@@ -21,6 +21,7 @@ import { getExecution, setExecutionFail, upsertTrigger, getTrigger } from "./reg
 import { appendEvent } from "./events.ts";
 import { killSession } from "./tmux.ts";
 import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
+import { listPendingDecisions } from "./decision.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogRoot = join(repoRoot, "catalog");
@@ -63,7 +64,7 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
     const status = await realDeps.vcStatus();
     const cfg = readConfig(vault);
     return c.html(
-      renderDashboard(listCatalogSkills(catalogRoot), listSessions(vault, db), { authed: status.ok }, cfg),
+      renderDashboard(listCatalogSkills(catalogRoot), listSessions(vault, db), { authed: status.ok }, cfg, listPendingDecisions(vault)),
     );
   });
 

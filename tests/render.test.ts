@@ -224,3 +224,19 @@ test("renderChatThread shows the transcript turns and the cold-context size", ()
   expect(html).toContain("10"); // token estimate surfaced
   expect(html).toContain("40"); // bytes surfaced
 });
+
+test("renderDashboard lists pending decisions when provided", () => {
+  const html = renderDashboard([], [], { authed: true }, undefined, [
+    { id: "dl-abc", question: "Push to prod?", options: ["yes", "no"],
+      originExecId: "ex-1", context: "deploy void-admin", state: "pending",
+      reply: null, createdAt: 1, resolvedAt: null },
+  ]);
+  expect(html).toContain("Pending decisions");
+  expect(html).toContain("Push to prod?");
+  expect(html).toContain("dl-abc");
+});
+
+test("renderDashboard omits the decisions section when none pending", () => {
+  const html = renderDashboard([], [], { authed: true }, undefined, []);
+  expect(html).not.toContain("Pending decisions");
+});

@@ -3,6 +3,7 @@ import type { CatalogSkill } from "./catalog.ts";
 import type { SessionInfo, SessionStatus } from "./sessions.ts";
 import { DEFAULT_RUNNERS, DEFAULT_RUNNER_LABEL } from "./paths.ts";
 import type { Runner } from "./paths.ts";
+import type { Decision } from "./decision.ts";
 
 /** Escape HTML special chars to prevent XSS in string templates. */
 export const esc = (s: string): string =>
@@ -139,6 +140,7 @@ export function renderDashboard(
   sessions: SessionInfo[],
   relay: { authed: boolean },
   runnerCfg: { runners: Runner[]; defaultRunner: string } = { runners: DEFAULT_RUNNERS, defaultRunner: DEFAULT_RUNNER_LABEL },
+  pendingDecisions: Decision[] = [],
 ): string {
   const showSelector = runnerCfg.runners.length > 1;
   const runnerOptions = runnerCfg.runners
@@ -270,6 +272,17 @@ code{font-family:monospace;font-size:0.85em}
 </style>
 <div class="topbar"><span class="logo">void-os</span>${badge}</div>
 <div class="dash-layout">
+${pendingDecisions.length === 0 ? "" : `
+<div class="section-label" style="color:hsl(38 92% 65%)">Pending decisions</div>
+<div class="session-list" style="margin-bottom:1.25rem">${pendingDecisions.map((d) => `
+  <div class="session-row" data-decision-id="${esc(d.id)}" style="flex-direction:column;align-items:flex-start;gap:.25rem;border:1px solid hsl(38 92% 25%);border-radius:calc(var(--radius) - 2px);padding:.625rem">
+    <div><code style="font-size:11px;color:hsl(var(--muted-foreground))">${esc(d.id)}</code></div>
+    <div style="font-size:13px;font-weight:500">${esc(d.question)}</div>
+    ${d.options.length ? `<div style="font-size:12px;color:hsl(var(--muted-foreground))">options: ${esc(d.options.join(" / "))}</div>` : ""}
+    ${d.context ? `<div style="font-size:12px;color:hsl(var(--muted-foreground))">${esc(d.context)}</div>` : ""}
+    <div style="font-size:11px;color:hsl(var(--muted-foreground));font-family:monospace">reply via bus: kind=decision-reply, routing.decisionRef=${esc(d.id)}</div>
+  </div>`).join("")}
+</div>`}
 ${runnerBar}
 <div class="section-label">Skills</div>
 <div class="skill-chips">${skillChips}</div>
