@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { buildLaunchArgv, buildAnswerArgv, tokenizeCommand, spawnTurn, runTurn, spawnRun } from "../src/spawn.ts";
+import { buildLaunchArgv, buildAnswerArgv, readCcSessionId, tokenizeCommand, spawnTurn, runTurn, spawnRun } from "../src/spawn.ts";
 import { pidPath, sessionDir, bodyPath, errorPath, stopPath } from "../src/paths.ts";
 import { openRegistry, getExecution } from "../src/registry.ts";
 import { killSession } from "../src/tmux.ts";
@@ -49,6 +49,44 @@ test("answer argv from form fields: key: value lines", () => {
   const a = buildAnswerArgv("sess-1", prompt);
   expect(a[3]).toContain("name: Alice");
   expect(a[3]).toContain("goal: learn TypeScript");
+});
+
+// VOS-203: buildAnswerArgv uses CC session ID (ccSeed) when provided, not execution ID
+test("buildAnswerArgv uses ccSessionId over execId when provided", () => {
+  const a = buildAnswerArgv("exec-abc123", "hello", "cc-seed-uuid-xyz");
+  expect(a[1]).toBe("cc-seed-uuid-xyz");
+  expect(a[1]).not.toBe("exec-abc123");
+});
+
+test("buildAnswerArgv falls back to execId when ccSessionId is null", () => {
+  const a = buildAnswerArgv("exec-abc123", "hello", null);
+  expect(a[1]).toBe("exec-abc123");
+});
+
+test("buildAnswerArgv falls back to execId when ccSessionId is undefined", () => {
+  const a = buildAnswerArgv("exec-abc123", "hello");
+  expect(a[1]).toBe("exec-abc123");
+});
+
+// VOS-203: readCcSessionId reads the --session-id from cc-command.txt
+test("readCcSessionId returns the CC session UUID from cc-command.txt", () => {
+  const vault = "/tmp/void-os-spawn-ccsess-test";
+  const execId = "exec-test-read-cc";
+  const ccSessionId = "a7157dde-2a89-451e-a1bc-0b58856013b5";
+  const dir = join(vault, "sessions", execId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "cc-command.txt"),
+    `claude -- --session-id ${ccSessionId} --settings /tmp/x.json --permission-mode bypassPermissions /onboarding\n`);
+  expect(readCcSessionId(vault, execId)).toBe(ccSessionId);
+  rmSync(vault, { recursive: true });
+});
+
+test("readCcSessionId returns null when cc-command.txt is absent", () => {
+  const vault = "/tmp/void-os-spawn-ccsess-absent";
+  const execId = "exec-absent-cc";
+  mkdirSync(join(vault, "sessions", execId), { recursive: true });
+  expect(readCcSessionId(vault, execId)).toBeNull();
+  rmSync(vault, { recursive: true });
 });
 
 test("tokenizeCommand splits prefix into argv head", () => {

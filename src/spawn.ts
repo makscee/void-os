@@ -39,14 +39,32 @@ export function buildLaunchArgv(uuid: string, skill: string, text: string): stri
 }
 
 /**
+ * Read the CC session ID (the --session-id value passed at launch) from cc-command.txt.
+ * spawnRun stores a fresh randomUUID() as --session-id; this is the value needed for
+ * --resume (it differs from the execution ID, which is exec-<uuid>).
+ * Returns null if cc-command.txt is absent or the pattern is not found.
+ */
+export function readCcSessionId(vault: string, execId: string): string | null {
+  const ccCmdPath = join(sessionDir(vault, execId), "cc-command.txt");
+  if (!existsSync(ccCmdPath)) return null;
+  const text = readFileSync(ccCmdPath, "utf8");
+  const m = text.match(/--session-id\s+([0-9a-f-]{36})/);
+  return m ? m[1] : null;
+}
+
+/**
  * Build argv suffix for resuming a session and injecting an answer.
  * Prompt is the render-contract preamble + newline + the user-supplied text.
  *
- * Shape: --resume <uuid> -p <preamble\ntext> --permission-mode bypassPermissions
+ * ccSessionId: the Claude session ID (from --session-id at launch, readable via readCcSessionId).
+ * Falls back to execId if ccSessionId is not available (legacy / hand-launched sessions).
+ *
+ * Shape: --resume <ccSessionId> -p <preamble\ntext> --permission-mode bypassPermissions
  */
-export function buildAnswerArgv(uuid: string, text: string): string[] {
+export function buildAnswerArgv(execId: string, text: string, ccSessionId?: string | null): string[] {
+  const resumeId = ccSessionId ?? execId;
   const prompt = `${RENDER_PREAMBLE}\n${text}`;
-  return ["--resume", uuid, "-p", prompt, ...PERM];
+  return ["--resume", resumeId, "-p", prompt, ...PERM];
 }
 
 /** Split a runner command prefix into argv tokens (whitespace-separated). */

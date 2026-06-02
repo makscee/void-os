@@ -25,10 +25,11 @@ mock.module("../src/spawn.ts", () => ({
     "--session-id", uuid, "-p", text ? `/${skill} ${text}` : `/${skill}`,
     "--permission-mode", "bypassPermissions",
   ],
-  buildAnswerArgv: (uuid: string, text: string) => [
-    "--resume", uuid, "-p", `[render contract: rewrite body.html, no terminal reply]\n${text}`,
+  buildAnswerArgv: (uuid: string, text: string, ccSessionId?: string | null) => [
+    "--resume", ccSessionId ?? uuid, "-p", `[render contract: rewrite body.html, no terminal reply]\n${text}`,
     "--permission-mode", "bypassPermissions",
   ],
+  readCcSessionId: (_vault: string, _execId: string) => null, // stub — no cc-command.txt in unit tests
   tokenizeCommand: (cmd: string) => cmd.trim().split(/\s+/).filter(Boolean),
   spawnTurn: (v: string, u: string, a: string[], cmd: string) => { spawnCalls.push({ vault: v, uuid: u, argv: a, command: cmd }); },
   runTurn: async (cwd: string, v: string, u: string, a: string[], cmd: string) => { runTurnCalls.push({ cwd, vault: v, uuid: u, argv: a, command: cmd }); return 0; },

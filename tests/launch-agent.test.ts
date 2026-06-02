@@ -26,7 +26,8 @@ const spawnRunCalls: SpawnRunCall[] = [];
 
 mock.module("../src/spawn.ts", () => ({
   buildLaunchArgv: (uuid: string, skill: string, text: string) => ["--session-id", uuid, "-p", text ? `/${skill} ${text}` : `/${skill}`, "--permission-mode", "bypassPermissions"],
-  buildAnswerArgv: (uuid: string, text: string) => ["--resume", uuid, "-p", text, "--permission-mode", "bypassPermissions"],
+  buildAnswerArgv: (uuid: string, text: string, ccSessionId?: string | null) => ["--resume", ccSessionId ?? uuid, "-p", text, "--permission-mode", "bypassPermissions"],
+  readCcSessionId: (_vault: string, _execId: string) => null,
   tokenizeCommand: (cmd: string) => cmd.trim().split(/\s+/).filter(Boolean),
   spawnTurn: () => {},
   runTurn: async () => 0,
