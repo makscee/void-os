@@ -8,10 +8,48 @@ import { readConfig, writeConfig, registryDbPath, chatThreadPath } from "./paths
 import { openRegistry } from "./registry.ts";
 import { killSession } from "./tmux.ts";
 import { reconcileTriggers } from "./triggers-reconcile.ts";
-import { fireTrigger, dueTriggers } from "./triggers-fire.ts";
+import { fireTrigger, dueTriggers, type SpawnFn } from "./triggers-fire.ts";
 import { drainInbox } from "./inbox-watch.ts";
 import { makeSpawnFn } from "./spawn-adapter.ts";
 import { appendUserMessage } from "./chat.ts";
+import type { Database } from "bun:sqlite";
+
+/**
+ * Handle a drainInbox callback for a single bus line. If the persisted BusLine file at
+ * `inputRef` carries `kind="chat"` with a `routing.thread`, this function:
+ *   1. Deposits the user's message into the thread history file (appendUserMessage).
+ *   2. Fires the trigger with `input`/`inputRef` both pointing at the thread file.
+ *   3. Returns true so the caller knows the chat path was taken.
+ * Returns false for non-chat lines or when `inputRef` is absent/unreadable (caller fires
+ * the default path).
+ *
+ * Exported for unit-testing; the live serve tick calls this.
+ */
+export function handleChatBusLine(
+  vault: string,
+  db: Database,
+  name: string,
+  input: string,
+  inputRef: string | null,
+  spawnFn: SpawnFn,
+  now: number = Date.now(),
+): boolean {
+  if (!inputRef) return false;
+  try {
+    const bl = JSON.parse(readFileSync(inputRef, "utf8")) as Record<string, unknown>;
+    if (bl.kind !== "chat") return false;
+    const routing = (bl.routing ?? {}) as Record<string, unknown>;
+    const thread = typeof routing.thread === "string" ? routing.thread : "";
+    if (!thread) return false;
+    const at = typeof bl.ts === "number" ? bl.ts : now;
+    appendUserMessage(vault, thread, typeof bl.payload === "string" ? bl.payload : input, at);
+    const threadFile = chatThreadPath(vault, thread);
+    fireTrigger(db, name, { spawn: spawnFn, now, input: threadFile, inputRef: threadFile });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Resolve the port: --port <n> flag > VOID_OS_PORT env > void-os.json > 4317. */
 export function resolvePort(argv: string[], env: Record<string, string | undefined>, cfgPort: number): number {
@@ -81,25 +119,7 @@ export async function runServe(): Promise<void> {
       drainInbox(db, vault, inboxOffsets, (name, input, inputRef) => {
         // Chat lines: deposit the user turn + set input to the thread file path, so the fresh
         // /chat execution reads the running transcript (ADR-0003 §4).
-        if (inputRef) {
-          try {
-            const bl = JSON.parse(readFileSync(inputRef, "utf8")) as Record<string, unknown>;
-            if (bl.kind === "chat") {
-              const routing = (bl.routing ?? {}) as Record<string, unknown>;
-              const thread = typeof routing.thread === "string" ? routing.thread : "";
-              if (thread) {
-                const at = typeof bl.ts === "number" ? bl.ts : Date.now();
-                appendUserMessage(vault, thread, typeof bl.payload === "string" ? bl.payload : input, at);
-                const threadFile = chatThreadPath(vault, thread);
-                fireTrigger(db, name, {
-                  spawn: spawnFn, now: Date.now(),
-                  input: threadFile, inputRef: threadFile,
-                });
-                return;
-              }
-            }
-          } catch { /* fall through to default fire */ }
-        }
+        if (handleChatBusLine(vault, db, name, input, inputRef, spawnFn, Date.now())) return;
         fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input, inputRef });
       });
     } catch { /* never crash serve */ }

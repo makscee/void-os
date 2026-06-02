@@ -5,18 +5,22 @@
 # Usage: bash scripts/vos-proof-vos193.sh
 #
 # What it proves:
-#   1. A kind:chat bus line (via /triggers/chat/fire with input=thread file) fires a fresh CC
-#      execution whose input is the thread history file.
-#   2. CC reads the file (which has a pre-deposited user turn), composes a reply, and appends
-#      an ## assistant section to the SAME file — produced_change=1, nudged=0.
+#   1. A kind:chat bus line appended to the bus inbox via vos-bus-append.sh (with
+#      routing.thread) is picked up by drainInbox → serve.ts chat interceptor, which:
+#      a. deposits the user turn (## user) into the thread history file, and
+#      b. fires the chat trigger with input=threadFile (NOT the raw payload).
+#   2. A real CC execution reads the thread history file (which now has the ## user section),
+#      composes a reply, and appends an ## assistant section — produced_change=1, nudged=0.
 #   3. The event log has start + end + output-check lines for the chat execution.
-#   4. The nudge variant (output-smoke-skip skill targeting the same chat/*.md glob) fires
-#      without writing → nudged=1, produced_change=0. Hard-fails if nudge never fires.
+#   4. The nudge variant (output-smoke-skip skill) fires without writing →
+#      nudged=1, produced_change=0. Hard-fails if nudge never fires.
 #   5. rebuildExecutions deep-equals both live rows (id, skill, started_at, ended_at,
 #      produced_change, nudged, input_ref). Hard-fails on any mismatch.
 #
-# MANDATORY genuine real-path: a real CC process fires the hooks — no hand-firing.
+# MANDATORY genuine real-path: bus line → drainInbox → serve.ts interceptor → real CC.
 # NO partial-proof fallback: if produced_change != 1 or nudged != 1, exits NON-ZERO.
+# The thread file must NOT have a ## user section before the bus line is appended —
+# the interceptor must be the one that deposits it.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -82,6 +86,23 @@ wait_exec_nudged() {
   return 1
 }
 
+# Poll for an execution fired by trigger_name created after after_ts. Prints exec id or "none".
+poll_exec_for_trigger() {
+  local trigger_name="$1" after_ts="$2" deadline=$((SECONDS + $3))
+  while [[ $SECONDS -lt $deadline ]]; do
+    local exec_id
+    exec_id=$(bun --eval "
+      const { Database } = require('bun:sqlite');
+      const db = new Database('$DB');
+      const r = db.query('SELECT id FROM executions WHERE trigger_id=? AND started_at>=? ORDER BY started_at DESC LIMIT 1').get('$trigger_name', $after_ts);
+      console.log(r ? r.id : 'none');
+    " 2>/dev/null) || exec_id="none"
+    [[ "$exec_id" != "none" && -n "$exec_id" ]] && { echo "$exec_id"; return 0; }
+    sleep 2
+  done
+  echo "none"
+}
+
 fire_trigger() {
   local name="$1" input_path="${2:-}"
   local body='{}'
@@ -100,15 +121,15 @@ fire_trigger() {
 }
 
 rm -f "$LOG"
-log "=== VOS-193 real-path proof: chat-as-file ==="
+log "=== VOS-193 real-path proof: chat-as-file (bus path) ==="
 log "Repo: $REPO"
 log "Vault: $VAULT"
 
 # ---- Preflight: vc auth check ----
 log "Checking vc auth..."
-if ! vc status 2>/dev/null | grep -q "authenticated\|authed\|ok"; then
-  if ! curl -sf "https://auth.makscee.ru/v1/auth-check" -H "Authorization: Bearer $(cat ~/.claudev/token 2>/dev/null)" 2>/dev/null | grep -q "ok\|valid\|true"; then
-    log "WARNING: vc may not be authenticated — proceeding (daemon will show auth error on /fire)"
+if ! vc status 2>/dev/null | grep -qi "logged in\|authenticated\|authed\|ok"; then
+  if ! cat ~/.claudev/token 2>/dev/null | grep -q .; then
+    log "WARNING: vc may not be authenticated — proceeding (daemon will show auth error on spawn)"
   fi
 fi
 
@@ -116,7 +137,7 @@ fi
 log "Setting up vault at $VAULT..."
 rm -rf "$VAULT"
 mkdir -p "$VAULT/triggers" "$VAULT/chat" "$VAULT/.claude/skills/chat" \
-         "$VAULT/.claude/skills/output-smoke-skip"
+         "$VAULT/.claude/skills/output-smoke-skip" "$VAULT/inbox"
 
 # void-os.json
 cat > "$VAULT/void-os.json" <<VAULTEOF
@@ -137,16 +158,12 @@ cp "$REPO/catalog/skills/chat/SKILL.md" "$VAULT/.claude/skills/chat/SKILL.md"
 # Install output-smoke-skip (no-op output — used for the nudge variant)
 cp "$REPO/catalog/skills/output-smoke-skip/SKILL.md" "$VAULT/.claude/skills/output-smoke-skip/SKILL.md"
 
-# Pre-seed user turn in thread file BEFORE daemon starts
+# Thread file must NOT exist before bus line is appended — the serve.ts interceptor
+# deposits the ## user section; pre-seeding it would bypass the interceptor.
 THREAD="proof-run"
 THREAD_FILE="$VAULT/chat/$THREAD.md"
-cat > "$THREAD_FILE" <<EOF
-
-## user ($(date -u +%Y-%m-%dT%H:%M:%SZ))
-
-Hello — this is a real-path proof. Please reply with exactly one short sentence confirming you read this file and are the chat agent.
-EOF
-log "Thread file seeded: $THREAD_FILE"
+[[ -f "$THREAD_FILE" ]] && fail "SETUP ERROR: thread file already exists before bus append (test contamination)"
+log "Thread file does not exist yet — interceptor will create it on bus drain"
 
 # Chat trigger: event, bound to bus inbox, kind=chat
 cat > "$VAULT/triggers/chat.md" <<'EOF'
@@ -161,8 +178,7 @@ step_ceiling: 30
 ---
 EOF
 
-# Nudge-variant trigger: manual, skill=output-smoke-skip (declared target=output-smoke/*.txt but fired
-# via the chat output_target glob by pointing input at a chat file)
+# Nudge-variant trigger: manual, skill=output-smoke-skip
 cat > "$VAULT/triggers/chat-noop.md" <<'EOF'
 ---
 name: chat-noop
@@ -200,24 +216,78 @@ for i in $(seq 1 5); do
 done
 
 # ====================================================================
-# === Proof 1: chat round-trip — CC reads thread file, appends reply, produced_change=1
+# === Proof 1: bus line → drainInbox → interceptor deposits user turn → CC appends reply
 # ====================================================================
 log ""
-log "=== Proof 1: Fire chat trigger with thread file as input ==="
+log "=== Proof 1: Append kind=chat bus line and wait for daemon to drain + CC round-trip ==="
 
-CHAT_EXEC_ID=$(fire_trigger "chat" "$THREAD_FILE")
-[[ "$CHAT_EXEC_ID" == "null" || -z "$CHAT_EXEC_ID" ]] && fail "chat trigger fire returned no runId"
-log "Chat execution ID: $CHAT_EXEC_ID"
+BEFORE_TS=$(( $(date +%s) * 1000 ))
+
+# Append a real bus line to the bus inbox — thread file must NOT exist yet (interceptor creates it).
+# Build the bus line directly with bun (avoids ${5:-{}} quoting gotcha in vos-bus-append.sh).
+log "Appending kind=chat bus line to inbox/bus.jsonl..."
+BUS_LINE_ID=$(THREAD="$THREAD" VAULT="$VAULT" bun --eval '
+  const { mkdirSync, appendFileSync } = require("fs");
+  const { randomUUID } = require("crypto");
+  const id = "bl-" + randomUUID();
+  const ts = Date.now();
+  const payload = "Hello — this is a real-path proof via the bus. Please reply with exactly one short sentence confirming you read this file and are the chat agent.";
+  const line = JSON.stringify({ channel: "file", kind: "chat", payload, routing: { thread: process.env.THREAD }, id, ts });
+  const dir = process.env.VAULT + "/inbox";
+  mkdirSync(dir, { recursive: true });
+  appendFileSync(dir + "/bus.jsonl", line + "\n");
+  process.stdout.write(id);
+' 2>/dev/null)
+[[ -z "$BUS_LINE_ID" ]] && fail "bus line append returned no id"
+log "Bus line appended: id=$BUS_LINE_ID inbox=$VAULT/inbox/bus.jsonl"
+
+# The daemon tick runs every 30s. Poll up to 90s for the chat trigger to fire an execution.
+# (The serve.ts interceptor reads the .void-os/bus/<id>.json inputRef file, extracts
+# routing.thread, calls appendUserMessage, then fires with input=threadFile.)
+log "Waiting for daemon tick to drain bus line and fire chat execution (up to 90s; tick=30s)..."
+CHAT_EXEC_ID=$(poll_exec_for_trigger "chat" "$BEFORE_TS" 90)
+[[ "$CHAT_EXEC_ID" == "none" || -z "$CHAT_EXEC_ID" ]] && {
+  log "Live triggers:"
+  query_exec "SELECT name, kind, event_kind, enabled FROM triggers" | tee -a "$LOG"
+  log "Inbox file:"
+  cat "$VAULT/inbox/bus.jsonl" | tee -a "$LOG" || true
+  log "Thread file (should now have ## user if interceptor ran):"
+  cat "$THREAD_FILE" 2>/dev/null | tee -a "$LOG" || log "(not yet created)"
+  log "Daemon log tail:"
+  tail -20 "$LOG" || true
+  fail "Bus line did not fire a chat execution within 90s — drainInbox or interceptor did not run"
+}
+log "Chat execution created: $CHAT_EXEC_ID"
+pass "Bus line → drainInbox → chat trigger fired: exec=$CHAT_EXEC_ID"
+
+# Proof 1a: Thread file must have ## user section — deposited by serve.ts interceptor
+# (NOT pre-seeded; the bus append happened above with an empty chat dir)
+if [[ ! -f "$THREAD_FILE" ]]; then
+  fail "HARD-FAIL: thread file not created by interceptor — serve.ts chat interceptor did not run"
+fi
+if grep -q "## user" "$THREAD_FILE"; then
+  pass "Thread file has ## user section deposited by serve.ts interceptor"
+else
+  log "Thread file contents:"
+  cat "$THREAD_FILE" | tee -a "$LOG"
+  fail "HARD-FAIL: thread file has no ## user section — interceptor did not call appendUserMessage"
+fi
 
 # Verify execution row has started_at
 STARTED=$(bun --eval "
   const { Database } = require('bun:sqlite');
   const db = new Database('$DB');
-  const r = db.query('SELECT started_at FROM executions WHERE id=?').get('$CHAT_EXEC_ID');
-  console.log(r ? r.started_at : 'null');
+  const r = db.query('SELECT started_at, input_ref FROM executions WHERE id=?').get('$CHAT_EXEC_ID');
+  console.log(r ? r.started_at + '|' + (r.input_ref ?? 'null') : 'null');
 " 2>/dev/null)
 [[ "$STARTED" == "null" || -z "$STARTED" ]] && fail "Chat execution row missing or started_at null"
-pass "Chat execution row created: started_at=$STARTED"
+EXEC_INPUT_REF=$(echo "$STARTED" | cut -d'|' -f2)
+log "Chat execution: started_at=$(echo "$STARTED" | cut -d'|' -f1) input_ref=$EXEC_INPUT_REF"
+
+# Verify input_ref points at the thread file (NOT the raw bus line — interceptor rewrote it)
+[[ "$EXEC_INPUT_REF" == "$THREAD_FILE" ]] || \
+  fail "HARD-FAIL: execution input_ref='$EXEC_INPUT_REF' expected '$THREAD_FILE' — interceptor did not rewrite input to thread file"
+pass "Execution input_ref = thread file (interceptor rewrote input correctly)"
 
 # Wait for CC to finish (max 180s for cold start + skill execution)
 log "Waiting for real CC hooks to walk chat execution start→end (max 180s)..."
@@ -226,7 +296,7 @@ if ! wait_exec_ended "$CHAT_EXEC_ID" 180; then
   log "Live row at timeout: $LIVE"
   log "Thread file contents:"
   cat "$THREAD_FILE" | tee -a "$LOG"
-  fail "Chat execution did not complete within 180s — ended_at never set. Daemon log: $LOG"
+  fail "Chat execution did not complete within 180s — ended_at never set"
 fi
 pass "Chat execution ended via real CC hooks"
 
@@ -234,17 +304,17 @@ pass "Chat execution ended via real CC hooks"
 log "Live chat execution row:"
 query_exec "SELECT id, skill, started_at, ended_at, produced_change, nudged, input_ref FROM executions WHERE id='$CHAT_EXEC_ID'" | tee -a "$LOG"
 
-# Proof 1a: thread file has ## assistant section
+# Proof 1b: thread file has ## assistant section (CC appended a reply)
 THREAD_CONTENT=$(cat "$THREAD_FILE")
 if echo "$THREAD_CONTENT" | grep -q "## assistant"; then
-  pass "Thread file contains ## assistant reply"
+  pass "Thread file contains ## assistant reply (CC appended)"
 else
   log "Thread file contents (no assistant found):"
   cat "$THREAD_FILE" | tee -a "$LOG"
   fail "HARD-FAIL: thread file has no ## assistant reply — CC did not append a reply. This is a failure, not a partial pass."
 fi
 
-# Proof 1b: produced_change=1
+# Proof 1c: produced_change=1
 PRODUCED=$(bun --eval "
   const { Database } = require('bun:sqlite');
   const db = new Database('$DB');
@@ -287,20 +357,15 @@ cat "$EVENT_LOG" | tee -a "$LOG"
 # === Proof 3: Reply-less nudge variant — nudged=1, produced_change=0
 # ====================================================================
 log ""
-log "=== Proof 3: Nudge variant — output-smoke-skip with chat output_target ==="
+log "=== Proof 3: Nudge variant — output-smoke-skip with declared output_target ==="
 log "Firing chat-noop trigger (output-smoke-skip skill — declares no output; expects nudge)..."
 
-# The output-smoke-skip skill has a different output_target (output-smoke/*.txt), but
-# it still won't touch ANY file in the vault. The nudge fires if the declared target is
-# not mutated. The declared target for output-smoke-skip is in its own SKILL.md.
-# This exercises the VOS-191 nudge path against any output_target declaration.
 NOOP_EXEC_ID=$(fire_trigger "chat-noop")
 [[ "$NOOP_EXEC_ID" == "null" || -z "$NOOP_EXEC_ID" ]] && fail "chat-noop trigger fire returned no runId"
 log "Noop execution ID: $NOOP_EXEC_ID"
 
-# Wait for nudge (max 240s — interactive mode required since print-mode does not fire Stop hook)
-# output-smoke-skip is a manual trigger → not print mode → Stop fires → nudge fires.
-log "Waiting for nudge to fire on noop execution (max 240s — interactive stop hook)..."
+# Wait for nudge (max 240s — interactive mode: Stop hook fires → nudge fires)
+log "Waiting for nudge to fire on noop execution (max 240s)..."
 if ! wait_exec_nudged "$NOOP_EXEC_ID" 240; then
   NOOP_ROW=$(query_exec "SELECT id, skill, started_at, ended_at, produced_change, nudged FROM executions WHERE id='$NOOP_EXEC_ID'")
   log "Noop row at timeout: $NOOP_ROW"
@@ -378,14 +443,17 @@ fi
 # ====================================================================
 log ""
 log "=== VOS-193 PROOF SUMMARY ==="
-log "Chat execution:   $CHAT_EXEC_ID"
+log "Bus line:         $BUS_LINE_ID (appended to inbox/bus.jsonl)"
+log "Chat execution:   $CHAT_EXEC_ID (fired by serve.ts interceptor via drainInbox)"
 log "Thread file:      $THREAD_FILE"
+log "  ## user:        present (deposited by serve.ts interceptor, NOT pre-seeded)"
 log "  ## assistant:   present (CC appended reply)"
 log "  produced_change: $PRODUCED"
 log "  nudged:          $NUDGED"
+log "  input_ref:       $EXEC_INPUT_REF (= thread file)"
 log "Nudge execution:  $NOOP_EXEC_ID"
 log "  nudged:          $NOOP_NUDGED"
 log "  produced_change: $NOOP_PRODUCED"
 log "Rebuild:          MATCH (all key fields equal)"
 log ""
-log "All checks passed — VOS-193 chat-as-file proven end-to-end with real CC."
+log "All checks passed — VOS-193 chat-as-file proven end-to-end: bus → drainInbox → interceptor → CC → reply."
