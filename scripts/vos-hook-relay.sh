@@ -3,10 +3,13 @@
 #
 # Claude Code fires this via a settings.json "type":"command" hook entry.
 # CC pipes the hook JSON payload to this script's stdin before each lifecycle event.
-# We forward it verbatim as a POST to the void-os daemon /hook?run=<id> endpoint.
+# We forward it verbatim as a POST to the void-os daemon /hook endpoint.
 #
-# Usage (embedded in per-Run settings.json):
-#   "command": "/path/to/vos-hook-relay.sh <daemon-url> <run-id>"
+# Two forms:
+#   Per-exec (daemon-spawned):  "/path/to/vos-hook-relay.sh <daemon-url> <run-id>"
+#     → POSTs to /hook?run=<run-id>
+#   Vault-level (hand-launched): "/path/to/vos-hook-relay.sh <daemon-url>"
+#     → POSTs to /hook (no run= param); daemon derives runId from payload.session_id
 #
 # Requirements: Bun in PATH (standard in void-os envs).
 # Always exits 0 — a command hook must never stall CC with a non-zero exit.
@@ -15,12 +18,14 @@ set -uo pipefail
 DAEMON_URL="${1:-}"
 RUN_ID="${2:-}"
 
-# Missing args = this script was called improperly; exit silently.
-[[ -z "$DAEMON_URL" || -z "$RUN_ID" ]] && exit 0
+# Only daemon-url is mandatory; exit silently if missing.
+[[ -z "$DAEMON_URL" ]] && exit 0
 
 # Read full stdin (CC hook JSON payload).
 PAYLOAD="$(cat 2>/dev/null || true)"
 
+# Build the hook URL: include ?run= only when a run-id was provided (per-exec path).
+# Vault-level path omits ?run= so the daemon derives runId from session_id in the payload.
 # POST to daemon; AWAIT the response. If the daemon returns a Stop-hook decision
 # ({"decision":"block",...}), echo EXACTLY that JSON to stdout so CC blocks the stop and
 # re-prompts. For any other response ({"ok":...}) print nothing. Always exit 0 (a 5xx or
@@ -28,7 +33,9 @@ PAYLOAD="$(cat 2>/dev/null || true)"
 RELAY_OUT="$(VOS_HOOK_PAYLOAD="$PAYLOAD" bun --eval "
   const body = process.env.VOS_HOOK_PAYLOAD ?? '{}';
   try {
-    const r = await fetch('$DAEMON_URL/hook?run=$RUN_ID', {
+    const run = '$RUN_ID';
+    const url = run ? '$DAEMON_URL/hook?run=' + run : '$DAEMON_URL/hook';
+    const r = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body,
     });
     const j = await r.json().catch(() => ({}));

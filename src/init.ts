@@ -1,20 +1,39 @@
 // init.ts — preflight, vault pick, seed, vc login (Task 13)
 // Non-interactive path: pass vault dir as first positional arg or via VOID_OS_VAULT env.
 // Interactive fallback: readline menu (requires a TTY).
-import { mkdirSync, cpSync, copyFileSync, existsSync } from "node:fs";
+import { mkdirSync, cpSync, copyFileSync, existsSync, rmSync, lstatSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { checkPrereqs, realDeps } from "./preflight.ts";
 import { writeConfig, readConfig } from "./paths.ts";
+import { buildVaultHookSettings } from "./hooks-endpoint.ts";
+import { hookRelayScriptPath } from "./spawn.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Seed vault floor: directory structure + files from templates + catalog. */
+/** Seed vault floor: directory structure + files from templates + catalog.
+ *  Writes vault-level .claude/settings.json with lifecycle hooks (VOS-197 vault-native). */
 export function seedVault(vault: string): void {
-  mkdirSync(join(vault, ".claude", "skills"), { recursive: true });
-  mkdirSync(join(vault, ".claude", "agents"), { recursive: true });
+  const claudeDir = join(vault, ".claude");
+
+  // Replace any stale skills symlink (worktree-collision class, Q3=a) with a real dir.
+  const skillsPath = join(claudeDir, "skills");
+  try {
+    if (lstatSync(skillsPath).isSymbolicLink()) rmSync(skillsPath);
+  } catch { /* path doesn't exist yet — that's fine */ }
+
+  mkdirSync(skillsPath, { recursive: true });
+  mkdirSync(join(claudeDir, "agents"), { recursive: true });
   mkdirSync(join(vault, "sessions"), { recursive: true });
+
+  // Write vault-level settings.json with lifecycle hooks (no per-exec runId baked in).
+  // The daemon /hook route derives runId from session_id for hand-launched sessions.
+  const daemonUrl = process.env.VOID_OS_DAEMON_URL ?? "http://127.0.0.1:4317";
+  writeFileSync(
+    join(claudeDir, "settings.json"),
+    JSON.stringify(buildVaultHookSettings(hookRelayScriptPath, daemonUrl), null, 2),
+  );
 
   const tmpl = join(repoRoot, "templates", "CLAUDE.md");
   if (existsSync(tmpl)) {
@@ -23,12 +42,18 @@ export function seedVault(vault: string): void {
 
   const onboardingSkill = join(repoRoot, "catalog", "skills", "onboarding");
   if (existsSync(onboardingSkill)) {
-    cpSync(onboardingSkill, join(vault, ".claude", "skills", "onboarding"), { recursive: true });
+    cpSync(onboardingSkill, join(claudeDir, "skills", "onboarding"), { recursive: true });
   }
 
   const agentsDir = join(repoRoot, "catalog", "agents");
   if (existsSync(agentsDir)) {
-    cpSync(agentsDir, join(vault, ".claude", "agents"), { recursive: true });
+    cpSync(agentsDir, join(claudeDir, "agents"), { recursive: true });
+  }
+
+  // Sync all catalog skills to vault .claude/skills so CC slash-command routing finds them.
+  const catalogSkillsDir = join(repoRoot, "catalog", "skills");
+  if (existsSync(catalogSkillsDir)) {
+    cpSync(catalogSkillsDir, skillsPath, { recursive: true });
   }
 }
 
