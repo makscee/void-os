@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 
 export type BusChannel = "file" | "tg" | "web";
-export type BusKind = "idea" | "chat" | "decision-reply";
+export type BusKind = "idea" | "chat" | "decision-reply" | "work";
 
 /** Routing hints. `skill`/`agent` override the trigger's bound pair (rare); decision-reply
  *  carries refs to the parked Decision + origin Execution it answers (consumer is VOS-194).
@@ -27,7 +27,7 @@ export interface BusLine {
 }
 
 const CHANNELS: ReadonlySet<string> = new Set(["file", "tg", "web"]);
-const KINDS: ReadonlySet<string> = new Set(["idea", "chat", "decision-reply"]);
+const KINDS: ReadonlySet<string> = new Set(["idea", "chat", "decision-reply", "work"]);
 
 /** Parse + validate one bus line. `now` seeds a default ts. Throws on invalid input. */
 export function parseBusLine(line: string, now: number = Date.now()): BusLine {
@@ -40,7 +40,7 @@ export function parseBusLine(line: string, now: number = Date.now()): BusLine {
   const channel = String(data.channel ?? "");
   if (!CHANNELS.has(channel)) throw new Error(`bus line: unknown channel "${channel}" (expected file|tg|web)`);
   const kind = String(data.kind ?? "");
-  if (!KINDS.has(kind)) throw new Error(`bus line: unknown kind "${kind}" (expected idea|chat|decision-reply)`);
+  if (!KINDS.has(kind)) throw new Error(`bus line: unknown kind "${kind}" (expected idea|chat|decision-reply|work)`);
   if (typeof data.payload !== "string" || data.payload.length === 0) {
     throw new Error(`bus line: missing or empty payload`);
   }
