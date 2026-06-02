@@ -22,6 +22,10 @@ import { appendEvent } from "./events.ts";
 import { killSession } from "./tmux.ts";
 import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
 import { listPendingDecisions } from "./decision.ts";
+import {
+  gateCreate, gatePatch, gateEdit, gateDelete, gateWriteFile,
+  listVaultSkills, viewVaultSkill,
+} from "./skill-manage.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogRoot = join(repoRoot, "catalog");
@@ -373,6 +377,82 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     const res = fireTrigger(db, name, { spawn: spawnFn, now: Date.now(), input: bodyInput, inputRef: bodyInputRef, forcePrint });
     if (!res) return c.json({ error: "no such trigger or disabled" }, 404);
     return c.json({ runId: res.runId });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Skill-manage HTTP routes (VOS-199) — thin wrapper for MCP server daemon-mode.
+  // ---------------------------------------------------------------------------
+
+  // GET /skill-manage/skills_list — list installed vault skills
+  app.get("/skill-manage/skills_list", (c) => {
+    return c.json(listVaultSkills(vault));
+  });
+
+  // POST /skill-manage/skills_list — also accept POST for symmetry with MCP daemon mode
+  app.post("/skill-manage/skills_list", (c) => {
+    return c.json(listVaultSkills(vault));
+  });
+
+  // POST /skill-manage/skill_view — return SKILL.md body
+  app.post("/skill-manage/skill_view", async (c) => {
+    const b = await c.req.json() as Record<string, unknown>;
+    const name = String(b.name ?? "");
+    if (!name) return c.json({ error: "name required" }, 400);
+    const body = viewVaultSkill(vault, name);
+    if (!body) return c.json({ error: `skill not found: ${name}` }, 404);
+    return c.json({ name, body });
+  });
+
+  // POST /skill-manage/mutate — gate a skill mutation (all actions)
+  // Returns { txnId, decisionId, status: "parked" }
+  app.post("/skill-manage/mutate", async (c) => {
+    const b = await c.req.json() as Record<string, unknown>;
+    const action = String(b.action ?? "");
+    const name = String(b.name ?? "");
+    const execId = String(b.exec_id ?? `daemon-${randomUUID()}`);
+
+    if (!action || !name) return c.json({ error: "action and name required" }, 400);
+
+    try {
+      let result: { txnId: string; decisionId: string; status: string };
+
+      if (action === "create") {
+        const body = String(b.body ?? "");
+        if (!body) return c.json({ error: "body required for create" }, 400);
+        result = gateCreate(vault, {
+          execId, name, body,
+          trigger: b.trigger ? String(b.trigger) : undefined,
+        });
+      } else if (action === "patch") {
+        const oldBody = String(b.old_body ?? "");
+        const newBody = String(b.body ?? "");
+        if (!oldBody || !newBody) return c.json({ error: "old_body and body required for patch" }, 400);
+        result = gatePatch(vault, {
+          execId, name, oldBody, newBody,
+          trigger: b.trigger ? String(b.trigger) : undefined,
+        });
+      } else if (action === "edit") {
+        const body = String(b.body ?? "");
+        if (!body) return c.json({ error: "body required for edit" }, 400);
+        result = gateEdit(vault, {
+          execId, name, body,
+          trigger: b.trigger ? String(b.trigger) : undefined,
+        });
+      } else if (action === "delete") {
+        result = gateDelete(vault, { execId, name });
+      } else if (action === "write_file") {
+        const filePath = String(b.file_path ?? "");
+        const content = String(b.content ?? "");
+        if (!filePath || !content) return c.json({ error: "file_path and content required for write_file" }, 400);
+        result = gateWriteFile(vault, { execId, name, filePath, content });
+      } else {
+        return c.json({ error: `unknown action: ${action}` }, 400);
+      }
+
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
   });
 
   // GET /s/:uuid/stream — SSE: emits "reload" whenever body.html mtime advances.
