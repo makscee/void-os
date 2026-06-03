@@ -108,8 +108,9 @@ export function handleHookEvent(
       appendEvent(vault, runId, { type: "output-check", produced_change: false, nudged: true, at: now });
       return {
         decision: "block",
-        reason: `You have not yet written your declared output target (${target}). ` +
-          `Your output is the FILE, not this message. Write/modify ${target} now, then stop.`,
+        reason: `You have not yet mutated your declared output target (${target}) since this session started. ` +
+          `Use the Edit tool to append to ${target}, then stop. Do not use Write (it overwrites). ` +
+          `The output is the FILE, not this message.`,
       };
     }
     case "SessionEnd": {
