@@ -129,61 +129,42 @@ test("S5·t3 — copybtn data-cmd is ccId-form resume command (not tmux / not ru
 });
 
 // ── S5·t4 ─────────────────────────────────────────────────────────────────────
-// PRE-CCID EDGE (KNOWN REJECT-CLASS): No cc-actual-session.txt → renderShell
-// falls back to `cd <vault> && vc -- --resume <runId>`.
-// A runId is NOT a valid CC --resume target.
-// Assert the actual data-cmd value, flag it. ACCEPT-with-nit only if suppressed/labeled.
+// VOS-215 BUG C FIXED: pre-ccId state renders a suppressed <span> (no data-cmd),
+// not a `--resume <runId>` button. renderShell now checks hasCcId = resumeCmd != null:
+//   • hasCcId true  → <button class="copy-btn" id="copybtn" data-cmd="...">
+//   • hasCcId false → <span class="copy-btn" id="copybtn" style="cursor:default;opacity:.5">starting…</span>
+// Regression guard: assert the bug is ABSENT (no misleading --resume <runId> button).
 
-test("S5·t4 — pre-ccId fallback: assert data-cmd value and flag misleading-resume", async ({ page }) => {
+test("S5·t4 — pre-ccId suppressed copybtn: no data-cmd, shows starting… (VOS-215 BUG C regression guard)", async ({ page }) => {
   await page.goto(`${BASE}/s/${PRECID_ID}`, { waitUntil: "domcontentloaded" });
 
+  // The #copybtn element MUST be present (the span is always rendered)
   const copybtn = page.locator("#copybtn");
   await expect(copybtn).toBeVisible({ timeout: 5000 });
 
+  // VOS-215 FIX: pre-ccId copybtn MUST NOT have a data-cmd attribute.
+  // (The old bug: it had data-cmd="cd <vault> && vc -- --resume <runId>")
+  // Regression guard: if renderShell ever reverts to emitting the runId button,
+  // data-cmd will be non-null and this assertion will FAIL.
   const dataCmd = await copybtn.getAttribute("data-cmd");
-  expect(dataCmd, "data-cmd must not be null").toBeTruthy();
+  expect(dataCmd, "pre-ccId #copybtn must NOT have data-cmd (no misleading --resume runId)").toBeNull();
 
-  // Record the actual value for the truth JSON regardless of form
-  truth.t4.dataCmdValue = dataCmd!;
-
-  // Determine if it's a runId-form (the known fallback)
-  const isRunIdForm = dataCmd!.includes(`--resume ${PRECID_ID}`);
-  const isCcIdForm  = dataCmd!.includes(`--resume ${CC_ID}`);
-  const isTmuxForm  = dataCmd!.includes("tmux -L vos attach -t");
-
-  // Button text — check if suppressed / labeled as "starting…"
+  // The button text must say "starting…" (the suppressed placeholder)
   const btnText = (await copybtn.innerText()).toLowerCase();
-  // "Suppressed" = explicitly labeled to signal the session hasn't started yet.
-  // The display label always contains "…" (truncated uuid), so "…" alone is NOT suppression.
-  const isSuppressed = btnText.includes("starting") || btnText.includes("pending");
+  expect(btnText, "pre-ccId copybtn must display 'starting…' label").toContain("starting");
+
+  // Must NOT contain --resume <runId> anywhere in the element's outer HTML
+  const outerHtml = await copybtn.evaluate((el: Element) => el.outerHTML);
+  expect(outerHtml, "pre-ccId copybtn outer HTML must NOT contain --resume <runId>")
+    .not.toContain(`--resume ${PRECID_ID}`);
 
   await page.screenshot({ path: join(SHOT_DIR, "t4-pre-ccid.png"), fullPage: true });
 
-  if (isRunIdForm && !isSuppressed) {
-    // REJECT-class: runId-form --resume unsuppressed — would mislead the operator
-    truth.t4.misleadingResumeFinding =
-      "pre-ccId copybtn shows runId-form --resume (not a valid CC target) — flag per S5·t4";
-    truth.t4.verdict = "REJECT-class: runId --resume not suppressed (misleading-resume finding)";
-    // The test still PASSES (we assert+flag, not block) — this is a known edge per spec
-    // The spec says ACCEPT-with-nit only if suppressed; we document REJECT-class in truth JSON.
-  } else if (isCcIdForm) {
-    // Unexpected but fine — ccId appeared (shouldn't happen for PRECID_ID with no cc-actual)
-    truth.t4.verdict = "ACCEPT: ccId-form (unexpected for pre-ccId session — investigate seeding)";
-  } else if (isRunIdForm && isSuppressed) {
-    truth.t4.verdict = "ACCEPT-with-nit: runId-form but button labeled as starting…";
-  } else if (isTmuxForm) {
-    truth.t4.verdict = "REJECT: tmux-target form in pre-ccId session";
-  } else {
-    truth.t4.verdict = `UNKNOWN: data-cmd="${dataCmd}" — inspect manually`;
-  }
+  // Record passing verdict
+  truth.t4.dataCmdValue = "(suppressed — no data-cmd attribute)";
+  truth.t4.verdict = "ACCEPT: pre-ccId copybtn correctly suppressed (starting… span, no runId --resume). VOS-215 BUG C fixed.";
 
-  // The assertion we enforce: data-cmd exists and we've recorded its value.
-  // The REJECT-class verdict is recorded in truth JSON (not a test failure per spec intent).
-  expect(truth.t4.dataCmdValue).toBeTruthy();
   // Log for CI output
-  console.log(`S5·t4 data-cmd: ${truth.t4.dataCmdValue}`);
   console.log(`S5·t4 verdict: ${truth.t4.verdict}`);
-  if (truth.t4.misleadingResumeFinding) {
-    console.warn(`S5·t4 REJECT-class: ${truth.t4.misleadingResumeFinding}`);
-  }
+  console.log(`S5·t4 outerHTML: ${outerHtml}`);
 });

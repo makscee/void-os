@@ -281,8 +281,8 @@ test("S7·t3 — awaiting: amber dot before; after clearing form dot changes", a
   // Reload and check dot is no longer amber (.await class gone)
   await page.reload({ waitUntil: "domcontentloaded" });
   const afterDot = await dotBgColor(page, ".session-dot");
-  // Should no longer be amber (hsl 38). After form cleared with live exec → working = green.
-  // working = default green = hsl(142 70% 45%) ≈ rgb(35, 196, 94)
+  // Should no longer be amber (hsl 38). After form cleared with live exec → working = blue (VOS-215).
+  // working = hsl(217 70% 55%) ≈ blue; either way NOT amber (high R + low B discriminator holds)
   const ma = afterDot.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
   if (ma) {
     const r = parseInt(ma[1]), g = parseInt(ma[2]), b = parseInt(ma[3]);
@@ -324,14 +324,15 @@ test("S7·t4 — reaped session: status=reaped, dot grey (resumable, not broken)
 });
 
 // ============================================================
-// S7·t5 — KNOWN REJECT-CLASS FINDING: working == complete == default green
-// Both map to dotClass("") => no extra CSS class => same background-color.
-// This is a BLOCKING misleading-status finding. The spec mandates surfacing.
+// S7·t5 — VOS-215 BUG B FIXED: working dot is now DISTINCT from complete dot.
+// dotClass("working") → "working" => CSS .session-dot.working { background: hsl(217 70% 55%) } (blue).
+// dotClass("complete") → "" => CSS .session-dot default { background: hsl(142 70% 45%) } (green).
+// This is the forward regression guard: assert the two dots are DIFFERENT colors.
 //
 // NOTE: The .session-dot selector is on the DASHBOARD (GET /), not on individual session
 // shell pages (/s/<uuid>). We navigate to GET / and inspect the dots by UUID.
 // ============================================================
-test("S7·t5 — KNOWN REJECT: working and complete share same green dot (misleading status)", async ({ page }) => {
+test("S7·t5 — status-distinct regression guard: working dot color ≠ complete dot color", async ({ page }) => {
   // Load dashboard — all dots are rendered here
   await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
 
@@ -363,21 +364,23 @@ test("S7·t5 — KNOWN REJECT: working and complete share same green dot (mislea
   expect(workingDotColor, "working dot color must be found on dashboard").not.toBe("NOT_FOUND");
   expect(completeDotColor, "complete dot color must be found on dashboard").not.toBe("NOT_FOUND");
 
-  // ASSERT: they are the SAME color — this is the known finding we must surface
-  expect(workingDotColor, "working dot color == complete dot color (both default green = misleading)").toBe(completeDotColor);
+  // VOS-215 FIX: working dot MUST be a different color from complete dot.
+  // working = hsl(217 70% 55%) ≈ blue; complete = hsl(142 70% 45%) ≈ green (default).
+  // Regression guard: if dotClass("working") ever falls back to "" again, both dots
+  // will share the default green and this assertion will FAIL (catching the regression).
+  expect(workingDotColor, "working dot color must be DISTINCT from complete dot color (VOS-215 BUG B regression guard)").not.toBe(completeDotColor);
 
-  // Record the blocking finding in truth JSON
+  // Record the passing verdict in truth JSON
   truth["s7t5"] = {
-    verdict: "REJECT",
-    finding: "BLOCKING — misleading-status",
-    details: "dotClass() maps BOTH 'working' AND 'complete' to '' (empty string) => both render default green background (hsl(142 70% 45%)). A running session is visually indistinguishable from a done session. Operator cannot tell if the agent is still working or has finished. This requires a distinct color or class for 'working' vs 'complete'.",
+    verdict: "ACCEPT",
+    finding: "status-distinct — working dot (blue) is visually distinguishable from complete dot (green)",
+    details: "dotClass('working') → 'working' class => CSS .session-dot.working { background: hsl(217 70% 55%) } (blue). dotClass('complete') → '' => default .session-dot { background: hsl(142 70% 45%) } (green). Colors are distinct. VOS-215 BUG B fixed.",
     workingDotColor,
     completeDotColor,
-    workingDotClass: "session-dot (no modifier — default green)",
-    completeDotClass: "session-dot (no modifier — default green)",
-    bugClass: "misleading-status",
-    severity: "BLOCKING",
-    recommendation: "Add a distinct dot class for 'working' (e.g. 'session-dot working') with a different color (e.g. blue/purple) so operator can distinguish in-progress from done.",
+    workingDotClass: "session-dot working (blue — hsl(217 70% 55%))",
+    completeDotClass: "session-dot (default green — hsl(142 70% 45%))",
+    bugClass: "none",
+    severity: "none",
   };
   saveTruth();
 
@@ -390,10 +393,6 @@ test("S7·t5 — KNOWN REJECT: working and complete share same green dot (mislea
 
   await page.goto(`${BASE}/s/${SESSION_IDS.complete}`, { waitUntil: "domcontentloaded" });
   await page.screenshot({ path: join(SHOT_S7, "t5-complete-shell.png"), fullPage: false });
-
-  // The test PASSES (green) because we are ASSERTING the known-gap behavior exists as documented.
-  // The REJECT verdict is surfaced in truth.json and the test name.
-  // This is the correct behavior per the spec: "assert workingDotColor==completeDotColor and RECORD it".
 });
 
 // Save truth JSON at end of each test too (for partial runs)
