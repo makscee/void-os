@@ -5,28 +5,64 @@ import { locateTranscript, parseTranscript, renderTranscript } from "../src/tran
 
 const fixture = readFileSync(join(import.meta.dir, "fixtures", "transcript-sample.jsonl"), "utf8");
 
-test("parseTranscript keeps only user/assistant turns with non-empty text", () => {
+test("parseTranscript keeps user/assistant text turns from fixture", () => {
   const turns = parseTranscript(fixture);
-  expect(turns).toEqual([
-    { role: "user", text: "/smoke-test hello" },
-    { role: "assistant", text: "Turn 1 done. body.html written." },
-  ]);
+  // user plain-string content → kind:text
+  expect(turns.some(t => t.role === "user" && t.kind === "text" && t.text === "/smoke-test hello")).toBe(true);
+  // assistant text block → kind:text
+  expect(turns.some(t => t.role === "assistant" && t.kind === "text" && t.text === "Turn 1 done. body.html written.")).toBe(true);
 });
 
-test("parseTranscript joins multiple text blocks", () => {
-  const line = JSON.stringify({
-    type: "assistant",
-    message: { role: "assistant", content: [
-      { type: "text", text: "alpha " },
-      { type: "tool_use", name: "X" },
-      { type: "text", text: "beta" },
-    ] },
-  });
-  expect(parseTranscript(line)).toEqual([{ role: "assistant", text: "alpha beta" }]);
+test("parseTranscript extracts all event kinds from fixture", () => {
+  const turns = parseTranscript(fixture);
+  // fixture has a tool_use Bash block, a tool_result, and a mode meta event
+  expect(turns.some(t => t.kind === "tool_use")).toBe(true);
+  expect(turns.some(t => t.kind === "tool_result")).toBe(true);
+  expect(turns.some(t => t.kind === "meta")).toBe(true);
 });
 
 test("parseTranscript returns [] for empty input", () => {
   expect(parseTranscript("")).toEqual([]);
+});
+
+test("parseTranscript tags chat, tool, thinking, and meta kinds", () => {
+  const jsonl = [
+    JSON.stringify({ type: "user", message: { content: "hello" } }),
+    JSON.stringify({ type: "assistant", message: { content: [
+      { type: "thinking", thinking: "hmm" },
+      { type: "text", text: "hi there" },
+      { type: "tool_use", name: "Bash", input: { command: "ls" } },
+    ] } }),
+    JSON.stringify({ type: "user", message: { content: [
+      { type: "tool_result", content: "file1\nfile2" },
+    ] } }),
+    JSON.stringify({ type: "system", content: "system note" }),
+  ].join("\n");
+  const turns = parseTranscript(jsonl);
+  // user text
+  expect(turns.find(t => t.role === "user" && t.kind === "text")?.text).toBe("hello");
+  // assistant carries separate blocks tagged by kind
+  const a = turns.filter(t => t.role === "assistant");
+  expect(a.some(t => t.kind === "thinking")).toBe(true);
+  expect(a.some(t => t.kind === "text" && t.text === "hi there")).toBe(true);
+  expect(a.some(t => t.kind === "tool_use")).toBe(true);
+  // tool_result tagged
+  expect(turns.some(t => t.kind === "tool_result")).toBe(true);
+  // meta tagged
+  expect(turns.some(t => t.kind === "meta")).toBe(true);
+});
+
+test("parseTranscript skips whitespace-only text blocks", () => {
+  const line = JSON.stringify({
+    type: "assistant",
+    message: { role: "assistant", content: [
+      { type: "text", text: "   " },
+      { type: "text", text: "beta" },
+    ] },
+  });
+  const turns = parseTranscript(line);
+  expect(turns).toHaveLength(1);
+  expect(turns[0].text).toBe("beta");
 });
 
 test("locateTranscript finds <uuid>.jsonl in any project subdir", () => {
@@ -55,16 +91,32 @@ test("locateTranscript returns null when projects dir is missing", () => {
 
 test("renderTranscript labels roles and escapes text", () => {
   const html = renderTranscript([
-    { role: "user", text: "/smoke <b>hi</b>" },
-    { role: "assistant", text: "done & ok" },
+    { role: "user", kind: "text", text: "/smoke <b>hi</b>" },
+    { role: "assistant", kind: "text", text: "done & ok" },
   ]);
-  expect(html).toContain('class="turn role-user"');
+  expect(html).toContain('class="turn role-user kind-text"');
   expect(html).toContain("you:");
   expect(html).toContain("&lt;b&gt;hi&lt;/b&gt;");
-  expect(html).toContain('class="turn role-assistant"');
+  expect(html).toContain('class="turn role-assistant kind-text"');
   expect(html).toContain("claude:");
   expect(html).toContain("done &amp; ok");
   expect(html).not.toContain("<b>hi</b>");
+});
+
+test("renderTranscript emits data-kind and data-role attributes", () => {
+  const html = renderTranscript([
+    { role: "user", kind: "text", text: "hello" },
+    { role: "assistant", kind: "tool_use", text: "Bash {}" },
+    { role: "assistant", kind: "thinking", text: "hmm" },
+    { role: "system", kind: "meta", text: "[mode] default" },
+  ]);
+  expect(html).toContain('data-kind="text"');
+  expect(html).toContain('data-kind="tool_use"');
+  expect(html).toContain('data-kind="thinking"');
+  expect(html).toContain('data-kind="meta"');
+  expect(html).toContain('data-role="user"');
+  expect(html).toContain('data-role="assistant"');
+  expect(html).toContain('data-role="system"');
 });
 
 test("renderTranscript returns empty string for no turns", () => {
