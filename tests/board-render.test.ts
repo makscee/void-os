@@ -2,7 +2,7 @@
 // The kanban panel ships with example cards; the daemon must replace them with REAL task
 // cards parsed from the panel's data-vos-source glob, grouped into columns by task `state`.
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderBoardData, parseTaskCard } from "../src/pages.ts";
@@ -92,4 +92,36 @@ test("renderBoardData renders empty columns cleanly when no tasks match the glob
   const out = renderBoardData(vault, KANBAN);
   expect(out).not.toContain("Example task A"); // examples still stripped
   expect(out).toContain('data-col="todo"');     // structure intact
+});
+
+// Regression (the bug THE PROOF caught): the SHIPPED kit/scaffolds/kanban.html has TWO example
+// cards nested in one `data-cards` container. A non-greedy `</div>` replacement stopped at the
+// FIRST card's close, orphaning the second example ("Example task B"). The container's matching
+// close must be found by div-depth walking. Drive the real scaffold from disk, not a 1-card stub.
+test("renderBoardData strips ALL example cards in a multi-card column (real shipped scaffold)", () => {
+  const scaffold = readFileSync(
+    join(import.meta.dir, "..", "kit", "scaffolds", "kanban.html"),
+    "utf8",
+  );
+  // sanity: the shipped scaffold really does carry two example cards in one column
+  expect(scaffold).toContain("Example task A");
+  expect(scaffold).toContain("Example task B");
+
+  task("VOS-901-a.md", { id: "VOS-901", title: "Alpha", state: "todo" });
+  task("VOS-902-b.md", { id: "VOS-902", title: "Beta", state: "doing" });
+  const out = renderBoardData(vault, scaffold);
+
+  // BOTH examples gone (the bug: only A was stripped, B survived)
+  expect(out).not.toContain("Example task A");
+  expect(out).not.toContain("Example task B");
+  expect(out).not.toContain('data-id="example-1"');
+  expect(out).not.toContain('data-id="example-2"');
+
+  // real cards present + correctly bucketed; board structure preserved
+  const todoCol = out.slice(out.indexOf('data-col="todo"'), out.indexOf('data-col="doing"'));
+  expect(todoCol).toContain('data-id="VOS-901"');
+  expect(todoCol).not.toContain('data-id="VOS-902"');
+  const doingCol = out.slice(out.indexOf('data-col="doing"'), out.indexOf('data-col="done"'));
+  expect(doingCol).toContain('data-id="VOS-902"');
+  expect(out).toContain('data-col="done"'); // third column structurally intact
 });

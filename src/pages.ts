@@ -192,12 +192,47 @@ export function renderBoardData(vault: string, html: string): string {
     );
   }
 
-  // for each `data-col="X"` block, replace the inner-most data-cards container's children
-  return html.replace(
-    /(<div[^>]*data-col\s*=\s*["']([^"']*)["'][^>]*>[\s\S]*?<div[^>]*\bdata-cards\b[^>]*>)([\s\S]*?)(<\/div>)/g,
-    (_full, open: string, col: string, _children: string, close: string) =>
-      `${open}${(buckets[col] ?? []).join("")}${close}`,
-  );
+  // For each `data-col="X"` block, replace the children of its first `data-cards` container.
+  // The example children are themselves `<div class="card">…</div>`, so a non-greedy `</div>`
+  // match would stop at the FIRST card's close (leaving sibling examples orphaned). Walk the
+  // div-nesting depth forward from the container's opening tag to find its TRUE matching close.
+  const colOpenRe = /<div[^>]*\bdata-col\s*=\s*["']([^"']*)["'][^>]*>/gi;
+  const divTokenRe = /<div\b[^>]*>|<\/div>/gi;
+  let out = "";
+  let cursor = 0;
+  let cm2: RegExpExecArray | null;
+  colOpenRe.lastIndex = 0;
+  while ((cm2 = colOpenRe.exec(html)) !== null) {
+    const col = cm2[1];
+    // find the `data-cards` container opening tag after this col tag
+    const cardsOpenRe = /<div[^>]*\bdata-cards\b[^>]*>/gi;
+    cardsOpenRe.lastIndex = colOpenRe.lastIndex;
+    const co = cardsOpenRe.exec(html);
+    if (!co) continue;
+    const contentStart = co.index + co[0].length;
+    // walk forward tracking depth to find the matching </div> of the container (depth starts at 1)
+    divTokenRe.lastIndex = contentStart;
+    let depth = 1;
+    let closeStart = -1;
+    let tk: RegExpExecArray | null;
+    while ((tk = divTokenRe.exec(html)) !== null) {
+      if (tk[0].startsWith("</")) {
+        depth--;
+        if (depth === 0) { closeStart = tk.index; break; }
+      } else {
+        depth++;
+      }
+    }
+    if (closeStart === -1) continue; // unbalanced — leave this block untouched
+    // emit everything up to the container's content, then the new cards, skipping old children
+    out += html.slice(cursor, contentStart);
+    out += (buckets[col] ?? []).join("");
+    cursor = closeStart; // resume at the container's closing </div>
+    // advance the col scanner past this container so we don't re-enter it
+    colOpenRe.lastIndex = closeStart;
+  }
+  out += html.slice(cursor);
+  return out;
 }
 
 /**
