@@ -6,7 +6,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { checkPrereqs, realDeps } from "./preflight.ts";
-import { writeConfig, readConfig } from "./paths.ts";
+import { writeConfig, readConfig, expandPath } from "./paths.ts";
 import { buildVaultHookSettings } from "./hooks-endpoint.ts";
 import { hookRelayScriptPath } from "./spawn.ts";
 
@@ -183,7 +183,11 @@ export async function runInit(
   vaultArg?: string,
 ): Promise<void> {
   const isTty = Boolean(process.stdin.isTTY);
-  const vault = await pickVault(vaultArg, process.env as Record<string, string | undefined>, isTty);
+  const picked = await pickVault(vaultArg, process.env as Record<string, string | undefined>, isTty);
+  // Expand leading ~ / $HOME and resolve to absolute BEFORE creating anything (VOS-229).
+  // Covers all three entry points (positional arg, VOID_OS_VAULT env, interactive clack prompt)
+  // since each funnels through pickVault's return value.
+  const vault = expandPath(picked);
 
   // Preflight (vc/claude/login) — skip hard-fail when running non-interactively so
   // G6 E2E can seed a fresh vault even if vc isn't logged in yet.

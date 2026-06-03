@@ -1,6 +1,33 @@
 // paths.ts — vault + session path resolution (Task 2)
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+
+/**
+ * Expand a user-typed path so shell-style home references resolve correctly (VOS-229).
+ * The OS only expands `~` and `$HOME` inside a real shell; a value typed into a clack
+ * prompt or passed as a literal argv arg arrives un-expanded, so `~/vault` would otherwise
+ * create a literal directory named `~`. This normalizes:
+ *   - leading `~`  or `~/...`  → home dir
+ *   - leading `$HOME` or `$HOME/...` → home dir
+ * then resolves to an absolute path (relative inputs resolve against cwd).
+ *
+ * @param input    The raw path string (trimmed by the caller is fine; we trim defensively).
+ * @param homeOverride  Override for the home dir (tests). Defaults to os.homedir().
+ */
+export function expandPath(input: string, homeOverride?: string): string {
+  // Prefer an explicit override, then $HOME (shell `~` expands to $HOME), then os.homedir().
+  const home = homeOverride ?? process.env.HOME ?? homedir();
+  let p = input.trim();
+  if (p === "~" || p === "$HOME") {
+    p = home;
+  } else if (p.startsWith("~/")) {
+    p = join(home, p.slice(2));
+  } else if (p.startsWith("$HOME/")) {
+    p = join(home, p.slice("$HOME/".length));
+  }
+  return resolve(p);
+}
 
 export const sessionsRoot = (vault: string) => join(vault, "sessions");
 export const sessionDir = (vault: string, uuid: string) => join(sessionsRoot(vault), uuid);

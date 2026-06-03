@@ -52,6 +52,25 @@ export function handleChatBusLine(
   }
 }
 
+/**
+ * Detect whether a thrown error from Bun.serve is an "address already in use" failure
+ * (VOS-229). Bun surfaces this as an error whose `code` is "EADDRINUSE" and/or whose
+ * message mentions the port being in use. We match on either so the detector is robust
+ * across Bun versions / message phrasings.
+ */
+export function isPortInUse(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { code?: unknown; message?: unknown };
+  if (typeof e.code === "string" && e.code === "EADDRINUSE") return true;
+  if (typeof e.message === "string") {
+    const m = e.message.toLowerCase();
+    if (m.includes("eaddrinuse")) return true;
+    if (m.includes("address already in use")) return true;
+    if (m.includes("is port") && m.includes("in use")) return true; // Bun's "Is port N in use?"
+  }
+  return false;
+}
+
 /** Resolve the port: --port <n> flag > VOID_OS_PORT env > void-os.json > 4317. */
 export function resolvePort(argv: string[], env: Record<string, string | undefined>, cfgPort: number): number {
   const flagIdx = argv.indexOf("--port");
@@ -139,7 +158,26 @@ export async function runServe(): Promise<void> {
   // idleTimeout:255 prevents Bun's 10s default from killing long-lived SSE connections
   // during cold starts. 255 is Bun's max; the SSE loop also sends periodic keepalive
   // pings so connections survive even beyond 255s.
-  Bun.serve({ port, hostname: "0.0.0.0", fetch: app.fetch, idleTimeout: 255 });
+  //
+  // VOS-229: catch EADDRINUSE (stale daemon holding the port). The port is config-derived
+  // (cfg.port, persisted via writeConfig above) and the daemon URL / trigger-fire client both
+  // read it back — auto-falling-forward to a free port would desync the stored config from the
+  // live listener, so we take the clear-error route and keep the operator in control.
+  try {
+    Bun.serve({ port, hostname: "0.0.0.0", fetch: app.fetch, idleTimeout: 255 });
+  } catch (err) {
+    if (isPortInUse(err)) {
+      console.error(
+        `void-os serve: port ${port} is already in use.\n` +
+        `  A void-os daemon (or another process) is likely already listening on it.\n` +
+        `  Resolve it one of these ways:\n` +
+        `    • stop the stale daemon:  lsof -ti tcp:${port} | xargs kill\n` +
+        `    • or serve on another port:  void-os serve --port <N>`,
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
   console.log(`void-os serving ${vault} at ${url}`);
 
   const noOpen = process.argv.includes("--no-open");

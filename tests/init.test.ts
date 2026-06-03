@@ -5,8 +5,80 @@ import { expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, lstatSync, readdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { seedVault, preseedCCTrust } from "../src/init.ts";
-import { readConfig, writeConfig } from "../src/paths.ts";
+import { homedir } from "node:os";
+import { seedVault, preseedCCTrust, runInit } from "../src/init.ts";
+import { readConfig, writeConfig, expandPath } from "../src/paths.ts";
+
+// ---- VOS-229: init path tilde / $HOME expansion ----
+
+test("expandPath expands a leading ~/ to the home dir", () => {
+  expect(expandPath("~/vault", "/home/testuser")).toBe("/home/testuser/vault");
+});
+
+test("expandPath expands a bare ~ to the home dir", () => {
+  expect(expandPath("~", "/home/testuser")).toBe("/home/testuser");
+});
+
+test("expandPath expands a leading $HOME/ to the home dir", () => {
+  expect(expandPath("$HOME/somevault", "/home/testuser")).toBe("/home/testuser/somevault");
+});
+
+test("expandPath expands a bare $HOME to the home dir", () => {
+  expect(expandPath("$HOME", "/home/testuser")).toBe("/home/testuser");
+});
+
+test("expandPath does NOT expand a ~ that is not at the start", () => {
+  // a/~/b is a real (if odd) relative path — only a LEADING ~ is a home reference
+  expect(expandPath("/abs/~/b", "/home/testuser")).toBe("/abs/~/b");
+});
+
+test("expandPath resolves a plain relative path against cwd (no ~)", () => {
+  expect(expandPath("subdir", "/home/testuser")).toBe(resolve("subdir"));
+});
+
+test("expandPath leaves an absolute path absolute", () => {
+  expect(expandPath("/tmp/myvault", "/home/testuser")).toBe("/tmp/myvault");
+});
+
+test("expandPath trims surrounding whitespace before expanding", () => {
+  expect(expandPath("  ~/vault  ", "/home/testuser")).toBe("/home/testuser/vault");
+});
+
+test("expandPath defaults to $HOME (or os.homedir()) when no override given", () => {
+  const home = process.env.HOME ?? homedir();
+  expect(expandPath("~/x")).toBe(join(home, "x"));
+});
+
+// Integration: runInit with a "$HOME/..."-style positional arg must create the real
+// home-relative vault and NEVER a literal "~" directory under cwd.
+test("runInit expands a ~/ positional arg to HOME and creates no literal ~ dir", async () => {
+  const fakeHome = `/tmp/voidos-init-home-${Date.now()}`;
+  mkdirSync(fakeHome, { recursive: true });
+  const origHome = process.env.HOME;
+  const origCwd = process.cwd();
+  // homedir() honours $HOME on posix; set it so expandPath resolves into fakeHome.
+  process.env.HOME = fakeHome;
+  // Move cwd somewhere isolated so we can detect a stray literal "~" dir if expansion regresses.
+  const cwdSandbox = `/tmp/voidos-init-cwd-${Date.now()}`;
+  mkdirSync(cwdSandbox, { recursive: true });
+  process.chdir(cwdSandbox);
+  try {
+    await runInit("~/myvault");
+    // Real, expanded vault exists
+    expect(existsSync(join(fakeHome, "myvault"))).toBe(true);
+    expect(existsSync(join(fakeHome, "myvault", "void-os.json"))).toBe(true);
+    // void-os.json records the RESOLVED absolute path, not the raw "~" string
+    const cfg = JSON.parse(readFileSync(join(fakeHome, "myvault", "void-os.json"), "utf8"));
+    expect(cfg.vault).toBe(join(fakeHome, "myvault"));
+    // No literal "~" directory created under cwd
+    expect(existsSync(join(cwdSandbox, "~"))).toBe(false);
+  } finally {
+    process.chdir(origCwd);
+    process.env.HOME = origHome;
+    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(cwdSandbox, { recursive: true, force: true });
+  }
+});
 
 const TMP_BASE = "/tmp/voidos-init-test";
 let vault: string;

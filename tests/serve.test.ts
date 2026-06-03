@@ -3,7 +3,7 @@
  * These test the pure exported functions without starting Bun.serve.
  */
 import { expect, test } from "bun:test";
-import { resolvePort, resolveVault, handleChatBusLine } from "../src/serve.ts";
+import { resolvePort, resolveVault, handleChatBusLine, isPortInUse } from "../src/serve.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +37,48 @@ test("resolvePort ignores non-numeric --port value and falls back", () => {
 
 test("resolvePort ignores missing --port value and falls back", () => {
   expect(resolvePort(["--port"], {}, 4317)).toBe(4317);
+});
+
+// --- isPortInUse (VOS-229) ---
+
+test("isPortInUse detects an error with code EADDRINUSE", () => {
+  expect(isPortInUse({ code: "EADDRINUSE", message: "whatever" })).toBe(true);
+});
+
+test("isPortInUse detects Bun's 'Is port N in use?' message", () => {
+  expect(isPortInUse(new Error("Failed to start server. Is port 14405 in use?"))).toBe(true);
+});
+
+test("isPortInUse detects 'address already in use' phrasing", () => {
+  expect(isPortInUse(new Error("listen: address already in use :::4317"))).toBe(true);
+});
+
+test("isPortInUse returns false for unrelated errors", () => {
+  expect(isPortInUse(new Error("some other failure"))).toBe(false);
+  expect(isPortInUse({ code: "ENOENT" })).toBe(false);
+  expect(isPortInUse(null)).toBe(false);
+  expect(isPortInUse("a string")).toBe(false);
+});
+
+// Integration: the error Bun.serve actually throws on a taken port is one isPortInUse matches.
+// This is the load-bearing wiring check — it proves the real EADDRINUSE the operator hit is
+// classified as "graceful path" and never escapes as an uncaught throw.
+test("Bun.serve EADDRINUSE on a taken port is classified by isPortInUse (not a raw crash)", () => {
+  const first = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("ok") });
+  const takenPort = first.port;
+  let classified = false;
+  let threw = false;
+  try {
+    Bun.serve({ port: takenPort, hostname: "127.0.0.1", fetch: () => new Response("ok2") });
+  } catch (err) {
+    threw = true;
+    classified = isPortInUse(err);
+  } finally {
+    first.stop(true);
+  }
+  // Hard-fail: Bun must throw AND our detector must catch it.
+  expect(threw).toBe(true);
+  expect(classified).toBe(true);
 });
 
 // --- resolveVault ---
