@@ -8,7 +8,8 @@
   "scripts": {
     "test": "bun test --isolate",
     "serve": "bun run src/cli.ts serve",
-    "verify": "bash scripts/verify.sh"
+    "verify": "bash scripts/verify.sh",
+    "e2e:core": "bun scripts/e2e-core.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
