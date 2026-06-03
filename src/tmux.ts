@@ -56,6 +56,17 @@ export function attachCommand(name: string): string {
   return `tmux -L ${VOS_SOCKET} attach -t ${name}`;
 }
 
+type TmuxRunner = (args: string[]) => { code: number; stdout: string; stderr: string };
+
+/**
+ * True when at least one tmux client is attached to the -L vos socket (VOS-219).
+ * Injectable runner for unit testing.
+ */
+export function hasAttachedClient(runner: TmuxRunner = run): boolean {
+  const r = runner(["list-clients", "-F", "#{client_name}"]);
+  return r.code === 0 && r.stdout.trim().length > 0;
+}
+
 /**
  * Retarget the operator's attached terminal to a different session.
  * The operator's terminal must be attached via `void-os attach` (the vos-follow session)

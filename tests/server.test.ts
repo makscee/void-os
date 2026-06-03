@@ -101,6 +101,8 @@ mock.module("../src/tmux.ts", () => ({
   capturePaneContent: () => "",
   waitForPrompt: async () => true,
   VOS_SOCKET: "vos",
+  // VOS-219: default true so attach-here routes proceed to switchClient in tests
+  hasAttachedClient: () => true,
 }));
 
 // VOS-205: stub resume.ts so no real CC/tmux launched in unit tests.
