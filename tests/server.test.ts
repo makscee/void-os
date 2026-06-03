@@ -880,6 +880,57 @@ test("POST /s/:uuid/message returns 400 when text is empty", async () => {
   expect(res.status).toBe(400);
 });
 
+// ── VOS-210 T2: ccId-form resume command ──────────────────────────────────
+
+test("GET /s/:uuid renders ccId-form vc --resume when cc-actual-session.txt exists", async () => {
+  const uuid = `vos-210-resume-${Date.now()}`;
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  // readCcSessionId validates UUID format: /^[0-9a-f-]{36}$/
+  const fakeCcId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  writeFileSync(join(dir, "cc-actual-session.txt"), fakeCcId);
+  const html = await (await makeApp(vault, db).request(`/s/${uuid}`)).text();
+  expect(html).toContain(`vc -- --resume ${fakeCcId}`);
+  expect(html).not.toContain("tmux -L vos attach");
+});
+
+test("GET /s/:uuid uses uuid-form resume cmd when cc-actual-session.txt is absent", async () => {
+  const uuid = `vos-210-noresume-${Date.now()}`;
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  const html = await (await makeApp(vault, db).request(`/s/${uuid}`)).text();
+  expect(html).toContain(`vc -- --resume ${uuid}`);
+  expect(html).not.toContain("tmux -L vos attach");
+});
+
+// ── VOS-210 T3: state-derived view tests ──────────────────────────────────
+
+test("GET /s/:uuid with placeholder-only body includes attach + message affordances (chat is primary)", async () => {
+  const uuid = `vos-210-placeholder-${Date.now()}`;
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  // Write placeholder body (what spawn seeds before skill runs)
+  const { placeholderBody } = await import("../src/render.ts");
+  writeFileSync(join(dir, "body.html"), placeholderBody("skill-author"));
+  const html = await (await makeApp(vault, db).request(`/s/${uuid}`)).text();
+  expect(html).toContain("attach-here");
+  expect(html).toContain('id="msgForm"');
+  // iframe still present (it's always in the shell)
+  expect(html).toContain(`src="/s/${uuid}/body"`);
+});
+
+test("GET /s/:uuid with real body content includes iframe + attach + message affordances", async () => {
+  const uuid = `vos-210-real-body-${Date.now()}`;
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "body.html"), "<!doctype html><title>Results</title><body><h1>done</h1></body></html>");
+  const html = await (await makeApp(vault, db).request(`/s/${uuid}`)).text();
+  // Both iframe and chat affordances present (precedence: show both)
+  expect(html).toContain(`src="/s/${uuid}/body"`);
+  expect(html).toContain("attach-here");
+  expect(html).toContain('id="msgForm"');
+});
+
 // Restore mock.module registrations so sibling test files (e.g. spawn.test.ts) that import
 // ../src/spawn.ts directly get the real implementation, not this file's stubs.
 afterAll(() => {

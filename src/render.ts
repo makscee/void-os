@@ -386,9 +386,11 @@ ${ELAPSED_TICK_SCRIPT}`;
  * session name, and click-to-copy resume command. Option 1 style.
  * @param name Human-readable session name (e.g. skill name). Falls back to short uuid.
  */
-export function renderShell(uuid: string, vault: string, name?: string, attachCmd?: string, interactive?: boolean, sessions: SessionInfo[] = []): string {
+// interactive-decide.ts + spawn.ts spawn-mode gates (spawn.ts:318,372) still use `interactive`
+// for wrapperMode/argv decisions — that is spawn-mode-only, never a view-affordance gate (VOS-210).
+export function renderShell(uuid: string, vault: string, name?: string, resumeCmd?: string, resumable?: boolean, hasBody?: boolean, sessions: SessionInfo[] = []): string {
   // The resume command must be run from the vault dir because CC uses cwd to locate sessions.
-  const resumeCmd = attachCmd ?? `cd ${vault} && vc -- --resume ${uuid}`;
+  const cmd = resumeCmd ?? `cd ${vault} && vc -- --resume ${uuid}`;
   // Truncated display label for the copy-button (max ~40 chars from end)
   const shortVault = vault.length > 20 ? "…" + vault.slice(-18) : vault;
   const displayLabel = `${shortVault} — resume ${uuid.slice(0, 8)}…`;
@@ -397,7 +399,7 @@ export function renderShell(uuid: string, vault: string, name?: string, attachCm
   const headerName = name ? name : uuid.slice(0, 8) + "…";
 
   // Store cmd/label in data attributes to avoid inline-JS quoting issues
-  const resumeCmdAttr = esc(resumeCmd);
+  const resumeCmdAttr = esc(cmd);
   const displayLabelAttr = esc(displayLabel);
 
   return `<!doctype html><meta charset=utf8><title>session ${esc(uuid)}</title>
@@ -467,14 +469,14 @@ ${leftNav(sessions, uuid)}
     data-cmd="${resumeCmdAttr}" data-label="${displayLabelAttr}">${displayLabelAttr}</button>
   <form action="/s/${esc(uuid)}/stop" method="POST" class="stop-form" style="flex-shrink:0">
     <button type="submit" class="stop-btn" title="Stop this session">■ Stop</button>
-  </form>${interactive ? `
+  </form>
   <form id="attachForm" action="/s/${esc(uuid)}/attach-here" method="POST" class="stop-form" style="flex-shrink:0">
     <button type="submit" class="attach-btn" title="Attach terminal to this session">⤵ Attach here</button>
   </form>
   <form id="msgForm" action="/s/${esc(uuid)}/message" method="POST" class="msg-form">
     <input type="text" name="text" class="msg-input" placeholder="Send message…">
     <button type="submit" class="msg-send" title="Send message to session">Send</button>
-  </form>` : ""}
+  </form>
 </div>
 <iframe id="f" src="/s/${esc(uuid)}/body"></iframe>
 </div>
@@ -487,7 +489,6 @@ document.getElementById('copybtn').addEventListener('click',function(){
   b.textContent='✓ copied';b.classList.add('copied');
   setTimeout(function(){b.textContent=lbl;b.classList.remove('copied')},1800);
 });
-${interactive ? `
 // Intercept attach + message forms with fetch() so the browser stays on the dashboard.
 // Native form POST navigates to the JSON response; fetch() stays put.
 ['attachForm','msgForm'].forEach(function(id){
@@ -505,7 +506,7 @@ if(msgInput){
   msgInput.addEventListener('keydown',function(e){
     if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();this.closest('form').requestSubmit();}
   });
-}` : ""}
+}
 var es=new EventSource("/s/${esc(uuid)}/stream");
 // Always navigate to the canonical body URL on reload events rather than re-POST.
 // location.reload() would re-submit POST /send and spawn a spurious vc turn.

@@ -279,16 +279,31 @@ test("renderShell includes attach-here button and message input for interactive 
   expect(html).toContain("Attach here");
 });
 
-test("renderShell does NOT include attach-here or message input for non-interactive sessions", () => {
-  const html = renderShell("sess-xyz", "/vault", "onboarding", undefined, false);
-  expect(html).not.toContain("attach-here");
-  expect(html).not.toContain("/message");
+test("renderShell renders attach-here + message input unconditionally (no-arg / non-interactive)", () => {
+  const html = renderShell("sess-xyz", "/vault", "skill-author");
+  expect(html).toContain("attach-here");
+  expect(html).toContain('name="text"');     // message input
+  expect(html).toContain('id="msgForm"');
 });
 
-test("renderShell non-interactive (no 5th arg) omits attach/message buttons", () => {
-  const html = renderShell("sess-no-arg", "/vault", "onboarding");
-  expect(html).not.toContain("attach-here");
-  expect(html).not.toContain("/message");
+test("renderShell still renders attach-here + message input for interactive sessions", () => {
+  const html = renderShell("sess-abc", "/vault", "chat", undefined, true);
+  expect(html).toContain("attach-here");
+  expect(html).toContain('id="msgForm"');
+});
+
+test("renderShell includes the fetch-interception JS unconditionally", () => {
+  const html = renderShell("sess-no-arg", "/vault", "skill-author");
+  expect(html).toContain("attachForm");
+  expect(html).toContain("requestSubmit");   // Cmd/Ctrl+Enter handler
+});
+
+// ── VOS-210 T4: grep-guard — no interactive gate in render.ts ──────────────
+
+import { readFileSync } from "node:fs";
+test("render.ts no longer gates any affordance on an `interactive` flag", () => {
+  const src = readFileSync(new URL("../src/render.ts", import.meta.url), "utf8");
+  expect(src).not.toContain("${interactive ?");
 });
 
 // ── VOS-207: left nav, needs-attention, elapsed, Cmd+Enter ─────────────────
@@ -446,4 +461,20 @@ test("VOS-209: Cmd+Enter on message input routes through requestSubmit (not nati
   // — native .submit() bypasses the submit listener
   expect(html).toContain("requestSubmit()");
   expect(html).not.toMatch(/\.submit\(\)(?!\s*\/\/ allowed)/);
+});
+
+// ── VOS-210 T2: ccId-form resume command ──────────────────────────────────
+
+test("renderShell copy-cmd uses the ccId-form vc --resume, never a tmux target", () => {
+  // 4th arg is the pre-built resume command (ccId-form), passed by the server.
+  const fakeCcId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const html = renderShell("u1", "/vault", "chat", `cd /vault && vc -- --resume ${fakeCcId}`);
+  expect(html).toContain(`vc -- --resume ${fakeCcId}`);
+  expect(html).not.toContain("tmux -L vos attach");
+});
+
+test("renderShell falls back to uuid-form resume cmd when none supplied (no tmux target)", () => {
+  const html = renderShell("u1", "/home/user/vault");
+  expect(html).toContain("vc -- --resume u1");
+  expect(html).not.toContain("tmux -L vos attach");
 });
