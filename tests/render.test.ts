@@ -279,16 +279,23 @@ test("renderShell includes attach-here button and message input for interactive 
   expect(html).toContain("Attach here");
 });
 
-test("renderShell does NOT include attach-here or message input for non-interactive sessions", () => {
-  const html = renderShell("sess-xyz", "/vault", "onboarding", undefined, false);
-  expect(html).not.toContain("attach-here");
-  expect(html).not.toContain("/message");
+test("renderShell renders attach-here + message input unconditionally (no-arg / non-interactive)", () => {
+  const html = renderShell("sess-xyz", "/vault", "skill-author");
+  expect(html).toContain("attach-here");
+  expect(html).toContain('name="text"');     // message input
+  expect(html).toContain('id="msgForm"');
 });
 
-test("renderShell non-interactive (no 5th arg) omits attach/message buttons", () => {
-  const html = renderShell("sess-no-arg", "/vault", "onboarding");
-  expect(html).not.toContain("attach-here");
-  expect(html).not.toContain("/message");
+test("renderShell still renders attach-here + message input for interactive sessions", () => {
+  const html = renderShell("sess-abc", "/vault", "chat", undefined, true);
+  expect(html).toContain("attach-here");
+  expect(html).toContain('id="msgForm"');
+});
+
+test("renderShell includes the fetch-interception JS unconditionally", () => {
+  const html = renderShell("sess-no-arg", "/vault", "skill-author");
+  expect(html).toContain("attachForm");
+  expect(html).toContain("requestSubmit");   // Cmd/Ctrl+Enter handler
 });
 
 // ── VOS-207: left nav, needs-attention, elapsed, Cmd+Enter ─────────────────

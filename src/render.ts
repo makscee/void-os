@@ -467,14 +467,14 @@ ${leftNav(sessions, uuid)}
     data-cmd="${resumeCmdAttr}" data-label="${displayLabelAttr}">${displayLabelAttr}</button>
   <form action="/s/${esc(uuid)}/stop" method="POST" class="stop-form" style="flex-shrink:0">
     <button type="submit" class="stop-btn" title="Stop this session">■ Stop</button>
-  </form>${interactive ? `
+  </form>
   <form id="attachForm" action="/s/${esc(uuid)}/attach-here" method="POST" class="stop-form" style="flex-shrink:0">
     <button type="submit" class="attach-btn" title="Attach terminal to this session">⤵ Attach here</button>
   </form>
   <form id="msgForm" action="/s/${esc(uuid)}/message" method="POST" class="msg-form">
     <input type="text" name="text" class="msg-input" placeholder="Send message…">
     <button type="submit" class="msg-send" title="Send message to session">Send</button>
-  </form>` : ""}
+  </form>
 </div>
 <iframe id="f" src="/s/${esc(uuid)}/body"></iframe>
 </div>
@@ -487,7 +487,6 @@ document.getElementById('copybtn').addEventListener('click',function(){
   b.textContent='✓ copied';b.classList.add('copied');
   setTimeout(function(){b.textContent=lbl;b.classList.remove('copied')},1800);
 });
-${interactive ? `
 // Intercept attach + message forms with fetch() so the browser stays on the dashboard.
 // Native form POST navigates to the JSON response; fetch() stays put.
 ['attachForm','msgForm'].forEach(function(id){
@@ -505,7 +504,7 @@ if(msgInput){
   msgInput.addEventListener('keydown',function(e){
     if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();this.closest('form').requestSubmit();}
   });
-}` : ""}
+}
 var es=new EventSource("/s/${esc(uuid)}/stream");
 // Always navigate to the canonical body URL on reload events rather than re-POST.
 // location.reload() would re-submit POST /send and spawn a spurious vc turn.
