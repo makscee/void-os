@@ -9,7 +9,7 @@ import type { Database } from "bun:sqlite";
 import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath, hookSettingsDir } from "./paths.ts";
 import { createExecution } from "./registry.ts";
 import { appendEvent } from "./events.ts";
-import { newRunSession } from "./tmux.ts";
+import { newRunSession, sendKeys } from "./tmux.ts";
 import { writeHookSettings } from "./hooks-endpoint.ts";
 
 // Absolute paths to the helper scripts shipped with void-os.
@@ -174,6 +174,46 @@ export function spawnTurn(vault: string, uuid: string, argv: string[], command: 
   });
 }
 
+/**
+ * Build argv for an interactive (no -p, no --resume) session launch.
+ * The skill is driven via send-keys post-init, not as a CLI arg.
+ * NO -p flag: the REPL stays open for multi-turn interaction.
+ *
+ * VOS-205: This is the interactive path; the print path stays in buildSpawnArgv.
+ */
+export function buildInteractiveArgv(
+  ccSeed: string,
+  vault: string,
+  o: { addDirs?: string[]; mcpConfigPath?: string | null },
+): string[] {
+  const argv = ["--session-id", ccSeed, "--add-dir", vault, "--permission-mode", "bypassPermissions"];
+  for (const d of o.addDirs ?? []) argv.push("--add-dir", d);
+  if (o.mcpConfigPath) argv.push("--mcp-config", o.mcpConfigPath, "--strict-mcp-config");
+  return argv;
+}
+
+/**
+ * Build the interactive wrapper command string (mode-token + daemon-url + run-id + cc-cmd).
+ * Factored out so both spawnRun and respawnSession use the same wrapper invocation.
+ *
+ * mode is "interactive" (no /dev/null redirect, real TTY) or "print" (< /dev/null).
+ */
+export function buildWrapperCommand(
+  wrapperPath: string,
+  daemonUrl: string,
+  runId: string,
+  mode: "interactive" | "print",
+  ccCommand: string,
+): string {
+  return [
+    `"${wrapperPath}"`,
+    `"${daemonUrl}"`,
+    `"${runId}"`,
+    `"${mode}"`,
+    ccCommand,
+  ].join(" ");
+}
+
 export interface SpawnRunOpts {
   db: Database;
   vault: string;
@@ -187,6 +227,7 @@ export interface SpawnRunOpts {
   stepCeiling?: number | null; // set for trigger-fired executions
   outputTarget?: string | null; // declared output target (vault-relative path/glob), from the skill
   forcePrint?: boolean | null;  // override print-mode decision (true = force print, false = force interactive)
+  interactive?: boolean;       // VOS-205: launch as interactive REPL; skill driven via send-keys post-init
   // Agent-launch extras (VOS-200): all optional; absent = no change to existing behavior.
   addDirs?: string[];              // extra --add-dir per agent folder (enforced scope)
   mcpConfigPath?: string | null;   // --mcp-config path (agent-restricted MCP servers)
@@ -268,25 +309,36 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     runId,
   );
 
-  // Trigger-fired executions use print mode (-p): CC runs the skill as a headless turn and exits.
-  // Print mode skips the workspace trust dialog, fires all hooks, and exits cleanly.
-  // --settings scopes hooks to this execution. --add-dir vault: pre-authorize the vault directory.
-  const skillArg = opts.skill ? (opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`) : null;
-  // Trigger-fired executions with a skill use print mode (-p) by default.
-  // forcePrint allows callers to override (e.g. interactive proof runs that need Stop to fire).
-  // Agent launches with a bodyMessage also use print mode (body is a -p prompt; no skill needed).
-  const hasPrompt = !!(skillArg || opts.bodyMessage);
-  const isPrint = opts.forcePrint != null
-    ? !!(opts.forcePrint && hasPrompt)
-    : !!(opts.triggerId && skillArg);
-  const argv = buildSpawnArgv(ccSeed, settingsPath, opts.vault, {
-    skill: opts.skill,
-    isPrint,
-    addDirs: opts.addDirs,
-    mcpConfigPath: opts.mcpConfigPath,
-    appendSystemPrompt: opts.appendSystemPrompt,
-    bodyMessage: opts.bodyMessage,
-  });
+  let argv: string[];
+  if (opts.interactive) {
+    // VOS-205: interactive launch — no -p, skill driven via send-keys after REPL is up.
+    // buildInteractiveArgv does NOT include --settings (interactive sessions don't need hook
+    // settings in the same way; hooks still fire via the wrapper ProcessExit path).
+    argv = buildInteractiveArgv(ccSeed, opts.vault, {
+      addDirs: opts.addDirs,
+      mcpConfigPath: opts.mcpConfigPath,
+    });
+  } else {
+    // Trigger-fired executions use print mode (-p): CC runs the skill as a headless turn and exits.
+    // Print mode skips the workspace trust dialog, fires all hooks, and exits cleanly.
+    // --settings scopes hooks to this execution. --add-dir vault: pre-authorize the vault directory.
+    const skillArg = opts.skill ? (opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`) : null;
+    // Trigger-fired executions with a skill use print mode (-p) by default.
+    // forcePrint allows callers to override (e.g. interactive proof runs that need Stop to fire).
+    // Agent launches with a bodyMessage also use print mode (body is a -p prompt; no skill needed).
+    const hasPrompt = !!(skillArg || opts.bodyMessage);
+    const isPrint = opts.forcePrint != null
+      ? !!(opts.forcePrint && hasPrompt)
+      : !!(opts.triggerId && skillArg);
+    argv = buildSpawnArgv(ccSeed, settingsPath, opts.vault, {
+      skill: opts.skill,
+      isPrint,
+      addDirs: opts.addDirs,
+      mcpConfigPath: opts.mcpConfigPath,
+      appendSystemPrompt: opts.appendSystemPrompt,
+      bodyMessage: opts.bodyMessage,
+    });
+  }
   const toks = tokenizeCommand(opts.runnerCommand);
   // Build shell-safe command string for tmux. JSON.stringify wraps args with spaces in double
   // quotes, but backtick characters inside double-quoted strings ARE interpreted by sh as
@@ -299,12 +351,9 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   }).join(" ");
 
   // Wrap in vos-run-wrapper.sh so ProcessExit fires after CC exits.
-  const fullCommand = [
-    `"${runWrapperScriptPath}"`,
-    `"${opts.daemonUrl}"`,
-    `"${runId}"`,
-    ccCommand,
-  ].join(" ");
+  // Interactive sessions get mode="interactive" (no /dev/null redirect); print gets "print".
+  const wrapperMode = opts.interactive ? "interactive" : "print";
+  const fullCommand = buildWrapperCommand(runWrapperScriptPath, opts.daemonUrl, runId, wrapperMode, ccCommand);
 
   const tmuxSession = `vos-run-${runId}`;
 
@@ -336,6 +385,18 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     trigger_id: opts.triggerId ?? null, step_ceiling: opts.stepCeiling ?? null,
     output_target: opts.outputTarget ?? null,
   });
+
+  // VOS-205: for interactive sessions, drive the skill as the first REPL input via send-keys.
+  // The REPL takes a moment to initialize; we rely on the existing tmux pane being ready.
+  // The caller (or proof script) may also send-keys separately after confirming the REPL is live.
+  if (opts.interactive && opts.skill) {
+    const skillLine = opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`;
+    // Brief delay to allow vc to start its REPL before we send the first keystroke.
+    // This is fire-and-forget; the REPL init timing is handled by the proof script / operator.
+    setTimeout(() => {
+      try { sendKeys(tmuxSession, skillLine); } catch { /* non-fatal: session may not be ready yet */ }
+    }, 3000);
+  }
 
   return { runId, tmuxSession };
 }

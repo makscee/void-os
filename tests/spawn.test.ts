@@ -11,7 +11,7 @@ import { killSession } from "../src/tmux.ts";
 // specifier, so adding ?real loads the actual source even without --isolate.
 const {
   buildLaunchArgv, buildAnswerArgv, readCcSessionId, tokenizeCommand,
-  spawnTurn, runTurn, spawnRun,
+  spawnTurn, runTurn, spawnRun, buildInteractiveArgv, buildWrapperCommand,
 } = await import("../src/spawn.ts?real");
 
 test("buildLaunchArgv has no leading -- (separator now lives in runner command)", () => {
@@ -204,6 +204,37 @@ test("spawnRun id prefixed exec- (stateless naming)", () => {
   });
   expect(runId.startsWith("exec-")).toBe(true);
   try { killSession(tmuxSession); } catch { /* ignore */ }
+});
+
+// VOS-205 T2: buildInteractiveArgv
+test("buildInteractiveArgv: interactive shape — no -p, fresh session id, vault add-dir, bypass perms", () => {
+  const argv = buildInteractiveArgv("seed-uuid", "/vault", { addDirs: [] });
+  expect(argv).toEqual([
+    "--session-id", "seed-uuid",
+    "--add-dir", "/vault",
+    "--permission-mode", "bypassPermissions",
+  ]);
+  expect(argv).not.toContain("-p"); // interactive: skill arrives via send-keys, not -p
+});
+
+test("buildInteractiveArgv: extra addDirs are appended", () => {
+  const argv = buildInteractiveArgv("seed-uuid", "/vault", { addDirs: ["/extra1", "/extra2"] });
+  expect(argv).toContain("--add-dir");
+  expect(argv).toContain("/extra1");
+  expect(argv).toContain("/extra2");
+});
+
+test("buildWrapperCommand includes mode token as third positional arg", () => {
+  const cmd = buildWrapperCommand("/path/to/wrapper.sh", "http://127.0.0.1:4317", "run-123", "interactive", "vc --raw");
+  expect(cmd).toContain('"interactive"');
+  expect(cmd).toContain('"http://127.0.0.1:4317"');
+  expect(cmd).toContain('"run-123"');
+  expect(cmd).toContain("vc --raw");
+});
+
+test("buildWrapperCommand print mode uses print token", () => {
+  const cmd = buildWrapperCommand("/path/to/wrapper.sh", "http://127.0.0.1:4317", "run-456", "print", "vc --");
+  expect(cmd).toContain('"print"');
 });
 
 test("spawnRun writes declared outputTarget into start event", () => {

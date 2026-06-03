@@ -47,6 +47,8 @@ export interface VoidOsConfig {
   port: number;
   runners: Runner[];
   defaultRunner: string;
+  /** VOS-205: idle ms before an interactive session's tmux is reaped (default 10 min). */
+  reapIdleMs?: number;
 }
 
 const DEFAULT_PORT = 4317;

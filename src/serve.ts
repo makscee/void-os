@@ -12,6 +12,7 @@ import { fireTrigger, dueTriggers, type SpawnFn } from "./triggers-fire.ts";
 import { drainInbox } from "./inbox-watch.ts";
 import { makeSpawnFn } from "./spawn-adapter.ts";
 import { appendUserMessage } from "./chat.ts";
+import { reapIdle } from "./reaper.ts";
 import type { Database } from "bun:sqlite";
 
 /**
@@ -124,6 +125,16 @@ export async function runServe(): Promise<void> {
       });
     } catch { /* never crash serve */ }
   }, TRIGGER_TICK_MS).unref();
+
+  // VOS-205: idle-reaper sweep — kill tmux for interactive sessions idle past reapIdleMs.
+  // Folds into a separate interval (distinct from trigger tick) so it can be tuned independently.
+  // Default: 10 min. Operator configures via void-os.json "reapIdleMs".
+  const REAP_IDLE_MS = cfg.reapIdleMs ?? 10 * 60_000;
+  const REAP_CHECK_MS = Math.min(REAP_IDLE_MS, 60_000); // check at most every minute
+  setInterval(() => {
+    try { reapIdle(db, vault, Date.now(), REAP_IDLE_MS); }
+    catch { /* never crash serve */ }
+  }, REAP_CHECK_MS).unref();
 
   // idleTimeout:255 prevents Bun's 10s default from killing long-lived SSE connections
   // during cold starts. 255 is Bun's max; the SSE loop also sends periodic keepalive
