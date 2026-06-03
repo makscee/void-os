@@ -51,3 +51,16 @@ test("output_target defaults to empty string when absent", () => {
   const md = `---\nname: w\ndescription: d\n---\n# body`;
   expect(parseFrontmatter(md).outputTarget).toBe("");
 });
+
+test("parseFrontmatter reads interactive: true", () => {
+  const md = `---\nname: chat\ndescription: d\ninteractive: true\n---\nbody`;
+  expect(parseFrontmatter(md).interactive).toBe(true);
+});
+test("parseFrontmatter reads interactive: false", () => {
+  const md = `---\nname: organize\ndescription: d\ninteractive: false\n---\nbody`;
+  expect(parseFrontmatter(md).interactive).toBe(false);
+});
+test("parseFrontmatter leaves interactive undefined when absent", () => {
+  const md = `---\nname: x\ndescription: d\n---\nbody`;
+  expect(parseFrontmatter(md).interactive).toBeUndefined();
+});

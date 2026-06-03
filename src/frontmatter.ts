@@ -6,6 +6,7 @@ export interface SkillMeta {
   inputLabel: string;
   outputTarget: string; // vault-relative path/glob the execution must mutate (VOS-191)
   version?: string;     // semver — optional (VOS-199 skill-manage rollback)
+  interactive?: boolean; // explicit per-skill flag: true=tmux REPL, false=print one-shot (VOS-206)
 }
 
 export function parseFrontmatter(md: string): SkillMeta {
@@ -23,6 +24,7 @@ export function parseFrontmatter(md: string): SkillMeta {
     if (k === "input_label") out.inputLabel = val;
     if (k === "output_target") out.outputTarget = val;
     if (k === "version") out.version = val;
+    if (k === "interactive") out.interactive = val === "true";
   }
   return out;
 }
