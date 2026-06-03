@@ -155,11 +155,15 @@ const LEFT_NAV_CSS = `
 .nav-home{display:block;font-size:12px;font-weight:600;padding:.4rem .75rem;text-decoration:none;color:hsl(var(--muted-foreground));transition:color .15s,background .15s;border-radius:calc(var(--radius) - 4px);margin:0 .25rem}
 .nav-home:hover,.nav-home.active{color:hsl(var(--foreground));background:hsl(var(--secondary))}
 .nav-group-label{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:hsl(var(--muted-foreground));padding:.5rem .75rem .25rem;opacity:.6}
-.nav-attention,.nav-recent{padding:0 .25rem}
+.nav-group-label.needs-you{color:hsl(38 92% 60%);opacity:1}
+.nav-group-label.idle{color:hsl(217 50% 60%);opacity:.8}
+.nav-attention,.nav-idle,.nav-recent{padding:0 .25rem}
 .nav-session{display:flex;flex-direction:column;padding:.3rem .5rem;text-decoration:none;color:hsl(var(--foreground));border-radius:calc(var(--radius) - 4px);transition:background .1s;font-size:12px;overflow:hidden}
 .nav-session:hover,.nav-session.active{background:hsl(var(--secondary))}
 .nav-session.unseen{border-left:2px solid hsl(38 92% 50%);padding-left:.375rem}
 .nav-session-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+.nav-status{font-size:10px;color:hsl(var(--muted-foreground));font-style:italic}
+.nav-session.unseen .nav-status{color:hsl(38 92% 55%)}
 .nav-elapsed{font-size:10px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
 `;
 
@@ -193,7 +197,8 @@ const ELAPSED_TICK_SCRIPT = `<script>
  */
 function leftNav(sessions: SessionInfo[], activeUuid?: string): string {
   const MAX_RECENT = 8;
-  const attention = sessions.filter((s) => s.needsAttention);
+  const needsYou = sessions.filter((s) => s.needsAttention);
+  const idle = sessions.filter((s) => (s as any).idle && !s.needsAttention);
   const recent = sessions.slice(0, MAX_RECENT);
 
   const btn = (s: SessionInfo) => {
@@ -201,16 +206,25 @@ function leftNav(sessions: SessionInfo[], activeUuid?: string): string {
     const unseen = s.needsAttention ? " unseen" : "";
     const epoch = s.lastActivityMs ?? s.mtimeMs;
     const shortTitle = esc(s.title.length > 22 ? s.title.slice(0, 22) + "…" : s.title);
-    return `<a href="/s/${esc(s.uuid)}" class="nav-session${active}${unseen}"><span class="nav-session-title">${shortTitle}</span><span class="nav-elapsed" data-epoch="${epoch}"></span></a>`;
+    const dotCls = dotClass(s.status);
+    return `<a href="/s/${esc(s.uuid)}" class="nav-session${active}${unseen}" data-status="${esc(s.status)}">`
+      + `<span class="session-dot${dotCls ? ` ${dotCls}` : ""}"></span>`
+      + `<span class="nav-session-title">${shortTitle}</span>`
+      + `<span class="nav-status">${esc(statusLabel(s.status))}</span>`
+      + `<span class="nav-elapsed" data-epoch="${epoch}"></span></a>`;
   };
 
-  const attentionGroup = attention.length > 0
-    ? `<div class="nav-attention"><div class="nav-group-label">needs attention</div>${attention.map(btn).join("")}</div>`
+  const needsYouGroup = needsYou.length > 0
+    ? `<div class="nav-attention"><div class="nav-group-label needs-you">needs you</div>${needsYou.map(btn).join("")}</div>`
+    : "";
+  const idleGroup = idle.length > 0
+    ? `<div class="nav-idle"><div class="nav-group-label idle">idle</div>${idle.map(btn).join("")}</div>`
     : "";
   return `
 <nav class="left-nav">
   <a href="/" class="nav-home${activeUuid ? "" : " active"}">⌂ home</a>
-  ${attentionGroup}
+  ${needsYouGroup}
+  ${idleGroup}
   <div class="nav-recent"><div class="nav-group-label">recent</div>${recent.map(btn).join("")}</div>
 </nav>`
 }

@@ -560,3 +560,20 @@ test("statusLabel maps all 6 states to human text", () => {
   expect(statusLabel("error")).toBe("failed");
   expect(statusLabel("stopped")).toBe("stopped");
 });
+
+// ── VOS-219: sidebar enrichment (needs-you / idle / status text) ─────────────
+
+test("leftNav shows status text + needs-you/idle groups", () => {
+  const now = Date.now();
+  const mk = (uuid: string, status: any, needs: boolean, idle: boolean): any =>
+    ({ uuid, title: uuid, mtimeMs: now, lastActivityMs: now, needsAttention: needs, idle, error: false, status, skill: "x" });
+  const html = renderDashboard([], [
+    mk("a", "awaiting", true, false),
+    mk("b", "working", false, true),
+    mk("c", "complete", false, false),
+  ], { authed: true });
+  expect(html).toContain("needs you");
+  expect(html).toContain("idle");
+  expect(html).toContain("awaiting input"); // status text rendered in sidebar
+  expect(html).toContain('data-status="working"');
+});
