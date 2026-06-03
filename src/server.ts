@@ -23,6 +23,7 @@ import { getExecution, setExecutionFail, upsertTrigger, getTrigger } from "./reg
 import { appendEvent } from "./events.ts";
 import { killSession, hasSession, switchClient, sendKeys } from "./tmux.ts";
 import { respawnSession } from "./resume.ts";
+import { bodyHasRealContent, isResumable } from "./view-state.ts";
 import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
 import { listPendingDecisions } from "./decision.ts";
 import {
@@ -165,24 +166,24 @@ a{color:#93c5fd}</style>
   // GET /s/:uuid — iframe shell wrapping the session body
   app.get("/s/:uuid", (c) => {
     const uuid = c.req.param("uuid");
-    // Read skill name + interactive flag from session-meta.json.
+    // Read skill name from session-meta.json (interactive no longer gates view affordances — VOS-210).
     const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
     let sessionName: string | undefined;
-    let isInteractive = false;
     if (existsSync(metaPath)) {
       try {
-        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { skill?: string; text?: string; interactive?: boolean };
+        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { skill?: string; text?: string };
         if (m.skill) sessionName = m.text ? `${m.skill} — ${m.text.slice(0, 40)}` : m.skill;
-        if (m.interactive) isInteractive = true;
       } catch { /* use fallback */ }
     }
     // Stamp last-opened.txt so needsAttention tracking knows when the operator viewed this session.
     try { writeFileSync(lastOpenedPath(vault, uuid), String(Date.now())); } catch { /* ignore */ }
-    // ccId-form resume command — the only form that actually resumes.
-    // NEVER the transient tmux target (print panes exit instantly) and NEVER the void-os runId.
+    // State-derived view: compute resumable + hasReal from live state (not frozen spawn flags).
     const ccId = readCcSessionId(vault, uuid);
+    const resumable = isResumable({ liveTmux: hasSession(`vos-run-${uuid}`), ccId });
     const resumeCmd = ccId ? `cd ${vault} && vc -- --resume ${ccId}` : undefined;
-    return c.html(renderShell(uuid, vault, sessionName, resumeCmd, isInteractive, listSessions(vault, db)));
+    const bp = bodyPath(vault, uuid);
+    const hasReal = existsSync(bp) && bodyHasRealContent(readFileSync(bp, "utf8"));
+    return c.html(renderShell(uuid, vault, sessionName, resumeCmd, resumable, hasReal, listSessions(vault, db)));
   });
 
   // GET /s/:uuid/body — serves the session's body.html, appends error banner if error.txt present.
