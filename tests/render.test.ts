@@ -252,3 +252,24 @@ test("renderDashboard renders chips for vault-installed skills (no inputLabel fi
   expect(html).toContain('data-skill="organize"');
   expect(html).toContain('optional input…'); // inputLabel fallback used, no crash
 });
+
+// VOS-205 T6: interactive-session shell buttons
+test("renderShell includes attach-here button and message input for interactive sessions", () => {
+  const html = renderShell("sess-abc", "/vault", "chat", undefined, true);
+  expect(html).toContain("attach-here");
+  expect(html).toContain("/message");
+  expect(html).toContain("Send message");
+  expect(html).toContain("Attach here");
+});
+
+test("renderShell does NOT include attach-here or message input for non-interactive sessions", () => {
+  const html = renderShell("sess-xyz", "/vault", "onboarding", undefined, false);
+  expect(html).not.toContain("attach-here");
+  expect(html).not.toContain("/message");
+});
+
+test("renderShell non-interactive (no 5th arg) omits attach/message buttons", () => {
+  const html = renderShell("sess-no-arg", "/vault", "onboarding");
+  expect(html).not.toContain("attach-here");
+  expect(html).not.toContain("/message");
+});

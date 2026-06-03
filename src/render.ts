@@ -300,7 +300,7 @@ ${modalScript}`;
  * session name, and click-to-copy resume command. Option 1 style.
  * @param name Human-readable session name (e.g. skill name). Falls back to short uuid.
  */
-export function renderShell(uuid: string, vault: string, name?: string, attachCmd?: string): string {
+export function renderShell(uuid: string, vault: string, name?: string, attachCmd?: string, interactive?: boolean): string {
   // The resume command must be run from the vault dir because CC uses cwd to locate sessions.
   const resumeCmd = attachCmd ?? `cd ${vault} && vc -- --resume ${uuid}`;
   // Truncated display label for the copy-button (max ~40 chars from end)
@@ -339,6 +339,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .stop-btn{font-size:11px;padding:2px 8px;border:1px solid hsl(0 60% 40%);background:transparent;
   color:hsl(0 70% 65%);border-radius:calc(var(--radius) - 4px);cursor:pointer;flex-shrink:0}
 .stop-btn:hover{background:hsl(0 60% 12%)}
+.attach-btn{font-size:11px;padding:2px 8px;border:1px solid hsl(142 60% 30%);background:transparent;
+  color:hsl(142 70% 65%);border-radius:calc(var(--radius) - 4px);cursor:pointer;flex-shrink:0}
+.attach-btn:hover{background:hsl(142 60% 8%)}
+.msg-form{display:flex;gap:.3rem;flex-shrink:0}
+.msg-input{font-size:11px;padding:2px 6px;border:1px solid hsl(var(--border));background:hsl(var(--secondary));
+  color:hsl(var(--foreground));border-radius:calc(var(--radius) - 4px);width:12rem}
+.msg-send{font-size:11px;padding:2px 8px;border:1px solid hsl(217 60% 40%);background:transparent;
+  color:hsl(217 70% 65%);border-radius:calc(var(--radius) - 4px);cursor:pointer;flex-shrink:0}
+.msg-send:hover{background:hsl(217 60% 8%)}
 iframe{border:0;width:100%;height:calc(100vh - 36px);display:block}
 body.drawer-open iframe{height:calc(100vh - 36px - 40vh - 28px)}
 #drawer-bar{position:fixed;left:0;right:0;bottom:0;height:28px;z-index:10;
@@ -366,7 +375,14 @@ body.drawer-open #drawer-panel{display:block}
     data-cmd="${resumeCmdAttr}" data-label="${displayLabelAttr}">${displayLabelAttr}</button>
   <form action="/s/${esc(uuid)}/stop" method="POST" class="stop-form" style="flex-shrink:0">
     <button type="submit" class="stop-btn" title="Stop this session">■ Stop</button>
+  </form>${interactive ? `
+  <form action="/s/${esc(uuid)}/attach-here" method="POST" class="stop-form" style="flex-shrink:0">
+    <button type="submit" class="attach-btn" title="Attach terminal to this session">⤵ Attach here</button>
   </form>
+  <form action="/s/${esc(uuid)}/message" method="POST" class="msg-form">
+    <input type="text" name="text" class="msg-input" placeholder="Send message…">
+    <button type="submit" class="msg-send" title="Send message to session">Send</button>
+  </form>` : ""}
 </div>
 <iframe id="f" src="/s/${esc(uuid)}/body"></iframe>
 <div id="drawer-panel"></div>

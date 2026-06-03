@@ -72,8 +72,13 @@ if (cmd === "init") {
   const port = readConfig(vault).port;
   const res = await fetch(`http://127.0.0.1:${port}/triggers/${name}/fire`, { method: "POST" });
   console.log(await res.text());
+} else if (cmd === "attach") {
+  // VOS-205: park the operator's terminal as a daemon-driven tmux client on the -L vos socket.
+  // The daemon retargets which session is viewed via POST /s/:uuid/attach-here (switch-client).
+  const { runAttach } = await import("./attach.ts");
+  runAttach();
 } else {
   console.error(`unknown command: ${cmd}`);
-  console.error("usage: void-os <init|serve|list-sessions|trigger-fire> [options]");
+  console.error("usage: void-os <init|serve|list-sessions|trigger-fire|attach> [options]");
   process.exit(2);
 }

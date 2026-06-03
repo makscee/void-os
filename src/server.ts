@@ -161,19 +161,21 @@ a{color:#93c5fd}</style>
   // GET /s/:uuid — iframe shell wrapping the session body
   app.get("/s/:uuid", (c) => {
     const uuid = c.req.param("uuid");
-    // Read skill name from session-meta.json to show a human-readable title in the header.
+    // Read skill name + interactive flag from session-meta.json.
     const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
     let sessionName: string | undefined;
+    let isInteractive = false;
     if (existsSync(metaPath)) {
       try {
-        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { skill?: string; text?: string };
+        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { skill?: string; text?: string; interactive?: boolean };
         if (m.skill) sessionName = m.text ? `${m.skill} — ${m.text.slice(0, 40)}` : m.skill;
+        if (m.interactive) isInteractive = true;
       } catch { /* use fallback */ }
     }
     // Look up the execution's attach command from the registry (for the shell to display).
     const exec = getExecution(db, uuid);
-    const attachCmd = exec ? `tmux attach -t ${exec.tmux_session}` : undefined;
-    return c.html(renderShell(uuid, vault, sessionName, attachCmd));
+    const attachCmd = exec ? `tmux -L vos attach -t ${exec.tmux_session}` : undefined;
+    return c.html(renderShell(uuid, vault, sessionName, attachCmd, isInteractive));
   });
 
   // GET /s/:uuid/body — serves the session's body.html, appends error banner if error.txt present.
