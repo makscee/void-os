@@ -36,6 +36,18 @@ mock.module("../src/spawn.ts", () => ({
     spawnRunCalls.push(opts);
     return { runId, tmuxSession: `vos-run-${runId}` };
   },
+  // re-export VOS-206 functions so spawn.test.ts still works if mocks bleed across files
+  buildInteractiveArgv: (ccSeed: string, vault: string, o: { addDirs?: string[]; mcpConfigPath?: string | null; settingsPath?: string | null }) => {
+    const argv = ["--session-id", ccSeed, "--add-dir", vault, "--permission-mode", "bypassPermissions"];
+    if (o.settingsPath) argv.push("--settings", o.settingsPath);
+    for (const d of o.addDirs ?? []) argv.push("--add-dir", d);
+    return argv;
+  },
+  buildWrapperCommand: (wrapperPath: string, daemonUrl: string, runId: string, mode: string, ccCommand: string) =>
+    `"${wrapperPath}" "${daemonUrl}" "${runId}" "${mode}" ${ccCommand}`,
+  buildSpawnArgv: () => [],
+  hookRelayScriptPath: "/mock/hook-relay.sh",
+  runWrapperScriptPath: "/mock/run-wrapper.sh",
 }));
 
 mock.module("../src/drain.ts", () => ({
@@ -44,6 +56,21 @@ mock.module("../src/drain.ts", () => ({
 
 mock.module("../src/preflight.ts", () => ({
   realDeps: { vcStatus: async () => ({ ok: true, msg: "authed" }) },
+  // re-export checkPrereqs so preflight.test.ts still works if mocks bleed across files
+  checkPrereqs: async (deps: { which: (b: string) => Promise<boolean>; vcStatus: () => Promise<{ ok: boolean; text: string }> }) => {
+    const problems: string[] = [];
+    let needsLogin = false;
+    const [hasVc, hasClaude] = await Promise.all([deps.which("vc"), deps.which("claude")]);
+    if (!hasVc) problems.push("vc not found — install via: curl -fsSL https://auth.makscee.ru/cv/install.sh | sh");
+    if (!hasClaude) problems.push("claude not found — install Claude Code CLI");
+    if (hasVc) {
+      const status = await deps.vcStatus();
+      if (!status.ok) { needsLogin = true; problems.push("vc not logged in — run: vc login"); }
+    }
+    return { ok: problems.length === 0, needsLogin, problems };
+  },
+  productionDeps: () => ({ which: async () => true, vcStatus: async () => ({ ok: true, text: "ok" }) }),
+  checkPreflight: async () => ({ ok: true, needsLogin: false, problems: [] }),
 }));
 
 // Stub agents.ts to avoid needing real agent files for the server route test

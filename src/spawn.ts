@@ -180,13 +180,18 @@ export function spawnTurn(vault: string, uuid: string, argv: string[], command: 
  * NO -p flag: the REPL stays open for multi-turn interaction.
  *
  * VOS-205: This is the interactive path; the print path stays in buildSpawnArgv.
+ * VOS-206 fix: --settings must be included so SessionStart hook fires and writes
+ * cc-actual-session.txt (required for --resume on reap/respawn).
  */
 export function buildInteractiveArgv(
   ccSeed: string,
   vault: string,
-  o: { addDirs?: string[]; mcpConfigPath?: string | null },
+  o: { addDirs?: string[]; mcpConfigPath?: string | null; settingsPath?: string | null },
 ): string[] {
   const argv = ["--session-id", ccSeed, "--add-dir", vault, "--permission-mode", "bypassPermissions"];
+  // --settings scopes the hook relay to this execution so SessionStart fires and
+  // writes cc-actual-session.txt — the source of the real CC session ID for --resume.
+  if (o.settingsPath) argv.push("--settings", o.settingsPath);
   for (const d of o.addDirs ?? []) argv.push("--add-dir", d);
   if (o.mcpConfigPath) argv.push("--mcp-config", o.mcpConfigPath, "--strict-mcp-config");
   return argv;
@@ -312,11 +317,13 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   let argv: string[];
   if (opts.interactive) {
     // VOS-205: interactive launch — no -p, skill driven via send-keys after REPL is up.
-    // buildInteractiveArgv does NOT include --settings (interactive sessions don't need hook
-    // settings in the same way; hooks still fire via the wrapper ProcessExit path).
+    // VOS-206 fix: pass settingsPath so --settings is included in argv; without it,
+    // SessionStart hook never fires and cc-actual-session.txt is never written,
+    // which breaks --resume on reap/respawn.
     argv = buildInteractiveArgv(ccSeed, opts.vault, {
       addDirs: opts.addDirs,
       mcpConfigPath: opts.mcpConfigPath,
+      settingsPath,
     });
   } else {
     // Trigger-fired executions use print mode (-p): CC runs the skill as a headless turn and exits.

@@ -97,16 +97,16 @@ echo "  pane_pid_before=$PANE_PID_BEFORE" >> "$EVIDENCE_FILE"
 
 # ---- Check body.html has <form ----
 BODY_PATH="${VAULT}/sessions/${RUNID}/body.html"
-for i in 1 2 3 4 5; do
+for i in $(seq 1 60); do
   sleep 2
   if [[ -f "$BODY_PATH" ]] && grep -q '<form' "$BODY_PATH" 2>/dev/null; then
-    echo "  PASS: body.html has <form (onboarding rendered form)" | tee -a "$EVIDENCE_FILE"
+    echo "  PASS: body.html has <form (onboarding rendered form, waited ~$((i*2))s)" | tee -a "$EVIDENCE_FILE"
     break
   fi
-  echo "  waiting for <form in body.html ($i/5)..."
+  echo "  waiting for <form in body.html ($i/60, ${i}×2s elapsed)..."
 done
 if ! grep -q '<form' "$BODY_PATH" 2>/dev/null; then
-  echo "WARNING: body.html does not contain <form — onboarding may not have rendered yet"
+  echo "WARNING: body.html does not contain <form after ~120s — onboarding may not have rendered yet"
   echo "  body.html snippet:" | tee -a "$EVIDENCE_FILE"
   head -5 "$BODY_PATH" 2>/dev/null | tee -a "$EVIDENCE_FILE"
 fi

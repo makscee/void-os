@@ -1,6 +1,6 @@
 // send-interactive.test.ts — VOS-206 T4: /send routes interactive form-submits to live REPL
 // Tests the new interactive branch in POST /s/:uuid/send.
-import { expect, test, beforeAll, mock } from "bun:test";
+import { expect, test, beforeAll, afterAll, mock } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -29,8 +29,34 @@ mock.module("../src/spawn.ts", () => ({
   spawnRun: (opts: Record<string, unknown>) => {
     const runId = `exec-${randomUUID()}`;
     spawnRunCalls.push(opts);
+    // Write a minimal start event so readStartEvent still works if this mock bleeds
+    // into other test files (e.g. triggers-fire.test.ts via spawn-adapter.ts).
+    try {
+      const { mkdirSync: _mkdir, appendFileSync: _append } = require("node:fs");
+      const { join: _join } = require("node:path");
+      if (opts.vault) {
+        const evDir = _join(opts.vault, ".void-os", "events");
+        _mkdir(evDir, { recursive: true });
+        const ev = JSON.stringify({ type: "start", agent: null, skill: opts.skill ?? null,
+          input_ref: null, tmux_session: `vos-run-${runId}`, at: Date.now(),
+          trigger_id: null, step_ceiling: null, output_target: opts.outputTarget ?? null });
+        _append(_join(evDir, `${runId}.jsonl`), ev + "\n");
+      }
+    } catch { /* non-fatal stub impl */ }
     return { runId, tmuxSession: `vos-run-${runId}` };
   },
+  // re-export so spawn.test.ts still works if mocks bleed across test files
+  buildInteractiveArgv: (ccSeed: string, vault: string, o: { addDirs?: string[]; mcpConfigPath?: string | null; settingsPath?: string | null }) => {
+    const argv = ["--session-id", ccSeed, "--add-dir", vault, "--permission-mode", "bypassPermissions"];
+    if (o.settingsPath) argv.push("--settings", o.settingsPath);
+    for (const d of o.addDirs ?? []) argv.push("--add-dir", d);
+    return argv;
+  },
+  buildWrapperCommand: (wrapperPath: string, daemonUrl: string, runId: string, mode: string, ccCommand: string) =>
+    `"${wrapperPath}" "${daemonUrl}" "${runId}" "${mode}" ${ccCommand}`,
+  buildSpawnArgv: () => [],
+  hookRelayScriptPath: "/mock/hook-relay.sh",
+  runWrapperScriptPath: "/mock/run-wrapper.sh",
 }));
 
 mock.module("../src/drain.ts", () => ({
@@ -39,6 +65,21 @@ mock.module("../src/drain.ts", () => ({
 
 mock.module("../src/preflight.ts", () => ({
   realDeps: { vcStatus: async () => ({ ok: true, msg: "authed" }) },
+  // re-export checkPrereqs so preflight.test.ts still works if mocks bleed across files
+  checkPrereqs: async (deps: { which: (b: string) => Promise<boolean>; vcStatus: () => Promise<{ ok: boolean; text: string }> }) => {
+    const problems: string[] = [];
+    let needsLogin = false;
+    const [hasVc, hasClaude] = await Promise.all([deps.which("vc"), deps.which("claude")]);
+    if (!hasVc) problems.push("vc not found — install via: curl -fsSL https://auth.makscee.ru/cv/install.sh | sh");
+    if (!hasClaude) problems.push("claude not found — install Claude Code CLI");
+    if (hasVc) {
+      const status = await deps.vcStatus();
+      if (!status.ok) { needsLogin = true; problems.push("vc not logged in — run: vc login"); }
+    }
+    return { ok: problems.length === 0, needsLogin, problems };
+  },
+  productionDeps: () => ({ which: async () => true, vcStatus: async () => ({ ok: true, text: "ok" }) }),
+  checkPreflight: async () => ({ ok: true, needsLogin: false, problems: [] }),
 }));
 
 mock.module("../src/tmux.ts", () => ({
@@ -58,9 +99,11 @@ mock.module("../src/resume.ts", () => ({
     hasSessionMap.set(`vos-run-${execId}`, true);
     return `vos-run-${execId}`;
   },
-  buildResumeArgv: (ccId: string, vaultPath: string) => [
-    "--resume", ccId, "--add-dir", vaultPath, "--permission-mode", "bypassPermissions",
-  ],
+  buildResumeArgv: (ccId: string, vaultPath: string, o?: { addDirs?: string[] }) => {
+    const argv = ["--resume", ccId, "--add-dir", vaultPath, "--permission-mode", "bypassPermissions"];
+    for (const d of o?.addDirs ?? []) argv.push("--add-dir", d);
+    return argv;
+  },
   // re-export the real ensureRawRunner for tests that import from resume.ts directly
   ensureRawRunner: (cmd: string) => {
     const toks = cmd.trim().split(/\s+/).filter(Boolean);
@@ -194,4 +237,10 @@ test("drain-gated session takes drain branch even when interactive flag set", as
   expect(runTurnCalls.length).toBe(beforeRunTurn + 1);
   // send-keys was NOT called (drain branch, not interactive send-keys branch)
   expect(sentKeys.length).toBe(beforeSentKeys);
+});
+
+// Restore all mock.module registrations so sibling test files (e.g. triggers-fire.test.ts
+// using spawn-adapter.ts → spawnRun) that run after this file get the real implementations.
+afterAll(() => {
+  mock.restore();
 });

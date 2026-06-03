@@ -255,3 +255,45 @@ test("spawnRun writes declared outputTarget into start event", () => {
   expect(startEvent.output_target).toBe("out/report.html");
   try { killSession(tmuxSession); } catch { /* ignore */ }
 });
+
+// VOS-206 regression: interactive spawn must include --settings in argv so
+// the SessionStart hook fires and writes cc-actual-session.txt.
+// Without --settings, hooks are not configured → SessionStart never fires →
+// cc-actual-session.txt never written → --resume on reap/respawn is broken.
+test("buildInteractiveArgv includes --settings when settingsPath is provided", () => {
+  const argv = buildInteractiveArgv("cc-seed-123", "/vault", {
+    settingsPath: "/vault/.void-os/hook-settings/exec-abc.json",
+  });
+  expect(argv).toContain("--settings");
+  expect(argv).toContain("/vault/.void-os/hook-settings/exec-abc.json");
+  expect(argv).toContain("--session-id");
+  expect(argv).toContain("cc-seed-123");
+});
+
+test("buildInteractiveArgv omits --settings when settingsPath is absent", () => {
+  const argv = buildInteractiveArgv("cc-seed-456", "/vault", {});
+  expect(argv).not.toContain("--settings");
+});
+
+test("spawnRun interactive path writes start event (cc-actual write path wired)", () => {
+  const { mkdtempSync } = require("node:fs");
+  const { tmpdir } = require("node:os");
+  const db = openRegistry(":memory:");
+  const vault = mkdtempSync(join(tmpdir(), "vos-spawn-interactive-"));
+  // spawnRun with interactive:true should still write the start event via appendEvent.
+  // This confirms the event-write path is not gated on the print/interactive branch.
+  const { runId, tmuxSession } = spawnRun({
+    db, vault, daemonUrl: "http://127.0.0.1:4317",
+    skill: "chat", agent: null,
+    runnerCommand: "sleep",
+    now: 2000,
+    interactive: true,
+    outputTarget: null,
+  });
+  const startEvent = JSON.parse(
+    readFileSync(join(vault, ".void-os", "events", `${runId}.jsonl`), "utf8").split("\n")[0],
+  );
+  expect(startEvent.type).toBe("start");
+  expect(startEvent.skill).toBe("chat");
+  try { killSession(tmuxSession); } catch { /* ignore */ }
+});
