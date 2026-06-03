@@ -395,7 +395,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // Recover the runner command stored at launch time; fall back to vault default
     const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
     let runnerCommand = resolveRunner(readConfig(vault)); // default fallback for legacy sessions
-    let meta: { runner?: string; drainIssue?: number; worktree?: string; max?: number; skill?: string; parkedBoxRaw?: string } = {};
+    let meta: { runner?: string; drainIssue?: number; worktree?: string; max?: number; skill?: string; parkedBoxRaw?: string; interactive?: boolean } = {};
     if (existsSync(metaPath)) {
       try {
         meta = JSON.parse(readFileSync(metaPath, "utf8"));
@@ -406,6 +406,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // Drain-session resume: if this session was parked by a drain (human gate verdict),
     // resume the skill IN THE WORKTREE (so its edits land in the repo), then re-invoke drain()
     // (verdict-aware path A: continuation passes the accepted human box so runner checks it).
+    // NOTE: drain guard must stay BEFORE the VOS-206 interactive branch so drain sessions
+    // with interactive:true still take the worktree-resume path, not send-keys.
     if (typeof meta.drainIssue === "number" && meta.worktree) {
       // Resume the parked skill in the worktree so its edits land in the repo
       const ccSessionIdDrain = readCcSessionId(vault, uuid);
@@ -433,6 +435,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
         const drainOpts = buildDrainOptsFor(vault, meta.drainIssue!, meta.worktree!, runnerCommand, meta.max ?? 12);
         void drain({ ...drainOpts, acceptHumanBox });
       }, 500);
+      return c.redirect(`/s/${uuid}`);
+    }
+
+    // VOS-206: interactive session form-submit → live REPL via send-keys (NO successor spawn).
+    // Mirrors the /message route: respawn-if-reaped (ensureRawRunner → --raw), touch last-activity, send-keys.
+    // Clearing the <form> from body.html flips deriveStatus off "awaiting" → stranded-yellow dissolves.
+    // Runs AFTER the drain guard (drain sessions with interactive:true still take the worktree path above).
+    if (meta.interactive === true) {
+      const target = `vos-run-${uuid}`;
+      const cfg2 = readConfig(vault);
+      const daemonUrl2 = `http://127.0.0.1:${cfg2.port}`;
+      if (!hasSession(target)) {
+        respawnSession(db, vault, uuid, runnerCommand, daemonUrl2);
+      }
+      try {
+        const dir = sessionDir(vault, uuid);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
+      } catch { /* non-fatal */ }
+      sendKeys(target, text);
+      // Replace the form so the session leaves the awaiting/agent-inbox state (stranded-yellow dissolves).
+      writeFileSync(bodyPath(vault, uuid), workingPage(fields));
       return c.redirect(`/s/${uuid}`);
     }
 
