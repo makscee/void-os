@@ -130,6 +130,75 @@ function dotClass(status: SessionStatus): string {
   return ""; // complete = default green
 }
 
+/** CSS for the left nav sidebar — inlined alongside the shared UI_TOKENS block. */
+const LEFT_NAV_CSS = `
+/* Left nav sidebar */
+.layout{display:flex;min-height:100vh}
+.left-nav{width:200px;flex-shrink:0;background:hsl(217.2 32.6% 6%);border-right:1px solid hsl(var(--border));display:flex;flex-direction:column;gap:1px;padding:.5rem 0;overflow-y:auto;position:fixed;top:0;left:0;height:100vh;z-index:5}
+.main-content{margin-left:200px;flex:1;min-width:0}
+.nav-home{display:block;font-size:12px;font-weight:600;padding:.4rem .75rem;text-decoration:none;color:hsl(var(--muted-foreground));transition:color .15s,background .15s;border-radius:calc(var(--radius) - 4px);margin:0 .25rem}
+.nav-home:hover,.nav-home.active{color:hsl(var(--foreground));background:hsl(var(--secondary))}
+.nav-group-label{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:hsl(var(--muted-foreground));padding:.5rem .75rem .25rem;opacity:.6}
+.nav-attention,.nav-recent{padding:0 .25rem}
+.nav-session{display:flex;flex-direction:column;padding:.3rem .5rem;text-decoration:none;color:hsl(var(--foreground));border-radius:calc(var(--radius) - 4px);transition:background .1s;font-size:12px;overflow:hidden}
+.nav-session:hover,.nav-session.active{background:hsl(var(--secondary))}
+.nav-session.unseen{border-left:2px solid hsl(38 92% 50%);padding-left:.375rem}
+.nav-session-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+.nav-elapsed{font-size:10px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+`;
+
+/** Client-side script that ticks elapsed-time spans (data-epoch attribute). */
+const ELAPSED_TICK_SCRIPT = `<script>
+(function(){
+  function fmtElapsed(ms){
+    var s=Math.floor(ms/1000);
+    if(s<60)return s+'s';
+    var m=Math.floor(s/60);
+    if(m<60)return m+'m';
+    var h=Math.floor(m/60);
+    return h+'h '+(m%60)+'m';
+  }
+  function tickElapsed(){
+    var now=Date.now();
+    document.querySelectorAll('.nav-elapsed[data-epoch]').forEach(function(el){
+      var epoch=parseInt(el.getAttribute('data-epoch'),10);
+      if(epoch>0)el.textContent=fmtElapsed(now-epoch)+' ago';
+    });
+  }
+  tickElapsed();
+  setInterval(tickElapsed,10000);
+})();
+</script>`;
+
+/**
+ * Render the persistent left-nav sidebar fragment.
+ * @param sessions Recent sessions (sorted newest-first from listSessions).
+ * @param activeUuid The currently-displayed session uuid (marks it active), or undefined for dashboard.
+ */
+function leftNav(sessions: SessionInfo[], activeUuid?: string): string {
+  const MAX_RECENT = 8;
+  const attention = sessions.filter((s) => s.needsAttention);
+  const recent = sessions.slice(0, MAX_RECENT);
+
+  const btn = (s: SessionInfo) => {
+    const active = s.uuid === activeUuid ? " active" : "";
+    const unseen = s.needsAttention ? " unseen" : "";
+    const epoch = s.lastActivityMs ?? s.mtimeMs;
+    const shortTitle = esc(s.title.length > 22 ? s.title.slice(0, 22) + "…" : s.title);
+    return `<a href="/s/${esc(s.uuid)}" class="nav-session${active}${unseen}"><span class="nav-session-title">${shortTitle}</span><span class="nav-elapsed" data-epoch="${epoch}"></span></a>`;
+  };
+
+  const attentionGroup = attention.length > 0
+    ? `<div class="nav-attention"><div class="nav-group-label">needs attention</div>${attention.map(btn).join("")}</div>`
+    : "";
+  return `
+<nav class="left-nav">
+  <a href="/" class="nav-home${activeUuid ? "" : " active"}">⌂ home</a>
+  ${attentionGroup}
+  <div class="nav-recent"><div class="nav-group-label">recent</div>${recent.map(btn).join("")}</div>
+</nav>`
+}
+
 /**
  * Main dashboard: skill launch chips + session list + relay auth banner.
  * Option 1 — Compact Command-Center style.
@@ -186,6 +255,9 @@ function openLaunch(btn){
 function closeLaunch(){document.getElementById('launch-modal').hidden=true;}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLaunch();});
 document.getElementById('launch-modal').addEventListener('click',function(e){if(e.target===this)closeLaunch();});
+document.getElementById('lm-text').addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();this.closest('form').submit();}
+});
 </script>`;
 
   // Agent inbox: sessions awaiting a human verdict (skill rendered a <form> into body.html)
@@ -203,12 +275,15 @@ document.getElementById('launch-modal').addEventListener('click',function(e){if(
 
   const rows = sessions
     .map(
-      (s) => `
+      (s) => {
+        const epoch = (s as any).lastActivityMs ?? s.mtimeMs;
+        return `
     <a href="/s/${esc(s.uuid)}" class="session-row">
       <span class="session-dot${s.status === "error" ? " err" : s.status === "awaiting" ? " await" : ""}"></span>
       <span class="session-title">${esc(s.title)}</span>
-      <span class="session-uuid">${esc(s.uuid.slice(0, 8))}…</span>
-    </a>`,
+      <span class="session-uuid">${esc(s.uuid.slice(0, 8))}… <span class="nav-elapsed" data-epoch="${epoch}"></span></span>
+    </a>`;
+      },
     )
     .join("");
 
@@ -219,6 +294,7 @@ document.getElementById('launch-modal').addEventListener('click',function(e){if(
   return `<!doctype html><meta charset=utf8><title>void-os</title>
 <style>
 ${UI_TOKENS}
+${LEFT_NAV_CSS}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
   background:hsl(var(--background));color:hsl(var(--foreground));min-height:100vh}
@@ -230,7 +306,7 @@ code{font-family:monospace;font-size:0.85em}
 .badge{font-size:11px;padding:2px 7px;border-radius:9999px;font-weight:500}
 .badge.ok{background:hsl(142 70% 12%);color:hsl(142 70% 65%)}
 .badge.bad{background:hsl(0 62.8% 18%);color:hsl(0 70% 65%)}
-/* Main layout */
+/* Main layout (with left nav) */
 .dash-layout{max-width:48rem;margin:0 auto;padding:1.25rem 1rem}
 /* Section labels */
 .section-label{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
@@ -270,6 +346,9 @@ code{font-family:monospace;font-size:0.85em}
 .session-uuid{font-size:11px;font-family:monospace;color:hsl(var(--muted-foreground))}
 </style>
 <div class="topbar"><span class="logo">void-os</span>${badge}</div>
+<div class="layout">
+${leftNav(sessions)}
+<div class="main-content">
 <div class="dash-layout">
 ${pendingDecisions.length === 0 ? "" : `
 <div class="section-label" style="color:hsl(38 92% 65%)">Pending decisions</div>
@@ -291,8 +370,11 @@ ${runnerBar}
 <div class="session-list">${rows || '<span style="font-size:13px;color:hsl(var(--muted-foreground));padding:.5rem .625rem">no sessions yet</span>'}</div>
 ${modal}
 </div>
+</div>
+</div>
 ${runnerScript}
-${modalScript}`;
+${modalScript}
+${ELAPSED_TICK_SCRIPT}`;
 }
 
 /**
@@ -300,7 +382,7 @@ ${modalScript}`;
  * session name, and click-to-copy resume command. Option 1 style.
  * @param name Human-readable session name (e.g. skill name). Falls back to short uuid.
  */
-export function renderShell(uuid: string, vault: string, name?: string, attachCmd?: string, interactive?: boolean): string {
+export function renderShell(uuid: string, vault: string, name?: string, attachCmd?: string, interactive?: boolean, sessions: SessionInfo[] = []): string {
   // The resume command must be run from the vault dir because CC uses cwd to locate sessions.
   const resumeCmd = attachCmd ?? `cd ${vault} && vc -- --resume ${uuid}`;
   // Truncated display label for the copy-button (max ~40 chars from end)
@@ -317,6 +399,7 @@ export function renderShell(uuid: string, vault: string, name?: string, attachCm
   return `<!doctype html><meta charset=utf8><title>session ${esc(uuid)}</title>
 <style>
 ${UI_TOKENS}
+${LEFT_NAV_CSS}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
   background:hsl(var(--background));color:hsl(var(--foreground))}
@@ -350,13 +433,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .msg-send:hover{background:hsl(217 60% 8%)}
 iframe{border:0;width:100%;height:calc(100vh - 36px);display:block}
 body.drawer-open iframe{height:calc(100vh - 36px - 40vh - 28px)}
-#drawer-bar{position:fixed;left:0;right:0;bottom:0;height:28px;z-index:10;
+/* Shell main content offset for left nav */
+.shell-main{margin-left:200px;display:flex;flex-direction:column}
+.shell-header{margin-left:0}
+#drawer-bar{position:fixed;left:200px;right:0;bottom:0;height:28px;z-index:10;
   display:flex;align-items:center;padding:0 .75rem;cursor:pointer;user-select:none;
   font-size:11px;font-family:monospace;color:hsl(var(--muted-foreground));
   background:hsl(217.2 32.6% 8%);border-top:1px solid hsl(var(--border))}
 #drawer-bar:hover{color:hsl(var(--foreground))}
 body.drawer-open #drawer-bar{bottom:40vh}
-#drawer-panel{position:fixed;left:0;right:0;bottom:0;height:40vh;z-index:9;display:none;
+#drawer-panel{position:fixed;left:200px;right:0;bottom:0;height:40vh;z-index:9;display:none;
   overflow:auto;padding:.5rem .75rem;background:hsl(var(--background));
   border-top:1px solid hsl(var(--border));font-size:12px;line-height:1.5}
 body.drawer-open #drawer-panel{display:block}
@@ -367,6 +453,8 @@ body.drawer-open #drawer-panel{display:block}
 .role-user .who{color:hsl(217 70% 65%)}
 .role-assistant .who{color:hsl(142 60% 60%)}
 </style>
+${leftNav(sessions, uuid)}
+<div class="shell-main">
 <div class="shell-header">
   <a href="/" class="back-link">← all</a>
   <span class="divider-v"></span>
@@ -385,6 +473,7 @@ body.drawer-open #drawer-panel{display:block}
   </form>` : ""}
 </div>
 <iframe id="f" src="/s/${esc(uuid)}/body"></iframe>
+</div>
 <div id="drawer-panel"></div>
 <div id="drawer-bar">▾ transcript</div>
 <script>
@@ -394,6 +483,13 @@ document.getElementById('copybtn').addEventListener('click',function(){
   b.textContent='✓ copied';b.classList.add('copied');
   setTimeout(function(){b.textContent=lbl;b.classList.remove('copied')},1800);
 });
+${interactive ? `
+var msgInput=document.querySelector('.msg-input');
+if(msgInput){
+  msgInput.addEventListener('keydown',function(e){
+    if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();this.closest('form').submit();}
+  });
+}` : ""}
 var es=new EventSource("/s/${esc(uuid)}/stream");
 // Always navigate to the canonical body URL on reload events rather than re-POST.
 // location.reload() would re-submit POST /send and spawn a spurious vc turn.
@@ -423,7 +519,8 @@ dvBar.addEventListener("click",function(){
   if(open){dvRefresh();dvTimer=setInterval(dvRefresh,2000);}
   else if(dvTimer){clearInterval(dvTimer);dvTimer=null;}
 });
-</script>`;
+</script>
+${ELAPSED_TICK_SCRIPT}`;
 }
 
 /**

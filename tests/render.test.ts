@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread } from "../src/render.ts";
 
+// ── VOS-207 helpers ────────────────────────────────────────────────────────
+const sess = (o: Partial<{ uuid: string; title: string; mtimeMs: number; lastActivityMs: number; needsAttention: boolean; error: boolean; status: string; skill: string }>) => ({
+  uuid: "u1", title: "T1", mtimeMs: 1, lastActivityMs: 1, needsAttention: false,
+  error: false, status: "complete" as const, skill: "deep-research", ...o,
+});
+
 test("placeholder body has a title so it lists + sorts", () => {
   expect(placeholderBody()).toContain("<title>");
   expect(placeholderBody()).toContain("starting");
@@ -272,4 +278,80 @@ test("renderShell non-interactive (no 5th arg) omits attach/message buttons", ()
   const html = renderShell("sess-no-arg", "/vault", "onboarding");
   expect(html).not.toContain("attach-here");
   expect(html).not.toContain("/message");
+});
+
+// ── VOS-207: left nav, needs-attention, elapsed, Cmd+Enter ─────────────────
+
+test("dashboard renders left nav with home button + recent session buttons", () => {
+  const html = renderDashboard([], [sess({ uuid: "abc123" })], { authed: true });
+  expect(html).toContain("nav-home");
+  expect(html).toContain("nav-session");
+  expect(html).toContain("/s/abc123");
+});
+
+test("dashboard groups needs-attention sessions in nav", () => {
+  const html = renderDashboard([], [
+    sess({ uuid: "na1", needsAttention: true }),
+    sess({ uuid: "ok1", needsAttention: false }),
+  ], { authed: true });
+  expect(html).toContain("nav-attention");
+  // needs-attention session must appear in nav-attention group
+  expect(html).toContain('href="/s/na1"');
+});
+
+test("dashboard does not put non-attention session in nav-attention group", () => {
+  const html = renderDashboard([], [
+    sess({ uuid: "na1", needsAttention: true }),
+    sess({ uuid: "ok1", needsAttention: false }),
+  ], { authed: true });
+  // ok1 should NOT appear inside the nav-attention section
+  // nav-attention section ends before nav-recent section
+  const attentionSection = html.match(/nav-attention[\s\S]*?nav-recent/)?.[0] ?? "";
+  expect(attentionSection).not.toContain("/s/ok1");
+});
+
+test("dashboard session rows include data-epoch attribute for elapsed time", () => {
+  const html = renderDashboard([], [sess({ uuid: "u1", lastActivityMs: 12345 })], { authed: true });
+  expect(html).toContain("data-epoch");
+  expect(html).toContain("12345");
+  expect(html).toContain("nav-elapsed");
+});
+
+test("dashboard includes client-side elapsed tick script", () => {
+  const html = renderDashboard([], [sess({ uuid: "u1", lastActivityMs: 1 })], { authed: true });
+  expect(html).toContain("data-epoch");
+  // Client tick script updates elapsed spans
+  expect(html).toContain("nav-elapsed");
+  expect(html).toContain("script");
+});
+
+test("shell includes Cmd/Ctrl+Enter keydown handler for message input", () => {
+  const html = renderShell("sess-abc", "/vault", "chat", undefined, true);
+  expect(html).toContain("metaKey");
+  expect(html).toContain("ctrlKey");
+  expect(html).toContain("Enter");
+});
+
+test("dashboard modal textarea includes Cmd/Ctrl+Enter submit handler", () => {
+  const html = renderDashboard([], [], { authed: true });
+  expect(html).toContain("metaKey");
+  expect(html).toContain("ctrlKey");
+  expect(html).toContain("Enter");
+});
+
+test("renderShell includes left nav with home button", () => {
+  const html = renderShell("sess-abc", "/vault", "chat", undefined, false, [
+    sess({ uuid: "sess-abc" }),
+  ]);
+  expect(html).toContain("nav-home");
+  expect(html).toContain("left-nav");
+});
+
+test("renderShell left nav marks active session", () => {
+  const html = renderShell("sess-abc", "/vault", "chat", undefined, false, [
+    sess({ uuid: "sess-abc" }),
+    sess({ uuid: "other-session" }),
+  ]);
+  expect(html).toContain("nav-session");
+  expect(html).toContain("/s/sess-abc");
 });
