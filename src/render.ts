@@ -478,7 +478,7 @@ ${leftNav(sessions, uuid)}
     <button type="submit" class="msg-send" title="Send message to session">Send</button>
   </form>
 </div>
-<iframe id="f" src="/s/${esc(uuid)}/body"></iframe>
+${hasBody ? `<iframe id="f" src="/s/${esc(uuid)}/body"></iframe>` : ""}
 </div>
 <div id="drawer-panel"></div>
 <div id="drawer-bar">▾ transcript</div>
@@ -514,7 +514,7 @@ var es=new EventSource("/s/${esc(uuid)}/stream");
 // the spinner stops and the connection is not held open needlessly.
 es.onmessage=function(){
   var f=document.getElementById("f");
-  f.contentWindow.location.replace("/s/${esc(uuid)}/body");
+  if(f){f.contentWindow.location.replace("/s/${esc(uuid)}/body");}
   fetch("/s/${esc(uuid)}/status").then(function(r){return r.text();}).then(function(s){
     if(s==="stopped"||s==="error"||s==="complete"||s==="reaped"){es.close();}
   });
