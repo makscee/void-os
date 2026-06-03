@@ -137,6 +137,23 @@ test("shell embeds the body iframe + SSE reload (hasBody=true)", () => {
   expect(html).toContain("/home/user/void-os");
 });
 
+test("VOS-230 symptom 1: SSE reload re-renders the shell when no iframe exists yet (body just appeared)", () => {
+  // Regression: a session opened BEFORE body.html exists renders hasBody=false → NO iframe#f.
+  // When the agent later writes body.html, the SSE fires "reload" but getElementById('f') is null,
+  // so the old `if(f){...replace...}` did nothing and the body pane stayed stuck on "no body.html".
+  // Fix: the onmessage handler must reload the whole (idempotent GET) shell page when the iframe is
+  // absent so the iframe gets created. This test FAILS on the old `if(f){...}else{/* nothing */}`.
+  const html = renderShell("u1", "/home/user/void-os", undefined, undefined, undefined, false);
+  // No iframe in the no-body shell (VOS-212 gate still holds)
+  expect(html).not.toContain('<iframe id="f"');
+  expect(html).toContain("body-absent");
+  // The SSE handler must take a page-reload branch when the iframe is absent.
+  const handler = html.slice(html.indexOf("es.onmessage"), html.indexOf("es.onmessage") + 700);
+  expect(handler).toContain("getElementById");
+  // Either an explicit else-reload or an unconditional reload-when-no-iframe — assert a top-level reload call.
+  expect(handler).toContain("location.reload()");
+});
+
 test("shell has click-to-copy button with resume command when ccId available", () => {
   // Pass a real ccId-form resumeCmd — copy-btn renders with clipboard JS
   const html = renderShell("u1", "/home/user/vault", undefined,

@@ -272,6 +272,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
         html = `<base target="_top">` + html;
       }
     }
+    // VOS-230 symptom 2: the <base target="_top"> above (for link-escape) also makes any native
+    // <form> default-target _top. The sandboxed iframe (allow-scripts allow-forms allow-popups — NO
+    // allow-top-navigation) BLOCKS that top navigation, so the onboarding form's POST never fires and
+    // the form silently does nothing. Force forms that DON'T already declare a target to target="_self"
+    // so their POST stays inside the iframe (the agent then rewrites body.html → SSE reload refreshes
+    // it). Forms with an explicit target (e.g. a deliberate _top) are left untouched.
+    html = html.replace(/<form\b(?![^>]*\btarget=)([^>]*)>/gi, '<form target="_self"$1>');
+
     // VOS-211: inject vendored htmx (loaded from our asset route, never a CDN) + substitute the
     // {{VOS_UUID}} sentinel so the agent can author a stable form template: hx-post="/s/{{VOS_UUID}}/act".
     const htmxTag = `<script src="/assets/htmx.min.js"></script>`;

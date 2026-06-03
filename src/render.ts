@@ -604,7 +604,12 @@ if(msgInput){
 var es=new EventSource("/s/${esc(uuid)}/stream");
 es.onmessage=function(){
   var f=document.getElementById("f");
+  // VOS-230 symptom 1: a session opened BEFORE body.html existed renders with NO iframe#f
+  // (hasBody=false → body-absent). When the agent later writes body.html, this reload event
+  // fires but there is no iframe to refresh. Reload the whole shell (an idempotent GET — no
+  // POST re-submit risk) so the iframe gets created and the freshly-written body shows.
   if(f){f.contentWindow.location.replace("/s/${esc(uuid)}/body");}
+  else{location.reload();return;}
   fetch("/s/${esc(uuid)}/status").then(function(r){return r.text();}).then(function(s){
     if(s==="stopped"||s==="error"||s==="complete"||s==="reaped"){es.close();}
   });

@@ -336,6 +336,38 @@ test("GET /s/:uuid/body injects base target=_top so in-body links escape the ifr
   expect(html).toContain('<base target="_top">');
 });
 
+test("VOS-230 symptom 2: GET /s/:uuid/body retargets a native form to _self so its POST is not a blocked top-navigation", async () => {
+  // Regression: the onboarding skill writes a native <form action="/s/:uuid/send" method="POST">.
+  // The injected <base target="_top"> made the form default-target _top; the sandboxed iframe
+  // (allow-scripts allow-forms allow-popups — NO allow-top-navigation) BLOCKS that top navigation,
+  // so the POST never fires and the form does nothing. Fix: force forms WITHOUT an explicit target
+  // to target="_self" so the POST stays in the iframe (the agent then rewrites body.html → SSE reload).
+  const id = "formtarget-uuid";
+  mkdirSync(sessionDir(vault, id), { recursive: true });
+  writeFileSync(
+    bodyPath(vault, id),
+    `<h2>Onboarding</h2><form action="/s/${id}/send" method="POST"><input name="name"><button>Go</button></form>`,
+  );
+  const html = await (await makeApp(vault, db).request(`/s/${id}/body`)).text();
+  // base still present for link-escape
+  expect(html).toContain('<base target="_top">');
+  // the form must carry target="_self" so its POST posts within the iframe (not a blocked _top nav)
+  expect(html).toMatch(/<form[^>]*target="_self"/);
+});
+
+test("VOS-230 symptom 2: form that already declares an explicit target is left untouched", async () => {
+  const id = "formtarget-keep-uuid";
+  mkdirSync(sessionDir(vault, id), { recursive: true });
+  writeFileSync(
+    bodyPath(vault, id),
+    `<form action="/s/${id}/act" method="POST" target="_top"><button>Go</button></form>`,
+  );
+  const html = await (await makeApp(vault, db).request(`/s/${id}/body`)).text();
+  // an explicit target is respected — we do not clobber it to _self
+  expect(html).toMatch(/<form[^>]*target="_top"/);
+  expect(html).not.toMatch(/<form[^>]*target="_self"/);
+});
+
 test("POST /launch writes placeholder + session-meta.json, calls spawnRun, redirects", async () => {
   const before = spawnCalls.length;
   const app = makeApp(vault, db);
