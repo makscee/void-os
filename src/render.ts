@@ -134,6 +134,18 @@ function dotClass(status: SessionStatus): string {
   return ""; // complete = default green
 }
 
+/** Map SessionStatus to a human-readable text label (VOS-219). */
+export function statusLabel(status: SessionStatus): string {
+  switch (status) {
+    case "working": return "running";
+    case "awaiting": return "awaiting input";
+    case "reaped": return "reaped (resumable)";
+    case "complete": return "done";
+    case "error": return "failed";
+    case "stopped": return "stopped";
+  }
+}
+
 /** CSS for the left nav sidebar — inlined alongside the shared UI_TOKENS block. */
 const LEFT_NAV_CSS = `
 /* Left nav sidebar */

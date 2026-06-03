@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread, ackFragment } from "../src/render.ts";
+import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread, ackFragment, statusLabel } from "../src/render.ts";
 import type { SessionInfo } from "../src/sessions.ts";
 
 // ── VOS-207 helpers ────────────────────────────────────────────────────────
@@ -548,4 +548,15 @@ test("renderShell sandboxes the body iframe (untrusted agent HTML)", () => {
   expect(html).toMatch(/<iframe[^>]*\bsandbox="[^"]*allow-scripts[^"]*"/);
   expect(html).toContain("allow-forms");
   expect(html).not.toMatch(/<iframe[^>]*allow-same-origin/);
+});
+
+// ── VOS-219: statusLabel ─────────────────────────────────────────────────────
+
+test("statusLabel maps all 6 states to human text", () => {
+  expect(statusLabel("working")).toBe("running");
+  expect(statusLabel("awaiting")).toBe("awaiting input");
+  expect(statusLabel("reaped")).toBe("reaped (resumable)");
+  expect(statusLabel("complete")).toBe("done");
+  expect(statusLabel("error")).toBe("failed");
+  expect(statusLabel("stopped")).toBe("stopped");
 });
