@@ -178,10 +178,11 @@ a{color:#93c5fd}</style>
     }
     // Stamp last-opened.txt so needsAttention tracking knows when the operator viewed this session.
     try { writeFileSync(lastOpenedPath(vault, uuid), String(Date.now())); } catch { /* ignore */ }
-    // Look up the execution's attach command from the registry (for the shell to display).
-    const exec = getExecution(db, uuid);
-    const attachCmd = exec ? `tmux -L vos attach -t ${exec.tmux_session}` : undefined;
-    return c.html(renderShell(uuid, vault, sessionName, attachCmd, isInteractive, listSessions(vault, db)));
+    // ccId-form resume command — the only form that actually resumes.
+    // NEVER the transient tmux target (print panes exit instantly) and NEVER the void-os runId.
+    const ccId = readCcSessionId(vault, uuid);
+    const resumeCmd = ccId ? `cd ${vault} && vc -- --resume ${ccId}` : undefined;
+    return c.html(renderShell(uuid, vault, sessionName, resumeCmd, isInteractive, listSessions(vault, db)));
   });
 
   // GET /s/:uuid/body — serves the session's body.html, appends error banner if error.txt present.

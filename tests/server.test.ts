@@ -880,6 +880,29 @@ test("POST /s/:uuid/message returns 400 when text is empty", async () => {
   expect(res.status).toBe(400);
 });
 
+// ── VOS-210 T2: ccId-form resume command ──────────────────────────────────
+
+test("GET /s/:uuid renders ccId-form vc --resume when cc-actual-session.txt exists", async () => {
+  const uuid = `vos-210-resume-${Date.now()}`;
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  // readCcSessionId validates UUID format: /^[0-9a-f-]{36}$/
+  const fakeCcId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  writeFileSync(join(dir, "cc-actual-session.txt"), fakeCcId);
+  const html = await (await makeApp(vault, db).request(`/s/${uuid}`)).text();
+  expect(html).toContain(`vc -- --resume ${fakeCcId}`);
+  expect(html).not.toContain("tmux -L vos attach");
+});
+
+test("GET /s/:uuid uses uuid-form resume cmd when cc-actual-session.txt is absent", async () => {
+  const uuid = `vos-210-noresume-${Date.now()}`;
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  const html = await (await makeApp(vault, db).request(`/s/${uuid}`)).text();
+  expect(html).toContain(`vc -- --resume ${uuid}`);
+  expect(html).not.toContain("tmux -L vos attach");
+});
+
 // Restore mock.module registrations so sibling test files (e.g. spawn.test.ts) that import
 // ../src/spawn.ts directly get the real implementation, not this file's stubs.
 afterAll(() => {

@@ -454,3 +454,19 @@ test("VOS-209: Cmd+Enter on message input routes through requestSubmit (not nati
   expect(html).toContain("requestSubmit()");
   expect(html).not.toMatch(/\.submit\(\)(?!\s*\/\/ allowed)/);
 });
+
+// ── VOS-210 T2: ccId-form resume command ──────────────────────────────────
+
+test("renderShell copy-cmd uses the ccId-form vc --resume, never a tmux target", () => {
+  // 4th arg is the pre-built resume command (ccId-form), passed by the server.
+  const fakeCcId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const html = renderShell("u1", "/vault", "chat", `cd /vault && vc -- --resume ${fakeCcId}`);
+  expect(html).toContain(`vc -- --resume ${fakeCcId}`);
+  expect(html).not.toContain("tmux -L vos attach");
+});
+
+test("renderShell falls back to uuid-form resume cmd when none supplied (no tmux target)", () => {
+  const html = renderShell("u1", "/home/user/vault");
+  expect(html).toContain("vc -- --resume u1");
+  expect(html).not.toContain("tmux -L vos attach");
+});
