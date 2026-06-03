@@ -1,8 +1,8 @@
 // init.ts — preflight, vault pick, seed, vc login (Task 13)
 // Non-interactive path: pass vault dir as first positional arg or via VOID_OS_VAULT env.
 // Interactive fallback: readline menu (requires a TTY).
-import { mkdirSync, cpSync, copyFileSync, existsSync, rmSync, lstatSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { mkdirSync, cpSync, copyFileSync, existsSync, rmSync, lstatSync, writeFileSync, readFileSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { checkPrereqs, realDeps } from "./preflight.ts";
@@ -11,6 +11,52 @@ import { buildVaultHookSettings } from "./hooks-endpoint.ts";
 import { hookRelayScriptPath } from "./spawn.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Pre-seed Claude Code trust for the vault directory in ~/.claude.json (VOS-223).
+ *
+ * CC stores per-project trust under `projects[absolutePath]` in ~/.claude.json.
+ * Setting `hasTrustDialogAccepted` + `hasCompletedProjectOnboarding` to true
+ * suppresses the interactive "Do you trust the files in this folder?" prompt,
+ * preventing a 7-min stall on autonomous kickoff for fresh vaults.
+ *
+ * Safe: merges into existing file, preserves all sibling keys + other project entries.
+ * Idempotent: re-running init does not clobber existing trust entries.
+ *
+ * @param vault   Absolute path to the vault directory.
+ * @param homeDir Override for $HOME (used in tests to avoid mutating ~/.claude.json).
+ */
+export function preseedCCTrust(vault: string, homeDir?: string): void {
+  const home = homeDir ?? process.env.HOME ?? "/tmp";
+  const claudeJsonPath = join(home, ".claude.json");
+  const vaultAbs = resolve(vault);
+
+  // Read or create the base config
+  let config: Record<string, unknown> = {};
+  if (existsSync(claudeJsonPath)) {
+    try {
+      config = JSON.parse(readFileSync(claudeJsonPath, "utf8"));
+    } catch {
+      // Malformed JSON — start fresh to avoid breaking CC entirely
+      config = {};
+    }
+  }
+
+  // Ensure projects map exists
+  if (!config.projects || typeof config.projects !== "object" || Array.isArray(config.projects)) {
+    config.projects = {};
+  }
+  const projects = config.projects as Record<string, Record<string, unknown>>;
+
+  // Merge trust flags — preserve any existing keys for this path
+  projects[vaultAbs] = {
+    ...(projects[vaultAbs] ?? {}),
+    hasTrustDialogAccepted: true,
+    hasCompletedProjectOnboarding: true,
+  };
+
+  writeFileSync(claudeJsonPath, JSON.stringify(config, null, 2) + "\n");
+}
 
 /** Write vault-level .mcp.json so CC sessions in the vault can call the MCP server (VOS-199).
  *  The MCP server runs as a stdio process with VOID_OS_MCP_DIRECT=1 for direct vault access. */
@@ -80,6 +126,9 @@ export function seedVault(vault: string): void {
 
   // Write .mcp.json so CC sessions in this vault can reach the skill_manage MCP server (VOS-199).
   writeMcpConfig(vault);
+
+  // Pre-seed CC trust so autonomous kickoff never stalls on the interactive trust dialog (VOS-223).
+  preseedCCTrust(vault);
 }
 
 /** Resolve vault dir: positional arg[0] > VOID_OS_VAULT env > interactive pick. */

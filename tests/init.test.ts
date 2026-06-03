@@ -3,9 +3,9 @@
  */
 import { expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, lstatSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { seedVault } from "../src/init.ts";
+import { seedVault, preseedCCTrust } from "../src/init.ts";
 import { readConfig, writeConfig } from "../src/paths.ts";
 
 const TMP_BASE = "/tmp/voidos-init-test";
@@ -134,4 +134,153 @@ test("init seeding: void-os.json carries runners and defaultRunner after init pa
   expect(written.runners[0].label).toBe("vc (relay)");
   expect(written.runners[0].command).toBe("vc --");
   expect(written.defaultRunner).toBe("vc (relay)");
+});
+
+// ---- VOS-223: CC trust pre-seeding tests ----
+
+const TRUST_TMP_BASE = "/tmp/voidos-trust-test";
+
+test("preseedCCTrust creates ~/.claude.json with trust flags when file is absent", () => {
+  const fakeHome = `${TRUST_TMP_BASE}-absent-${Date.now()}`;
+  mkdirSync(fakeHome, { recursive: true });
+  try {
+    const claudeJsonPath = join(fakeHome, ".claude.json");
+    expect(existsSync(claudeJsonPath)).toBe(false);
+
+    preseedCCTrust(vault, fakeHome);
+
+    expect(existsSync(claudeJsonPath)).toBe(true);
+    const config = JSON.parse(readFileSync(claudeJsonPath, "utf8"));
+    const vaultAbs = resolve(vault);
+    expect(config.projects).toBeDefined();
+    expect(config.projects[vaultAbs]).toBeDefined();
+    // Hard-fail: both flags must be true
+    expect(config.projects[vaultAbs].hasTrustDialogAccepted).toBe(true);
+    expect(config.projects[vaultAbs].hasCompletedProjectOnboarding).toBe(true);
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test("preseedCCTrust merges into existing ~/.claude.json without clobbering sibling data", () => {
+  const fakeHome = `${TRUST_TMP_BASE}-merge-${Date.now()}`;
+  mkdirSync(fakeHome, { recursive: true });
+  try {
+    const claudeJsonPath = join(fakeHome, ".claude.json");
+    const existingConfig = {
+      numStartups: 42,
+      someOtherKey: "keep-me",
+      projects: {
+        "/other/vault": { hasTrustDialogAccepted: true },
+      },
+    };
+    writeFileSync(claudeJsonPath, JSON.stringify(existingConfig, null, 2) + "\n");
+
+    preseedCCTrust(vault, fakeHome);
+
+    const config = JSON.parse(readFileSync(claudeJsonPath, "utf8"));
+    const vaultAbs = resolve(vault);
+    // Trust flags written for the new vault
+    expect(config.projects[vaultAbs].hasTrustDialogAccepted).toBe(true);
+    expect(config.projects[vaultAbs].hasCompletedProjectOnboarding).toBe(true);
+    // Sibling project preserved
+    expect(config.projects["/other/vault"].hasTrustDialogAccepted).toBe(true);
+    // Top-level sibling keys preserved
+    expect(config.numStartups).toBe(42);
+    expect(config.someOtherKey).toBe("keep-me");
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test("preseedCCTrust preserves existing keys on the same vault path (no clobber)", () => {
+  const fakeHome = `${TRUST_TMP_BASE}-preserve-${Date.now()}`;
+  mkdirSync(fakeHome, { recursive: true });
+  try {
+    const claudeJsonPath = join(fakeHome, ".claude.json");
+    const vaultAbs = resolve(vault);
+    const existingConfig = {
+      projects: {
+        [vaultAbs]: { someExistingKey: "do-not-delete", hasTrustDialogAccepted: false },
+      },
+    };
+    writeFileSync(claudeJsonPath, JSON.stringify(existingConfig, null, 2) + "\n");
+
+    preseedCCTrust(vault, fakeHome);
+
+    const config = JSON.parse(readFileSync(claudeJsonPath, "utf8"));
+    // Trust flags overwritten to true
+    expect(config.projects[vaultAbs].hasTrustDialogAccepted).toBe(true);
+    expect(config.projects[vaultAbs].hasCompletedProjectOnboarding).toBe(true);
+    // Existing key on same path preserved
+    expect(config.projects[vaultAbs].someExistingKey).toBe("do-not-delete");
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test("preseedCCTrust handles malformed ~/.claude.json gracefully (re-creates it)", () => {
+  const fakeHome = `${TRUST_TMP_BASE}-malformed-${Date.now()}`;
+  mkdirSync(fakeHome, { recursive: true });
+  try {
+    const claudeJsonPath = join(fakeHome, ".claude.json");
+    writeFileSync(claudeJsonPath, "{ this is not valid JSON !!!  }");
+
+    // Must not throw
+    preseedCCTrust(vault, fakeHome);
+
+    const config = JSON.parse(readFileSync(claudeJsonPath, "utf8"));
+    const vaultAbs = resolve(vault);
+    expect(config.projects[vaultAbs].hasTrustDialogAccepted).toBe(true);
+    expect(config.projects[vaultAbs].hasCompletedProjectOnboarding).toBe(true);
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test("preseedCCTrust is idempotent — calling twice produces same result", () => {
+  const fakeHome = `${TRUST_TMP_BASE}-idempotent-${Date.now()}`;
+  mkdirSync(fakeHome, { recursive: true });
+  try {
+    preseedCCTrust(vault, fakeHome);
+    preseedCCTrust(vault, fakeHome);  // second call must not throw
+
+    const claudeJsonPath = join(fakeHome, ".claude.json");
+    const config = JSON.parse(readFileSync(claudeJsonPath, "utf8"));
+    const vaultAbs = resolve(vault);
+    expect(config.projects[vaultAbs].hasTrustDialogAccepted).toBe(true);
+    expect(config.projects[vaultAbs].hasCompletedProjectOnboarding).toBe(true);
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test("seedVault writes CC trust flags to ~/.claude.json via preseedCCTrust (wiring check)", () => {
+  // Redirect HOME via env to avoid mutating the real ~/.claude.json
+  const fakeHome = `${TRUST_TMP_BASE}-seedvault-wiring-${Date.now()}`;
+  mkdirSync(fakeHome, { recursive: true });
+  const origHome = process.env.HOME;
+  try {
+    process.env.HOME = fakeHome;
+    seedVault(vault);
+
+    // Hard-fail: trust flags MUST be present — this is the load-bearing wiring check
+    const claudeJsonPath = join(fakeHome, ".claude.json");
+    if (!existsSync(claudeJsonPath)) {
+      throw new Error("WIRING FAIL: ~/.claude.json not created by seedVault");
+    }
+    const config = JSON.parse(readFileSync(claudeJsonPath, "utf8"));
+    const vaultAbs = resolve(vault);
+    if (!config.projects?.[vaultAbs]?.hasTrustDialogAccepted) {
+      throw new Error(`WIRING FAIL: hasTrustDialogAccepted not set for ${vaultAbs}`);
+    }
+    if (!config.projects?.[vaultAbs]?.hasCompletedProjectOnboarding) {
+      throw new Error(`WIRING FAIL: hasCompletedProjectOnboarding not set for ${vaultAbs}`);
+    }
+    expect(config.projects[vaultAbs].hasTrustDialogAccepted).toBe(true);
+    expect(config.projects[vaultAbs].hasCompletedProjectOnboarding).toBe(true);
+  } finally {
+    process.env.HOME = origHome;
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
 });
