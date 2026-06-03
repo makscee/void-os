@@ -20,7 +20,8 @@ import { parseTranscript, locateTranscript, renderTranscript } from "./transcrip
 import { handleHookEvent, runIdForSession, type HookPayload, type HookDecision } from "./hooks-endpoint.ts";
 import { getExecution, setExecutionFail, upsertTrigger, getTrigger } from "./registry.ts";
 import { appendEvent } from "./events.ts";
-import { killSession } from "./tmux.ts";
+import { killSession, hasSession, switchClient, sendKeys } from "./tmux.ts";
+import { respawnSession } from "./resume.ts";
 import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
 import { listPendingDecisions } from "./decision.ts";
 import {
@@ -316,6 +317,50 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     // Advancing mtime also triggers the SSE reload → spinner replaced with stopped view.
     writeFileSync(bodyPath(vault, sessionId), stoppedBody(skill));
     return c.redirect("/");
+  });
+
+  // POST /s/:uuid/attach-here — retarget the operator's `void-os attach` terminal to this session.
+  // If the session's tmux is not live (reaped), respawn it via --resume first.
+  // This is the "web button → operator's terminal snaps to live chat" path (VOS-205 step 2/3).
+  app.post("/s/:uuid/attach-here", async (c) => {
+    const uuid = c.req.param("uuid");
+    const target = `vos-run-${uuid}`;
+    const cfg = readConfig(vault);
+    const daemonUrl = `http://127.0.0.1:${cfg.port}`;
+    const runnerCommand = resolveRunner(cfg);
+    // Respawn if reaped (idempotent — if still live, respawnSession returns immediately).
+    if (!hasSession(target)) {
+      respawnSession(db, vault, uuid, runnerCommand, daemonUrl);
+    }
+    const r = switchClient(target);
+    return c.json({ ok: r.code === 0, target, err: r.stderr || undefined });
+  });
+
+  // POST /s/:uuid/message — ONE model for chat input: live → send-keys; reaped → respawn(--resume) then send-keys.
+  // Reconciliation note: this route serves INTERACTIVE sessions only. The existing POST /s/:uuid/send
+  // (headless form-render via fresh spawnRun) is UNTOUCHED and continues serving form-render sessions.
+  // The two coexist, keyed on session-kind (session-meta.interactive===true vs. form-render).
+  app.post("/s/:uuid/message", async (c) => {
+    const uuid = c.req.param("uuid");
+    const body = await c.req.parseBody();
+    const text = String(body.text ?? "").trim();
+    if (!text) return c.json({ ok: false, err: "empty" }, 400);
+    const target = `vos-run-${uuid}`;
+    const cfg = readConfig(vault);
+    const daemonUrl = `http://127.0.0.1:${cfg.port}`;
+    const runnerCommand = resolveRunner(cfg);
+    // Respawn if reaped.
+    if (!hasSession(target)) {
+      respawnSession(db, vault, uuid, runnerCommand, daemonUrl);
+    }
+    // Touch last-activity stamp so the reaper resets the idle clock (file-stamp source in reaper.ts).
+    try {
+      const dir = sessionDir(vault, uuid);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
+    } catch { /* non-fatal */ }
+    sendKeys(target, text);
+    return c.json({ ok: true, target });
   });
 
   // GET /s/:uuid/status — plain-text SessionStatus for the SSE client to decide when to stop reloading.

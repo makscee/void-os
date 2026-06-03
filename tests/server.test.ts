@@ -55,6 +55,34 @@ mock.module("../src/preflight.ts", () => ({
   },
 }));
 
+// VOS-205: stub tmux functions used by the new routes (no real tmux sessions in unit tests).
+const switchTargets: string[] = [];
+const sentKeys: Array<[string, string]> = [];
+const hasSessionMap: Map<string, boolean> = new Map();
+mock.module("../src/tmux.ts", () => ({
+  hasSession: (name: string) => hasSessionMap.get(name) ?? false,
+  switchClient: (target: string) => { switchTargets.push(target); return { code: 0, stderr: "" }; },
+  sendKeys: (target: string, line: string) => { sentKeys.push([target, line]); },
+  killSession: (_name: string) => {},
+  newRunSession: (_name: string, _cwd: string, _cmd: string, _env: Record<string, string>) => 0,
+  listVosSessions: () => [],
+  attachCommand: (name: string) => `tmux -L vos attach -t ${name}`,
+  VOS_SOCKET: "vos",
+}));
+
+// VOS-205: stub resume.ts so no real CC/tmux launched in unit tests.
+const respawnCalls: string[] = [];
+mock.module("../src/resume.ts", () => ({
+  respawnSession: (_db: unknown, _vault: string, execId: string, _runner: string, _daemonUrl: string) => {
+    respawnCalls.push(execId);
+    hasSessionMap.set(`vos-run-${execId}`, true); // mark session as live after respawn
+    return `vos-run-${execId}`;
+  },
+  buildResumeArgv: (ccId: string, vault: string, _o: unknown) => [
+    "--resume", ccId, "--add-dir", vault, "--permission-mode", "bypassPermissions",
+  ],
+}));
+
 // Import AFTER mock is registered
 const { makeApp, buildDrainOptsFor } = await import("../src/server.ts");
 
@@ -642,6 +670,97 @@ test("GET / dashboard shows vault-installed skills, not catalog-only skills", as
   expect(text).not.toContain('data-skill="work"');
 
   rmSync(testVault, { recursive: true, force: true });
+});
+
+// --- VOS-205 T5: new interactive-session routes ---
+
+test("POST /s/:uuid/attach-here switch-clients to a live session", async () => {
+  const uuid = `attach-test-${Date.now()}`;
+  // Seed session dir + meta + registry row so the route resolves
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>live</p>");
+  const { createExecution } = await import("../src/registry.ts");
+  createExecution(db, { id: uuid, agent: null, skill: "chat", inputRef: null,
+    tmuxSession: `vos-run-${uuid}`, now: Date.now(), triggerId: null, stepCeiling: null });
+  writeFileSync(join(sessionDir(vault, uuid), "session-meta.json"),
+    JSON.stringify({ skill: "chat", interactive: true, tmuxSession: `vos-run-${uuid}` }));
+
+  // Mark session as live so attach-here goes directly to switchClient
+  hasSessionMap.set(`vos-run-${uuid}`, true);
+  const prevLen = switchTargets.length;
+
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/attach-here`, { method: "POST" });
+  expect(res.status).toBe(200);
+  // switchClient must have been called with the correct target
+  expect(switchTargets.slice(prevLen)).toContain(`vos-run-${uuid}`);
+});
+
+test("POST /s/:uuid/message send-keys into a live session", async () => {
+  const uuid = `msg-live-${Date.now()}`;
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>live</p>");
+  const { createExecution } = await import("../src/registry.ts");
+  createExecution(db, { id: uuid, agent: null, skill: "chat", inputRef: null,
+    tmuxSession: `vos-run-${uuid}`, now: Date.now(), triggerId: null, stepCeiling: null });
+  writeFileSync(join(sessionDir(vault, uuid), "session-meta.json"),
+    JSON.stringify({ skill: "chat", interactive: true, tmuxSession: `vos-run-${uuid}` }));
+
+  hasSessionMap.set(`vos-run-${uuid}`, true);
+  const prevKeys = sentKeys.length;
+
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/message`, {
+    method: "POST",
+    body: new URLSearchParams({ text: "hello there" }),
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  expect(res.status).toBe(200);
+  const sent = sentKeys.slice(prevKeys).map(([t, l]) => [t, l]);
+  expect(sent.some(([t, l]) => t === `vos-run-${uuid}` && l === "hello there")).toBe(true);
+});
+
+test("POST /s/:uuid/message on a reaped session respawns then send-keys", async () => {
+  const uuid = `msg-reaped-${Date.now()}`;
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>reaped</p>");
+  const { createExecution } = await import("../src/registry.ts");
+  createExecution(db, { id: uuid, agent: null, skill: "chat", inputRef: null,
+    tmuxSession: `vos-run-${uuid}`, now: Date.now(), triggerId: null, stepCeiling: null });
+  writeFileSync(join(sessionDir(vault, uuid), "session-meta.json"),
+    JSON.stringify({ skill: "chat", interactive: true, tmuxSession: `vos-run-${uuid}` }));
+  // Write cc-actual-session.txt so respawnSession can resolve ccId
+  writeFileSync(join(sessionDir(vault, uuid), "cc-actual-session.txt"), "a1b2c3d4-0000-0000-0000-000000000001");
+
+  // Session is reaped: hasSession returns false
+  hasSessionMap.set(`vos-run-${uuid}`, false);
+  const prevRespawn = respawnCalls.length;
+  const prevKeys = sentKeys.length;
+
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/message`, {
+    method: "POST",
+    body: new URLSearchParams({ text: "after reap" }),
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  expect(res.status).toBe(200);
+  // respawnSession was called for the reaped session
+  expect(respawnCalls.slice(prevRespawn)).toContain(uuid);
+  // send-keys was then called
+  const sent = sentKeys.slice(prevKeys).map(([t, l]) => [t, l]);
+  expect(sent.some(([t, l]) => t === `vos-run-${uuid}` && l === "after reap")).toBe(true);
+});
+
+test("POST /s/:uuid/message returns 400 when text is empty", async () => {
+  const uuid = `msg-empty-${Date.now()}`;
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/message`, {
+    method: "POST",
+    body: new URLSearchParams({ text: "" }),
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  expect(res.status).toBe(400);
 });
 
 // Restore mock.module registrations so sibling test files (e.g. spawn.test.ts) that import
