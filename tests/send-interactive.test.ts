@@ -198,7 +198,7 @@ test("interactive + reaped → respawn (ensureRawRunner injects --raw) then send
   expect(sentKeys[sentKeys.length - 1][1]).toContain("Bob");
 });
 
-test("print-mode session form-submit keeps fresh-spawn form-resume (unchanged)", async () => {
+test("print-mode session form-submit uses unified send path — resumes own thread, no successor", async () => {
   const uuid = `print-mode-${randomUUID()}`;
   seedSession(uuid, { skill: "onboarding", interactive: false, runner: "vc --" });
 
@@ -210,14 +210,13 @@ test("print-mode session form-submit keeps fresh-spawn form-resume (unchanged)",
   const res = await app.request(`/s/${uuid}/send`, { method: "POST", body: form });
 
   expect(res.status).toBe(302);
-  // Redirects to a NEW session (not the original uuid)
+  // VOS-211: unified send path — redirects back to the SAME session (no successor exec).
   const newLoc = res.headers.get("location") ?? "";
-  expect(newLoc).not.toBe(`/s/${uuid}`);
-  expect(newLoc).toMatch(/\/s\/exec-[0-9a-f-]+/);
-  // spawnRun was called (legacy fresh-spawn path)
-  expect(spawnRunCalls.length).toBe(beforeSpawn + 1);
-  // NO send-keys (print mode)
-  expect(sentKeys.length).toBe(beforeSentKeys);
+  expect(newLoc).toBe(`/s/${uuid}`);
+  // NO new exec row created.
+  expect(spawnRunCalls.length).toBe(beforeSpawn);
+  // send-keys was called (message delivered to this uuid's tmux session).
+  expect(sentKeys.length).toBeGreaterThan(beforeSentKeys);
 });
 
 test("drain-gated session takes drain branch even when interactive flag set", async () => {

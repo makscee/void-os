@@ -478,7 +478,7 @@ ${leftNav(sessions, uuid)}
     <button type="submit" class="msg-send" title="Send message to session">Send</button>
   </form>
 </div>
-${hasBody ? `<iframe id="f" src="/s/${esc(uuid)}/body"></iframe>` : ""}
+${hasBody ? `<iframe id="f" src="/s/${esc(uuid)}/body" sandbox="allow-scripts allow-forms allow-popups"></iframe>` : ""}
 </div>
 <div id="drawer-panel"></div>
 <div id="drawer-bar">▾ transcript</div>
@@ -538,6 +538,19 @@ dvBar.addEventListener("click",function(){
 });
 </script>
 ${ELAPSED_TICK_SCRIPT}`;
+}
+
+/**
+ * Ack-fast fragment returned synchronously by POST /s/:uuid/act. Never blocks on the
+ * agent turn. htmx swaps this into the form's target; the agent's eventual new body.html
+ * arrives via the SSE reload (server.ts /stream). Fragment, NOT a standalone document.
+ */
+export function ackFragment(): string {
+  return `<div class="vos-ack" aria-busy="true">
+  <fieldset disabled style="border:0;padding:0">
+    <span class="vos-ack-msg">working… the panel will update when the agent responds.</span>
+  </fieldset>
+</div>`;
 }
 
 /**

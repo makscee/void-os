@@ -209,28 +209,27 @@ test("GET /s/:uuid returns the iframe shell with correct src and vault-anchored 
 test("POST /s/:uuid/send serializes ALL form fields (Bug #1 fix)", async () => {
   mkdirSync(sessionDir(vault, "multi-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "multi-uuid"), "<title>s</title>hi");
-  const before = spawnRunCalls.length;
+  const beforeSpawn = spawnRunCalls.length;
+  const beforeKeys = sentKeys.length;
   const app = makeApp(vault, db);
   const form = new FormData();
   form.append("name", "Alice");
   form.append("skill_deep-research", "on");
   const res = await app.request("/s/multi-uuid/send", { method: "POST", body: form });
-  // VOS-203: /send creates a fresh form-reply run; redirect goes to the NEW run, not multi-uuid
+  // VOS-211: unified send path — redirects back to the SAME session, no successor spawn.
   expect(res.status).toBe(302);
-  // Should redirect to /s/<new-run-id> (a fresh exec-xxx)
-  const newLoc = res.headers.get("location") ?? "";
-  expect(newLoc).toMatch(/\/s\/exec-[0-9a-f-]+/);
-  // spawnRun was called (fresh session for form-reply)
-  expect(spawnRunCalls.length).toBe(before + 1);
-  const lastRun = spawnRunCalls[spawnRunCalls.length - 1] as Record<string, unknown>;
-  // The bodyMessage must include the form fields
-  const msg = String(lastRun.bodyMessage ?? "");
-  expect(msg).toContain("name: Alice");
-  expect(msg).toContain("skill_deep-research: on");
-  expect(msg).toContain("[render contract: rewrite body.html, no terminal reply]");
+  const loc = res.headers.get("location") ?? "";
+  expect(loc).toBe("/s/multi-uuid");
+  // NO new exec row created (unified send path: same-thread resume, no successor).
+  expect(spawnRunCalls.length).toBe(beforeSpawn);
+  // Form fields arrived serialized in the sendKeys call.
+  const sent = sentKeys.slice(beforeKeys);
+  const line = sent.at(-1)?.[1] ?? "";
+  expect(line).toContain("name: Alice");
+  expect(line).toContain("skill_deep-research: on");
 });
 
-test("POST /s/:uuid/send redirects to new form-reply run and writes working page", async () => {
+test("POST /s/:uuid/send redirects back to same session and writes working page", async () => {
   mkdirSync(sessionDir(vault, "send-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "send-uuid"), "<title>s</title>hi");
   const before = spawnRunCalls.length;
@@ -238,13 +237,12 @@ test("POST /s/:uuid/send redirects to new form-reply run and writes working page
   const form = new FormData();
   form.append("text", "my answer");
   const res = await app.request("/s/send-uuid/send", { method: "POST", body: form });
-  // VOS-203: fresh form-reply run created; redirect to new exec-xxx (not original send-uuid)
+  // VOS-211: unified send path — redirects back to the SAME session, no successor spawn.
   expect(res.status).toBe(302);
-  const newLoc = res.headers.get("location") ?? "";
-  expect(newLoc).toMatch(/\/s\/exec-[0-9a-f-]+/);
-  expect(newLoc).not.toContain("/s/send-uuid");
-  // spawnRun was called (not spawnTurn — fresh session)
-  expect(spawnRunCalls.length).toBe(before + 1);
+  const loc = res.headers.get("location") ?? "";
+  expect(loc).toBe("/s/send-uuid");
+  // NO new exec row created (unified send path: same-thread resume, no successor).
+  expect(spawnRunCalls.length).toBe(before);
 });
 
 /**
@@ -378,7 +376,7 @@ test("POST /launch persists resolved runner command in session-meta", async () =
   expect(spawnCalls[spawnCalls.length - 1].command).toBe("claude_artem");
 });
 
-test("POST /s/:uuid/send reuses runner from session-meta on form-reply", async () => {
+test("POST /s/:uuid/send reuses runner from session-meta (unified send path: same-thread resume)", async () => {
   const id = "resume-runner-uuid";
   mkdirSync(sessionDir(vault, id), { recursive: true });
   writeFileSync(bodyPath(vault, id), "<title>r</title>hi");
@@ -386,16 +384,146 @@ test("POST /s/:uuid/send reuses runner from session-meta on form-reply", async (
     join(sessionDir(vault, id), "session-meta.json"),
     JSON.stringify({ skill: "smoke-test", launchedAt: Date.now(), text: "", runner: "claude_artem" }),
   );
-  const beforeRun = spawnRunCalls.length;
+  hasSessionMap.set(`vos-run-${id}`, false); // reaped so respawn is triggered
+  const beforeSpawn = spawnRunCalls.length;
+  const beforeRespawn = respawnCalls.length;
   const app = makeApp(vault, db);
   const form = new FormData();
   form.append("text", "echo: hello");
   const res = await app.request(`/s/${id}/send`, { method: "POST", body: form });
   expect(res.status).toBe(302);
-  // VOS-203: form-reply uses spawnRun (fresh session) with the runner from session-meta
-  expect(spawnRunCalls.length).toBe(beforeRun + 1);
-  const lastRun = spawnRunCalls[spawnRunCalls.length - 1] as Record<string, unknown>;
-  expect(lastRun.runnerCommand).toBe("claude_artem");
+  // VOS-211: unified send path — no new exec row, respawns same thread using the session's runner.
+  expect(spawnRunCalls.length).toBe(beforeSpawn);
+  expect(respawnCalls.slice(beforeRespawn)).toContain(id);
+});
+
+// VOS-211: unified send path — worker (interactive:false) resumes its OWN thread, no successor spawn.
+test("POST /s/:uuid/send on a worker (interactive:false) resumes its OWN thread — no successor spawn", async () => {
+  const uuid = "exec-worker-resume";
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  // A finished worker: NOT interactive, NO drainIssue. Wrote cc-actual-session.txt → resumable.
+  writeFileSync(join(dir, "session-meta.json"),
+    JSON.stringify({ skill: "skill-author", interactive: false, tmuxSession: `vos-run-${uuid}`, runner: "vc --" }));
+  writeFileSync(join(dir, "cc-actual-session.txt"), "12345678-1234-1234-1234-1234567890ab");
+  hasSessionMap.set(`vos-run-${uuid}`, false);   // reaped: worker finished, pane gone
+  const beforeSpawn = spawnRunCalls.length;
+  const beforeRespawn = respawnCalls.length;
+  const beforeKeys = sentKeys.length;
+
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/send`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ answer: "continue the skill" }),
+  });
+
+  expect(res.status).toBeLessThan(400);
+  // THE worker-resume invariant: NO new exec row created.
+  expect(spawnRunCalls.length).toBe(beforeSpawn);
+  // It respawned + resumed THIS uuid's own thread...
+  expect(respawnCalls.slice(beforeRespawn)).toContain(uuid);
+  // ...and sent the input to the SAME uuid's tmux session.
+  const sent = sentKeys.slice(beforeKeys);
+  expect(sent.at(-1)?.[0]).toBe(`vos-run-${uuid}`);
+  expect(sent.at(-1)?.[1]).toContain("answer: continue the skill");
+});
+
+// VOS-211: /act route tests
+test("POST /s/:uuid/act sends to the live session, returns ack fragment, advances body.html", async () => {
+  const uuid = "exec-act-live";
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "session-meta.json"), JSON.stringify({ skill: "x", interactive: true }));
+  writeFileSync(bodyPath(vault, uuid), "<html><body>old</body></html>");
+  hasSessionMap.set(`vos-run-${uuid}`, true);
+  const before = readFileSync(bodyPath(vault, uuid), "utf8");
+  const beforeKeys = sentKeys.length;
+
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/act`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ answer: "ship it", choice: "yes" }),
+  });
+
+  expect(res.status).toBe(200);
+  const frag = await res.text();
+  expect(frag).toContain("working");                       // ack fragment returned
+  expect(frag).not.toContain("<html");                      // fragment, not full doc
+  const sent = sentKeys.slice(beforeKeys);
+  expect(sent.at(-1)?.[0]).toBe(`vos-run-${uuid}`);         // same send path as the chat box
+  expect(sent.at(-1)?.[1]).toContain("answer: ship it");
+  expect(sent.at(-1)?.[1]).toContain("choice: yes");
+  // body.html replaced with workingPage so SSE reload fires
+  const after = readFileSync(bodyPath(vault, uuid), "utf8");
+  expect(after).not.toBe(before);
+  expect(after).toContain("working");
+});
+
+test("POST /s/:uuid/act on a reaped session respawns (--resume) then sends — no lost message", async () => {
+  const uuid = "exec-act-reaped";
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "session-meta.json"), JSON.stringify({ skill: "x", interactive: true }));
+  writeFileSync(join(dir, "cc-actual-session.txt"), "12345678-1234-1234-1234-1234567890ab");
+  hasSessionMap.set(`vos-run-${uuid}`, false);     // reaped pane
+  const beforeRespawn = respawnCalls.length;
+  const beforeKeys = sentKeys.length;
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/act`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ answer: "resume me" }),
+  });
+  expect(res.status).toBe(200);
+  expect(respawnCalls.slice(beforeRespawn)).toContain(uuid);   // respawned this uuid
+  expect(sentKeys.slice(beforeKeys).at(-1)?.[1]).toContain("answer: resume me");  // send AFTER respawn
+});
+
+test("POST /s/:uuid/act rejects a path-traversal session id", async () => {
+  const app = makeApp(vault, db);
+  const res = await app.request("/s/..%2F..%2Fetc/act", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ x: "1" }),
+  });
+  expect(res.status).toBe(400);
+});
+
+// VOS-211: B2 — htmx asset route + UUID substitution
+test("GET /assets/htmx.min.js serves the vendored runtime", async () => {
+  const app = makeApp(vault, db);
+  const res = await app.request("/assets/htmx.min.js");
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toContain("javascript");
+  expect((await res.text()).length).toBeGreaterThan(1000);
+});
+
+test("GET /s/:uuid/body injects htmx and substitutes {{VOS_UUID}}", async () => {
+  const uuid = "exec-sub-uuid";
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid),
+    `<!doctype html><html><head></head><body><form hx-post="/s/{{VOS_UUID}}/act"></form></body></html>`);
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/body`);
+  const out = await res.text();
+  expect(out).toContain(`hx-post="/s/${uuid}/act"`);
+  expect(out).not.toContain("{{VOS_UUID}}");
+  expect(out).toContain("htmx.min.js");
+});
+
+test("GET /s/:uuid/body returns a complete standalone doc wired on cold load (dead-render)", async () => {
+  const uuid = "exec-cold";
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid),
+    `<!doctype html><html><head><title>t</title></head><body><form hx-post="/s/{{VOS_UUID}}/act"><button>go</button></form></body></html>`);
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/body`);
+  const out = await res.text();
+  expect(out).toContain("<html");                 // full doc, not a fragment-only response
+  expect(out).toContain("htmx.min.js");            // runtime present without any SSE event
+  expect(out).toContain(`/s/${uuid}/act`);          // form is wired on cold load
 });
 
 // VOS-204: transcript route must translate void-os runId → CC session id via cc-actual-session.txt.

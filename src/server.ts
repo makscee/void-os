@@ -12,7 +12,7 @@ import { listSessions, statusFor } from "./sessions.ts";
 import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn, readCcSessionId } from "./spawn.ts";
 import { buildAgentLaunch, type AgentLaunch } from "./agents.ts";
 import { drain, type DrainOpts } from "./drain.ts";
-import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody } from "./render.ts";
+import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody, ackFragment } from "./render.ts";
 import { killProcessTree } from "./kill.ts";
 import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, stopPath, lastOpenedPath } from "./paths.ts";
 import { homedir } from "node:os";
@@ -30,6 +30,7 @@ import {
   gateCreate, gatePatch, gateEdit, gateDelete, gateWriteFile,
   listVaultSkills, viewVaultSkill,
 } from "./skill-manage.ts";
+import { HTMX_MIN_JS } from "./htmx-runtime.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogRoot = join(repoRoot, "catalog");
@@ -163,6 +164,10 @@ a{color:#93c5fd}</style>
     return c.redirect(`/s/${runId}`);
   });
 
+  // GET /assets/htmx.min.js — vendored htmx runtime (VOS-211). Served by the daemon, not a CDN.
+  app.get("/assets/htmx.min.js", (c) =>
+    new Response(HTMX_MIN_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } }));
+
   // GET /s/:uuid — iframe shell wrapping the session body
   app.get("/s/:uuid", (c) => {
     const uuid = c.req.param("uuid");
@@ -215,6 +220,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
         html = `<base target="_top">` + html;
       }
     }
+    // VOS-211: inject vendored htmx (loaded from our asset route, never a CDN) + substitute the
+    // {{VOS_UUID}} sentinel so the agent can author a stable form template: hx-post="/s/{{VOS_UUID}}/act".
+    const htmxTag = `<script src="/assets/htmx.min.js"></script>`;
+    if (html.includes("</head>")) html = html.replace("</head>", `${htmxTag}</head>`);
+    else html = htmxTag + html;
+    html = html.replaceAll("{{VOS_UUID}}", uuid);
+
     const ep = errorPath(vault, uuid);
     // Never show the error banner for stopped sessions — the banner is a live-run artifact.
     const isStopped = existsSync(stopPath(vault, uuid));
@@ -437,59 +449,86 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       return c.redirect(`/s/${uuid}`);
     }
 
-    // VOS-206: interactive session form-submit → live REPL via send-keys (NO successor spawn).
-    // Mirrors the /message route: respawn-if-reaped (ensureRawRunner → --raw), touch last-activity, send-keys.
-    // Clearing the <form> from body.html flips deriveStatus off "awaiting" → stranded-yellow dissolves.
-    // Runs AFTER the drain guard (drain sessions with interactive:true still take the worktree path above).
-    if (meta.interactive === true) {
-      const target = `vos-run-${uuid}`;
-      const cfg2 = readConfig(vault);
-      const daemonUrl2 = `http://127.0.0.1:${cfg2.port}`;
-      if (!hasSession(target)) {
-        respawnSession(db, vault, uuid, runnerCommand, daemonUrl2);
-      }
-      try {
-        const dir = sessionDir(vault, uuid);
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
-      } catch { /* non-fatal */ }
-      sendKeys(target, text);
-      // Replace the form so the session leaves the awaiting/agent-inbox state (stranded-yellow dissolves).
-      writeFileSync(bodyPath(vault, uuid), workingPage(fields));
-      return c.redirect(`/s/${uuid}`);
-    }
-
-    // Form-resume: launch a fresh print-mode CC session that invokes the same skill
-    // with the form data as the input text. This is the stateless ADR-0003 path:
-    // - The skill's SKILL.md is loaded from vault .claude/skills/ context
-    // - The form fields arrive in the -p text: "[render contract]\n<fields>"
-    // - The skill detects form fields and processes them (step 3 / form-reply path)
-    // Using spawnRun (fresh session) instead of spawnTurn (--resume):
-    //   spawnTurn's buildAnswerArgv emits --resume which is ignored by the claude -- runner
-    //   (the runner passes all argv as user-message text, where --resume looks like a flag).
-    //   A fresh launch via spawnRun correctly puts the form data in the -p prompt.
-    const formPrompt = `[render contract: rewrite body.html, no terminal reply]\n${text}`;
+    // VOS-211: UNIFIED send path. ANY non-drain session — interactive REPL OR a finished
+    // interactive:false worker (skill-author, deep-research) — resumes its OWN thread:
+    // respawn-if-reaped (respawnSession → vc --raw -- --resume <ccId>), then send-keys.
+    // The previous fall-through spawned a fresh spawnRun (a SUCCESSOR exec), abandoning the
+    // original thread — deleted. A worker that never wrote cc-actual cannot resume; respawnSession
+    // returns null and the live send still no-ops gracefully (sendKeys to a dead pane is harmless).
+    const target = `vos-run-${uuid}`;
     const cfg = readConfig(vault);
-    const daemonUrlForRespawn = `http://127.0.0.1:${cfg.port}`;
-    const { runId: formRunId } = spawnRun({
-      db, vault, daemonUrl: daemonUrlForRespawn,
-      skill: meta.skill ?? null, agent: null,
-      runnerCommand, now: Date.now(),
-      // forcePrint ensures the form-reply session runs headlessly (print mode);
-      // bodyMessage carries the form fields as the initial prompt.
-      forcePrint: true,
-      bodyMessage: formPrompt,
+    const daemonUrl = `http://127.0.0.1:${cfg.port}`;
+    if (!hasSession(target)) {
+      respawnSession(db, vault, uuid, runnerCommand, daemonUrl);
+    }
+    try {
+      const dir = sessionDir(vault, uuid);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
+    } catch { /* non-fatal */ }
+    sendKeys(target, text);
+    // Replace the form so the session leaves the awaiting/agent-inbox state (stranded-yellow dissolves).
+    writeFileSync(bodyPath(vault, uuid), workingPage(fields));
+    return c.redirect(`/s/${uuid}`);
+  });
+
+  // Session-id shape guard (VOS-211): reject anything that could escape sessionDir (path traversal).
+  // void-os run ids are "exec-" + a uuid; allow that plus bare ids (legacy/tests). No "..".
+  const isValidSessionId = (id: string): boolean =>
+    /^[A-Za-z0-9_-]{1,128}$/.test(id) && !id.includes("..");
+
+  // POST /s/:uuid/act — htmx hypermedia loop (VOS-211). The agent's body.html posts a form here.
+  // Ack-FAST: serialize the form fields → route through the SAME unified send path as POST /send
+  // (respawn-if-reaped → send-keys into the session's OWN thread), write a workingPage so the
+  // existing SSE reload (GET /stream) re-renders the panel when the agent writes a fresh body.html.
+  // Returns an ack FRAGMENT synchronously — never blocks on the agent turn. The submission becomes a
+  // visible transcript turn automatically: send-keys hits the live CC REPL, CC records it in its JSONL,
+  // and GET /s/:uuid/transcript already renders that JSONL — no separate append.
+  // Two-verb (VOS-211 deferred): only the message verb ships; a future `verb` field can branch.
+  // CORS: daemon is tailnet-only; allow-origin:* lets the sandboxed iframe (null origin) POST back.
+  app.options("/s/:uuid/act", (c) =>
+    new Response(null, { status: 204, headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST",
+      "Access-Control-Allow-Headers": "content-type, hx-request, hx-target, hx-current-url, hx-trigger, hx-trigger-name, hx-boosted, hx-history-restore-request",
+    } }));
+  app.post("/s/:uuid/act", async (c) => {
+    const uuid = c.req.param("uuid");
+    if (!isValidSessionId(uuid)) return c.text("bad session id", 400);
+    const body = await c.req.parseBody();
+    // Serialize ALL fields as "key: value\n" (mirrors POST /send so a multi-field form arrives intact).
+    const fields: Record<string, string> = {};
+    for (const [k, v] of Object.entries(body)) fields[k] = String(v);
+    const text = Object.entries(fields).map(([k, v]) => `${k}: ${v}`).join("\n");
+    if (!text) return c.html(ackFragment(), 400);
+
+    // Recover the per-session runner (mirrors /send): session-meta.runner or vault default.
+    const metaPath = join(sessionDir(vault, uuid), "session-meta.json");
+    let runnerCommand = resolveRunner(readConfig(vault));
+    if (existsSync(metaPath)) {
+      try {
+        const m = JSON.parse(readFileSync(metaPath, "utf8")) as { runner?: string };
+        if (typeof m.runner === "string" && m.runner) runnerCommand = m.runner;
+      } catch { /* keep default */ }
+    }
+    const target = `vos-run-${uuid}`;
+    const cfg = readConfig(vault);
+    const daemonUrl = `http://127.0.0.1:${cfg.port}`;
+    if (!hasSession(target)) {
+      respawnSession(db, vault, uuid, runnerCommand, daemonUrl);
+    }
+    try {
+      const dir = sessionDir(vault, uuid);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
+    } catch { /* non-fatal */ }
+    sendKeys(target, text);
+    // Advance body.html → SSE reload swaps the iframe to the working page until the agent rewrites it.
+    writeFileSync(bodyPath(vault, uuid), workingPage(fields));
+    // CORS header for null-origin sandboxed iframe.
+    return new Response(ackFragment(), {
+      headers: { "content-type": "text/html; charset=utf-8", "Access-Control-Allow-Origin": "*" },
     });
-    // Seed the session dir for the new run and redirect to it.
-    const formDir = sessionDir(vault, formRunId);
-    mkdirSync(formDir, { recursive: true });
-    writeFileSync(
-      join(formDir, "session-meta.json"),
-      JSON.stringify({ skill: meta.skill ?? null, agent: null, launchedAt: Date.now(),
-        text: formPrompt.slice(0, 200), tmuxSession: `vos-run-${formRunId}`, runner: runnerCommand }),
-    );
-    writeFileSync(bodyPath(vault, formRunId), workingPage(fields));
-    return c.redirect(`/s/${formRunId}`);
   });
 
   // POST /triggers/:name/fire — manually fire a named Trigger, spawning a real Run.
