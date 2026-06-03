@@ -78,6 +78,40 @@ export function sendKeys(target: string, line: string): void {
 }
 
 /**
+ * Capture visible pane content of a tmux session as a string.
+ * Returns "" if the session does not exist or tmux errors.
+ */
+export function capturePaneContent(target: string): string {
+  const r = run(["capture-pane", "-p", "-t", target]);
+  return r.code === 0 ? r.stdout : "";
+}
+
+/**
+ * Poll a tmux pane until its visible content contains `marker`.
+ * Returns true when marker is found, false when maxMs elapses without it.
+ *
+ * Used by spawnRun to wait for the claude REPL prompt (❯) before sending the
+ * skill kickoff via send-keys. A 3-second fixed delay fired before the REPL
+ * was ready, silently dropping the keystroke.
+ *
+ * intervalMs: how often to poll (default 1000ms).
+ * maxMs: hard wall-clock cap (default 60000ms = 60s).
+ */
+export async function waitForPrompt(
+  target: string,
+  marker: string = "❯",
+  maxMs: number = 60_000,
+  intervalMs: number = 1_000,
+): Promise<boolean> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    if (capturePaneContent(target).includes(marker)) return true;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
+/**
  * List all session names on the void-os socket.
  * Returns [] when the socket has no sessions yet (exit code non-zero).
  */

@@ -1,7 +1,7 @@
 // tmux.test.ts — integration tests against real tmux (3.6a present).
 // VOS-205: updated for -L vos socket isolation + new helpers.
 import { test, expect, afterEach } from "bun:test";
-import { newRunSession, killSession, hasSession, attachCommand, switchClient, sendKeys, listVosSessions, VOS_SOCKET } from "../src/tmux.ts";
+import { newRunSession, killSession, hasSession, attachCommand, switchClient, sendKeys, listVosSessions, VOS_SOCKET, capturePaneContent, waitForPrompt } from "../src/tmux.ts";
 import { readFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 
@@ -68,3 +68,33 @@ test("sendKeys delivers a line to a live session pane", () => {
     rmSync(out, { force: true });
   }
 });
+
+// VOS-206 Gap 1: waitForPrompt polls pane content for a marker string.
+test("capturePaneContent returns empty string for non-existent session", () => {
+  expect(capturePaneContent("vos-run-definitely-nonexistent-" + process.pid)).toBe("");
+});
+
+test("waitForPrompt resolves true when marker appears in pane within timeout", async () => {
+  const name = "vos-run-waitprompt-" + process.pid;
+  try {
+    // Start a shell that prints the marker after 200ms then loops
+    newRunSession(name, process.cwd(), `bash -c 'sleep 0.2; echo "❯"; sleep 30'`, {});
+    // waitForPrompt polls every 200ms; marker should appear well within 5s
+    const result = await waitForPrompt(name, "❯", 5_000, 200);
+    expect(result).toBe(true);
+  } finally {
+    try { killSession(name); } catch { /* ignore */ }
+  }
+}, 8_000);
+
+test("waitForPrompt returns false when marker never appears before timeout", async () => {
+  const name = "vos-run-waitprompt-timeout-" + process.pid;
+  try {
+    // Shell that never prints the marker
+    newRunSession(name, process.cwd(), `bash -c 'sleep 30'`, {});
+    const result = await waitForPrompt(name, "NEVER_APPEARS_MARKER_XYZ", 500, 100);
+    expect(result).toBe(false);
+  } finally {
+    try { killSession(name); } catch { /* ignore */ }
+  }
+}, 3_000);

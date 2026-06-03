@@ -94,6 +94,8 @@ mock.module("../src/tmux.ts", () => ({
   newRunSession: (_name: string, _cwd: string, _cmd: string, _env: Record<string, string>) => 0,
   listVosSessions: () => [],
   attachCommand: (name: string) => `tmux -L vos attach -t ${name}`,
+  capturePaneContent: () => "",
+  waitForPrompt: async () => true,
   VOS_SOCKET: "vos",
 }));
 

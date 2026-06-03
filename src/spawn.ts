@@ -9,7 +9,7 @@ import type { Database } from "bun:sqlite";
 import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath, hookSettingsDir } from "./paths.ts";
 import { createExecution } from "./registry.ts";
 import { appendEvent } from "./events.ts";
-import { newRunSession, sendKeys } from "./tmux.ts";
+import { newRunSession, sendKeys, waitForPrompt } from "./tmux.ts";
 import { writeHookSettings } from "./hooks-endpoint.ts";
 
 // Absolute paths to the helper scripts shipped with void-os.
@@ -346,7 +346,17 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
       bodyMessage: opts.bodyMessage,
     });
   }
-  const toks = tokenizeCommand(opts.runnerCommand);
+  // VOS-206 Gap 3: interactive launch must include --raw before -- so vc opens the REPL
+  // instead of its bubbletea TUI menu on cold start. Mirrors respawnSession (resume.ts).
+  // Inlined here to avoid a circular import (resume.ts imports spawn.ts).
+  const toks = (() => {
+    const t = tokenizeCommand(opts.runnerCommand);
+    if (opts.interactive) {
+      const sepIdx = t.indexOf("--");
+      if (sepIdx !== -1 && !t.includes("--raw")) t.splice(sepIdx, 0, "--raw");
+    }
+    return t;
+  })();
   // Build shell-safe command string for tmux. JSON.stringify wraps args with spaces in double
   // quotes, but backtick characters inside double-quoted strings ARE interpreted by sh as
   // command substitution (even inside double quotes). Escape backticks to prevent expansion.
@@ -393,16 +403,19 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     output_target: opts.outputTarget ?? null,
   });
 
-  // VOS-205: for interactive sessions, drive the skill as the first REPL input via send-keys.
-  // The REPL takes a moment to initialize; we rely on the existing tmux pane being ready.
-  // The caller (or proof script) may also send-keys separately after confirming the REPL is live.
+  // VOS-206 Gap 1: for interactive sessions, wait for the REPL prompt (❯) before sending
+  // the skill kickoff. A fixed 3-second delay fired before claude was ready on cold start,
+  // silently dropping the keystroke and leaving the pane idle. Poll up to 60s for ❯.
+  // Fire-and-forget (void): spawnRun is synchronous; the await runs in the background.
   if (opts.interactive && opts.skill) {
     const skillLine = opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`;
-    // Brief delay to allow vc to start its REPL before we send the first keystroke.
-    // This is fire-and-forget; the REPL init timing is handled by the proof script / operator.
-    setTimeout(() => {
-      try { sendKeys(tmuxSession, skillLine); } catch { /* non-fatal: session may not be ready yet */ }
-    }, 3000);
+    void (async () => {
+      const ready = await waitForPrompt(tmuxSession, "❯", 60_000);
+      if (ready) {
+        try { sendKeys(tmuxSession, skillLine); } catch { /* non-fatal: session may have been reaped */ }
+      }
+      // If !ready after 60s, the session failed to initialize; do not send (leave idle for inspection).
+    })();
   }
 
   return { runId, tmuxSession };

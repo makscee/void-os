@@ -73,7 +73,7 @@ echo "  PASS: meta.interactive=true" | tee -a "$EVIDENCE_FILE"
 # ---- Count executions rows (should be 1) ----
 EXEC_COUNT=$(bun --eval "
 const {openRegistry}=require('./src/registry.ts');
-const db=openRegistry('${VAULT}/void-os.db');
+const db=openRegistry('${VAULT}/.void-os/registry.db');
 const rows=db.prepare('SELECT count(*) as n FROM executions WHERE id=?').get('${RUNID}');
 console.log(rows.n);
 " 2>/dev/null || echo "?")
@@ -131,7 +131,7 @@ fi
 sleep 0.5
 EXEC_COUNT_AFTER=$(bun --eval "
 const {openRegistry}=require('./src/registry.ts');
-const db=openRegistry('${VAULT}/void-os.db');
+const db=openRegistry('${VAULT}/.void-os/registry.db');
 const rows=db.prepare('SELECT count(*) as n FROM executions').get();
 console.log(rows.n);
 " 2>/dev/null || echo "?")
@@ -141,7 +141,7 @@ echo "  total_executions_after_send=$EXEC_COUNT_AFTER" >> "$EVIDENCE_FILE"
 # Compare execution count — should not have grown by more than 1 (the original onboarding)
 EXEC_FOR_RUNID=$(bun --eval "
 const {openRegistry}=require('./src/registry.ts');
-const db=openRegistry('${VAULT}/void-os.db');
+const db=openRegistry('${VAULT}/.void-os/registry.db');
 const rows=db.prepare('SELECT count(*) as n FROM executions WHERE id=?').get('${RUNID}');
 console.log(rows.n);
 " 2>/dev/null || echo "?")

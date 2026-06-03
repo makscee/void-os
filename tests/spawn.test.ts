@@ -297,3 +297,55 @@ test("spawnRun interactive path writes start event (cc-actual write path wired)"
   expect(startEvent.skill).toBe("chat");
   try { killSession(tmuxSession); } catch { /* ignore */ }
 });
+
+// VOS-206 Gap 2: interactive launch must register an executions row immediately.
+// The proof showed exec-count=0 before the send (the proof was querying the wrong DB path,
+// but the assertion that createExecution is called for interactive sessions is still load-bearing).
+test("spawnRun interactive launch registers an executions row", () => {
+  const { mkdtempSync } = require("node:fs");
+  const { tmpdir } = require("node:os");
+  const db = openRegistry(":memory:");
+  const vault = mkdtempSync(join(tmpdir(), "vos-spawn-exec-row-"));
+  const { runId, tmuxSession } = spawnRun({
+    db, vault, daemonUrl: "http://127.0.0.1:4317",
+    skill: "onboarding", agent: null,
+    runnerCommand: "sleep",
+    now: Date.now(),
+    interactive: true,
+    outputTarget: null,
+  });
+  const exec = getExecution(db, runId);
+  expect(exec).not.toBeNull();
+  expect(exec!.id).toBe(runId);
+  expect(exec!.skill).toBe("onboarding");
+  expect(exec!.ended_at).toBeNull(); // not ended yet
+  try { killSession(tmuxSession); } catch { /* ignore */ }
+});
+
+// VOS-206 Gap 3: interactive launch argv must carry --raw before -- so vc opens the REPL
+// instead of its bubbletea TUI menu. The fixed 3s setTimeout fired before claude was ready;
+// --raw ensures vc opens the REPL immediately on launch.
+test("spawnRun interactive argv carries --raw before -- in cc-command.txt", () => {
+  const { mkdtempSync } = require("node:fs");
+  const { tmpdir } = require("node:os");
+  const db = openRegistry(":memory:");
+  const vault = mkdtempSync(join(tmpdir(), "vos-spawn-raw-flag-"));
+  const { runId, tmuxSession } = spawnRun({
+    db, vault, daemonUrl: "http://127.0.0.1:4317",
+    skill: "chat", agent: null,
+    runnerCommand: "vc --",  // runner without --raw — spawnRun must inject it
+    now: Date.now(),
+    interactive: true,
+    outputTarget: null,
+  });
+  const ccCmdPath = join(sessionDir(vault, runId), "cc-command.txt");
+  const ccCmd = readFileSync(ccCmdPath, "utf8");
+  // Assert: --raw appears before --
+  const rawIdx = ccCmd.indexOf("--raw");
+  const sepIdx = ccCmd.indexOf("--");
+  expect(rawIdx).toBeGreaterThanOrEqual(0);   // --raw is present
+  expect(rawIdx).toBeLessThan(sepIdx + 1);     // --raw comes before -- (rawIdx < sepIdx is the real check, but sepIdx finds "--raw" too)
+  // More precise: the token sequence "vc --raw --" must appear
+  expect(ccCmd).toMatch(/vc\s+--raw\s+--/);
+  try { killSession(tmuxSession); } catch { /* ignore */ }
+});
