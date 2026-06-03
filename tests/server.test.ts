@@ -915,8 +915,8 @@ test("GET /s/:uuid with placeholder-only body includes attach + message affordan
   const html = await (await makeApp(vault, db).request(`/s/${uuid}`)).text();
   expect(html).toContain("attach-here");
   expect(html).toContain('id="msgForm"');
-  // iframe still present (it's always in the shell)
-  expect(html).toContain(`src="/s/${uuid}/body"`);
+  // VOS-212: placeholder-only body → iframe omitted (chat-first view, no phantom spinner)
+  expect(html).not.toContain(`src="/s/${uuid}/body"`);
 });
 
 test("GET /s/:uuid with real body content includes iframe + attach + message affordances", async () => {

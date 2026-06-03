@@ -72,8 +72,9 @@ test("dashboard session dot has awaiting class when status is awaiting", () => {
   expect(html).toContain("await");
 });
 
-test("shell embeds the body iframe + SSE reload + vault-anchored resume cmd", () => {
-  const html = renderShell("u1", "/home/user/void-os");
+test("shell embeds the body iframe + SSE reload + vault-anchored resume cmd (hasBody=true)", () => {
+  // hasBody=true is required for the iframe to render (VOS-212 gate)
+  const html = renderShell("u1", "/home/user/void-os", undefined, undefined, undefined, true);
   expect(html).toContain('src="/s/u1/body"');
   expect(html).toContain("/s/u1/stream");
   expect(html).toContain("--resume u1");
@@ -477,4 +478,39 @@ test("renderShell falls back to uuid-form resume cmd when none supplied (no tmux
   const html = renderShell("u1", "/home/user/vault");
   expect(html).toContain("vc -- --resume u1");
   expect(html).not.toContain("tmux -L vos attach");
+});
+
+// ── VOS-212: iframe gate on hasBody ───────────────────────────────────────────
+
+test("renderShell omits iframe when hasBody is false (chat-first view)", () => {
+  const html = renderShell("u1", "/vault", "skill-author", undefined, false, false);
+  expect(html).not.toContain("<iframe");
+  // chat/attach affordances must still be present
+  expect(html).toContain('id="msgForm"');
+  expect(html).toContain("attach-here");
+  expect(html).toContain('name="text"');
+});
+
+test("renderShell omits iframe when hasBody is undefined (chat-first view)", () => {
+  const html = renderShell("u1", "/vault", "skill-author", undefined, false, undefined);
+  expect(html).not.toContain("<iframe");
+  expect(html).toContain('id="msgForm"');
+  expect(html).toContain("attach-here");
+});
+
+test("renderShell renders iframe when hasBody is true (real-content view)", () => {
+  const html = renderShell("u1", "/vault", "deep-research", undefined, false, true);
+  expect(html).toContain('<iframe id="f"');
+  expect(html).toContain('src="/s/u1/body"');
+});
+
+test("renderShell: attach + Send still render unconditionally when hasBody=false (VOS-210 no-regression)", () => {
+  const noBody = renderShell("u2", "/vault", "chat", undefined, true, false);
+  const withBody = renderShell("u2", "/vault", "chat", undefined, true, true);
+  for (const html of [noBody, withBody]) {
+    expect(html).toContain("attach-here");
+    expect(html).toContain('id="msgForm"');
+    expect(html).toContain("msg-send");
+    expect(html).toContain("msg-input");
+  }
 });
