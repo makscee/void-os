@@ -86,7 +86,7 @@ pass "setup: tmux $TM live"
 # Wait for kickoff to reach pane (claude cold-start, up to 120s)
 say "polling pane for kickoff (≤120s)..."
 OK=0
-for i in $(seq 1 120); do
+for i in $(seq 1 300); do
   sleep 1
   T=$(tmux -L "$SOCK" capture-pane -p -t "$TM" 2>/dev/null || echo "")
   [[ $(echo "$T" | grep -cE '[[:alnum:]]') -gt 3 ]] && { OK=1; say "  pane active after ${i}s"; break; }

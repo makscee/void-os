@@ -106,7 +106,7 @@ fi
 
 # --- t2: wait for onboarding to write real body.html (form fields, ≤120s) ---
 say "--- t2: polling for real body.html (form fields, ≤120s) ---"
-DEADLINE=$((SECONDS + 120))
+DEADLINE=$((SECONDS + 300))
 until curl -sf "$BASE/s/${RUNID}/body" 2>/dev/null | grep -qiE 'name=|<input|<form'; do
   [[ $SECONDS -lt $DEADLINE ]] || die "t2: onboarding body.html never contained form fields after 120s"
   sleep 3

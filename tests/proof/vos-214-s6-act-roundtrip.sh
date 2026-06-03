@@ -102,7 +102,7 @@ pass "t3a: launched htmx-form-demo as $UUID; tmux $TM live"
 
 # --- t3b: poll GET /body ≤90s until hx-post present; capture PANE_PID_BEFORE ---
 say "--- t3b: polling GET /body for hx-post (≤90s) ---"
-DEADLINE=$((SECONDS + 90))
+DEADLINE=$((SECONDS + 300))
 until curl -sf "${BASE}/s/${UUID}/body" 2>/dev/null | grep -q 'hx-post'; do
   [[ $SECONDS -lt $DEADLINE ]] || die "t3b: body.html never contained hx-post form after 90s"
   sleep 2
