@@ -9,7 +9,7 @@ import type { Database } from "bun:sqlite";
 import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath, hookSettingsDir } from "./paths.ts";
 import { createExecution } from "./registry.ts";
 import { appendEvent } from "./events.ts";
-import { newRunSession, sendKeys, waitForPrompt } from "./tmux.ts";
+import { newRunSession, sendKeys, waitForReady, sendKickoff } from "./tmux.ts";
 import { writeHookSettings } from "./hooks-endpoint.ts";
 
 // Absolute paths to the helper scripts shipped with void-os.
@@ -403,18 +403,21 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     output_target: opts.outputTarget ?? null,
   });
 
-  // VOS-206 Gap 1: for interactive sessions, wait for the REPL prompt (❯) before sending
-  // the skill kickoff. A fixed 3-second delay fired before claude was ready on cold start,
-  // silently dropping the keystroke and leaving the pane idle. Poll up to 180s for ❯.
-  // VOS-215: 60s was insufficient for Opus 4.8 cold starts through void-relay (>60s observed);
-  // 180s matches the "still working" cold-start stage in placeholderBody.
+  // VOS-206 Gap 1: for interactive sessions, wait for the REPL to be genuinely input-ready
+  // before sending the skill kickoff via send-keys.
+  // VOS-215 BUG A (root-cause fix): waitForPrompt("❯") returned true at ~1s because the ❯
+  // char is present in the boot frame. The REPL only accepts input at ~20s when the
+  // interactive footer/statusline renders ("bypass permissions" / "for agents" / "Relay:").
+  // Fix: waitForReady polls for ❯ + footer marker (genuine input-readiness).
+  // Belt-and-suspenders: sendKickoff retries the keystroke if acceptance is not detected
+  // within 12s per attempt (up to 6 attempts, ~72s total retry window).
   // Fire-and-forget (void): spawnRun is synchronous; the await runs in the background.
   if (opts.interactive && opts.skill) {
     const skillLine = opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`;
     void (async () => {
-      const ready = await waitForPrompt(tmuxSession, "❯", 180_000);
+      const ready = await waitForReady(tmuxSession, 180_000);
       if (ready) {
-        try { sendKeys(tmuxSession, skillLine); } catch { /* non-fatal: session may have been reaped */ }
+        try { await sendKickoff(tmuxSession, skillLine); } catch { /* non-fatal: session may have been reaped */ }
       }
       // If !ready after 180s, the session failed to initialize; do not send (leave idle for inspection).
     })();

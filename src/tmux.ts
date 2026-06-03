@@ -130,6 +130,115 @@ export async function waitForPrompt(
 }
 
 /**
+ * READY-MARKERS: strings that only appear in the claude REPL footer once
+ * the REPL is fully interactive and accepting input (~20s post-start).
+ * The bare ❯ prompt appears at ~1s (boot frame) so is NOT a reliable signal.
+ * These strings come from the status-bar / footer row rendered when the REPL
+ * is attached and past the model-selection phase:
+ *   "bypass permissions on (shift+tab to cycle) · ← for agents"
+ *   "← for agents"
+ *   "Relay:" (appears in the token/cost status line)
+ * Any one of them is sufficient — OR-match for forward-compatibility.
+ */
+const READY_MARKERS = ["bypass permissions", "for agents", "Relay:"];
+
+/**
+ * Poll a tmux pane until the claude REPL is genuinely input-ready.
+ *
+ * Stronger than waitForPrompt("❯"): requires both the ❯ cursor AND one of the
+ * interactive footer/statusline markers that only render when the REPL has
+ * finished its startup phase and is accepting keystrokes (~20s after launch).
+ *
+ * Returns true when ready, false when maxMs elapses.
+ * intervalMs: poll cadence (default 1000ms).
+ * maxMs: hard cap (default 180_000ms).
+ */
+export async function waitForReady(
+  target: string,
+  maxMs: number = 180_000,
+  intervalMs: number = 1_000,
+): Promise<boolean> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const pane = capturePaneContent(target);
+    if (pane.includes("❯") && READY_MARKERS.some((m) => pane.includes(m))) return true;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
+/**
+ * ACCEPTANCE-MARKERS: strings that appear in the claude REPL pane once it has
+ * started processing a turn (i.e. the keystroke was delivered and accepted).
+ * "Esc to interrupt" / "esc to interrupt" appears while a turn is running.
+ * The spinner / working indicator also uses these strings.
+ * We also treat any non-empty token cost delta as acceptance, but the Esc string
+ * is the most reliable pane-level signal.
+ */
+const ACCEPTANCE_MARKERS = ["Esc to interrupt", "esc to interrupt", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/**
+ * Pure-function seam for kickoff delivery + retry — injectable runner for unit testing.
+ *
+ * Algorithm:
+ *   1. Send the skill line via sendFn.
+ *   2. Poll captureFn every acceptPollMs for up to acceptWaitMs for an acceptance signal.
+ *   3. If NOT accepted: re-send (belt-and-suspenders). Repeat up to maxAttempts.
+ *   4. Stop the instant acceptance is detected — never double-delivers once accepted.
+ *
+ * Double-send safety: once an acceptance marker appears we return immediately without
+ * sending again, regardless of how many attempts remain.
+ *
+ * @returns number of send attempts made (1 = delivered on first try).
+ */
+export async function sendKickoffWith(
+  captureFn: (target: string) => string,
+  sendFn: (target: string, line: string) => void,
+  target: string,
+  skillLine: string,
+  opts: {
+    maxAttempts?: number;    // default 6
+    acceptWaitMs?: number;   // per-attempt poll window (default 12_000ms)
+    acceptPollMs?: number;   // poll cadence inside window (default 1_000ms)
+  } = {},
+): Promise<number> {
+  const maxAttempts = opts.maxAttempts ?? 6;
+  const acceptWaitMs = opts.acceptWaitMs ?? 12_000;
+  const acceptPollMs = opts.acceptPollMs ?? 1_000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    sendFn(target, skillLine);
+
+    // Poll for acceptance
+    const deadline = Date.now() + acceptWaitMs;
+    while (Date.now() < deadline) {
+      const pane = captureFn(target);
+      if (ACCEPTANCE_MARKERS.some((m) => pane.includes(m))) return attempt;
+      await new Promise((r) => setTimeout(r, acceptPollMs));
+    }
+    // Not accepted — loop continues to re-send (unless we're at maxAttempts)
+  }
+  // All attempts exhausted without confirmed acceptance; session may have been reaped.
+  return maxAttempts;
+}
+
+/**
+ * Send a skill kickoff to a live tmux session with retry-until-accepted.
+ * Wraps sendKickoffWith with the real capturePaneContent and sendKeys.
+ */
+export async function sendKickoff(
+  target: string,
+  skillLine: string,
+  opts: {
+    maxAttempts?: number;
+    acceptWaitMs?: number;
+    acceptPollMs?: number;
+  } = {},
+): Promise<number> {
+  return sendKickoffWith(capturePaneContent, sendKeys, target, skillLine, opts);
+}
+
+/**
  * List all session names on the void-os socket.
  * Returns [] when the socket has no sessions yet (exit code non-zero).
  */
