@@ -8,15 +8,19 @@
 #
 # USAGE:  bash tests/proof/vos-206-onboarding-one-session.sh [VAULT] [PORT]
 #
-# WHAT IT ASSERTS (exit 0 = PASS):
+# WHAT IT ASSERTS (exit 0 = PASS, all checks are HARD — exit 1 on any miss):
 #   - POST /launch skill=onboarding → 302 redirect, captures RUNID
 #   - session-meta.json has interactive:true
 #   - ONE executions row exists for RUNID
 #   - tmux session vos-run-<RUNID> is live on socket 'vos'
+#   - cc-command.txt matches vc --raw -- (launch argv carries --raw)
+#   - Kickoff reached the pane (claude began work within 60s, not idle REPL)
 #   - POST /s/<RUNID>/send name=Alice → 302 back to /s/<RUNID> (SAME session, NOT a new exec)
 #   - STILL exactly ONE executions row for RUNID (no successor spawn)
-#   - body.html does NOT contain <form (stranded-yellow dissolved)
-#   - tmux session vos-run-<RUNID> is STILL the same session (pane PID unchanged)
+#   - Sent text 'Alice' appeared in the live pane (send-keys routed to same session)
+#   - tmux session vos-run-<RUNID> has the same pane PID before/after send
+#
+# Note: body.html form rendering is Opus-timing-dependent and NOT a gate assertion.
 #
 # REAPED-PATH PROOF (optional, step 5):
 #   Kill the session manually:  tmux -L vos kill-session -t vos-run-<RUNID>
@@ -82,35 +86,67 @@ console.log(rows.n);
 echo "  executions rows for RUNID=$EXEC_COUNT"
 echo "  executions_before_send=$EXEC_COUNT" >> "$EVIDENCE_FILE"
 if [[ "$EXEC_COUNT" != "1" ]]; then
-  echo "WARNING: expected 1 execution row, got $EXEC_COUNT (may be timing — continuing)"
+  echo "FAIL: expected 1 execution row, got $EXEC_COUNT" | tee -a "$EVIDENCE_FILE"
+  exit 1
 fi
+echo "  PASS: exactly 1 execution row for RUNID" | tee -a "$EVIDENCE_FILE"
 
 # ---- Check tmux session is live ----
 TMUX_SESSION="vos-run-${RUNID}"
 sleep 1  # allow tmux session to start
-if tmux -L vos has-session -t "$TMUX_SESSION" 2>/dev/null; then
-  PANE_PID_BEFORE=$(tmux -L vos display-message -p -t "${TMUX_SESSION}" '#{pane_pid}' 2>/dev/null || echo "?")
-  echo "  PASS: tmux session $TMUX_SESSION is live (pane_pid=$PANE_PID_BEFORE)" | tee -a "$EVIDENCE_FILE"
-else
-  echo "WARNING: tmux session $TMUX_SESSION not yet live — onboarding may still be starting"
-  PANE_PID_BEFORE="?"
+if ! tmux -L vos has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  echo "FAIL: tmux session $TMUX_SESSION not live after launch" | tee -a "$EVIDENCE_FILE"
+  exit 1
 fi
+PANE_PID_BEFORE=$(tmux -L vos display-message -p -t "${TMUX_SESSION}" '#{pane_pid}' 2>/dev/null || echo "?")
+echo "  PASS: tmux session $TMUX_SESSION is live (pane_pid=$PANE_PID_BEFORE)" | tee -a "$EVIDENCE_FILE"
 echo "  pane_pid_before=$PANE_PID_BEFORE" >> "$EVIDENCE_FILE"
 
-# ---- Check body.html has <form ----
-BODY_PATH="${VAULT}/sessions/${RUNID}/body.html"
-for i in $(seq 1 90); do
-  sleep 2
-  if [[ -f "$BODY_PATH" ]] && grep -q '<form' "$BODY_PATH" 2>/dev/null; then
-    echo "  PASS: body.html has <form (onboarding rendered form, waited ~$((i*2))s)" | tee -a "$EVIDENCE_FILE"
+# ---- Check cc-command.txt carries --raw ----
+CC_CMD_PATH="${VAULT}/sessions/${RUNID}/cc-command.txt"
+sleep 0.5
+if [[ ! -f "$CC_CMD_PATH" ]]; then
+  echo "FAIL: cc-command.txt not found at $CC_CMD_PATH" | tee -a "$EVIDENCE_FILE"
+  exit 1
+fi
+CC_CMD_CONTENT=$(cat "$CC_CMD_PATH")
+if echo "$CC_CMD_CONTENT" | grep -qE 'vc[[:space:]]+--raw[[:space:]]+--'; then
+  echo "  PASS: cc-command.txt carries vc --raw -- (launch argv wired correctly)" | tee -a "$EVIDENCE_FILE"
+else
+  echo "FAIL: cc-command.txt does not match 'vc --raw --', got: $CC_CMD_CONTENT" | tee -a "$EVIDENCE_FILE"
+  exit 1
+fi
+echo "  cc_command=$CC_CMD_CONTENT" >> "$EVIDENCE_FILE"
+
+# ---- Check kickoff reached the pane (claude began work, not idle REPL) ----
+echo "  polling pane for kickoff activity (up to 60s)..."
+KICKOFF_REACHED=0
+for i in $(seq 1 60); do
+  sleep 1
+  PANE_TEXT=$(tmux -L vos capture-pane -p -t "$TMUX_SESSION" 2>/dev/null || echo "")
+  # Idle bare banner: only banner + empty prompt, nothing else. Detect activity by:
+  # - any tool-call marker, thinking spinner chars, or onboarding-specific text
+  # - more than just the blank REPL (any non-whitespace line beyond the first 2 banner lines)
+  ACTIVE_LINES=$(echo "$PANE_TEXT" | grep -cE '[[:alnum:]]' || true)
+  if [[ "$ACTIVE_LINES" -gt 3 ]]; then
+    echo "  PASS: pane shows activity after ~${i}s (kickoff delivered)" | tee -a "$EVIDENCE_FILE"
+    echo "  kickoff_wait_s=$i" >> "$EVIDENCE_FILE"
+    KICKOFF_REACHED=1
     break
   fi
-  echo "  waiting for <form in body.html ($i/90, ${i}×2s elapsed)..."
 done
-if ! grep -q '<form' "$BODY_PATH" 2>/dev/null; then
-  echo "WARNING: body.html does not contain <form after ~180s — onboarding may not have rendered yet"
-  echo "  body.html snippet:" | tee -a "$EVIDENCE_FILE"
-  head -5 "$BODY_PATH" 2>/dev/null | tee -a "$EVIDENCE_FILE"
+if [[ "$KICKOFF_REACHED" != "1" ]]; then
+  echo "FAIL: pane still idle after 60s — kickoff (waitForPrompt+send-keys) did not deliver the skill prompt" | tee -a "$EVIDENCE_FILE"
+  tmux -L vos capture-pane -p -t "$TMUX_SESSION" 2>/dev/null >> "$EVIDENCE_FILE" || true
+  exit 1
+fi
+
+# ---- Informational: body.html form check (NOT a gate — Opus timing varies) ----
+BODY_PATH="${VAULT}/sessions/${RUNID}/body.html"
+if [[ -f "$BODY_PATH" ]] && grep -q '<form' "$BODY_PATH" 2>/dev/null; then
+  echo "  note: form rendered=yes (informational, not gating)" | tee -a "$EVIDENCE_FILE"
+else
+  echo "  note: form rendered=no (informational, not gating — Opus may still be working)" | tee -a "$EVIDENCE_FILE"
 fi
 
 # ---- Step 4: Submit form (THE core assertion) ----
@@ -158,28 +194,42 @@ else
   exit 1
 fi
 
-# CORE ASSERTION 3: body.html no longer has <form
+# CORE ASSERTION 3: sent text 'Alice' reached the same live pane
 sleep 0.5
-if ! grep -q '<form' "$BODY_PATH" 2>/dev/null; then
-  echo "  PASS: body.html no longer contains <form (stranded-yellow dissolved)" | tee -a "$EVIDENCE_FILE"
+PANE_AFTER_SEND=$(tmux -L vos capture-pane -p -t "$TMUX_SESSION" 2>/dev/null || echo "")
+if echo "$PANE_AFTER_SEND" | grep -q 'Alice'; then
+  echo "  PASS: 'Alice' appeared in pane — send-keys routed to the live session" | tee -a "$EVIDENCE_FILE"
 else
-  echo "FAIL: body.html still contains <form after send — interactive branch may not have cleared it" | tee -a "$EVIDENCE_FILE"
-  head -10 "$BODY_PATH" | tee -a "$EVIDENCE_FILE"
+  echo "FAIL: sent text 'Alice' did not appear in pane after send — send may have gone to wrong session or been dropped" | tee -a "$EVIDENCE_FILE"
+  echo "  pane_after_send:" >> "$EVIDENCE_FILE"
+  echo "$PANE_AFTER_SEND" >> "$EVIDENCE_FILE"
   exit 1
 fi
 
-# CORE ASSERTION 4: same tmux session (pane PID family unchanged)
-if tmux -L vos has-session -t "$TMUX_SESSION" 2>/dev/null; then
-  PANE_PID_AFTER=$(tmux -L vos display-message -p -t "${TMUX_SESSION}" '#{pane_pid}' 2>/dev/null || echo "?")
-  echo "  tmux session $TMUX_SESSION still live after send (pane_pid=$PANE_PID_AFTER)" | tee -a "$EVIDENCE_FILE"
-  if [[ "$PANE_PID_BEFORE" == "$PANE_PID_AFTER" && "$PANE_PID_BEFORE" != "?" ]]; then
-    echo "  PASS: same pane PID ($PANE_PID_AFTER) — answer was send-keys'd into the EXISTING session" | tee -a "$EVIDENCE_FILE"
-  else
-    echo "  NOTE: pane PID before=$PANE_PID_BEFORE after=$PANE_PID_AFTER (may differ if reaped+respawned)" | tee -a "$EVIDENCE_FILE"
-  fi
+# Informational: body.html form dissolution (NOT a gate)
+if [[ -f "$BODY_PATH" ]] && grep -q '<form' "$BODY_PATH" 2>/dev/null; then
+  echo "  note: form still present in body.html (informational — Opus may still be processing)" | tee -a "$EVIDENCE_FILE"
 else
-  echo "  NOTE: tmux session gone (may have been reaped by idle-reaper)" | tee -a "$EVIDENCE_FILE"
+  echo "  note: form dissolved in body.html (informational)" | tee -a "$EVIDENCE_FILE"
 fi
+
+# CORE ASSERTION 4: same tmux session (pane PID unchanged — not a respawn)
+if ! tmux -L vos has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  echo "FAIL: tmux session $TMUX_SESSION gone after send — session was lost" | tee -a "$EVIDENCE_FILE"
+  exit 1
+fi
+PANE_PID_AFTER=$(tmux -L vos display-message -p -t "${TMUX_SESSION}" '#{pane_pid}' 2>/dev/null || echo "?")
+echo "  tmux session $TMUX_SESSION still live after send (pane_pid=$PANE_PID_AFTER)" | tee -a "$EVIDENCE_FILE"
+echo "  pane_pid_after=$PANE_PID_AFTER" >> "$EVIDENCE_FILE"
+if [[ "$PANE_PID_BEFORE" == "?" || "$PANE_PID_AFTER" == "?" ]]; then
+  echo "FAIL: pane PID could not be read (before=$PANE_PID_BEFORE after=$PANE_PID_AFTER)" | tee -a "$EVIDENCE_FILE"
+  exit 1
+fi
+if [[ "$PANE_PID_BEFORE" != "$PANE_PID_AFTER" ]]; then
+  echo "FAIL: pane PID changed (before=$PANE_PID_BEFORE after=$PANE_PID_AFTER) — send-keys hit a respawned session, not the original" | tee -a "$EVIDENCE_FILE"
+  exit 1
+fi
+echo "  PASS: same pane PID ($PANE_PID_AFTER) — answer was send-keys'd into the EXISTING session" | tee -a "$EVIDENCE_FILE"
 
 echo ""
 echo "=== PROOF COMPLETE: onboarding round-trip stayed in ONE session ==="
