@@ -503,7 +503,7 @@ es.onmessage=function(){
   var f=document.getElementById("f");
   f.contentWindow.location.replace("/s/${esc(uuid)}/body");
   fetch("/s/${esc(uuid)}/status").then(function(r){return r.text();}).then(function(s){
-    if(s==="stopped"||s==="error"||s==="complete"){es.close();}
+    if(s==="stopped"||s==="error"||s==="complete"||s==="reaped"){es.close();}
   });
 };
 var dvBar=document.getElementById("drawer-bar");

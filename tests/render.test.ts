@@ -172,6 +172,16 @@ test("renderShell SSE client closes the stream on a terminal status", () => {
   expect(shell).toContain("es.close()");
 });
 
+test("SSE client treats reaped as terminal (closes stream)", () => {
+  const html = renderShell("u-reaped", "/tmp/vault", "deep-research");
+  // The status-poll branch must include "reaped" in the terminal set
+  expect(html).toContain('"reaped"');
+  // "reaped" must appear on the same logic path as es.close()
+  const closeIdx = html.indexOf("es.close()");
+  const statusPollBlock = html.slice(Math.max(0, closeIdx - 200), closeIdx + 20);
+  expect(statusPollBlock).toContain("reaped");
+});
+
 // VOS-187: Universal modal replaces needs_input gated chip + single-click chip.
 // Both flagged and unflagged skills now open a modal — no direct submit, no needs-input class.
 import type { CatalogSkill } from "../src/catalog.ts";
