@@ -437,59 +437,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       return c.redirect(`/s/${uuid}`);
     }
 
-    // VOS-206: interactive session form-submit → live REPL via send-keys (NO successor spawn).
-    // Mirrors the /message route: respawn-if-reaped (ensureRawRunner → --raw), touch last-activity, send-keys.
-    // Clearing the <form> from body.html flips deriveStatus off "awaiting" → stranded-yellow dissolves.
-    // Runs AFTER the drain guard (drain sessions with interactive:true still take the worktree path above).
-    if (meta.interactive === true) {
-      const target = `vos-run-${uuid}`;
-      const cfg2 = readConfig(vault);
-      const daemonUrl2 = `http://127.0.0.1:${cfg2.port}`;
-      if (!hasSession(target)) {
-        respawnSession(db, vault, uuid, runnerCommand, daemonUrl2);
-      }
-      try {
-        const dir = sessionDir(vault, uuid);
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
-      } catch { /* non-fatal */ }
-      sendKeys(target, text);
-      // Replace the form so the session leaves the awaiting/agent-inbox state (stranded-yellow dissolves).
-      writeFileSync(bodyPath(vault, uuid), workingPage(fields));
-      return c.redirect(`/s/${uuid}`);
-    }
-
-    // Form-resume: launch a fresh print-mode CC session that invokes the same skill
-    // with the form data as the input text. This is the stateless ADR-0003 path:
-    // - The skill's SKILL.md is loaded from vault .claude/skills/ context
-    // - The form fields arrive in the -p text: "[render contract]\n<fields>"
-    // - The skill detects form fields and processes them (step 3 / form-reply path)
-    // Using spawnRun (fresh session) instead of spawnTurn (--resume):
-    //   spawnTurn's buildAnswerArgv emits --resume which is ignored by the claude -- runner
-    //   (the runner passes all argv as user-message text, where --resume looks like a flag).
-    //   A fresh launch via spawnRun correctly puts the form data in the -p prompt.
-    const formPrompt = `[render contract: rewrite body.html, no terminal reply]\n${text}`;
+    // VOS-211: UNIFIED send path. ANY non-drain session — interactive REPL OR a finished
+    // interactive:false worker (skill-author, deep-research) — resumes its OWN thread:
+    // respawn-if-reaped (respawnSession → vc --raw -- --resume <ccId>), then send-keys.
+    // The previous fall-through spawned a fresh spawnRun (a SUCCESSOR exec), abandoning the
+    // original thread — deleted. A worker that never wrote cc-actual cannot resume; respawnSession
+    // returns null and the live send still no-ops gracefully (sendKeys to a dead pane is harmless).
+    const target = `vos-run-${uuid}`;
     const cfg = readConfig(vault);
-    const daemonUrlForRespawn = `http://127.0.0.1:${cfg.port}`;
-    const { runId: formRunId } = spawnRun({
-      db, vault, daemonUrl: daemonUrlForRespawn,
-      skill: meta.skill ?? null, agent: null,
-      runnerCommand, now: Date.now(),
-      // forcePrint ensures the form-reply session runs headlessly (print mode);
-      // bodyMessage carries the form fields as the initial prompt.
-      forcePrint: true,
-      bodyMessage: formPrompt,
-    });
-    // Seed the session dir for the new run and redirect to it.
-    const formDir = sessionDir(vault, formRunId);
-    mkdirSync(formDir, { recursive: true });
-    writeFileSync(
-      join(formDir, "session-meta.json"),
-      JSON.stringify({ skill: meta.skill ?? null, agent: null, launchedAt: Date.now(),
-        text: formPrompt.slice(0, 200), tmuxSession: `vos-run-${formRunId}`, runner: runnerCommand }),
-    );
-    writeFileSync(bodyPath(vault, formRunId), workingPage(fields));
-    return c.redirect(`/s/${formRunId}`);
+    const daemonUrl = `http://127.0.0.1:${cfg.port}`;
+    if (!hasSession(target)) {
+      respawnSession(db, vault, uuid, runnerCommand, daemonUrl);
+    }
+    try {
+      const dir = sessionDir(vault, uuid);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
+    } catch { /* non-fatal */ }
+    sendKeys(target, text);
+    // Replace the form so the session leaves the awaiting/agent-inbox state (stranded-yellow dissolves).
+    writeFileSync(bodyPath(vault, uuid), workingPage(fields));
+    return c.redirect(`/s/${uuid}`);
   });
 
   // POST /triggers/:name/fire — manually fire a named Trigger, spawning a real Run.
