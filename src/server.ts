@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { listCatalogSkills } from "./catalog.ts";
 import { decideInteractive } from "./interactive-decide.ts";
-import { listSessions } from "./sessions.ts";
+import { listSessions, statusFor } from "./sessions.ts";
 import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn, readCcSessionId } from "./spawn.ts";
 import { buildAgentLaunch, type AgentLaunch } from "./agents.ts";
 import { drain, type DrainOpts } from "./drain.ts";
@@ -372,13 +372,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   });
 
   // GET /s/:uuid/status — plain-text SessionStatus for the SSE client to decide when to stop reloading.
+  // Uses the shared statusFor() so SSE poll always agrees with the dashboard dot (VOS-208).
   app.get("/s/:uuid/status", (c) => {
     const uuid = c.req.param("uuid");
-    if (existsSync(stopPath(vault, uuid))) return c.text("stopped");
-    if (existsSync(errorPath(vault, uuid))) return c.text("error");
     const bp = bodyPath(vault, uuid);
     const html = existsSync(bp) ? readFileSync(bp, "utf8") : "";
-    return c.text(html.includes("<form") ? "awaiting" : "complete");
+    return c.text(statusFor(vault, uuid, html, db));
   });
 
   // POST /s/:uuid/send — answer-back: serialize ALL form fields as "key: value\n" lines, resume session

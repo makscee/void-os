@@ -356,3 +356,57 @@ test("renderShell left nav marks active session", () => {
   expect(html).toContain("nav-session");
   expect(html).toContain("/s/sess-abc");
 });
+
+// ── VOS-208: 6-state dot rendering ────────────────────────────────────────────
+
+test("dashboard dot reflects all 6 statuses — failed/reaped/stopped never green", () => {
+  const mk = (uuid: string, status: any): SessionInfo =>
+    sess({ uuid, status });
+  const sessions: SessionInfo[] = (["stopped", "error", "reaped", "awaiting", "working", "complete"] as const)
+    .map((s) => mk(s, s));
+  const html = renderDashboard([], sessions, { authed: true });
+
+  // Helper: extract the main-content session row (not the left-nav row) for a given uuid.
+  // Each main-content row contains the uuid prefix in a session-uuid span.
+  const rowFor = (uuid: string) => {
+    // Find the session-uuid span containing the uuid slice
+    const marker = `${uuid.slice(0, 8)}…`;
+    let searchFrom = 0;
+    while (true) {
+      const idx = html.indexOf(marker, searchFrom);
+      if (idx === -1) return "";
+      // Check if this is the session-uuid span (not a nav span)
+      const spanStart = html.lastIndexOf("<span", idx);
+      const spanContent = html.slice(spanStart, idx + marker.length + 20);
+      if (spanContent.includes("session-uuid")) {
+        const rowStart = html.lastIndexOf("<a href=", spanStart);
+        const rowEnd = html.indexOf("</a>", idx);
+        return html.slice(rowStart, rowEnd + 4);
+      }
+      searchFrom = idx + 1;
+    }
+  };
+
+  // error and reaped rows must carry a non-default (non-green) dot class
+  expect(rowFor("error")).toContain("session-dot err");
+  expect(rowFor("reaped")).toContain("session-dot reaped");
+  expect(rowFor("stopped")).toContain("session-dot stopped");
+  expect(rowFor("awaiting")).toContain("session-dot await");
+  // working + complete keep the default green dot (no extra class)
+  const workingRow = rowFor("working");
+  expect(workingRow).toContain("session-dot");
+  expect(workingRow).not.toContain("session-dot err");
+  expect(workingRow).not.toContain("session-dot reaped");
+  expect(workingRow).not.toContain("session-dot stopped");
+  const completeRow = rowFor("complete");
+  expect(completeRow).toContain("session-dot");
+  expect(completeRow).not.toContain("session-dot err");
+  expect(completeRow).not.toContain("session-dot reaped");
+  expect(completeRow).not.toContain("session-dot stopped");
+});
+
+test("CSS for reaped and stopped dot classes is present", () => {
+  const html = renderDashboard([], [sess({ status: "reaped" })], { authed: true });
+  expect(html).toContain("session-dot.reaped");
+  expect(html).toContain("session-dot.stopped");
+});

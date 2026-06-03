@@ -554,6 +554,50 @@ test("GET /s/:uuid/status returns 'stopped' when stopped.txt present", async () 
   expect(await res.text()).toBe("stopped");
 });
 
+// VOS-208: /status route uses statusFor — agrees with dashboard dot for exec-row states
+test("GET /s/:uuid/status returns 'error' for exec with reason (false-green regression)", async () => {
+  const { createExecution, setExecutionFail } = await import("../src/registry.ts");
+  const uuid = "status-error-exec-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>failed run</p>");
+  createExecution(db, { id: uuid, agent: null, skill: null, inputRef: null,
+    tmuxSession: `vos-run-${uuid}`, now: 1000, triggerId: null, stepCeiling: null });
+  setExecutionFail(db, uuid, "runaway-ceiling", 2000);
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/status`);
+  expect(await res.text()).toBe("error");
+});
+
+test("GET /s/:uuid/status returns 'reaped' for stranded form + ended exec (stranded-yellow regression)", async () => {
+  const { createExecution, setExecutionEnded } = await import("../src/registry.ts");
+  const { reapedPath } = await import("../src/paths.ts");
+  const uuid = "status-reaped-stranded-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>body</p><form action='/send'><input></form>");
+  createExecution(db, { id: uuid, agent: null, skill: null, inputRef: null,
+    tmuxSession: `vos-run-${uuid}`, now: 1000, triggerId: null, stepCeiling: null });
+  setExecutionEnded(db, uuid, 2000);
+  // ended + form present → reaped (stranded-yellow fix)
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/status`);
+  expect(await res.text()).toBe("reaped");
+});
+
+test("GET /s/:uuid/status returns 'working' for live exec without form", async () => {
+  const { createExecution } = await import("../src/registry.ts");
+  const uuid = "status-working-uuid";
+  rmSync(sessionDir(vault, uuid), { recursive: true, force: true });
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>running…</p>");
+  createExecution(db, { id: uuid, agent: null, skill: null, inputRef: null,
+    tmuxSession: `vos-run-${uuid}`, now: 1000, triggerId: null, stepCeiling: null });
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/status`);
+  expect(await res.text()).toBe("working");
+});
+
 test("[BLOCKER] POST /s/:uuid/send on parked drain calls runTurn with cwd=worktree and triggers drain continuation", async () => {
   const parkedId = "parked-drain-uuid";
   const drainWorktree = "/tmp/drain-wt-parked";

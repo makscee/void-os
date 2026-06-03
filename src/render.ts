@@ -123,11 +123,13 @@ var s=0,iv=setInterval(function(){
 </script>`;
 }
 
-/** Map SessionStatus to a CSS class for the status dot. */
+/** Map SessionStatus to a CSS class for the status dot (VOS-208: 6-state model). */
 function dotClass(status: SessionStatus): string {
   if (status === "error") return "err";
   if (status === "awaiting") return "await";
-  return ""; // complete = default green
+  if (status === "reaped") return "reaped";
+  if (status === "stopped") return "stopped";
+  return ""; // working + complete = default green
 }
 
 /** CSS for the left nav sidebar — inlined alongside the shared UI_TOKENS block. */
@@ -279,7 +281,7 @@ document.getElementById('lm-text').addEventListener('keydown',function(e){
         const epoch = (s as any).lastActivityMs ?? s.mtimeMs;
         return `
     <a href="/s/${esc(s.uuid)}" class="session-row">
-      <span class="session-dot${s.status === "error" ? " err" : s.status === "awaiting" ? " await" : ""}"></span>
+      <span class="session-dot${dotClass(s.status) ? ` ${dotClass(s.status)}` : ""}"></span>
       <span class="session-title">${esc(s.title)}</span>
       <span class="session-uuid">${esc(s.uuid.slice(0, 8))}… <span class="nav-elapsed" data-epoch="${epoch}"></span></span>
     </a>`;
@@ -342,6 +344,8 @@ code{font-family:monospace;font-size:0.85em}
 .session-dot{width:6px;height:6px;border-radius:50%;background:hsl(142 70% 45%);flex-shrink:0}
 .session-dot.err{background:hsl(0 70% 55%)}
 .session-dot.await{background:hsl(38 92% 50%)}
+.session-dot.reaped{background:hsl(217 10% 45%)}
+.session-dot.stopped{background:hsl(0 0% 40%)}
 .session-title{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .session-uuid{font-size:11px;font-family:monospace;color:hsl(var(--muted-foreground))}
 </style>
