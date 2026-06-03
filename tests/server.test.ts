@@ -20,6 +20,9 @@ const spawnCalls: Array<{ vault: string; uuid: string; argv: string[]; command: 
 const runTurnCalls: Array<{ cwd: string; vault: string; uuid: string; argv: string[]; command: string }> = [];
 const spawnRunCalls: Array<unknown> = [];
 import { randomUUID } from "node:crypto";
+// Load the real readCcSessionId via ?real specifier so the mock can delegate to it
+// (the mock replaces spawn.ts, but transcript/resume routes need actual fs reads).
+const { readCcSessionId: realReadCcSessionId } = await import("../src/spawn.ts?real");
 mock.module("../src/spawn.ts", () => ({
   buildLaunchArgv: (uuid: string, skill: string, text: string) => [
     "--session-id", uuid, "-p", text ? `/${skill} ${text}` : `/${skill}`,
@@ -29,7 +32,8 @@ mock.module("../src/spawn.ts", () => ({
     "--resume", ccSessionId ?? uuid, "-p", `[render contract: rewrite body.html, no terminal reply]\n${text}`,
     "--permission-mode", "bypassPermissions",
   ],
-  readCcSessionId: (_vault: string, _execId: string) => null, // stub — no cc-command.txt in unit tests
+  // Delegate to the real readCcSessionId so transcript route resolves cc-actual + cc-command fallback.
+  readCcSessionId: realReadCcSessionId,
   tokenizeCommand: (cmd: string) => cmd.trim().split(/\s+/).filter(Boolean),
   spawnTurn: (v: string, u: string, a: string[], cmd: string) => { spawnCalls.push({ vault: v, uuid: u, argv: a, command: cmd }); },
   runTurn: async (cwd: string, v: string, u: string, a: string[], cmd: string) => { runTurnCalls.push({ cwd, vault: v, uuid: u, argv: a, command: cmd }); return 0; },
@@ -444,6 +448,39 @@ test("GET /s/:uuid/transcript returns strictly empty body for unknown uuid", asy
   const res = await app.request("/s/99999999-8888-7777-6666-555555555555/transcript");
   expect(res.status).toBe(200);
   expect(await res.text()).toBe("");
+});
+
+// VOS-209 Task 3: transcript route must fall back to cc-command.txt --session-id when cc-actual is absent
+test("VOS-209: GET /s/:uuid/transcript resolves via cc-command.txt --session-id when cc-actual missing", async () => {
+  const runId = `exec-vos209-fallback-${Date.now()}`;
+  const ccId = "cc209aaa-e5f6-7890-abcd-ef1234560209";
+  const dir = sessionDir(vault, runId);
+  mkdirSync(dir, { recursive: true });
+  // Write cc-command.txt with --session-id hint (no cc-actual-session.txt)
+  writeFileSync(
+    join(dir, "cc-command.txt"),
+    `vc -- claude --session-id ${ccId} --add-dir /tmp/vault --permission-mode bypassPermissions`,
+  );
+  // Write the CC jsonl using the hint ID
+  const proj = join(process.env.HOME!, ".claude", "projects", "-voidos-server-test-vos209");
+  mkdirSync(proj, { recursive: true });
+  const txFile = join(proj, `${ccId}.jsonl`);
+  writeFileSync(
+    txFile,
+    `{"type":"user","message":{"role":"user","content":"hello from vos209 fallback"}}\n` +
+    `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reply via fallback"}]}}\n`,
+  );
+  try {
+    const app = makeApp(vault, db);
+    const res = await app.request(`/s/${runId}/transcript`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("hello from vos209 fallback");
+    expect(body).toContain("reply via fallback");
+  } finally {
+    try { rmSync(txFile); } catch { /* ignore */ }
+    try { rmSync(dir, { recursive: true }); } catch { /* ignore */ }
+  }
 });
 
 // --- Drain route tests ---
