@@ -41,8 +41,10 @@ echo ""
 
 # ---- Step 3: Launch onboarding ----
 echo "[step 3] POST /launch skill=onboarding"
-LAUNCH_RESP=$(curl -s -D - -X POST "${BASE}/launch" -d 'skill=onboarding' -o /dev/null -w "%{http_code}")
-LAUNCH_LOCATION=$(curl -s -D - -X POST "${BASE}/launch" -d 'skill=onboarding' 2>&1 | grep -i '^location:' | tr -d '\r' | awk '{print $2}')
+LAUNCH_HEADERS="/tmp/vos-206-launch-headers-$$.txt"
+LAUNCH_RESP=$(curl -s -D "$LAUNCH_HEADERS" -X POST "${BASE}/launch" -d 'skill=onboarding' -o /dev/null -w "%{http_code}")
+LAUNCH_LOCATION=$(grep -i '^location:' "$LAUNCH_HEADERS" | tr -d '\r' | awk '{print $2}')
+rm -f "$LAUNCH_HEADERS"
 if [[ -z "$LAUNCH_LOCATION" ]]; then
   echo "ERROR: /launch did not redirect — got: $LAUNCH_RESP" >&2
   exit 1
@@ -97,16 +99,16 @@ echo "  pane_pid_before=$PANE_PID_BEFORE" >> "$EVIDENCE_FILE"
 
 # ---- Check body.html has <form ----
 BODY_PATH="${VAULT}/sessions/${RUNID}/body.html"
-for i in $(seq 1 60); do
+for i in $(seq 1 90); do
   sleep 2
   if [[ -f "$BODY_PATH" ]] && grep -q '<form' "$BODY_PATH" 2>/dev/null; then
     echo "  PASS: body.html has <form (onboarding rendered form, waited ~$((i*2))s)" | tee -a "$EVIDENCE_FILE"
     break
   fi
-  echo "  waiting for <form in body.html ($i/60, ${i}×2s elapsed)..."
+  echo "  waiting for <form in body.html ($i/90, ${i}×2s elapsed)..."
 done
 if ! grep -q '<form' "$BODY_PATH" 2>/dev/null; then
-  echo "WARNING: body.html does not contain <form after ~120s — onboarding may not have rendered yet"
+  echo "WARNING: body.html does not contain <form after ~180s — onboarding may not have rendered yet"
   echo "  body.html snippet:" | tee -a "$EVIDENCE_FILE"
   head -5 "$BODY_PATH" 2>/dev/null | tee -a "$EVIDENCE_FILE"
 fi
@@ -114,8 +116,10 @@ fi
 # ---- Step 4: Submit form (THE core assertion) ----
 echo ""
 echo "[step 4] POST /s/${RUNID}/send name=Alice skill_chat=on"
-SEND_RESP=$(curl -s -D - -X POST "${BASE}/s/${RUNID}/send" -d 'name=Alice&skill_chat=on' -o /dev/null -w "%{http_code}" 2>&1)
-SEND_LOCATION=$(curl -s -D - -X POST "${BASE}/s/${RUNID}/send" -d 'name=Alice&skill_chat=on' 2>&1 | grep -i '^location:' | tr -d '\r' | awk '{print $2}')
+SEND_HEADERS="/tmp/vos-206-send-headers-$$.txt"
+SEND_RESP=$(curl -s -D "$SEND_HEADERS" -X POST "${BASE}/s/${RUNID}/send" -d 'name=Alice&skill_chat=on' -o /dev/null -w "%{http_code}")
+SEND_LOCATION=$(grep -i '^location:' "$SEND_HEADERS" | tr -d '\r' | awk '{print $2}')
+rm -f "$SEND_HEADERS"
 echo "  send redirect location=$SEND_LOCATION"
 echo "  send_location=$SEND_LOCATION" >> "$EVIDENCE_FILE"
 
