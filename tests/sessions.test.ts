@@ -2,7 +2,8 @@ import { expect, test, beforeAll } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { listSessions } from "../src/sessions.ts";
-import { bodyPath, sessionDir, stopPath } from "../src/paths.ts";
+import { bodyPath, sessionDir, stopPath, reapedPath } from "../src/paths.ts";
+import { openRegistry, createExecution, setExecutionEnded, setExecutionFail } from "../src/registry.ts";
 
 const vault = "/tmp/voidos-sessions-test";
 beforeAll(() => {
@@ -86,4 +87,68 @@ test("empty sessions root returns empty array", () => {
   rmSync(emptyVault, { recursive: true, force: true });
   mkdirSync(`${emptyVault}/sessions`, { recursive: true });
   expect(listSessions(emptyVault)).toEqual([]);
+});
+
+// ── VOS-208: 6-state exec-aware deriveStatus regression matrix ───────────────
+
+test("deriveStatus folds exec terminal/liveness state into 6 states", () => {
+  const v = "/tmp/voidos-status-matrix";
+  rmSync(v, { recursive: true, force: true });
+  rmSync(`${v}.db`, { force: true });
+  const db = openRegistry(`${v}.db`);
+
+  const mk = (u: string, body: string) => {
+    mkdirSync(sessionDir(v, u), { recursive: true });
+    writeFileSync(bodyPath(v, u), body);
+  };
+  const exec = (id: string) =>
+    createExecution(db, { id, agent: null, skill: null, inputRef: null,
+      tmuxSession: `vos-run-${id}`, now: 1000, triggerId: null, stepCeiling: null });
+
+  // 5 (working): exec live, no form
+  mk("working", "<title>w</title>");
+  exec("working");
+  // 6 (complete): exec ended cleanly, no form
+  mk("done", "<title>d</title>");
+  exec("done");
+  setExecutionEnded(db, "done", 2000);
+  // 2 (error via reason): exec failed with reason, body advanced (no error.txt)
+  mk("failed", "<title>f</title>");
+  exec("failed");
+  setExecutionFail(db, "failed", "runaway-ceiling", 2000);
+  // 2 (error via error.txt): file marker
+  mk("crashed", "<title>c</title>");
+  exec("crashed");
+  setExecutionEnded(db, "crashed", 2000);
+  writeFileSync(`${sessionDir(v, "crashed")}/error.txt`, "exit 1");
+  // 4 (awaiting): live exec + form
+  mk("await-live", "<title>a</title><form action='/send'><input name='x'></form>");
+  exec("await-live");
+  // 3 (reaped, stranded form): exec ended, form still present, no error.txt → reaped NOT awaiting
+  mk("stranded", "<title>s</title><form action='/send'><input name='x'></form>");
+  exec("stranded");
+  setExecutionEnded(db, "stranded", 2000);
+  // 3 (reaped via marker): reaped.txt written by reaper
+  mk("reaped", "<title>r</title>");
+  exec("reaped");
+  setExecutionEnded(db, "reaped", 2000);
+  writeFileSync(reapedPath(v, "reaped"), "idle\n");
+  // 1 (stopped): beats everything including error
+  mk("stopped", "<title>st</title><form></form>");
+  exec("stopped");
+  setExecutionFail(db, "stopped", "x", 2000);
+  writeFileSync(stopPath(v, "stopped"), "stopped");
+  // 6 (no exec, plain body): unchanged legacy path — no db entry
+  mk("noexec", "<title>n</title>");
+
+  const byU = Object.fromEntries(listSessions(v, db).map((s) => [s.uuid, s.status]));
+  expect(byU["working"]).toBe("working");
+  expect(byU["done"]).toBe("complete");
+  expect(byU["failed"]).toBe("error");      // false-green regression: reason!=null NEVER green
+  expect(byU["crashed"]).toBe("error");
+  expect(byU["await-live"]).toBe("awaiting");
+  expect(byU["stranded"]).toBe("reaped");   // stranded-yellow regression: exited form is NOT awaiting
+  expect(byU["reaped"]).toBe("reaped");
+  expect(byU["stopped"]).toBe("stopped");   // stopped beats error
+  expect(byU["noexec"]).toBe("complete");
 });

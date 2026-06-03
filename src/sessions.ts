@@ -3,12 +3,12 @@
 import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { sessionsRoot, sessionDir, bodyPath, errorPath, stopPath, lastOpenedPath } from "./paths.ts";
-import { getExecution } from "./registry.ts";
+import { sessionsRoot, sessionDir, bodyPath, errorPath, stopPath, reapedPath, lastOpenedPath } from "./paths.ts";
+import { getExecution, type ExecutionRow } from "./registry.ts";
 import { attachCommand } from "./tmux.ts";
 
-/** Status derived purely from filesystem state — no process lookup needed. */
-export type SessionStatus = "error" | "stopped" | "awaiting" | "complete";
+/** Status derived from filesystem markers + exec row — 6-state model (VOS-208). */
+export type SessionStatus = "stopped" | "error" | "reaped" | "awaiting" | "working" | "complete";
 
 /** Execution status derived from executions row (ended_at / reason). */
 export type ExecStatus = "running" | "failed" | "complete";
@@ -33,12 +33,25 @@ function extractTitle(html: string): string {
   return m ? m[1] : "";
 }
 
-/** Derive status from filesystem: stopped.txt → stopped; error.txt → error; body has <form → awaiting; else complete. */
-function deriveStatus(vault: string, uuid: string, html: string): SessionStatus {
+/**
+ * Derive status from filesystem markers + exec row by strict precedence (VOS-208).
+ * stopped > error(error.txt|reason) > reaped(marker|ended+stranded-form) > awaiting(live+form) > working(live) > complete.
+ */
+function deriveStatus(vault: string, uuid: string, html: string, exec: ExecutionRow | null): SessionStatus {
   if (existsSync(stopPath(vault, uuid))) return "stopped";
-  if (existsSync(errorPath(vault, uuid))) return "error";
-  if (html.includes("<form")) return "awaiting";
+  if (existsSync(errorPath(vault, uuid)) || (exec != null && exec.reason != null)) return "error";
+  const ended = exec != null && exec.ended_at != null;
+  const hasForm = html.includes("<form");
+  if (existsSync(reapedPath(vault, uuid)) || (ended && hasForm)) return "reaped";
+  if (hasForm && (exec == null || exec.ended_at == null)) return "awaiting";
+  if (exec != null && exec.ended_at == null) return "working";
   return "complete";
+}
+
+/** Export for use in the /status route so SSE and dashboard always agree. */
+export function statusFor(vault: string, uuid: string, html: string, db?: import("bun:sqlite").Database): SessionStatus {
+  const exec = db ? getExecution(db, uuid) : null;
+  return deriveStatus(vault, uuid, html, exec);
 }
 
 const GENERIC_TITLES = new Set(["session starting…", "working…", "void-os", ""]);
@@ -97,12 +110,10 @@ export function listSessions(vault: string, db?: Database): SessionInfo[] {
     // Registry-derived execution status + attach command (VOS-190: executions table).
     let execStatus: ExecStatus | undefined;
     let attach: string | undefined;
-    if (db) {
-      const exec = getExecution(db, uuid);
-      if (exec) {
-        execStatus = exec.ended_at == null ? "running" : exec.reason ? "failed" : "complete";
-        attach = attachCommand(exec.tmux_session);
-      }
+    const exec = db ? getExecution(db, uuid) : null;
+    if (exec) {
+      execStatus = exec.ended_at == null ? "running" : exec.reason ? "failed" : "complete";
+      attach = attachCommand(exec.tmux_session);
     }
 
     const lastActivityMs = sessionLastActivity(vault, uuid, stat.mtimeMs);
@@ -127,7 +138,7 @@ export function listSessions(vault: string, db?: Database): SessionInfo[] {
       lastActivityMs,
       needsAttention,
       error: existsSync(errorPath(vault, uuid)),
-      status: deriveStatus(vault, uuid, html),
+      status: deriveStatus(vault, uuid, html, exec),
       skill,
       execStatus,
       attach,
