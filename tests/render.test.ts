@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread } from "../src/render.ts";
+import type { SessionInfo } from "../src/sessions.ts";
 
 // ── VOS-207 helpers ────────────────────────────────────────────────────────
-const sess = (o: Partial<{ uuid: string; title: string; mtimeMs: number; lastActivityMs: number; needsAttention: boolean; error: boolean; status: string; skill: string }>) => ({
+const sess = (o: Partial<SessionInfo> = {}): SessionInfo => ({
   uuid: "u1", title: "T1", mtimeMs: 1, lastActivityMs: 1, needsAttention: false,
-  error: false, status: "complete" as const, skill: "deep-research", ...o,
+  error: false, status: "complete", skill: "deep-research", ...o,
 });
 
 test("placeholder body has a title so it lists + sorts", () => {
@@ -54,7 +55,7 @@ test("dashboard shows skill chips and session rows in Option 1 style", () => {
 test("dashboard shows error flag for errored session", () => {
   const html = renderDashboard(
     [],
-    [{ uuid: "err-uuid", title: "Boom", mtimeMs: 1, error: true, status: "error", skill: "" }],
+    [sess({ uuid: "err-uuid", title: "Boom", error: true, status: "error", skill: "" })],
     { authed: false },
   );
   expect(html).toContain("relay ✗");
@@ -65,7 +66,7 @@ test("dashboard shows error flag for errored session", () => {
 test("dashboard session dot has awaiting class when status is awaiting", () => {
   const html = renderDashboard(
     [],
-    [{ uuid: "a1", title: "Awaiting", mtimeMs: 1, error: false, status: "awaiting", skill: "" }],
+    [sess({ uuid: "a1", title: "Awaiting", status: "awaiting", skill: "" })],
     { authed: true },
   );
   expect(html).toContain("await");
