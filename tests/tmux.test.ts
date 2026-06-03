@@ -1,7 +1,7 @@
 // tmux.test.ts — integration tests against real tmux (3.6a present).
 // VOS-205: updated for -L vos socket isolation + new helpers.
 import { test, expect, afterEach } from "bun:test";
-import { newRunSession, killSession, hasSession, attachCommand, switchClient, sendKeys, sendKeysWith, listVosSessions, VOS_SOCKET, capturePaneContent, waitForPrompt, hasAttachedClient } from "../src/tmux.ts";
+import { newRunSession, killSession, hasSession, attachCommand, switchClient, sendKeys, sendKeysWith, listVosSessions, VOS_SOCKET, capturePaneContent, waitForPrompt, hasAttachedClient, sendAfterRespawnWith } from "../src/tmux.ts";
 import { readFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 
@@ -153,3 +153,80 @@ test("hasAttachedClient true when a client is listed", () => {
   const stub = (_args: string[]) => ({ code: 0, stdout: "/dev/ttys001: vos-follow\n", stderr: "" });
   expect(hasAttachedClient(stub)).toBe(true);
 });
+
+// ── VOS-222: sendAfterRespawnWith — wait-for-ready + retry-until-accepted ────
+
+test("VOS-222: sendAfterRespawnWith waits for REPL ready before sending (pure-function unit)", async () => {
+  const order: string[] = [];
+
+  // waitForReadyFn resolves after a tick, logging the call order
+  const waitForReadyFn = async (_target: string, _maxMs?: number): Promise<boolean> => {
+    order.push("waitForReady");
+    return true;
+  };
+
+  // captureFn and sendFn log order of calls
+  const paneContent: Record<string, string> = { target: "❯ Esc to interrupt" }; // accepted marker
+  const captureFn = (target: string) => {
+    order.push("capture");
+    return paneContent[target] ?? "";
+  };
+  const sentLines: string[] = [];
+  const sendFn = (_target: string, line: string) => {
+    order.push("send");
+    sentLines.push(line);
+  };
+
+  await sendAfterRespawnWith(waitForReadyFn, captureFn, sendFn, "target", "hello respawn");
+
+  // waitForReady MUST be called before send
+  const waitIdx = order.indexOf("waitForReady");
+  const sendIdx = order.indexOf("send");
+  expect(waitIdx).toBeGreaterThanOrEqual(0);
+  expect(sendIdx).toBeGreaterThan(waitIdx);  // send happens AFTER waitForReady
+  expect(sentLines).toContain("hello respawn");
+}, 5_000);
+
+test("VOS-222: sendAfterRespawnWith still sends even when REPL never signals ready (timeout path)", async () => {
+  // Simulate a REPL that never shows a ready marker (waitForReady returns false)
+  const waitForReadyFn = async (_target: string, _maxMs?: number): Promise<boolean> => false;
+  const captureFn = (_target: string) => ""; // no acceptance markers either
+  const sentLines: string[] = [];
+  const sendFn = (_target: string, line: string) => { sentLines.push(line); };
+
+  // Should still attempt the send (belt-and-suspenders: REPL may be up but marker missed)
+  await sendAfterRespawnWith(waitForReadyFn, captureFn, sendFn, "target", "fallback send", {
+    maxAttempts: 1,
+    acceptWaitMs: 50,   // short window so test doesn't take long
+    acceptPollMs: 10,
+  });
+
+  expect(sentLines.length).toBeGreaterThan(0);
+  expect(sentLines[0]).toBe("fallback send");
+}, 5_000);
+
+test("VOS-222: sendAfterRespawnWith does NOT send twice once accepted (idempotent delivery)", async () => {
+  let waitCalled = false;
+  const waitForReadyFn = async (_target: string, _maxMs?: number): Promise<boolean> => {
+    waitCalled = true;
+    return true;
+  };
+
+  // Pane shows acceptance marker immediately after first send
+  let sendCount = 0;
+  const captureFn = (_target: string) => {
+    // After first send, show acceptance marker
+    if (sendCount >= 1) return "❯ Esc to interrupt working...";
+    return "❯";
+  };
+  const sendFn = (_target: string, _line: string) => { sendCount++; };
+
+  const attempts = await sendAfterRespawnWith(
+    waitForReadyFn, captureFn, sendFn, "target", "once only",
+    { acceptPollMs: 10, acceptWaitMs: 200 },
+  );
+
+  expect(waitCalled).toBe(true);
+  expect(sendCount).toBe(1);   // accepted on first attempt — must NOT re-send
+  expect(attempts).toBe(1);
+}, 5_000);

@@ -21,7 +21,7 @@ import { parseTranscript, locateTranscript, renderTranscript } from "./transcrip
 import { handleHookEvent, runIdForSession, type HookPayload, type HookDecision } from "./hooks-endpoint.ts";
 import { getExecution, setExecutionFail, upsertTrigger, getTrigger } from "./registry.ts";
 import { appendEvent } from "./events.ts";
-import { killSession, hasSession, switchClient, sendKeys, hasAttachedClient } from "./tmux.ts";
+import { killSession, hasSession, switchClient, sendKeys, hasAttachedClient, sendAfterRespawn } from "./tmux.ts";
 import { respawnSession } from "./resume.ts";
 import { attachInvocation } from "./attach.ts";
 import { bodyHasRealContent, isResumable } from "./view-state.ts";
@@ -380,7 +380,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     const daemonUrl = `http://127.0.0.1:${cfg.port}`;
     const runnerCommand = resolveRunner(cfg);
     // Respawn if reaped.
-    if (!hasSession(target)) {
+    const wasReaped = !hasSession(target);
+    if (wasReaped) {
       respawnSession(db, vault, uuid, runnerCommand, daemonUrl);
     }
     // Touch last-activity stamp so the reaper resets the idle clock (file-stamp source in reaper.ts).
@@ -389,7 +390,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
     } catch { /* non-fatal */ }
-    sendKeys(target, text);
+    // VOS-222: after a respawn the REPL needs ~15-20s to reach input-ready state.
+    // Plain sendKeys fired immediately silently drops the keystroke.
+    // Use sendAfterRespawn (waitForReady + retry-until-accepted) on the respawn path.
+    if (wasReaped) {
+      void sendAfterRespawn(target, text);
+    } else {
+      sendKeys(target, text);
+    }
     return c.json({ ok: true, target });
   });
 
@@ -470,7 +478,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     const target = `vos-run-${uuid}`;
     const cfg = readConfig(vault);
     const daemonUrl = `http://127.0.0.1:${cfg.port}`;
-    if (!hasSession(target)) {
+    const wasReapedSend = !hasSession(target);
+    if (wasReapedSend) {
       respawnSession(db, vault, uuid, runnerCommand, daemonUrl);
     }
     try {
@@ -478,7 +487,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
     } catch { /* non-fatal */ }
-    sendKeys(target, text);
+    // VOS-222: after a respawn the REPL needs ~15-20s to reach input-ready state.
+    // Plain sendKeys fired immediately silently drops the keystroke.
+    // Use sendAfterRespawn (waitForReady + retry-until-accepted) on the respawn path.
+    if (wasReapedSend) {
+      void sendAfterRespawn(target, text);
+    } else {
+      sendKeys(target, text);
+    }
     // Replace the form so the session leaves the awaiting/agent-inbox state (stranded-yellow dissolves).
     writeFileSync(bodyPath(vault, uuid), workingPage(fields));
     return c.redirect(`/s/${uuid}`);
@@ -526,7 +542,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     const target = `vos-run-${uuid}`;
     const cfg = readConfig(vault);
     const daemonUrl = `http://127.0.0.1:${cfg.port}`;
-    if (!hasSession(target)) {
+    const wasReapedAct = !hasSession(target);
+    if (wasReapedAct) {
       respawnSession(db, vault, uuid, runnerCommand, daemonUrl);
     }
     try {
@@ -534,7 +551,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "last-activity.txt"), String(Date.now()));
     } catch { /* non-fatal */ }
-    sendKeys(target, text);
+    // VOS-222: after a respawn the REPL needs ~15-20s to reach input-ready state.
+    // Plain sendKeys fired immediately silently drops the keystroke.
+    // Use sendAfterRespawn (waitForReady + retry-until-accepted) on the respawn path.
+    if (wasReapedAct) {
+      void sendAfterRespawn(target, text);
+    } else {
+      sendKeys(target, text);
+    }
     // Advance body.html → SSE reload swaps the iframe to the working page until the agent rewrites it.
     writeFileSync(bodyPath(vault, uuid), workingPage(fields));
     // CORS header for null-origin sandboxed iframe.

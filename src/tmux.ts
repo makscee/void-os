@@ -313,3 +313,78 @@ export function listVosSessions(): string[] {
   const r = run(["list-sessions", "-F", "#{session_name}"]);
   return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
 }
+
+/**
+ * Pure-function seam for sendAfterRespawn — injectable for unit testing.
+ *
+ * After a session respawn the claude REPL needs time to reach the input-ready
+ * state (the same ~15-20s cold-start gap that VOS-216 / the kickoff fix handles).
+ * Plain sendKeys fired immediately after respawnSession silently DROPS the
+ * keystroke — the REPL has not finished starting yet (VOS-222 bug root-cause).
+ *
+ * This function applies the same discipline as the kickoff path:
+ *   1. Wait for the REPL to be genuinely input-ready (waitForReadyFn).
+ *   2. Send with retry-until-accepted (sendKickoffWithFn).
+ *
+ * For live sessions (no respawn just happened) the caller should use sendKeys
+ * directly — the REPL is already up and the extra wait is not needed.
+ *
+ * @returns number of send attempts (same contract as sendKickoffWith).
+ */
+export async function sendAfterRespawnWith(
+  waitForReadyFn: (target: string, maxMs?: number) => Promise<boolean>,
+  captureFn: (target: string) => string,
+  sendFn: (target: string, line: string) => void,
+  target: string,
+  line: string,
+  opts: {
+    readyWaitMs?: number;       // max ms to wait for REPL ready (default 180_000)
+    maxAttempts?: number;        // passed through to sendKickoffWith (default 6)
+    acceptWaitMs?: number;       // per-attempt poll window (default 12_000)
+    acceptPollMs?: number;       // poll cadence (default 1_000)
+  } = {},
+): Promise<number> {
+  const ready = await waitForReadyFn(target, opts.readyWaitMs ?? 180_000);
+  if (!ready) {
+    // REPL never became ready within the window — still attempt the send
+    // (the REPL may have started but missed the marker; belt-and-suspenders).
+  }
+  const baseline = captureFn(target);
+  return sendKickoffWith(captureFn, sendFn, target, line, {
+    maxAttempts: opts.maxAttempts,
+    acceptWaitMs: opts.acceptWaitMs,
+    acceptPollMs: opts.acceptPollMs,
+    baselinePane: baseline,
+  });
+}
+
+/**
+ * Send text to a freshly-respawned interactive tmux session.
+ * Waits for the REPL to be input-ready (via waitForReady), then uses
+ * sendKickoff (retry-until-accepted) to deliver the text.
+ *
+ * Use this instead of sendKeys when the session was just respawned — plain
+ * sendKeys fires immediately and silently drops the keystroke while the REPL
+ * is still starting up (VOS-222 bug).
+ *
+ * @returns number of send attempts made.
+ */
+export async function sendAfterRespawn(
+  target: string,
+  line: string,
+  opts: {
+    readyWaitMs?: number;
+    maxAttempts?: number;
+    acceptWaitMs?: number;
+    acceptPollMs?: number;
+  } = {},
+): Promise<number> {
+  return sendAfterRespawnWith(
+    waitForReady,
+    capturePaneContent,
+    sendKeys,
+    target,
+    line,
+    opts,
+  );
+}

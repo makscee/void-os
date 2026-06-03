@@ -89,11 +89,14 @@ mock.module("../src/preflight.ts", () => ({
 // VOS-205: stub tmux functions used by the new routes (no real tmux sessions in unit tests).
 const switchTargets: string[] = [];
 const sentKeys: Array<[string, string]> = [];
+const sentAfterRespawn: Array<[string, string]> = [];  // VOS-222: tracks sendAfterRespawn calls
 const hasSessionMap: Map<string, boolean> = new Map();
 mock.module("../src/tmux.ts", () => ({
   hasSession: (name: string) => hasSessionMap.get(name) ?? false,
   switchClient: (target: string) => { switchTargets.push(target); return { code: 0, stderr: "" }; },
   sendKeys: (target: string, line: string) => { sentKeys.push([target, line]); },
+  // VOS-222: stub sendAfterRespawn — records call; resolves synchronously in tests.
+  sendAfterRespawn: async (target: string, line: string) => { sentAfterRespawn.push([target, line]); return 1; },
   killSession: (_name: string) => {},
   newRunSession: (_name: string, _cwd: string, _cmd: string, _env: Record<string, string>) => 0,
   listVosSessions: () => [],
@@ -1064,6 +1067,125 @@ test("GET /s/:uuid with real body content includes iframe + attach + message aff
   expect(html).toContain(`src="/s/${uuid}/body"`);
   expect(html).toContain("attach-here");
   expect(html).toContain('id="msgForm"');
+});
+
+// ── VOS-222: respawn → sendAfterRespawn (not bare sendKeys) on all three send routes ──
+
+test("VOS-222: /message on reaped session calls sendAfterRespawn not sendKeys", async () => {
+  const uuid = `vos222-msg-reaped-${Date.now()}`;
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>reaped</p>");
+  const { createExecution } = await import("../src/registry.ts");
+  createExecution(db, { id: uuid, agent: null, skill: "chat", inputRef: null,
+    tmuxSession: `vos-run-${uuid}`, now: Date.now(), triggerId: null, stepCeiling: null });
+  writeFileSync(join(sessionDir(vault, uuid), "session-meta.json"),
+    JSON.stringify({ skill: "chat", interactive: true }));
+  writeFileSync(join(sessionDir(vault, uuid), "cc-actual-session.txt"), "a1b2c3d4-0000-0000-0000-000000000222");
+
+  // Mark as reaped so the respawn path fires
+  hasSessionMap.set(`vos-run-${uuid}`, false);
+  const prevAfterRespawn = sentAfterRespawn.length;
+  const prevKeys = sentKeys.length;
+
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/message`, {
+    method: "POST",
+    body: new URLSearchParams({ text: "turn after respawn" }),
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  expect(res.status).toBe(200);
+  // sendAfterRespawn MUST have been called (wiring check — VOS-222 fix)
+  const newAfterRespawn = sentAfterRespawn.slice(prevAfterRespawn);
+  expect(newAfterRespawn.length).toBeGreaterThan(0);
+  expect(newAfterRespawn.some(([t, l]) => t === `vos-run-${uuid}` && l === "turn after respawn")).toBe(true);
+  // Plain sendKeys must NOT have been called for the reaped-session text (would drop it)
+  const newKeys = sentKeys.slice(prevKeys);
+  expect(newKeys.some(([_t, l]) => l === "turn after respawn")).toBe(false);
+});
+
+test("VOS-222: /message on live session still uses sendKeys (no regression)", async () => {
+  const uuid = `vos222-msg-live-${Date.now()}`;
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>live</p>");
+  const { createExecution } = await import("../src/registry.ts");
+  createExecution(db, { id: uuid, agent: null, skill: "chat", inputRef: null,
+    tmuxSession: `vos-run-${uuid}`, now: Date.now(), triggerId: null, stepCeiling: null });
+  writeFileSync(join(sessionDir(vault, uuid), "session-meta.json"),
+    JSON.stringify({ skill: "chat", interactive: true }));
+
+  // Session is live — sendKeys path, not sendAfterRespawn
+  hasSessionMap.set(`vos-run-${uuid}`, true);
+  const prevAfterRespawn = sentAfterRespawn.length;
+  const prevKeys = sentKeys.length;
+
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/message`, {
+    method: "POST",
+    body: new URLSearchParams({ text: "live turn" }),
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  expect(res.status).toBe(200);
+  // sendKeys MUST be called for live path
+  const newKeys = sentKeys.slice(prevKeys);
+  expect(newKeys.some(([t, l]) => t === `vos-run-${uuid}` && l === "live turn")).toBe(true);
+  // sendAfterRespawn must NOT be called for a live session
+  const newAfterRespawn = sentAfterRespawn.slice(prevAfterRespawn);
+  expect(newAfterRespawn.some(([_t, l]) => l === "live turn")).toBe(false);
+});
+
+test("VOS-222: /send on reaped session calls sendAfterRespawn not sendKeys", async () => {
+  const uuid = `vos222-send-reaped-${Date.now()}`;
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<p>reaped</p>");
+  writeFileSync(join(sessionDir(vault, uuid), "session-meta.json"),
+    JSON.stringify({ skill: "onboarding", interactive: false, runner: "vc --" }));
+  writeFileSync(join(sessionDir(vault, uuid), "cc-actual-session.txt"), "b2c3d4e5-0000-0000-0000-000000000222");
+
+  hasSessionMap.set(`vos-run-${uuid}`, false);
+  const prevAfterRespawn = sentAfterRespawn.length;
+  const prevKeys = sentKeys.length;
+
+  const app = makeApp(vault, db);
+  const form = new FormData();
+  form.append("name", "Bob");
+  const res = await app.request(`/s/${uuid}/send`, { method: "POST", body: form });
+  expect(res.status).toBe(302);
+  // sendAfterRespawn MUST have been called for the reaped send path
+  const newAfterRespawn = sentAfterRespawn.slice(prevAfterRespawn);
+  expect(newAfterRespawn.length).toBeGreaterThan(0);
+  expect(newAfterRespawn.some(([t]) => t === `vos-run-${uuid}`)).toBe(true);
+  // Plain sendKeys must NOT have been called with the form text
+  const payload = newAfterRespawn.find(([t]) => t === `vos-run-${uuid}`)?.[1] ?? "";
+  expect(payload).toContain("name: Bob");
+  const newKeys = sentKeys.slice(prevKeys);
+  expect(newKeys.some(([_t, l]) => l === payload)).toBe(false);
+});
+
+test("VOS-222: /act on reaped session calls sendAfterRespawn not sendKeys", async () => {
+  const uuid = `vos222-act-reaped-${Date.now()}`;
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid), "<html><body>old</body></html>");
+  writeFileSync(join(sessionDir(vault, uuid), "session-meta.json"),
+    JSON.stringify({ skill: "x", interactive: true }));
+  writeFileSync(join(sessionDir(vault, uuid), "cc-actual-session.txt"), "c3d4e5f6-0000-0000-0000-000000000222");
+
+  hasSessionMap.set(`vos-run-${uuid}`, false);
+  const prevAfterRespawn = sentAfterRespawn.length;
+  const prevKeys = sentKeys.length;
+
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/act`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ answer: "act after respawn" }),
+  });
+  expect(res.status).toBe(200);
+  // sendAfterRespawn MUST have been called
+  const newAfterRespawn = sentAfterRespawn.slice(prevAfterRespawn);
+  expect(newAfterRespawn.some(([t, l]) => t === `vos-run-${uuid}` && l === "answer: act after respawn")).toBe(true);
+  // Plain sendKeys must NOT have been called with this text
+  const newKeys = sentKeys.slice(prevKeys);
+  expect(newKeys.some(([_t, l]) => l === "answer: act after respawn")).toBe(false);
 });
 
 // Restore mock.module registrations so sibling test files (e.g. spawn.test.ts) that import
