@@ -33,9 +33,36 @@ import {
   listVaultSkills, viewVaultSkill,
 } from "./skill-manage.ts";
 import { HTMX_MIN_JS } from "./htmx-runtime.ts";
+import { readManifest, extractDataSource, dataSourceMtime } from "./pages.ts";
+import { createVaultMcpServer } from "./vault-mcp.ts";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const catalogRoot = join(repoRoot, "catalog");
+
+/**
+ * Apply the SAME body pipeline as GET /s/:uuid/body to a panel's html (VOS-225 §3.3):
+ * light-theme wrap for bare fragments, <base target="_top"> for full docs, vendored htmx
+ * injection, and {{VOS_SLUG}} substitution. Shared so the page route mirrors the session route.
+ */
+function renderPanelBody(html: string, slug: string): string {
+  if (!html.includes("<html")) {
+    html = `<!doctype html><html><head><meta charset="utf-8"><base target="_top"><style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  background:#ffffff;color:#1a1a1a;padding:1rem;line-height:1.5}
+</style></head><body>${html}</body></html>`;
+  } else if (html.includes("<head>")) {
+    html = html.replace("<head>", `<head><base target="_top">`);
+  } else if (html.includes("<head ")) {
+    html = html.replace(/<head(\s[^>]*)?>/, (m) => m.slice(0, -1) + `><base target="_top">`);
+  } else {
+    html = `<base target="_top">` + html;
+  }
+  const htmxTag = `<script src="/assets/htmx.min.js"></script>`;
+  if (html.includes("</head>")) html = html.replace("</head>", `${htmxTag}</head>`);
+  else html = htmxTag + html;
+  return html.replaceAll("{{VOS_SLUG}}", slug);
+}
 
 /** Build the real DrainOpts for a server-side drain (wires actual gh/git/bun callbacks). */
 export function buildDrainOptsFor(vault: string, issueNum: number, worktree: string, runner: string, max: number): DrainOpts {
@@ -711,6 +738,110 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       }
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // VOS-225 §2 — daemon-hosted SHARED MCP transport. ONE instance for all sessions.
+  // Stateless streamable-HTTP (JSON responses): every spawned CC session reaches the four
+  // vault tools (vault.write/append, page.register/list) at this URL via its generated .mcp.json.
+  // ---------------------------------------------------------------------------
+  // Stateless mode: a fresh transport (and server) PER REQUEST — the SDK forbids reusing a
+  // stateless transport across requests (id-collision guard). The tools themselves are stateless
+  // (all state is files: the vault + manifest), so per-request instantiation is correct + cheap.
+  // page.register serialization lives in vault-mcp.ts (module-level mutex), so it survives the
+  // per-request server churn — concurrent registers still serialize on the single daemon process.
+  app.all("/mcp", async (c) => {
+    const server = createVaultMcpServer(vault);
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // stateless
+      enableJsonResponse: true,      // JSON request/response (no long-lived SSE per call)
+    });
+    await server.connect(transport);
+    const res = await transport.handleRequest(c.req.raw);
+    c.req.raw.signal?.addEventListener("abort", () => { void server.close(); });
+    return res;
+  });
+
+  // ---------------------------------------------------------------------------
+  // VOS-225 §3.3 — live pages. GET /p/:slug renders a manifest-registered panel inside a
+  // shell mirroring /s/:uuid; the panel is a READ-ONLY LIVE VIEW that reloads when its
+  // declared data-vos-source glob changes (§3.4). POST /p/:slug/act is the v1.5 410 seam.
+  // ---------------------------------------------------------------------------
+  const slugOf = (c: { req: { param: (k: string) => string } }) => c.req.param("slug");
+  const lookupPage = (slug: string) => readManifest(vault).pages.find((p) => p.slug === slug);
+
+  // GET /p/:slug — shell wrapping the panel body + an SSE stream keyed on the data source.
+  app.get("/p/:slug", (c) => {
+    const slug = slugOf(c);
+    const page = lookupPage(slug);
+    if (!page) return c.text("no such page", 404);
+    return c.html(`<!doctype html><meta charset=utf8><title>${slug}</title>
+<style>html,body{margin:0;height:100%;background:#0a0f1a}iframe{border:0;width:100%;height:100vh;display:block}</style>
+<iframe id="f" src="/p/${slug}/body" sandbox="allow-scripts allow-forms allow-popups"></iframe>
+<script>
+var es=new EventSource("/p/${slug}/stream");
+es.onmessage=function(){var f=document.getElementById("f");if(f)f.contentWindow.location.replace("/p/${slug}/body");};
+</script>`);
+  });
+
+  // GET /p/:slug/body — the panel html through the shared pipeline; missing-file → stub (never 500).
+  app.get("/p/:slug/body", (c) => {
+    const slug = slugOf(c);
+    const page = lookupPage(slug);
+    if (!page) return c.text("no such page", 404);
+    const abs = join(vault, page.path);
+    if (!existsSync(abs)) {
+      return c.html(renderPanelBody(`<p>page file missing: ${page.path}</p>`, slug));
+    }
+    const raw = readFileSync(abs, "utf8");
+    return c.html(renderPanelBody(raw, slug));
+  });
+
+  // GET /p/:slug/stream — SSE: emit "reload" when the page's data-source glob mtime advances.
+  // Freshness watches the DATA SOURCE (e.g. work/tasks/active/*.md), not the served html (§3.4).
+  app.get("/p/:slug/stream", (c) => {
+    const slug = slugOf(c);
+    const page = lookupPage(slug);
+    if (!page) return c.text("no such page", 404);
+    const abs = join(vault, page.path);
+    // resolve the data-source glob from the panel html; fall back to watching the html file itself.
+    let glob: string | null = null;
+    if (existsSync(abs)) { try { glob = extractDataSource(readFileSync(abs, "utf8")); } catch { /* none */ } }
+    const mtimeNow = () => {
+      const data = glob ? dataSourceMtime(vault, glob) : 0;
+      const self = existsSync(abs) ? statSync(abs).mtimeMs : 0;
+      return Math.max(data, self); // also reload if the panel html itself is re-authored
+    };
+    let last = mtimeNow();
+    let msSinceLastPing = 0;
+    const PING_INTERVAL_MS = 5_000;
+    return streamSSE(c, async (stream) => {
+      while (!stream.closed) {
+        const now = mtimeNow();
+        if (now > last) {
+          last = now;
+          msSinceLastPing = 0;
+          await stream.writeSSE({ data: "reload" });
+        } else {
+          msSinceLastPing += 1000;
+          if (msSinceLastPing >= PING_INTERVAL_MS) { msSinceLastPing = 0; await stream.write(": ping\n\n"); }
+        }
+        await stream.sleep(1000);
+      }
+    });
+  });
+
+  // POST /p/:slug/act — frozen 410 seam (§6.3). v1 pages are read-only live views; browser
+  // write-back is v1.5. Scaffolds POST here so they ship complete, but the path is a dead-end.
+  app.post("/p/:slug/act", (c) =>
+    new Response("agent-mediated write-back is v1.5", {
+      status: 410,
+      headers: { "content-type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" },
+    }));
+  app.options("/p/:slug/act", () =>
+    new Response(null, { status: 204, headers: {
+      "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST",
+      "Access-Control-Allow-Headers": "content-type, hx-request, hx-target, hx-current-url, hx-trigger",
+    } }));
 
   return app;
 }
