@@ -14,7 +14,7 @@ import { buildAgentLaunch, type AgentLaunch } from "./agents.ts";
 import { drain, type DrainOpts } from "./drain.ts";
 import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody } from "./render.ts";
 import { killProcessTree } from "./kill.ts";
-import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, stopPath } from "./paths.ts";
+import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, stopPath, lastOpenedPath } from "./paths.ts";
 import { homedir } from "node:os";
 import { realDeps } from "./preflight.ts";
 import { parseTranscript, locateTranscript, renderTranscript } from "./transcript.ts";
@@ -176,10 +176,12 @@ a{color:#93c5fd}</style>
         if (m.interactive) isInteractive = true;
       } catch { /* use fallback */ }
     }
+    // Stamp last-opened.txt so needsAttention tracking knows when the operator viewed this session.
+    try { writeFileSync(lastOpenedPath(vault, uuid), String(Date.now())); } catch { /* ignore */ }
     // Look up the execution's attach command from the registry (for the shell to display).
     const exec = getExecution(db, uuid);
     const attachCmd = exec ? `tmux -L vos attach -t ${exec.tmux_session}` : undefined;
-    return c.html(renderShell(uuid, vault, sessionName, attachCmd, isInteractive));
+    return c.html(renderShell(uuid, vault, sessionName, attachCmd, isInteractive, listSessions(vault, db)));
   });
 
   // GET /s/:uuid/body — serves the session's body.html, appends error banner if error.txt present.
