@@ -170,6 +170,18 @@ test("Stop on a clean target nudges once: produced_change=false, nudged=true, re
   expect(typeof decision?.reason).toBe("string");
 });
 
+test("nudge reason says Edit not Write/modify (VOS-218: steer agent to correct tool)", () => {
+  // Agents must receive "Edit" not "Write/modify" in the nudge so they reach for the right tool.
+  const { vault, db } = setupWithTarget("chat/general.md");
+  const decision = handleHookEvent(db, vault, "exec-1",
+    { hook_event_name: "Stop", session_id: "", stop_hook_active: false }, 2000);
+  expect(decision?.decision).toBe("block");
+  const reason = decision!.reason;
+  expect(reason).toContain("Edit");
+  expect(reason).not.toContain("Write/modify");
+  expect(reason).toContain("chat/general.md"); // target name embedded
+});
+
 test("Stop on a mutated target: produced_change=true, no nudge, allows stop", () => {
   const { vault, db } = setupWithTarget("reports/out.html");
   mkdirSync(join(vault, "reports"), { recursive: true });

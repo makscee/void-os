@@ -31,3 +31,25 @@ Source: VOS-104 T8 (recorded 2026-05-20). **Verify against the current harness b
 4. `Bun.serve` `idleTimeout` default 10s drops `/events` mid-`ask_user`; daemon sets 255.
 
 Plans that touch `plugin/e2e/` must budget for these or sidestep by REST-driving the daemon directly. Do NOT assume placeholder helpers exist — inline the fixture-swap pattern or break out a real helper module in a dedicated task first.
+
+## Skill conventions
+
+### Input delivery
+
+- **Print-mode skills** (no `interactive: true`): input arrives as `-p "<skill-cmd>\n\n<input>"` in the user prompt. There are no trailing arguments.
+- **Interactive skills** (`interactive: true`): input arrives via the `$VOID_OS_INPUT_REF` environment variable. Read `process.env.VOID_OS_INPUT_REF` (in JS/TS) or `$VOID_OS_INPUT_REF` (in shell) to get the input file path. Do NOT rely on CLI trailing arguments — there are none in interactive mode.
+
+### Output target: Edit, not Write
+
+When `output_target: <path>` is declared in a skill's frontmatter, the Stop hook checks whether the target file's mtime advanced since session start (`wasMutatedSince`). If not:
+
+1. First clean Stop → hook blocks and emits a nudge message.
+2. Second Stop → hook gives up; session ends with `produced_change=false`.
+
+Rule: **use Edit (not Write) on existing output-target files.** Write creates/overwrites a file — it can clobber content and does not reliably advance mtime on the existing file path. Edit is an in-place mutation that always advances mtime.
+
+### Communication channel: transcript is primary, body.html is optional
+
+The CC transcript (the `.jsonl` session file) is the **primary communication channel** between a skill and the operator. Every assistant turn in the REPL session is visible there.
+
+`body.html` is **optional** and should only be written for content that genuinely requires a rendered surface: forms the operator must fill in, structured reports to act on, or rich decisions. Do NOT write `body.html` for conversational replies — the transcript is enough.
