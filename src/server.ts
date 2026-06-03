@@ -485,6 +485,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   // visible transcript turn automatically: send-keys hits the live CC REPL, CC records it in its JSONL,
   // and GET /s/:uuid/transcript already renders that JSONL — no separate append.
   // Two-verb (VOS-211 deferred): only the message verb ships; a future `verb` field can branch.
+  // CORS: daemon is tailnet-only; allow-origin:* lets the sandboxed iframe (null origin) POST back.
+  app.options("/s/:uuid/act", (c) =>
+    new Response(null, { status: 204, headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST",
+      "Access-Control-Allow-Headers": "content-type, hx-request, hx-target, hx-current-url, hx-trigger, hx-trigger-name, hx-boosted, hx-history-restore-request",
+    } }));
   app.post("/s/:uuid/act", async (c) => {
     const uuid = c.req.param("uuid");
     if (!isValidSessionId(uuid)) return c.text("bad session id", 400);
@@ -518,7 +525,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     sendKeys(target, text);
     // Advance body.html → SSE reload swaps the iframe to the working page until the agent rewrites it.
     writeFileSync(bodyPath(vault, uuid), workingPage(fields));
-    return c.html(ackFragment());
+    // CORS header for null-origin sandboxed iframe.
+    return new Response(ackFragment(), {
+      headers: { "content-type": "text/html; charset=utf-8", "Access-Control-Allow-Origin": "*" },
+    });
   });
 
   // POST /triggers/:name/fire — manually fire a named Trigger, spawning a real Run.
