@@ -36,10 +36,12 @@ log()  { echo "  $1" | tee -a "$PROOF"; }
 echo "=== Round-trip 1: htmx-form-demo interactive skill ===" | tee -a "$PROOF"
 
 # Launch htmx-form-demo interactively
-RT1=$(curl -sfS -X POST "${BASE}/launch" \
-  -d "skill=htmx-form-demo&text=start&runner=" 2>&1) || fail "POST /launch failed: $RT1"
-UUID1=$(echo "$RT1" | grep -o 'exec-[0-9a-f-]*' | head -1)
-[ -n "$UUID1" ] || fail "Could not extract UUID from launch response: $RT1"
+# /launch returns 302 → parse the runid from the Location header (body is empty)
+H1=$(mktemp)
+curl -sS -D "$H1" -X POST "${BASE}/launch" \
+  -d "skill=htmx-form-demo&text=start&runner=" -o /dev/null || fail "POST /launch failed"
+UUID1=$(grep -i '^location:' "$H1" | tr -d '\r' | grep -o 'exec-[0-9a-f-]*' | head -1); rm -f "$H1"
+[ -n "$UUID1" ] || fail "Could not extract UUID from launch Location header"
 pass "Launched htmx-form-demo as $UUID1"
 
 # Poll until body.html contains the hx-post form (bounded 90s)
@@ -102,17 +104,17 @@ echo "" >> "$PROOF"
 # --- Round-trip 2: worker-resume ---
 echo "=== Round-trip 2: worker-resume (non-interactive skill) ===" | tee -a "$PROOF"
 
-# Count existing executions for the baseline
 DB="${VAULT}/.void-os/registry.db"
 [ -f "$DB" ] || fail "registry.db not found at $DB"
-EXEC_COUNT_BEFORE=$(sqlite3 "$DB" "SELECT count(*) FROM executions;" 2>/dev/null) || fail "sqlite3 query failed"
-pass "exec count before: $EXEC_COUNT_BEFORE"
+# Baseline is captured AFTER launch+reap (below) — the worker's OWN launch row is legitimate;
+# the invariant is that /send on the reaped worker adds NO row beyond it (resume, not successor).
 
 # Launch a non-interactive skill (smoke-test is simple and fast)
-RT2=$(curl -sfS -X POST "${BASE}/launch" \
-  -d "skill=smoke-test&text=run&runner=" 2>&1) || fail "POST /launch (rt2) failed: $RT2"
-UUID2=$(echo "$RT2" | grep -o 'exec-[0-9a-f-]*' | head -1)
-[ -n "$UUID2" ] || fail "Could not extract UUID2 from launch response: $RT2"
+H2=$(mktemp)
+curl -sS -D "$H2" -X POST "${BASE}/launch" \
+  -d "skill=smoke-test&text=run&runner=" -o /dev/null || fail "POST /launch (rt2) failed"
+UUID2=$(grep -i '^location:' "$H2" | tr -d '\r' | grep -o 'exec-[0-9a-f-]*' | head -1); rm -f "$H2"
+[ -n "$UUID2" ] || fail "Could not extract UUID2 from launch Location header"
 pass "Launched smoke-test as $UUID2"
 
 # Wait until the tmux session is gone (worker finished/reaped)
@@ -126,6 +128,11 @@ pass "Worker tmux session reaped — session finished"
 # Confirm no live tmux for this uuid
 tmux -L vos has-session -t "vos-run-${UUID2}" 2>/dev/null && fail "tmux session still live after expected reap"
 pass "No live tmux session for $UUID2 (confirmed reaped)"
+
+# Baseline NOW (worker launched + reaped, its legitimate row already counted). The worker-resume
+# invariant: POST /send resumes the SAME thread and adds NO new exec row beyond this point.
+EXEC_COUNT_BEFORE=$(sqlite3 "$DB" "SELECT count(*) FROM executions;" 2>/dev/null) || fail "sqlite3 baseline query failed"
+pass "exec count at reaped baseline (pre-/send): $EXEC_COUNT_BEFORE"
 
 # POST /send with a follow-up message (the operator's "resume skill-author" flow)
 SEND_RESP=$(curl -sfS -w "%{http_code}" -X POST "${BASE}/s/${UUID2}/send" \
