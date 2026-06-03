@@ -170,23 +170,70 @@ export async function waitForReady(
 /**
  * ACCEPTANCE-MARKERS: strings that appear in the claude REPL pane once it has
  * started processing a turn (i.e. the keystroke was delivered and accepted).
- * "Esc to interrupt" / "esc to interrupt" appears while a turn is running.
- * The spinner / working indicator also uses these strings.
- * We also treat any non-empty token cost delta as acceptance, but the Esc string
- * is the most reliable pane-level signal.
+ *
+ * ONLY "Esc to interrupt" / "esc to interrupt" are reliable turn-running signals.
+ * Spinner chars (⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) were previously included but they appear
+ * in the REPL status-bar at idle too — using them caused false-positive acceptance
+ * detection (VOS-216: kickoff sent 4× because the loop re-sent every 12s after
+ * each false-positive, OR never stopped retrying when spinners triggered early exit
+ * before the real signal appeared). Only "Esc to interrupt" is exclusive to an
+ * in-progress turn.
  */
-const ACCEPTANCE_MARKERS = ["Esc to interrupt", "esc to interrupt", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const ACCEPTANCE_MARKERS = ["Esc to interrupt", "esc to interrupt"];
+
+/**
+ * Returns true if the post-send pane content indicates the kickoff was accepted
+ * (the REPL received the command and started processing it).
+ *
+ * Three independent signals — any one is sufficient:
+ *   1. Explicit turn-running marker: "Esc to interrupt" appears (exclusive to in-progress turn).
+ *   2. Prompt disappeared: baseline had ❯ but current pane no longer does → command was
+ *      submitted and REPL is processing (❯ only returns after the turn completes).
+ *   3. Baseline had ❯, new pane also has ❯ but has substantially more content — the turn
+ *      completed so fast that ❯ returned before the first poll. "Substantially more" means
+ *      the non-status-bar portion of the pane gained real content lines.
+ *
+ * Deliberately excluded:
+ *   - Raw `pane !== baseline`: status-bar spinner chars update every ~80ms at idle, so
+ *     any baseline comparison fires immediately on the next poll from routine animation.
+ *   - Spinner chars (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏): appear in the status bar at idle (see VOS-216).
+ */
+function isKickoffAccepted(pane: string, baseline: string | undefined): boolean {
+  // Signal 1: explicit turn-running marker
+  if (ACCEPTANCE_MARKERS.some((m) => pane.includes(m))) return true;
+
+  if (baseline !== undefined && baseline.includes("❯")) {
+    // Signal 2: ❯ was in baseline but is now gone → turn is in progress
+    if (!pane.includes("❯")) return true;
+
+    // Signal 3: ❯ is back (fast turn completed). Detect by comparing the prompt-preceding
+    // content: if baseline had only the status-bar before ❯, and now there is substantive
+    // output content (non-empty non-whitespace lines that differ from baseline before ❯),
+    // the turn ran and completed.
+    const baselineBeforePrompt = baseline.slice(0, baseline.lastIndexOf("❯")).trim();
+    const paneBeforePrompt = pane.slice(0, pane.lastIndexOf("❯")).trim();
+    // Substantial change = added at least 20 chars of non-whitespace content
+    if (
+      paneBeforePrompt.length > baselineBeforePrompt.length + 20 &&
+      paneBeforePrompt !== baselineBeforePrompt
+    ) return true;
+  }
+
+  return false;
+}
 
 /**
  * Pure-function seam for kickoff delivery + retry — injectable runner for unit testing.
  *
  * Algorithm:
- *   1. Send the skill line via sendFn.
- *   2. Poll captureFn every acceptPollMs for up to acceptWaitMs for an acceptance signal.
- *   3. If NOT accepted: re-send (belt-and-suspenders). Repeat up to maxAttempts.
- *   4. Stop the instant acceptance is detected — never double-delivers once accepted.
+ *   1. Capture pane baseline before first send (or use provided baselinePane).
+ *   2. Send the skill line via sendFn.
+ *   3. Poll captureFn every acceptPollMs for up to acceptWaitMs for an acceptance signal.
+ *      Accepted when: "Esc to interrupt" appears OR pane content changed from baseline.
+ *   4. If NOT accepted: re-send. Repeat up to maxAttempts.
+ *   5. Stop the instant acceptance is detected — never double-delivers once accepted.
  *
- * Double-send safety: once an acceptance marker appears we return immediately without
+ * Double-send safety: once an acceptance signal appears we return immediately without
  * sending again, regardless of how many attempts remain.
  *
  * @returns number of send attempts made (1 = delivered on first try).
@@ -200,11 +247,14 @@ export async function sendKickoffWith(
     maxAttempts?: number;    // default 6
     acceptWaitMs?: number;   // per-attempt poll window (default 12_000ms)
     acceptPollMs?: number;   // poll cadence inside window (default 1_000ms)
+    baselinePane?: string;   // pre-send pane snapshot; when provided, pane change = accepted
   } = {},
 ): Promise<number> {
   const maxAttempts = opts.maxAttempts ?? 6;
   const acceptWaitMs = opts.acceptWaitMs ?? 12_000;
   const acceptPollMs = opts.acceptPollMs ?? 1_000;
+  // Use provided baseline, or capture one before the first send.
+  const baseline = opts.baselinePane ?? captureFn(target);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     sendFn(target, skillLine);
@@ -213,7 +263,7 @@ export async function sendKickoffWith(
     const deadline = Date.now() + acceptWaitMs;
     while (Date.now() < deadline) {
       const pane = captureFn(target);
-      if (ACCEPTANCE_MARKERS.some((m) => pane.includes(m))) return attempt;
+      if (isKickoffAccepted(pane, baseline)) return attempt;
       await new Promise((r) => setTimeout(r, acceptPollMs));
     }
     // Not accepted — loop continues to re-send (unless we're at maxAttempts)
@@ -224,6 +274,9 @@ export async function sendKickoffWith(
 
 /**
  * Send a skill kickoff to a live tmux session with retry-until-accepted.
+ * Captures a baseline pane snapshot before sending, then passes it through to
+ * sendKickoffWith so any pane content change is treated as acceptance (handles
+ * fast turns that complete before the first poll).
  * Wraps sendKickoffWith with the real capturePaneContent and sendKeys.
  */
 export async function sendKickoff(
@@ -233,9 +286,12 @@ export async function sendKickoff(
     maxAttempts?: number;
     acceptWaitMs?: number;
     acceptPollMs?: number;
+    baselinePane?: string;
   } = {},
 ): Promise<number> {
-  return sendKickoffWith(capturePaneContent, sendKeys, target, skillLine, opts);
+  // Capture baseline before the first send unless caller already provided one.
+  const baselinePane = opts.baselinePane ?? capturePaneContent(target);
+  return sendKickoffWith(capturePaneContent, sendKeys, target, skillLine, { ...opts, baselinePane });
 }
 
 /**

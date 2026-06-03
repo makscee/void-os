@@ -78,7 +78,11 @@ test("BUG A: sendKickoffWith retries if no acceptance signal (mocked sequences)"
   // With acceptWaitMs=1500, acceptPollMs=500: polls at 0ms, 500ms, 1000ms → 3 polls before
   // deadline (1500ms). All return idle → attempt 1 exhausted → re-send on attempt 2.
   // Attempt 2 poll 0ms → "Esc to interrupt" → accepted → return.
+  //
+  // VOS-216: sendKickoffWith now captures a baseline pane before the loop (one extra
+  // captureFn call at the top). The sequence has an extra leading "❯" for that call.
   const captureResponses = [
+    "❯",               // baseline capture (pre-loop, pre-send)
     "❯",               // attempt 1, poll 0ms: idle
     "❯",               // attempt 1, poll 500ms: idle
     "❯",               // attempt 1, poll 1000ms: idle (attempt 1 exhausted)
