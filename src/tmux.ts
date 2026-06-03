@@ -67,14 +67,32 @@ export function switchClient(target: string): { code: number; stderr: string } {
 }
 
 /**
+ * Pure-function seam for sendKeys — injectable runner for unit testing.
+ * A multi-line payload (e.g. serialized form fields "k: v\nk2: v2") is collapsed
+ * into a single line so the REPL sees ONE submission, not one per newline.
+ * `send-keys -l` delivers an embedded \n as a literal newline keystroke which
+ * causes the REPL to submit on the first line and then re-submit on the trailing
+ * Enter — double-kickoff. We replace interior newlines with " | " (one-liner join)
+ * and emit a single Enter at the end.
+ */
+export function sendKeysWith(
+  runner: (args: string[]) => unknown,
+  target: string,
+  line: string,
+): void {
+  const oneLine = line.replace(/\r?\n/g, " | ");
+  runner(["send-keys", "-t", target, "-l", oneLine]);
+  runner(["send-keys", "-t", target, "Enter"]);
+}
+
+/**
  * Send a text line to a live tmux session pane via the REPL.
  * First sends the literal text (-l flag avoids key-binding interpretation),
  * then sends Enter to submit it.
+ * Multi-line payloads are collapsed to a single line (see sendKeysWith).
  */
 export function sendKeys(target: string, line: string): void {
-  // -l sends the literal text, then a separate Enter keystroke submits it.
-  run(["send-keys", "-t", target, "-l", line]);
-  run(["send-keys", "-t", target, "Enter"]);
+  sendKeysWith(run, target, line);
 }
 
 /**

@@ -1,7 +1,7 @@
 // tmux.test.ts — integration tests against real tmux (3.6a present).
 // VOS-205: updated for -L vos socket isolation + new helpers.
 import { test, expect, afterEach } from "bun:test";
-import { newRunSession, killSession, hasSession, attachCommand, switchClient, sendKeys, listVosSessions, VOS_SOCKET, capturePaneContent, waitForPrompt } from "../src/tmux.ts";
+import { newRunSession, killSession, hasSession, attachCommand, switchClient, sendKeys, sendKeysWith, listVosSessions, VOS_SOCKET, capturePaneContent, waitForPrompt } from "../src/tmux.ts";
 import { readFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 
@@ -98,3 +98,41 @@ test("waitForPrompt returns false when marker never appears before timeout", asy
     try { killSession(name); } catch { /* ignore */ }
   }
 }, 3_000);
+
+// VOS-209 Task 2: sendKeys multi-line payload is ONE REPL submission (unit, no live tmux)
+test("VOS-209: sendKeysWith collapses multi-line payload to single Enter (no double-kickoff)", () => {
+  const calls: string[][] = [];
+  const recorder = (args: string[]) => { calls.push(args); };
+
+  sendKeysWith(recorder, "vos-run-test", "name: Alice\nskill_chat: on");
+
+  // Must have exactly 2 calls: one -l send + one Enter
+  expect(calls).toHaveLength(2);
+  // First call: literal text send — the payload must be ONE line (no embedded \n)
+  const literalCall = calls[0]!;
+  expect(literalCall).toContain("-l");
+  const payload = literalCall[literalCall.indexOf("-l") + 1];
+  expect(payload).not.toContain("\n");
+  expect(payload).not.toContain("\r");
+  // Interior newlines replaced by " | " separator
+  expect(payload).toContain(" | ");
+  expect(payload).toContain("name: Alice");
+  expect(payload).toContain("skill_chat: on");
+
+  // Second call: Enter — exactly one Enter keystroke
+  expect(calls[1]).toContain("Enter");
+  expect(calls[1]).not.toContain("-l");
+});
+
+test("VOS-209: sendKeysWith single-line payload emits exactly one Enter (no regression)", () => {
+  const calls: string[][] = [];
+  const recorder = (args: string[]) => { calls.push(args); };
+
+  sendKeysWith(recorder, "vos-run-test", "PINGLINE");
+
+  expect(calls).toHaveLength(2);
+  const literalCall = calls[0]!;
+  const payload = literalCall[literalCall.indexOf("-l") + 1];
+  expect(payload).toBe("PINGLINE");
+  expect(calls[1]).toContain("Enter");
+});
