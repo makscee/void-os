@@ -206,6 +206,32 @@ test("spawnRun id prefixed exec- (stateless naming)", () => {
   try { killSession(tmuxSession); } catch { /* ignore */ }
 });
 
+// VOS-225 §2: every spawned session gets a generated .mcp.json wiring the shared daemon MCP.
+test("spawnRun generates a session .mcp.json + references it in cc-command.txt (plain session)", () => {
+  const db = openRegistry(":memory:");
+  const vault = "/tmp/void-os-spawn-mcpcfg-test";
+  rmSync(vault, { recursive: true, force: true });
+  mkdirSync(vault, { recursive: true });
+  const { runId, tmuxSession } = spawnRun({
+    db, vault, daemonUrl: "http://127.0.0.1:4317",
+    skill: null, agent: null, // PLAIN session — no agent, must still get the vault MCP
+    runnerCommand: "sleep",
+    now: 1000,
+  });
+  // generated config exists + points at the shared daemon MCP
+  const cfgPath = join(vault, ".void-os", "session-mcp", `${runId}.json`);
+  expect(existsSync(cfgPath)).toBe(true);
+  const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+  expect(cfg.mcpServers["void-os-vault"]).toEqual({ type: "http", url: "http://127.0.0.1:4317/mcp" });
+  // cc-command.txt wires --mcp-config <that path> --strict-mcp-config
+  const ccCmd = readFileSync(join(sessionDir(vault, runId), "cc-command.txt"), "utf8");
+  expect(ccCmd).toContain("--mcp-config");
+  expect(ccCmd).toContain(`${runId}.json`);
+  expect(ccCmd).toContain("--strict-mcp-config");
+  try { killSession(tmuxSession); } catch { /* ignore */ }
+  rmSync(vault, { recursive: true, force: true });
+});
+
 // VOS-205 T2: buildInteractiveArgv
 test("buildInteractiveArgv: interactive shape — no -p, fresh session id, vault add-dir, bypass perms", () => {
   const argv = buildInteractiveArgv("seed-uuid", "/vault", { addDirs: [] });

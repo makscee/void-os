@@ -10,6 +10,13 @@ import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath, hookSet
 import { createExecution } from "./registry.ts";
 import { appendEvent } from "./events.ts";
 import { newRunSession, sendKeys, waitForReady, sendKickoff, capturePaneContent } from "./tmux.ts";
+import { writeSessionMcpConfig } from "./session-mcp-config.ts";
+
+/** Extract the port from a daemon URL like "http://127.0.0.1:4317"; defaults to 4317. */
+function portFromDaemonUrl(daemonUrl: string): number {
+  const m = daemonUrl.match(/:(\d+)(?:\/|$)/);
+  return m ? parseInt(m[1], 10) : 4317;
+}
 import { writeHookSettings } from "./hooks-endpoint.ts";
 
 // Absolute paths to the helper scripts shipped with void-os.
@@ -306,6 +313,13 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
   const runId = `exec-${randomUUID()}`;
   const ccSeed = randomUUID(); // fresh CC thread every time — NO --resume (ADR-0003 §1)
 
+  // VOS-225 §2: generate a per-session .mcp.json that points THIS session at the shared
+  // daemon-hosted vault MCP. Applies to ALL spawn paths (launch, trigger, chat) — plain
+  // (agent-less) sessions get it too so vault.write/append + page.* are universally available.
+  // When an agent already supplied a restricted mcpConfig, merge so the agent keeps its servers.
+  const mcpPort = portFromDaemonUrl(opts.daemonUrl);
+  const sessionMcpConfigPath = writeSessionMcpConfig(opts.vault, runId, mcpPort, opts.mcpConfigPath ?? null);
+
   // Write per-execution hook settings file (type:"command" hooks → relay script → daemon).
   const settingsPath = writeHookSettings(
     hookSettingsDir(opts.vault),
@@ -322,7 +336,7 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     // which breaks --resume on reap/respawn.
     argv = buildInteractiveArgv(ccSeed, opts.vault, {
       addDirs: opts.addDirs,
-      mcpConfigPath: opts.mcpConfigPath,
+      mcpConfigPath: sessionMcpConfigPath,
       settingsPath,
     });
   } else {
@@ -341,7 +355,7 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
       skill: opts.skill,
       isPrint,
       addDirs: opts.addDirs,
-      mcpConfigPath: opts.mcpConfigPath,
+      mcpConfigPath: sessionMcpConfigPath,
       appendSystemPrompt: opts.appendSystemPrompt,
       bodyMessage: opts.bodyMessage,
     });
