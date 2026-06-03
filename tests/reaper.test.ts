@@ -1,8 +1,10 @@
 // reaper.test.ts — unit tests for the idle-reap logic (pure functions + wired sweep).
 // VOS-205 T3: injected clock, no real processes.
 import { test, expect } from "bun:test";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dueForReap, reapIdle, type ReapCandidate } from "../src/reaper.ts";
 import { openRegistry, createExecution, getExecution } from "../src/registry.ts";
+import { reapedPath, sessionDir } from "../src/paths.ts";
 
 test("dueForReap selects live sessions idle past the threshold, skips ended ones", () => {
   const now = 1_000_000;
@@ -68,4 +70,36 @@ test("reapIdle calls killFn for each due session and marks ended_at", () => {
   expect(old?.ended_at).toBe(now);
   const fresh = getExecution(db, "exec-new");
   expect(fresh?.ended_at).toBeNull();
+});
+
+test("reapIdle stamps reaped.txt for each reaped execution", () => {
+  const db = openRegistry(":memory:");
+  const vault = "/tmp/void-os-reaper-stamp-test";
+  rmSync(vault, { recursive: true, force: true });
+
+  const now = 2_000_000;
+  const idleMs = 10 * 60_000;
+
+  // Create two executions, both idle beyond threshold
+  createExecution(db, { id: "stamp-a", agent: null, skill: null, inputRef: null,
+    tmuxSession: "vos-run-stamp-a", now: now - 20 * 60_000, triggerId: null, stepCeiling: null });
+  createExecution(db, { id: "stamp-b", agent: null, skill: null, inputRef: null,
+    tmuxSession: "vos-run-stamp-b", now: now - 15 * 60_000, triggerId: null, stepCeiling: null });
+  // One recent (should NOT be reaped or stamped)
+  createExecution(db, { id: "stamp-c", agent: null, skill: null, inputRef: null,
+    tmuxSession: "vos-run-stamp-c", now: now - 2 * 60_000, triggerId: null, stepCeiling: null });
+
+  // Create session dirs so reapedPath's directory exists
+  mkdirSync(sessionDir(vault, "stamp-a"), { recursive: true });
+  mkdirSync(sessionDir(vault, "stamp-b"), { recursive: true });
+  mkdirSync(sessionDir(vault, "stamp-c"), { recursive: true });
+
+  const killed: string[] = [];
+  reapIdle(db, vault, now, idleMs, (session) => { killed.push(session); });
+
+  // Both idle execs should have reaped.txt
+  expect(existsSync(reapedPath(vault, "stamp-a"))).toBe(true);
+  expect(existsSync(reapedPath(vault, "stamp-b"))).toBe(true);
+  // Recent exec should NOT have reaped.txt
+  expect(existsSync(reapedPath(vault, "stamp-c"))).toBe(false);
 });

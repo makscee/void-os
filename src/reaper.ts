@@ -2,12 +2,12 @@
 // VOS-205: ADR-0003 amendment — reaper kills ONLY the tmux container; it does NOT
 // revive warm-process/resume_token state (that stays removed per ADR-0003 §1).
 // Resume-on-demand uses CC-native --resume (src/resume.ts).
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { listExecutions, setExecutionEnded } from "./registry.ts";
 import { killSession } from "./tmux.ts";
-import { sessionDir } from "./paths.ts";
+import { sessionDir, reapedPath } from "./paths.ts";
 
 export interface ReapCandidate {
   id: string;
@@ -72,6 +72,8 @@ export function reapIdle(
   for (const d of due) {
     killFn(d.tmux_session);
     setExecutionEnded(db, d.id, now);
+    // Stamp reaped.txt so deriveStatus can distinguish reaped-resumable from clean-complete (VOS-208).
+    try { writeFileSync(reapedPath(vault, d.id), "reaped\n"); } catch { /* session dir may not exist in tests */ }
   }
   return due.map(d => d.id);
 }
