@@ -1,7 +1,7 @@
 // tmux.test.ts — integration tests against real tmux (3.6a present).
 // VOS-205: updated for -L vos socket isolation + new helpers.
 import { test, expect, afterEach } from "bun:test";
-import { newRunSession, killSession, hasSession, attachCommand, switchClient, sendKeys, sendKeysWith, listVosSessions, VOS_SOCKET, capturePaneContent, waitForPrompt } from "../src/tmux.ts";
+import { newRunSession, killSession, hasSession, attachCommand, switchClient, sendKeys, sendKeysWith, listVosSessions, VOS_SOCKET, capturePaneContent, waitForPrompt, hasAttachedClient } from "../src/tmux.ts";
 import { readFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 
@@ -135,4 +135,21 @@ test("VOS-209: sendKeysWith single-line payload emits exactly one Enter (no regr
   const payload = literalCall[literalCall.indexOf("-l") + 1];
   expect(payload).toBe("PINGLINE");
   expect(calls[1]).toContain("Enter");
+});
+
+// ── VOS-219: hasAttachedClient (injectable seam) ──────────────────────────────
+
+test("hasAttachedClient false when list-clients returns empty output", () => {
+  const stub = (_args: string[]) => ({ code: 0, stdout: "", stderr: "" });
+  expect(hasAttachedClient(stub)).toBe(false);
+});
+
+test("hasAttachedClient false when list-clients exits non-zero", () => {
+  const stub = (_args: string[]) => ({ code: 1, stdout: "/dev/ttys001: vos-follow\n", stderr: "" });
+  expect(hasAttachedClient(stub)).toBe(false);
+});
+
+test("hasAttachedClient true when a client is listed", () => {
+  const stub = (_args: string[]) => ({ code: 0, stdout: "/dev/ttys001: vos-follow\n", stderr: "" });
+  expect(hasAttachedClient(stub)).toBe(true);
 });

@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread, ackFragment } from "../src/render.ts";
+import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread, ackFragment, statusLabel } from "../src/render.ts";
 import type { SessionInfo } from "../src/sessions.ts";
 
 // ── VOS-207 helpers ────────────────────────────────────────────────────────
 const sess = (o: Partial<SessionInfo> = {}): SessionInfo => ({
   uuid: "u1", title: "T1", mtimeMs: 1, lastActivityMs: 1, needsAttention: false,
-  error: false, status: "complete", skill: "deep-research", ...o,
+  idle: false, error: false, status: "complete", skill: "deep-research", ...o,
 });
 
 test("placeholder body has a title so it lists + sorts", () => {
@@ -135,13 +135,13 @@ test("hides Run as select when only one runner", () => {
   expect(html).not.toContain('id="runner-select"');
 });
 
-test("renderShell includes the collapsible transcript drawer wired to /transcript", () => {
+// VOS-219: drawer replaced by always-visible two-pane layout
+test("renderShell has transcript pane wired to /transcript with polling", () => {
   const html = renderShell("abc12345-0000-1111-2222-333344445555", "/Users/admin/void-os");
-  expect(html).toContain('id="drawer-bar"');
-  expect(html).toContain('id="drawer-panel"');
+  expect(html).toContain('id="transcript-pane"');
   expect(html).toContain("/s/abc12345-0000-1111-2222-333344445555/transcript");
-  expect(html).toContain("drawer-open");
   expect(html).toContain("setInterval");
+  expect(html).toContain("dvRefresh");
 });
 
 // Bug 2: header shows session name, not raw uuid
@@ -548,4 +548,63 @@ test("renderShell sandboxes the body iframe (untrusted agent HTML)", () => {
   expect(html).toMatch(/<iframe[^>]*\bsandbox="[^"]*allow-scripts[^"]*"/);
   expect(html).toContain("allow-forms");
   expect(html).not.toMatch(/<iframe[^>]*allow-same-origin/);
+});
+
+// ── VOS-219: statusLabel ─────────────────────────────────────────────────────
+
+test("statusLabel maps all 6 states to human text", () => {
+  expect(statusLabel("working")).toBe("running");
+  expect(statusLabel("awaiting")).toBe("awaiting input");
+  expect(statusLabel("reaped")).toBe("reaped (resumable)");
+  expect(statusLabel("complete")).toBe("done");
+  expect(statusLabel("error")).toBe("failed");
+  expect(statusLabel("stopped")).toBe("stopped");
+});
+
+// ── VOS-219: sidebar enrichment (needs-you / idle / status text) ─────────────
+
+test("leftNav shows status text + needs-you/idle groups", () => {
+  const now = Date.now();
+  const mk = (uuid: string, status: any, needs: boolean, idle: boolean): any =>
+    ({ uuid, title: uuid, mtimeMs: now, lastActivityMs: now, needsAttention: needs, idle, error: false, status, skill: "x" });
+  const html = renderDashboard([], [
+    mk("a", "awaiting", true, false),
+    mk("b", "working", false, true),
+    mk("c", "complete", false, false),
+  ], { authed: true });
+  expect(html).toContain("needs you");
+  expect(html).toContain("idle");
+  expect(html).toContain("awaiting input"); // status text rendered in sidebar
+  expect(html).toContain('data-status="working"');
+});
+
+// ── VOS-219: two-pane inspect layout ─────────────────────────────────────────
+
+test("renderShell: two panes, 5 filters, bottom bar with status text, body-absent labeled", () => {
+  const withBody = renderShell("u1", "/vault", "skill-x", "cd /vault && vc -- --resume cc1", true, true, [], "awaiting");
+  // Two panes present
+  expect(withBody).toContain('id="transcript-pane"');
+  expect(withBody).toContain('id="body-pane"');
+  // 5 filter buttons
+  for (const f of ["filter-everything", "filter-chat", "filter-chat-tools", "filter-hide-meta", "filter-no-thinking"]) {
+    expect(withBody).toContain(`id="${f}"`);
+  }
+  // Bottom bar elements
+  expect(withBody).toContain('id="msgForm"');     // chat input
+  expect(withBody).toContain('id="copybtn"');     // copy resume
+  expect(withBody).toContain('class="attach-btn"'); // attach
+  expect(withBody).toContain("awaiting input");    // status TEXT label
+  // body present → no collapse marker
+  expect(withBody).not.toContain("no body.html");
+  // body absent → collapsed + labeled
+  const noBody = renderShell("u2", "/vault", "skill-x", "cmd", true, false, [], "working");
+  expect(noBody).toContain("no body.html");
+  expect(noBody).toContain('id="body-pane"');
+  expect(noBody).toContain("body-collapsed");
+});
+
+test("renderShell: transcript pane is always visible (not auto-collapsed)", () => {
+  const html = renderShell("u3", "/vault", "skill-x", undefined, false, false, [], "complete");
+  expect(html).toContain('id="transcript-pane"');
+  expect(html).not.toContain('transcript-collapsed');
 });

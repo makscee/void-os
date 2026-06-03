@@ -1,7 +1,7 @@
 import { expect, test, beforeAll } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
-import { listSessions } from "../src/sessions.ts";
+import { listSessions, isIdle, IDLE_MS } from "../src/sessions.ts";
 import { bodyPath, sessionDir, stopPath, reapedPath } from "../src/paths.ts";
 import { openRegistry, createExecution, setExecutionEnded, setExecutionFail } from "../src/registry.ts";
 
@@ -173,4 +173,26 @@ test("deriveStatus folds exec terminal/liveness state into 6 states", () => {
   expect(byU["reaped"]).toBe("reaped");
   expect(byU["stopped"]).toBe("stopped");   // stopped beats error
   expect(byU["noexec"]).toBe("complete");
+});
+
+// ── VOS-219: isIdle ──────────────────────────────────────────────────────────
+
+test("isIdle: working + stale activity = true", () => {
+  const now = Date.now();
+  expect(isIdle("working", now - (IDLE_MS + 10_000), now)).toBe(true);
+});
+
+test("isIdle: working + recent activity = false", () => {
+  const now = Date.now();
+  expect(isIdle("working", now - 30_000, now)).toBe(false);
+});
+
+test("isIdle: awaiting is never idle", () => {
+  const now = Date.now();
+  expect(isIdle("awaiting", now - (IDLE_MS + 10_000), now)).toBe(false);
+});
+
+test("isIdle: complete is never idle", () => {
+  const now = Date.now();
+  expect(isIdle("complete", now - (IDLE_MS + 10_000), now)).toBe(false);
 });

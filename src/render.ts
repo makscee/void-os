@@ -134,6 +134,18 @@ function dotClass(status: SessionStatus): string {
   return ""; // complete = default green
 }
 
+/** Map SessionStatus to a human-readable text label (VOS-219). */
+export function statusLabel(status: SessionStatus): string {
+  switch (status) {
+    case "working": return "running";
+    case "awaiting": return "awaiting input";
+    case "reaped": return "reaped (resumable)";
+    case "complete": return "done";
+    case "error": return "failed";
+    case "stopped": return "stopped";
+  }
+}
+
 /** CSS for the left nav sidebar — inlined alongside the shared UI_TOKENS block. */
 const LEFT_NAV_CSS = `
 /* Left nav sidebar */
@@ -143,11 +155,15 @@ const LEFT_NAV_CSS = `
 .nav-home{display:block;font-size:12px;font-weight:600;padding:.4rem .75rem;text-decoration:none;color:hsl(var(--muted-foreground));transition:color .15s,background .15s;border-radius:calc(var(--radius) - 4px);margin:0 .25rem}
 .nav-home:hover,.nav-home.active{color:hsl(var(--foreground));background:hsl(var(--secondary))}
 .nav-group-label{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:hsl(var(--muted-foreground));padding:.5rem .75rem .25rem;opacity:.6}
-.nav-attention,.nav-recent{padding:0 .25rem}
+.nav-group-label.needs-you{color:hsl(38 92% 60%);opacity:1}
+.nav-group-label.idle{color:hsl(217 50% 60%);opacity:.8}
+.nav-attention,.nav-idle,.nav-recent{padding:0 .25rem}
 .nav-session{display:flex;flex-direction:column;padding:.3rem .5rem;text-decoration:none;color:hsl(var(--foreground));border-radius:calc(var(--radius) - 4px);transition:background .1s;font-size:12px;overflow:hidden}
 .nav-session:hover,.nav-session.active{background:hsl(var(--secondary))}
 .nav-session.unseen{border-left:2px solid hsl(38 92% 50%);padding-left:.375rem}
 .nav-session-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+.nav-status{font-size:10px;color:hsl(var(--muted-foreground));font-style:italic}
+.nav-session.unseen .nav-status{color:hsl(38 92% 55%)}
 .nav-elapsed{font-size:10px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
 `;
 
@@ -181,7 +197,8 @@ const ELAPSED_TICK_SCRIPT = `<script>
  */
 function leftNav(sessions: SessionInfo[], activeUuid?: string): string {
   const MAX_RECENT = 8;
-  const attention = sessions.filter((s) => s.needsAttention);
+  const needsYou = sessions.filter((s) => s.needsAttention);
+  const idle = sessions.filter((s) => (s as any).idle && !s.needsAttention);
   const recent = sessions.slice(0, MAX_RECENT);
 
   const btn = (s: SessionInfo) => {
@@ -189,16 +206,25 @@ function leftNav(sessions: SessionInfo[], activeUuid?: string): string {
     const unseen = s.needsAttention ? " unseen" : "";
     const epoch = s.lastActivityMs ?? s.mtimeMs;
     const shortTitle = esc(s.title.length > 22 ? s.title.slice(0, 22) + "…" : s.title);
-    return `<a href="/s/${esc(s.uuid)}" class="nav-session${active}${unseen}"><span class="nav-session-title">${shortTitle}</span><span class="nav-elapsed" data-epoch="${epoch}"></span></a>`;
+    const dotCls = dotClass(s.status);
+    return `<a href="/s/${esc(s.uuid)}" class="nav-session${active}${unseen}" data-status="${esc(s.status)}">`
+      + `<span class="session-dot${dotCls ? ` ${dotCls}` : ""}"></span>`
+      + `<span class="nav-session-title">${shortTitle}</span>`
+      + `<span class="nav-status">${esc(statusLabel(s.status))}</span>`
+      + `<span class="nav-elapsed" data-epoch="${epoch}"></span></a>`;
   };
 
-  const attentionGroup = attention.length > 0
-    ? `<div class="nav-attention"><div class="nav-group-label">needs attention</div>${attention.map(btn).join("")}</div>`
+  const needsYouGroup = needsYou.length > 0
+    ? `<div class="nav-attention"><div class="nav-group-label needs-you">needs you</div>${needsYou.map(btn).join("")}</div>`
+    : "";
+  const idleGroup = idle.length > 0
+    ? `<div class="nav-idle"><div class="nav-group-label idle">idle</div>${idle.map(btn).join("")}</div>`
     : "";
   return `
 <nav class="left-nav">
   <a href="/" class="nav-home${activeUuid ? "" : " active"}">⌂ home</a>
-  ${attentionGroup}
+  ${needsYouGroup}
+  ${idleGroup}
   <div class="nav-recent"><div class="nav-group-label">recent</div>${recent.map(btn).join("")}</div>
 </nav>`
 }
@@ -385,29 +411,33 @@ ${ELAPSED_TICK_SCRIPT}`;
 }
 
 /**
- * Iframe shell: wraps a session's body.html in a 36px header with back link,
- * session name, and click-to-copy resume command. Option 1 style.
+ * Iframe shell: two-pane inspect view (VOS-219).
+ * LEFT = transcript (always visible, with 5 filter buttons).
+ * RIGHT = body.html iframe (auto-collapsed when absent).
+ * BOTTOM BAR = chat input + copy-resume + attach + stop + status text.
+ *
  * @param name Human-readable session name (e.g. skill name). Falls back to short uuid.
+ * @param status Current SessionStatus — rendered as text in the bottom bar.
  */
 // interactive-decide.ts + spawn.ts spawn-mode gates (spawn.ts:318,372) still use `interactive`
 // for wrapperMode/argv decisions — that is spawn-mode-only, never a view-affordance gate (VOS-210).
-export function renderShell(uuid: string, vault: string, name?: string, resumeCmd?: string, resumable?: boolean, hasBody?: boolean, sessions: SessionInfo[] = []): string {
+export function renderShell(uuid: string, vault: string, name?: string, resumeCmd?: string, resumable?: boolean, hasBody?: boolean, sessions: SessionInfo[] = [], status: SessionStatus = "working"): string {
   // VOS-215 BUG C: only emit the copy-button when a real ccId-form resumeCmd is available.
-  // Before cc-actual-session.txt exists, resumeCmd is undefined — emitting --resume <runId>
-  // would give the operator a command that fails (runId is not a valid CC --resume target).
   const hasCcId = resumeCmd != null;
-  // Truncated display label for the copy-button (max ~40 chars from end)
   const shortVault = vault.length > 20 ? "…" + vault.slice(-18) : vault;
   const displayLabel = hasCcId
     ? `${shortVault} — resume ${uuid.slice(0, 8)}…`
     : "starting…";
-
-  // Header title: show the human-readable session name when available; fall back to short uuid.
   const headerName = name ? name : uuid.slice(0, 8) + "…";
-
-  // Store cmd/label in data attributes to avoid inline-JS quoting issues (only used when hasCcId)
   const resumeCmdAttr = hasCcId ? esc(resumeCmd!) : "";
   const displayLabelAttr = esc(displayLabel);
+  const statusText = esc(statusLabel(status));
+
+  // body-pane: collapsed when no body.html exists yet
+  const bodyPaneContent = hasBody
+    ? `<iframe id="f" src="/s/${esc(uuid)}/body" sandbox="allow-scripts allow-forms allow-popups"></iframe>`
+    : `<div class="body-absent">no body.html</div>`;
+  const bodyPaneClass = hasBody ? "body-pane" : "body-pane body-collapsed";
 
   return `<!doctype html><meta charset=utf8><title>session ${esc(uuid)}</title>
 <style>
@@ -415,9 +445,12 @@ ${UI_TOKENS}
 ${LEFT_NAV_CSS}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
-  background:hsl(var(--background));color:hsl(var(--foreground))}
-.shell-header{display:flex;align-items:center;gap:.75rem;padding:.4rem .75rem;
-  background:hsl(217.2 32.6% 8%);border-bottom:1px solid hsl(var(--border));min-height:36px}
+  background:hsl(var(--background));color:hsl(var(--foreground));height:100vh;overflow:hidden}
+/* Shell layout — left nav + main column */
+.shell-main{margin-left:200px;display:flex;flex-direction:column;height:100vh}
+/* Top header bar */
+.shell-header{display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;
+  background:hsl(217.2 32.6% 8%);border-bottom:1px solid hsl(var(--border));min-height:36px;flex-shrink:0}
 .back-link{display:flex;align-items:center;gap:.25rem;font-size:12px;
   color:hsl(var(--muted-foreground));text-decoration:none;padding:2px 6px;
   border-radius:calc(var(--radius) - 4px);transition:color .15s,background .15s;flex-shrink:0}
@@ -425,10 +458,35 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .divider-v{width:1px;height:16px;background:hsl(var(--border))}
 .session-name{flex:1;font-size:12px;font-weight:500;color:hsl(var(--muted-foreground));
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Filter row */
+.filter-row{display:flex;align-items:center;gap:.25rem;padding:.3rem .75rem;
+  background:hsl(217.2 32.6% 7%);border-bottom:1px solid hsl(var(--border));flex-shrink:0}
+.filter-btn{font-size:11px;padding:2px 8px;border:1px solid hsl(var(--border));
+  background:transparent;color:hsl(var(--muted-foreground));border-radius:calc(var(--radius) - 4px);
+  cursor:pointer;transition:background .1s,color .1s,border-color .1s}
+.filter-btn:hover,.filter-btn.active{background:hsl(var(--secondary));color:hsl(var(--foreground));
+  border-color:hsl(var(--ring))}
+/* Two-pane inspect area */
+.inspect-main{display:flex;flex:1;min-height:0;overflow:hidden}
+.transcript-pane{flex:1;min-width:0;overflow-y:auto;padding:.5rem .75rem;
+  border-right:1px solid hsl(var(--border));font-size:12px;line-height:1.5}
+.body-pane{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.body-pane iframe{border:0;width:100%;flex:1}
+.body-pane.body-collapsed{flex:0 0 220px;background:hsl(217.2 32.6% 7%);
+  display:flex;align-items:center;justify-content:center}
+.body-absent{font-size:12px;color:hsl(var(--muted-foreground));font-style:italic}
+/* Pane toggle controls */
+.pane-toggle{font-size:10px;padding:1px 6px;border:1px solid hsl(var(--border));background:transparent;
+  color:hsl(var(--muted-foreground));border-radius:calc(var(--radius) - 4px);cursor:pointer;margin-bottom:.25rem}
+/* Bottom bar */
+.bottom-bar{display:flex;align-items:center;gap:.4rem;padding:.3rem .75rem;
+  background:hsl(217.2 32.6% 8%);border-top:1px solid hsl(var(--border));flex-shrink:0;min-height:40px}
+.status-text{font-size:11px;color:hsl(var(--muted-foreground));font-style:italic;margin-left:auto;flex-shrink:0}
+/* Buttons */
 .copy-btn{display:inline-flex;align-items:center;gap:.3rem;font-family:monospace;font-size:11px;
   padding:3px 8px;border-radius:calc(var(--radius) - 4px);border:1px solid hsl(var(--border));
   background:hsl(var(--secondary));color:hsl(var(--muted-foreground));cursor:pointer;
-  flex-shrink:0;transition:border-color .15s,color .15s;max-width:22rem;overflow:hidden;
+  flex-shrink:0;transition:border-color .15s,color .15s;max-width:18rem;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;user-select:none}
 .copy-btn:hover{border-color:hsl(var(--ring));color:hsl(var(--foreground))}
 .copy-btn.copied{border-color:hsl(142 70% 45%);color:hsl(142 70% 65%);background:hsl(142 70% 8%)}
@@ -438,27 +496,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .attach-btn{font-size:11px;padding:2px 8px;border:1px solid hsl(142 60% 30%);background:transparent;
   color:hsl(142 70% 65%);border-radius:calc(var(--radius) - 4px);cursor:pointer;flex-shrink:0}
 .attach-btn:hover{background:hsl(142 60% 8%)}
-.msg-form{display:flex;gap:.3rem;flex-shrink:0}
+.msg-form{display:flex;gap:.3rem;flex:1;min-width:0}
 .msg-input{font-size:11px;padding:2px 6px;border:1px solid hsl(var(--border));background:hsl(var(--secondary));
-  color:hsl(var(--foreground));border-radius:calc(var(--radius) - 4px);width:12rem}
+  color:hsl(var(--foreground));border-radius:calc(var(--radius) - 4px);flex:1;min-width:0}
 .msg-send{font-size:11px;padding:2px 8px;border:1px solid hsl(217 60% 40%);background:transparent;
   color:hsl(217 70% 65%);border-radius:calc(var(--radius) - 4px);cursor:pointer;flex-shrink:0}
 .msg-send:hover{background:hsl(217 60% 8%)}
-iframe{border:0;width:100%;height:calc(100vh - 36px);display:block}
-body.drawer-open iframe{height:calc(100vh - 36px - 40vh - 28px)}
-/* Shell main content offset for left nav */
-.shell-main{margin-left:200px;display:flex;flex-direction:column}
-.shell-header{margin-left:0}
-#drawer-bar{position:fixed;left:200px;right:0;bottom:0;height:28px;z-index:10;
-  display:flex;align-items:center;padding:0 .75rem;cursor:pointer;user-select:none;
-  font-size:11px;font-family:monospace;color:hsl(var(--muted-foreground));
-  background:hsl(217.2 32.6% 8%);border-top:1px solid hsl(var(--border))}
-#drawer-bar:hover{color:hsl(var(--foreground))}
-body.drawer-open #drawer-bar{bottom:40vh}
-#drawer-panel{position:fixed;left:200px;right:0;bottom:0;height:40vh;z-index:9;display:none;
-  overflow:auto;padding:.5rem .75rem;background:hsl(var(--background));
-  border-top:1px solid hsl(var(--border));font-size:12px;line-height:1.5}
-body.drawer-open #drawer-panel{display:block}
+/* Transcript turns */
 .turn{white-space:pre-wrap;word-break:break-word;padding:.35rem 0;
   border-bottom:1px solid hsl(var(--border))}
 .turn .who{display:block;font-family:monospace;font-size:10px;text-transform:uppercase;
@@ -472,42 +516,65 @@ ${leftNav(sessions, uuid)}
   <a href="/" class="back-link">← all</a>
   <span class="divider-v"></span>
   <span class="session-name">${esc(headerName)}</span>
+</div>
+<div class="filter-row">
+  <button class="filter-btn active" id="filter-everything">Everything</button>
+  <button class="filter-btn" id="filter-chat">Chat only</button>
+  <button class="filter-btn" id="filter-chat-tools">Chat + Tools</button>
+  <button class="filter-btn" id="filter-hide-meta">Hide system/meta</button>
+  <button class="filter-btn" id="filter-no-thinking">No thinking</button>
+</div>
+<div class="inspect-main">
+  <div class="transcript-pane" id="transcript-pane"></div>
+  <div class="${bodyPaneClass}" id="body-pane">${bodyPaneContent}</div>
+</div>
+<div class="bottom-bar">
+  <form id="msgForm" action="/s/${esc(uuid)}/message" method="POST" class="msg-form">
+    <input type="text" name="text" class="msg-input" placeholder="Send message…">
+    <button type="submit" class="msg-send" title="Send message to session">Send</button>
+  </form>
   ${hasCcId
     ? `<button class="copy-btn" id="copybtn" title="Copy resume command"
     data-cmd="${resumeCmdAttr}" data-label="${displayLabelAttr}">${displayLabelAttr}</button>`
     : `<span class="copy-btn" id="copybtn" style="cursor:default;opacity:.5" title="Resume command available once session starts">${displayLabelAttr}</span>`
   }
-  <form action="/s/${esc(uuid)}/stop" method="POST" class="stop-form" style="flex-shrink:0">
-    <button type="submit" class="stop-btn" title="Stop this session">■ Stop</button>
-  </form>
-  <form id="attachForm" action="/s/${esc(uuid)}/attach-here" method="POST" class="stop-form" style="flex-shrink:0">
+  <form id="attachForm" action="/s/${esc(uuid)}/attach-here" method="POST" style="flex-shrink:0">
     <button type="submit" class="attach-btn" title="Attach terminal to this session">⤵ Attach here</button>
   </form>
-  <form id="msgForm" action="/s/${esc(uuid)}/message" method="POST" class="msg-form">
-    <input type="text" name="text" class="msg-input" placeholder="Send message…">
-    <button type="submit" class="msg-send" title="Send message to session">Send</button>
+  <form action="/s/${esc(uuid)}/stop" method="POST" style="flex-shrink:0">
+    <button type="submit" class="stop-btn" title="Stop this session">■ Stop</button>
   </form>
+  <span class="status-text">${statusText}</span>
 </div>
-${hasBody ? `<iframe id="f" src="/s/${esc(uuid)}/body" sandbox="allow-scripts allow-forms allow-popups"></iframe>` : ""}
 </div>
-<div id="drawer-panel"></div>
-<div id="drawer-bar">▾ transcript</div>
 <script>
+// Copy-resume button
 document.getElementById('copybtn').addEventListener('click',function(){
   var b=this,cmd=b.getAttribute('data-cmd'),lbl=b.getAttribute('data-label');
   navigator.clipboard&&navigator.clipboard.writeText(cmd);
   b.textContent='✓ copied';b.classList.add('copied');
   setTimeout(function(){b.textContent=lbl;b.classList.remove('copied')},1800);
 });
-// Intercept attach + message forms with fetch() so the browser stays on the dashboard.
-// Native form POST navigates to the JSON response; fetch() stays put.
+// Intercept attach + message forms with fetch() so the browser stays on the page.
 ['attachForm','msgForm'].forEach(function(id){
   var fm=document.getElementById(id);
   if(!fm) return;
   fm.addEventListener('submit',function(e){
     e.preventDefault();
     fetch(fm.getAttribute('action'),{method:'POST',body:new FormData(fm)})
-      .then(function(r){return r.json();}).catch(function(){});
+      .then(function(r){return r.json();})
+      .then(function(d){
+        // VOS-219 attach-detect: if no client attached, surface the start command
+        if(id==='attachForm'&&d&&d.attached===false&&d.command){
+          var el=document.getElementById('attach-cmd-display');
+          if(!el){
+            el=document.createElement('span');el.id='attach-cmd-display';
+            el.style.cssText='font-size:11px;font-family:monospace;background:hsl(217.2 32.6% 10%);padding:2px 6px;border-radius:3px;color:hsl(var(--foreground))';
+            fm.after(el);
+          }
+          el.textContent=d.command;
+        }
+      }).catch(function(){});
     var inp=fm.querySelector('.msg-input'); if(inp) inp.value='';
   });
 });
@@ -517,11 +584,8 @@ if(msgInput){
     if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();this.closest('form').requestSubmit();}
   });
 }
+// SSE stream → reload body pane + close when terminal
 var es=new EventSource("/s/${esc(uuid)}/stream");
-// Always navigate to the canonical body URL on reload events rather than re-POST.
-// location.reload() would re-submit POST /send and spawn a spurious vc turn.
-// After reload, probe the session status; close the EventSource once terminal so
-// the spinner stops and the connection is not held open needlessly.
 es.onmessage=function(){
   var f=document.getElementById("f");
   if(f){f.contentWindow.location.replace("/s/${esc(uuid)}/body");}
@@ -529,23 +593,41 @@ es.onmessage=function(){
     if(s==="stopped"||s==="error"||s==="complete"||s==="reaped"){es.close();}
   });
 };
-var dvBar=document.getElementById("drawer-bar");
-var dvPanel=document.getElementById("drawer-panel");
+// ── Transcript polling + filter logic ─────────────────────────────────────
+var activeFilter='everything';
+function applyFilter(){
+  document.querySelectorAll('#transcript-pane .turn').forEach(function(el){
+    var kind=el.getAttribute('data-kind'),role=el.getAttribute('data-role'),show=true;
+    if(activeFilter==='chat') show=(kind==='text'&&(role==='user'||role==='assistant'));
+    else if(activeFilter==='chat-tools') show=(kind!=='thinking'&&role!=='system');
+    else if(activeFilter==='hide-meta') show=(role!=='system');
+    else if(activeFilter==='no-thinking') show=(kind!=='thinking');
+    el.style.display=show?'':'none';
+  });
+}
+['everything','chat','chat-tools','hide-meta','no-thinking'].forEach(function(f){
+  var btn=document.getElementById('filter-'+f);
+  if(!btn) return;
+  btn.addEventListener('click',function(){
+    activeFilter=f;
+    document.querySelectorAll('.filter-btn').forEach(function(b){b.classList.remove('active');});
+    btn.classList.add('active');
+    applyFilter();
+  });
+});
+var dvPanel=document.getElementById('transcript-pane');
 var dvTimer=null;
 function dvNearBottom(){return dvPanel.scrollTop+dvPanel.clientHeight>=dvPanel.scrollHeight-40;}
 function dvRefresh(){
   fetch("/s/${esc(uuid)}/transcript").then(function(r){return r.text();}).then(function(html){
     var atBottom=dvNearBottom();
     dvPanel.innerHTML=html;
+    applyFilter();
     if(atBottom){dvPanel.scrollTop=dvPanel.scrollHeight;}
   });
 }
-dvBar.addEventListener("click",function(){
-  var open=document.body.classList.toggle("drawer-open");
-  dvBar.textContent=open?"▴ transcript":"▾ transcript";
-  if(open){dvRefresh();dvTimer=setInterval(dvRefresh,2000);}
-  else if(dvTimer){clearInterval(dvTimer);dvTimer=null;}
-});
+dvRefresh();
+dvTimer=setInterval(dvRefresh,2000);
 </script>
 ${ELAPSED_TICK_SCRIPT}`;
 }

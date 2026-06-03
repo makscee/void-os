@@ -21,11 +21,24 @@ export interface SessionInfo {
   lastActivityMs: number;
   /** True when the session was updated since the operator last opened it. */
   needsAttention: boolean;
+  /** True when session is working but has had no new activity for >2 min (VOS-219). */
+  idle: boolean;
   error: boolean;
   status: SessionStatus;
   skill: string;
   execStatus?: ExecStatus;  // execution status from registry (undefined when no execution exists)
   attach?: string;          // `tmux attach -t vos-run-<id>` (undefined when no execution exists)
+}
+
+/** Threshold: a working session with no activity for this long is considered idle (VOS-219). */
+export const IDLE_MS = 120_000;
+
+/**
+ * True when a working session has had no activity for longer than IDLE_MS.
+ * Only applies to "working" status — awaiting/stopped/etc are never idle in this sense.
+ */
+export function isIdle(status: SessionStatus, lastActivityMs: number, now: number): boolean {
+  return status === "working" && (now - lastActivityMs) > IDLE_MS;
 }
 
 function extractTitle(html: string): string {
@@ -134,14 +147,16 @@ export function listSessions(vault: string, db?: Database): SessionInfo[] {
       needsAttention = stat.mtimeMs > 0 && !html.includes("session starting…");
     }
 
+    const status = deriveStatus(vault, uuid, html, exec);
     sessions.push({
       uuid,
       title,
       mtimeMs: stat.mtimeMs,
       lastActivityMs,
       needsAttention,
+      idle: isIdle(status, lastActivityMs, Date.now()),
       error: existsSync(errorPath(vault, uuid)),
-      status: deriveStatus(vault, uuid, html, exec),
+      status,
       skill,
       execStatus,
       attach,

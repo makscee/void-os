@@ -110,6 +110,8 @@ mock.module("../src/tmux.ts", () => ({
   attachCommand: (name: string) => `tmux -L vos attach -t ${name}`,
   capturePaneContent: () => "",
   waitForPrompt: async () => true,
+  VOS_SOCKET: "vos",
+  hasAttachedClient: () => false,
 }));
 
 mock.module("../src/resume.ts", () => ({

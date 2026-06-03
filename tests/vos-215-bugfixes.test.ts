@@ -148,7 +148,7 @@ test("BUG A: sendKickoffWith never sends beyond maxAttempts when never accepted"
 
 const sess = (o: Partial<SessionInfo> = {}): SessionInfo => ({
   uuid: "u1", title: "T1", mtimeMs: 1, lastActivityMs: 1, needsAttention: false,
-  error: false, status: "complete", skill: "deep-research", ...o,
+  idle: false, error: false, status: "complete", skill: "deep-research", ...o,
 });
 
 test("BUG B: working-status dot class is distinct from complete-status dot class", () => {

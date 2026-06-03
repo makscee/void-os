@@ -21,8 +21,9 @@ import { parseTranscript, locateTranscript, renderTranscript } from "./transcrip
 import { handleHookEvent, runIdForSession, type HookPayload, type HookDecision } from "./hooks-endpoint.ts";
 import { getExecution, setExecutionFail, upsertTrigger, getTrigger } from "./registry.ts";
 import { appendEvent } from "./events.ts";
-import { killSession, hasSession, switchClient, sendKeys } from "./tmux.ts";
+import { killSession, hasSession, switchClient, sendKeys, hasAttachedClient } from "./tmux.ts";
 import { respawnSession } from "./resume.ts";
+import { attachInvocation } from "./attach.ts";
 import { bodyHasRealContent, isResumable } from "./view-state.ts";
 import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
 import { listPendingDecisions } from "./decision.ts";
@@ -340,9 +341,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   // POST /s/:uuid/attach-here — retarget the operator's `void-os attach` terminal to this session.
   // If the session's tmux is not live (reaped), respawn it via --resume first.
   // This is the "web button → operator's terminal snaps to live chat" path (VOS-205 step 2/3).
+  // VOS-219: when no tmux client is attached, return the start command rather than a silent no-op.
   app.post("/s/:uuid/attach-here", async (c) => {
     const uuid = c.req.param("uuid");
     const target = `vos-run-${uuid}`;
+    // Detect whether a local tmux client is attached to the -L vos socket.
+    // When no client is attached, switch-client is a silent no-op; surface the start command instead.
+    if (!hasAttachedClient()) {
+      return c.json({ attached: false, command: attachInvocation() });
+    }
     const cfg = readConfig(vault);
     const daemonUrl = `http://127.0.0.1:${cfg.port}`;
     const runnerCommand = resolveRunner(cfg);
@@ -351,7 +358,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       respawnSession(db, vault, uuid, runnerCommand, daemonUrl);
     }
     const r = switchClient(target);
-    return c.json({ ok: r.code === 0, target, err: r.stderr || undefined });
+    return c.json({ attached: true, ok: r.code === 0, target, err: r.stderr || undefined });
+  });
+
+  // GET /s/:uuid/attach-state — returns { attached: bool, command: string } for initial render (VOS-219).
+  app.get("/s/:uuid/attach-state", (c) => {
+    return c.json({ attached: hasAttachedClient(), command: attachInvocation() });
   });
 
   // POST /s/:uuid/message — ONE model for chat input: live → send-keys; reaped → respawn(--resume) then send-keys.
