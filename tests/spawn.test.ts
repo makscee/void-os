@@ -275,6 +275,25 @@ test("buildInteractiveArgv omits --settings when settingsPath is absent", () => 
   expect(argv).not.toContain("--settings");
 });
 
+// VOS-209 Task 4: regression lock — --settings must survive future merges
+// Without --settings the SessionStart hook never fires → cc-actual-session.txt never written → --resume broken
+test("VOS-209: buildInteractiveArgv includes --settings so SessionStart writes cc-actual", () => {
+  const argv = buildInteractiveArgv("seed-uuid", "/tmp/vault", { settingsPath: "/tmp/vault/.void-os/cc/exec-x.settings.json" });
+  const i = argv.indexOf("--settings");
+  expect(i).toBeGreaterThanOrEqual(0);
+  expect(argv[i + 1]).toBe("/tmp/vault/.void-os/cc/exec-x.settings.json");
+  // --session-id must also be present so CC can map the hint
+  expect(argv).toContain("--session-id");
+  expect(argv).toContain("seed-uuid");
+});
+
+test("VOS-209: buildInteractiveArgv omits --settings only when settingsPath null (back-compat)", () => {
+  const argv = buildInteractiveArgv("seed-uuid", "/tmp/vault", { settingsPath: null });
+  expect(argv).not.toContain("--settings");
+  // session-id still present
+  expect(argv).toContain("--session-id");
+});
+
 test("spawnRun interactive path writes start event (cc-actual write path wired)", () => {
   const { mkdtempSync } = require("node:fs");
   const { tmpdir } = require("node:os");
