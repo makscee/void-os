@@ -10,6 +10,7 @@ export const runLogPath = (vault: string, uuid: string, n: number) =>
   join(sessionDir(vault, uuid), `run-${n}.log`);
 export const pidPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "vc.pid");
 export const stopPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "stopped.txt");
+export const lastOpenedPath = (vault: string, uuid: string) => join(sessionDir(vault, uuid), "last-opened.txt");
 export const configPath = (vault: string) => join(vault, "void-os.json");
 export const registryDbPath = (vault: string) => join(vault, ".void-os", "registry.db");
 export const hookSettingsDir = (vault: string) => join(vault, ".void-os", "cc");

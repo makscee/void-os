@@ -3,7 +3,7 @@
 import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { sessionsRoot, sessionDir, bodyPath, errorPath, stopPath } from "./paths.ts";
+import { sessionsRoot, sessionDir, bodyPath, errorPath, stopPath, lastOpenedPath } from "./paths.ts";
 import { getExecution } from "./registry.ts";
 import { attachCommand } from "./tmux.ts";
 
@@ -17,6 +17,10 @@ export interface SessionInfo {
   uuid: string;
   title: string;
   mtimeMs: number;
+  /** Timestamp of last activity (message sent, body.html updated, or session started). */
+  lastActivityMs: number;
+  /** True when the session was updated since the operator last opened it. */
+  needsAttention: boolean;
   error: boolean;
   status: SessionStatus;
   skill: string;
@@ -38,6 +42,22 @@ function deriveStatus(vault: string, uuid: string, html: string): SessionStatus 
 }
 
 const GENERIC_TITLES = new Set(["session starting…", "working…", "void-os", ""]);
+
+/**
+ * Read the last-activity timestamp for a session.
+ * Priority (mirrors reaper.ts readLastActivity):
+ *  1. last-activity.txt mtime — written by /message route on each send-keys delivery.
+ *  2. body.html mtime — updated whenever the REPL outputs; proxy for headless sessions.
+ *  3. fallback: 0.
+ */
+function sessionLastActivity(vault: string, uuid: string, bodyMtimeMs: number): number {
+  const dir = sessionDir(vault, uuid);
+  const stamp = join(dir, "last-activity.txt");
+  if (existsSync(stamp)) {
+    try { return statSync(stamp).mtimeMs; } catch { /* fallthrough */ }
+  }
+  return bodyMtimeMs;
+}
 
 export function listSessions(vault: string, db?: Database): SessionInfo[] {
   const root = sessionsRoot(vault);
@@ -85,10 +105,27 @@ export function listSessions(vault: string, db?: Database): SessionInfo[] {
       }
     }
 
+    const lastActivityMs = sessionLastActivity(vault, uuid, stat.mtimeMs);
+
+    // needsAttention: body was updated AFTER last-opened.txt was written (or last-opened.txt absent)
+    let needsAttention = false;
+    const loPath = lastOpenedPath(vault, uuid);
+    if (existsSync(loPath)) {
+      try {
+        const loMtime = statSync(loPath).mtimeMs;
+        needsAttention = lastActivityMs > loMtime;
+      } catch { /* ignore */ }
+    } else {
+      // Never opened: attention only if session has completed output (not a fresh placeholder)
+      needsAttention = stat.mtimeMs > 0 && !html.includes("session starting…");
+    }
+
     sessions.push({
       uuid,
       title,
       mtimeMs: stat.mtimeMs,
+      lastActivityMs,
+      needsAttention,
       error: existsSync(errorPath(vault, uuid)),
       status: deriveStatus(vault, uuid, html),
       skill,
