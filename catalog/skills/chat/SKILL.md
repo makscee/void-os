@@ -4,6 +4,7 @@ description: One-shot stateless chat turn — read the thread history file, repl
 output_target: chat/*.md
 needs_input: true
 input_label: thread history file path
+interactive: true
 ---
 
 # chat

@@ -4,6 +4,7 @@ description: Turn one raw idea into a well-formed task file in the vault backlog
 needs_input: true
 input_label: idea
 output_target: vault/work/tasks/backlog/*.md
+interactive: false
 ---
 
 # Idea Intake

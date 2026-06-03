@@ -1,6 +1,7 @@
 ---
 name: ralph
 description: Works ONE assigned Box of a gated Issue-drain. Makes the minimal code change the Box's acceptance criteria require, in the worktree, then stops. The runner assigns the Box, runs the gate, and checks the box — you do not.
+interactive: false
 ---
 
 # ralph — work one assigned Box

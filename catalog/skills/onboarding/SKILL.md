@@ -1,6 +1,7 @@
 ---
 name: onboarding
 description: First-run setup — configure your vault and install skills.
+interactive: true
 ---
 
 # Onboarding

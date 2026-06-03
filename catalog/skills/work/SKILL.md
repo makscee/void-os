@@ -4,6 +4,7 @@ description: Execute a task file in the vault and mutate it to a done/result sta
 needs_input: true
 input_label: task file path
 output_target: vault/work/tasks/active/*.md
+interactive: true
 ---
 
 # Work
