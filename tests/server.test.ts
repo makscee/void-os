@@ -429,6 +429,103 @@ test("POST /s/:uuid/send on a worker (interactive:false) resumes its OWN thread 
   expect(sent.at(-1)?.[1]).toContain("answer: continue the skill");
 });
 
+// VOS-211: /act route tests
+test("POST /s/:uuid/act sends to the live session, returns ack fragment, advances body.html", async () => {
+  const uuid = "exec-act-live";
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "session-meta.json"), JSON.stringify({ skill: "x", interactive: true }));
+  writeFileSync(bodyPath(vault, uuid), "<html><body>old</body></html>");
+  hasSessionMap.set(`vos-run-${uuid}`, true);
+  const before = readFileSync(bodyPath(vault, uuid), "utf8");
+  const beforeKeys = sentKeys.length;
+
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/act`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ answer: "ship it", choice: "yes" }),
+  });
+
+  expect(res.status).toBe(200);
+  const frag = await res.text();
+  expect(frag).toContain("working");                       // ack fragment returned
+  expect(frag).not.toContain("<html");                      // fragment, not full doc
+  const sent = sentKeys.slice(beforeKeys);
+  expect(sent.at(-1)?.[0]).toBe(`vos-run-${uuid}`);         // same send path as the chat box
+  expect(sent.at(-1)?.[1]).toContain("answer: ship it");
+  expect(sent.at(-1)?.[1]).toContain("choice: yes");
+  // body.html replaced with workingPage so SSE reload fires
+  const after = readFileSync(bodyPath(vault, uuid), "utf8");
+  expect(after).not.toBe(before);
+  expect(after).toContain("working");
+});
+
+test("POST /s/:uuid/act on a reaped session respawns (--resume) then sends — no lost message", async () => {
+  const uuid = "exec-act-reaped";
+  const dir = sessionDir(vault, uuid);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "session-meta.json"), JSON.stringify({ skill: "x", interactive: true }));
+  writeFileSync(join(dir, "cc-actual-session.txt"), "12345678-1234-1234-1234-1234567890ab");
+  hasSessionMap.set(`vos-run-${uuid}`, false);     // reaped pane
+  const beforeRespawn = respawnCalls.length;
+  const beforeKeys = sentKeys.length;
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/act`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ answer: "resume me" }),
+  });
+  expect(res.status).toBe(200);
+  expect(respawnCalls.slice(beforeRespawn)).toContain(uuid);   // respawned this uuid
+  expect(sentKeys.slice(beforeKeys).at(-1)?.[1]).toContain("answer: resume me");  // send AFTER respawn
+});
+
+test("POST /s/:uuid/act rejects a path-traversal session id", async () => {
+  const app = makeApp(vault, db);
+  const res = await app.request("/s/..%2F..%2Fetc/act", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ x: "1" }),
+  });
+  expect(res.status).toBe(400);
+});
+
+// VOS-211: B2 — htmx asset route + UUID substitution
+test("GET /assets/htmx.min.js serves the vendored runtime", async () => {
+  const app = makeApp(vault, db);
+  const res = await app.request("/assets/htmx.min.js");
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toContain("javascript");
+  expect((await res.text()).length).toBeGreaterThan(1000);
+});
+
+test("GET /s/:uuid/body injects htmx and substitutes {{VOS_UUID}}", async () => {
+  const uuid = "exec-sub-uuid";
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid),
+    `<!doctype html><html><head></head><body><form hx-post="/s/{{VOS_UUID}}/act"></form></body></html>`);
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/body`);
+  const out = await res.text();
+  expect(out).toContain(`hx-post="/s/${uuid}/act"`);
+  expect(out).not.toContain("{{VOS_UUID}}");
+  expect(out).toContain("htmx.min.js");
+});
+
+test("GET /s/:uuid/body returns a complete standalone doc wired on cold load (dead-render)", async () => {
+  const uuid = "exec-cold";
+  mkdirSync(sessionDir(vault, uuid), { recursive: true });
+  writeFileSync(bodyPath(vault, uuid),
+    `<!doctype html><html><head><title>t</title></head><body><form hx-post="/s/{{VOS_UUID}}/act"><button>go</button></form></body></html>`);
+  const app = makeApp(vault, db);
+  const res = await app.request(`/s/${uuid}/body`);
+  const out = await res.text();
+  expect(out).toContain("<html");                 // full doc, not a fragment-only response
+  expect(out).toContain("htmx.min.js");            // runtime present without any SSE event
+  expect(out).toContain(`/s/${uuid}/act`);          // form is wired on cold load
+});
+
 // VOS-204: transcript route must translate void-os runId → CC session id via cc-actual-session.txt.
 // Test 1: runId (exec-...) with cc-actual-session.txt → renders turns from the CC jsonl.
 test("GET /s/:uuid/transcript renders turns when uuid is a runId and cc-actual-session.txt is present", async () => {

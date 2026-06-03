@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread } from "../src/render.ts";
+import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread, ackFragment } from "../src/render.ts";
 import type { SessionInfo } from "../src/sessions.ts";
 
 // ── VOS-207 helpers ────────────────────────────────────────────────────────
@@ -513,4 +513,21 @@ test("renderShell: attach + Send still render unconditionally when hasBody=false
     expect(html).toContain("msg-send");
     expect(html).toContain("msg-input");
   }
+});
+
+// VOS-211: ackFragment
+test("ackFragment is a self-contained htmx swap target showing working state", () => {
+  const html = ackFragment();
+  expect(html).toContain("working");          // operator-visible status
+  expect(html).toContain("disabled");          // form is disabled after submit
+  expect(html).not.toContain("<html");          // it is a FRAGMENT, not a full doc
+});
+
+// VOS-211: C1 — iframe sandbox
+test("renderShell sandboxes the body iframe (untrusted agent HTML)", () => {
+  // hasBody=true so the iframe is rendered (VOS-212 gates it on hasBody)
+  const html = renderShell("exec-u1", "/vault", "htmx-form-demo", undefined, true, true);
+  expect(html).toMatch(/<iframe[^>]*\bsandbox="[^"]*allow-scripts[^"]*"/);
+  expect(html).toContain("allow-forms");
+  expect(html).not.toMatch(/<iframe[^>]*allow-same-origin/);
 });
