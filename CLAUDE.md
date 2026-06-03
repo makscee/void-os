@@ -21,6 +21,17 @@ Proofs for void-os features run against a live daemon + real `claude`/`vc`/`tmux
 
 **Reaper constraint:** the subagent sandbox SIGKILLs long-lived process trees at ~2–4 min. Any proof that spawns a live `claude`/`vc`/`tmux` session must be **master-run**, never run inside a dispatched subagent. Subagents do source + fast unit tests only.
 
+## Core-flow regression guard (MANDATORY on every close-out)
+
+`bun run e2e:core` (`scripts/e2e-core.ts` → `.e2e/core-flows.spec.ts`) is the standing regression gate for the
+3 core void-os flows ANY change can silently break: (A) body.html write → SSE hot-reload re-renders the iframe
+with no manual refresh; (B) onboarding form submit → POST `/s/:uuid/send` 302 + body advances; (C) kanban
+`page.register` → server-side card render. It boots ONE real daemon on a fresh tmpdir vault + free port, drives
+real Chromium, and asserts WIRING (no LLM dependence on the deterministic legs). The finalizer runs it on EVERY
+void-os close-out — not just feature-touching tasks — because VOS-225/228 regressed A+B while their per-feature
+proofs only checked the new surface (the gap VOS-231 closed). If you change render.ts, server.ts, the body/SSE
+pipeline, or the `/p/:slug` path, run `bun run e2e:core` before claiming done.
+
 ## E2E gotchas (plugin/e2e harness)
 
 Source: VOS-104 T8 (recorded 2026-05-20). **Verify against the current harness before relying on these — the plugin layout may have shifted.** Before writing a new spec in `plugin/e2e/`:
