@@ -213,6 +213,7 @@ test("GET /s/:uuid returns the iframe shell with correct src", async () => {
 test("POST /s/:uuid/send serializes ALL form fields (Bug #1 fix)", async () => {
   mkdirSync(sessionDir(vault, "multi-uuid"), { recursive: true });
   writeFileSync(bodyPath(vault, "multi-uuid"), "<title>s</title>hi");
+  hasSessionMap.set("vos-run-multi-uuid", true); // live session — testing serialization not respawn
   const beforeSpawn = spawnRunCalls.length;
   const beforeKeys = sentKeys.length;
   const app = makeApp(vault, db);
@@ -427,10 +428,9 @@ test("POST /s/:uuid/send on a worker (interactive:false) resumes its OWN thread 
   expect(spawnRunCalls.length).toBe(beforeSpawn);
   // It respawned + resumed THIS uuid's own thread...
   expect(respawnCalls.slice(beforeRespawn)).toContain(uuid);
-  // ...and sent the input to the SAME uuid's tmux session.
-  const sent = sentKeys.slice(beforeKeys);
-  expect(sent.at(-1)?.[0]).toBe(`vos-run-${uuid}`);
-  expect(sent.at(-1)?.[1]).toContain("answer: continue the skill");
+  // VOS-222: reaped session goes via sendAfterRespawn (not bare sendKeys).
+  const afterRespawnSent = sentAfterRespawn.slice(beforeKeys);
+  expect(afterRespawnSent.some(([t, l]) => t === `vos-run-${uuid}` && l.includes("answer: continue the skill"))).toBe(true);
 });
 
 // VOS-211: /act route tests
@@ -482,7 +482,8 @@ test("POST /s/:uuid/act on a reaped session respawns (--resume) then sends — n
   });
   expect(res.status).toBe(200);
   expect(respawnCalls.slice(beforeRespawn)).toContain(uuid);   // respawned this uuid
-  expect(sentKeys.slice(beforeKeys).at(-1)?.[1]).toContain("answer: resume me");  // send AFTER respawn
+  // VOS-222: reaped session goes via sendAfterRespawn (not bare sendKeys).
+  expect(sentAfterRespawn.slice(beforeKeys).some(([_t, l]) => l.includes("answer: resume me"))).toBe(true);
 });
 
 test("POST /s/:uuid/act rejects a path-traversal session id", async () => {
@@ -995,9 +996,8 @@ test("POST /s/:uuid/message on a reaped session respawns then send-keys", async 
   expect(res.status).toBe(200);
   // respawnSession was called for the reaped session
   expect(respawnCalls.slice(prevRespawn)).toContain(uuid);
-  // send-keys was then called
-  const sent = sentKeys.slice(prevKeys).map(([t, l]) => [t, l]);
-  expect(sent.some(([t, l]) => t === `vos-run-${uuid}` && l === "after reap")).toBe(true);
+  // VOS-222: reaped session goes via sendAfterRespawn (not bare sendKeys).
+  expect(sentAfterRespawn.slice(prevKeys).some(([t, l]) => t === `vos-run-${uuid}` && l === "after reap")).toBe(true);
 });
 
 test("POST /s/:uuid/message returns 400 when text is empty", async () => {

@@ -14,6 +14,7 @@ const db = openRegistry(":memory:");
 
 // --- Spies ---
 const sentKeys: Array<[string, string]> = [];
+const sentAfterRespawn: Array<[string, string]> = [];  // VOS-222: tracks sendAfterRespawn calls
 const hasSessionMap: Map<string, boolean> = new Map();
 const spawnRunCalls: Array<Record<string, unknown>> = [];
 const runTurnCalls: Array<unknown> = [];
@@ -86,6 +87,8 @@ mock.module("../src/tmux.ts", () => ({
   hasSession: (name: string) => hasSessionMap.get(name) ?? false,
   switchClient: () => ({ code: 0, stderr: "" }),
   sendKeys: (target: string, line: string) => { sentKeys.push([target, line]); },
+  // VOS-222: sendAfterRespawn stub — routes reaped-session sends here (not to sentKeys).
+  sendAfterRespawn: async (target: string, line: string) => { sentAfterRespawn.push([target, line]); return 1; },
   killSession: () => {},
   newRunSession: () => 0,
   listVosSessions: () => [],
@@ -130,6 +133,7 @@ beforeAll(() => {
   rmSync(vault, { recursive: true, force: true });
   mkdirSync(`${vault}/sessions`, { recursive: true });
   sentKeys.length = 0;
+  sentAfterRespawn.length = 0;
   spawnRunCalls.length = 0;
   runTurnCalls.length = 0;
   respawnCalls.length = 0;
@@ -179,6 +183,7 @@ test("interactive + reaped → respawn (ensureRawRunner injects --raw) then send
 
   const beforeRespawn = respawnCalls.length;
   const beforeSentKeys = sentKeys.length;
+  const beforeAfterRespawn = sentAfterRespawn.length;
   const app = makeApp(vault, db);
   const form = new FormData();
   form.append("name", "Bob");
@@ -193,14 +198,16 @@ test("interactive + reaped → respawn (ensureRawRunner injects --raw) then send
   const rawArgv = ensureRawRunner(respawn.runner);
   expect(rawArgv).toContain("--raw");
   expect(rawArgv.indexOf("--raw")).toBeLessThan(rawArgv.indexOf("--"));
-  // send-keys was called after respawn
-  expect(sentKeys.length).toBe(beforeSentKeys + 1);
-  expect(sentKeys[sentKeys.length - 1][1]).toContain("Bob");
+  // VOS-222: reaped session send goes via sendAfterRespawn (not bare sendKeys)
+  const afterRespawnSent = sentAfterRespawn.slice(beforeAfterRespawn);
+  expect(afterRespawnSent.length).toBeGreaterThan(0);
+  expect(afterRespawnSent.some(([_t, l]) => l.includes("Bob"))).toBe(true);
 });
 
 test("print-mode session form-submit uses unified send path — resumes own thread, no successor", async () => {
   const uuid = `print-mode-${randomUUID()}`;
   seedSession(uuid, { skill: "onboarding", interactive: false, runner: "vc --" });
+  hasSessionMap.set(`vos-run-${uuid}`, true); // mark session live — testing send routing, not respawn
 
   const beforeSpawn = spawnRunCalls.length;
   const beforeSentKeys = sentKeys.length;

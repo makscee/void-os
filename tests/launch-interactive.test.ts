@@ -104,6 +104,7 @@ mock.module("../src/tmux.ts", () => ({
   hasSession: () => false,
   switchClient: () => ({ code: 0, stderr: "" }),
   sendKeys: () => {},
+  sendAfterRespawn: async () => 1,  // VOS-222: stub for reaped-session send path
   killSession: () => {},
   newRunSession: () => 0,
   listVosSessions: () => [],
