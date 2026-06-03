@@ -89,6 +89,28 @@ test("empty sessions root returns empty array", () => {
   expect(listSessions(emptyVault)).toEqual([]);
 });
 
+// ── VOS-208: Task 4 — VOS-206 non-regression + reaped→resume guard ───────────
+
+test("VOS-206 non-regression: live form stays awaiting; resumed reaped session is not stuck reaped", () => {
+  const v = "/tmp/voidos-status-resume";
+  rmSync(v, { recursive: true, force: true });
+  rmSync(`${v}.db`, { force: true });
+  const db = openRegistry(`${v}.db`);
+  // (a) live interactive awaiting — VOS-206 form round-trip stays one session
+  mkdirSync(sessionDir(v, "live"), { recursive: true });
+  writeFileSync(bodyPath(v, "live"), "<form action='/send'><input name='x'></form>");
+  createExecution(db, { id: "live", agent: null, skill: null, inputRef: null,
+    tmuxSession: "vos-run-live", now: 1, triggerId: null, stepCeiling: null });
+  expect(listSessions(v, db).find((s) => s.uuid === "live")!.status).toBe("awaiting");
+  // (b) resumed-after-reap: reaped.txt present but a live exec row exists again — must NOT be stuck reaped
+  mkdirSync(sessionDir(v, "resumed"), { recursive: true });
+  writeFileSync(bodyPath(v, "resumed"), "<title>resumed</title>");
+  writeFileSync(reapedPath(v, "resumed"), "old reap\n");
+  createExecution(db, { id: "resumed", agent: null, skill: null, inputRef: null,
+    tmuxSession: "vos-run-resumed", now: 5, triggerId: null, stepCeiling: null });
+  expect(listSessions(v, db).find((s) => s.uuid === "resumed")!.status).toBe("working");
+});
+
 // ── VOS-208: 6-state exec-aware deriveStatus regression matrix ───────────────
 
 test("deriveStatus folds exec terminal/liveness state into 6 states", () => {

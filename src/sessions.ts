@@ -36,15 +36,18 @@ function extractTitle(html: string): string {
 /**
  * Derive status from filesystem markers + exec row by strict precedence (VOS-208).
  * stopped > error(error.txt|reason) > reaped(marker|ended+stranded-form) > awaiting(live+form) > working(live) > complete.
+ * reaped.txt is gated on !liveExec so a resumed session (fresh live exec) is never stuck reaped.
  */
 function deriveStatus(vault: string, uuid: string, html: string, exec: ExecutionRow | null): SessionStatus {
   if (existsSync(stopPath(vault, uuid))) return "stopped";
   if (existsSync(errorPath(vault, uuid)) || (exec != null && exec.reason != null)) return "error";
+  const liveExec = exec != null && exec.ended_at == null;
   const ended = exec != null && exec.ended_at != null;
   const hasForm = html.includes("<form");
-  if (existsSync(reapedPath(vault, uuid)) || (ended && hasForm)) return "reaped";
-  if (hasForm && (exec == null || exec.ended_at == null)) return "awaiting";
-  if (exec != null && exec.ended_at == null) return "working";
+  // reaped: only when exec is not live (gate prevents resumed sessions being stuck reaped)
+  if (!liveExec && (existsSync(reapedPath(vault, uuid)) || (ended && hasForm))) return "reaped";
+  if (hasForm && !ended) return "awaiting";
+  if (liveExec) return "working";
   return "complete";
 }
 
