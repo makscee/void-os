@@ -9,7 +9,7 @@ import type { Database } from "bun:sqlite";
 import { sessionDir, errorPath, bodyPath, runLogPath, pidPath, stopPath, hookSettingsDir } from "./paths.ts";
 import { createExecution } from "./registry.ts";
 import { appendEvent } from "./events.ts";
-import { newRunSession, sendKeys, waitForReady, sendKickoff } from "./tmux.ts";
+import { newRunSession, sendKeys, waitForReady, sendKickoff, capturePaneContent } from "./tmux.ts";
 import { writeHookSettings } from "./hooks-endpoint.ts";
 
 // Absolute paths to the helper scripts shipped with void-os.
@@ -417,7 +417,14 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
     void (async () => {
       const ready = await waitForReady(tmuxSession, 180_000);
       if (ready) {
-        try { await sendKickoff(tmuxSession, skillLine); } catch { /* non-fatal: session may have been reaped */ }
+        // VOS-216: capture baseline pane snapshot immediately after waitForReady returns.
+        // Passing it to sendKickoff lets the acceptance detector use "pane changed from
+        // baseline" as a secondary signal — catches fast turns that complete before the
+        // first "Esc to interrupt" poll. Without it, only "Esc to interrupt" is checked,
+        // which may appear AFTER the 12s per-attempt window on a cold/slow model start,
+        // causing spurious re-sends (the 4× over-queue bug).
+        const baseline = capturePaneContent(tmuxSession);
+        try { await sendKickoff(tmuxSession, skillLine, { baselinePane: baseline }); } catch { /* non-fatal: session may have been reaped */ }
       }
       // If !ready after 180s, the session failed to initialize; do not send (leave idle for inspection).
     })();
