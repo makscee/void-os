@@ -24,6 +24,25 @@ export function buildResumeArgv(
 }
 
 /**
+ * Tokenise runnerCommand and inject `--raw` before the `--` separator if absent.
+ * Resume is always interactive: `--raw` makes vc open the REPL instead of its
+ * bubbletea TUI menu, so subsequent tmux send-keys reaches claude directly.
+ *
+ * Examples:
+ *   "vc --"        → ["vc", "--raw", "--"]
+ *   "vc --raw --"  → ["vc", "--raw", "--"]   (idempotent)
+ *   "vc"           → ["vc"]                  (no separator: pass through unchanged)
+ */
+export function ensureRawRunner(runnerCommand: string): string[] {
+  const toks = runnerCommand.trim().split(/\s+/).filter(Boolean);
+  const sepIdx = toks.indexOf("--");
+  if (sepIdx !== -1 && !toks.includes("--raw")) {
+    toks.splice(sepIdx, 0, "--raw");
+  }
+  return toks;
+}
+
+/**
  * Respawn a reaped session's tmux with `vc --raw -- --resume <ccId>`.
  * Returns the tmux session name (stable across reap+resume), or null if no ccId.
  *
@@ -53,8 +72,7 @@ export function respawnSession(
   const argv = buildResumeArgv(ccId, vault, { addDirs: [] });
 
   // Assemble the command string the same way spawnRun does (shared buildWrapperCommand).
-  const toks = runnerCommand.trim().split(/\s+/).filter(Boolean);
-  const ccCommand = [...toks, ...argv].map((a) => {
+  const ccCommand = [...ensureRawRunner(runnerCommand), ...argv].map((a) => {
     if (!a.includes(" ") && !a.includes("`")) return a;
     const escaped = a.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$").replace(/"/g, '\\"');
     return `"${escaped}"`;
