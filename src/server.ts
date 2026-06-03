@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { listCatalogSkills } from "./catalog.ts";
+import { decideInteractive } from "./interactive-decide.ts";
 import { listSessions } from "./sessions.ts";
 import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn, readCcSessionId } from "./spawn.ts";
 import { buildAgentLaunch, type AgentLaunch } from "./agents.ts";
@@ -134,14 +135,17 @@ a{color:#93c5fd}</style>
     }
 
     const outputTarget = agentLaunch ? agentLaunch.outputTarget : (skillMeta?.outputTarget ?? null);
+    // VOS-206: decide interactive mode per skill heuristic/flag.
+    // Conversational skills (chat/onboarding/work) launch as interactive tmux REPL.
+    // Pure-worker skills and agent-only launches stay print-mode (forcePrint:true).
+    const interactive = skillMeta ? decideInteractive(skillMeta) : false;
     const { runId, tmuxSession } = spawnRun({
       db, vault, daemonUrl, skill: skill || null, agent: agentName,
       runnerCommand, now: Date.now(), outputTarget,
-      // forcePrint: all /launch sessions use print mode so hooks fire and body.html is the output.
-      // Print mode: CC runs the skill, fires hooks (SessionStart → cc-actual-session.txt written),
-      // renders body.html, and exits. Form-resume (/s/:uuid/send) resumes via --resume actualId.
-      // Interactive (forcePrint:false) broke form-resume: hooks didn't fire reliably in tmux TUI.
-      forcePrint: true,
+      // interactive sessions use the tmux REPL path (forcePrint:false);
+      // print-mode sessions keep forcePrint:true so hooks fire and body.html is the output.
+      interactive,
+      forcePrint: interactive ? false : true,
       addDirs: agentLaunch?.addDirs,
       mcpConfigPath: agentLaunch?.mcpConfigPath ?? null,
       appendSystemPrompt: agentLaunch?.appendSystemPrompt,
@@ -152,7 +156,7 @@ a{color:#93c5fd}</style>
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, "session-meta.json"),
-      JSON.stringify({ skill: skill || null, agent: agentName, launchedAt: Date.now(), text, tmuxSession, runner: runnerCommand }),
+      JSON.stringify({ skill: skill || null, agent: agentName, launchedAt: Date.now(), text, tmuxSession, runner: runnerCommand, interactive }),
     );
     writeFileSync(bodyPath(vault, runId), placeholderBody(skill));
     return c.redirect(`/s/${runId}`);
