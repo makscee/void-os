@@ -1,0 +1,79 @@
+<!doctype html>
+<!--
+  void-os scaffold: FEED (dominant interaction: hx-ext=sse + sse-connect, live append)
+
+  COPY to panels/<slug>.html, register via page.register. Daemon serves at /p/<slug>,
+  substitutes {{VOS_SLUG}}, injects htmx. CUSTOMIZE the marked spots; keep the token <style>,
+  the data-vos-source attr, and the SSE wiring.
+
+  The htmx SSE extension is VENDORED INLINE below (htmx-ext-sse 2.2.3, ~2.8KB) so hx-ext="sse"
+  works with no CDN (htmx 2.x ships SSE as a separate ext, not in core). It self-registers via
+  htmx.defineExtension, so the inline <script> must load AFTER the daemon-injected htmx tag.
+
+  v1 LIVE VIEW: sse-connect opens an EventSource to the feed stream; new lines append on each
+  named event. The daemon wires the stream in P4; until then the connect URL 404s harmlessly.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feed</title>
+<script src="/assets/htmx.min.js"></script>
+<style>
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 212.7 26.8% 83.9%;
+  --radius: 0.5rem;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 1rem; max-width: 640px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: hsl(var(--background)); color: hsl(var(--foreground));
+  -webkit-font-smoothing: antialiased; line-height: 1.5;
+}
+h1 { font-size: 1.1rem; margin: 0 0 1rem; }
+#events { display: flex; flex-direction: column; gap: 0.5rem; }
+.event {
+  background: hsl(var(--card)); color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border)); border-radius: calc(var(--radius) - 2px);
+  padding: 0.55rem 0.7rem; font-size: 0.9rem;
+}
+.event time { color: hsl(var(--muted-foreground)); font-size: 0.75rem; margin-right: 0.5rem; }
+</style>
+</head>
+<body>
+<!-- CUSTOMIZE the glob; daemon watches it for SSE reload. -->
+<div data-vos-source="work/tasks/active/*.md">
+  <h1>Feed — {{VOS_SLUG}}</h1>
+
+  <!-- hx-ext="sse" + sse-connect open an EventSource; sse-swap names the event whose data
+       appends here. CUSTOMIZE the stream path + event name to your daemon feed route. -->
+  <div hx-ext="sse" sse-connect="/p/{{VOS_SLUG}}/feed">
+    <div id="events"
+         sse-swap="message"
+         hx-swap="beforeend">
+      <!-- new .event fragments append here as they arrive -->
+    </div>
+  </div>
+</div>
+
+<!-- vendored htmx SSE extension (htmx-ext-sse 2.2.3) — inlined, NO CDN. Loads after htmx. -->
+<script>(function(){var g;htmx.defineExtension("sse",{init:function(e){g=e;if(htmx.createEventSource==undefined){htmx.createEventSource=t}},getSelectors:function(){return["[sse-connect]","[data-sse-connect]","[sse-swap]","[data-sse-swap]"]},onEvent:function(e,t){var r=t.target||t.detail.elt;switch(e){case"htmx:beforeCleanupElement":var n=g.getInternalData(r);var s=n.sseEventSource;if(s){g.triggerEvent(r,"htmx:sseClose",{source:s,type:"nodeReplaced"});n.sseEventSource.close()}return;case"htmx:afterProcessNode":i(r)}}});function t(e){return new EventSource(e,{withCredentials:true})}function a(n){if(g.getAttributeValue(n,"sse-swap")){var s=g.getClosestMatch(n,v);if(s==null){return null}var e=g.getInternalData(s);var a=e.sseEventSource;var t=g.getAttributeValue(n,"sse-swap");var r=t.split(",");for(var i=0;i<r.length;i++){const u=r[i].trim();const c=function(e){if(l(s)){return}if(!g.bodyContains(n)){a.removeEventListener(u,c);return}if(!g.triggerEvent(n,"htmx:sseBeforeMessage",e)){return}f(n,e.data);g.triggerEvent(n,"htmx:sseMessage",e)};g.getInternalData(n).sseEventListener=c;a.addEventListener(u,c)}}if(g.getAttributeValue(n,"hx-trigger")){var s=g.getClosestMatch(n,v);if(s==null){return null}var e=g.getInternalData(s);var a=e.sseEventSource;var o=g.getTriggerSpecs(n);o.forEach(function(t){if(t.trigger.slice(0,4)!=="sse:"){return}var r=function(e){if(l(s)){return}if(!g.bodyContains(n)){a.removeEventListener(t.trigger.slice(4),r)}htmx.trigger(n,t.trigger,e);htmx.trigger(n,"htmx:sseMessage",e)};g.getInternalData(n).sseEventListener=r;a.addEventListener(t.trigger.slice(4),r)})}}function i(e,t){if(e==null){return null}if(g.getAttributeValue(e,"sse-connect")){var r=g.getAttributeValue(e,"sse-connect");if(r==null){return}n(e,r,t)}a(e)}function n(r,e,n){var s=htmx.createEventSource(e);s.onerror=function(e){g.triggerErrorEvent(r,"htmx:sseError",{error:e,source:s});if(l(r)){return}if(s.readyState===EventSource.CLOSED){n=n||0;n=Math.max(Math.min(n*2,128),1);var t=n*500;window.setTimeout(function(){i(r,n)},t)}};s.onopen=function(e){g.triggerEvent(r,"htmx:sseOpen",{source:s});if(n&&n>0){const t=r.querySelectorAll("[sse-swap], [data-sse-swap], [hx-trigger], [data-hx-trigger]");for(let e=0;e<t.length;e++){a(t[e])}n=0}};g.getInternalData(r).sseEventSource=s;var t=g.getAttributeValue(r,"sse-close");if(t){s.addEventListener(t,function(){g.triggerEvent(r,"htmx:sseClose",{source:s,type:"message"});s.close()})}}function l(e){if(!g.bodyContains(e)){var t=g.getInternalData(e).sseEventSource;if(t!=undefined){g.triggerEvent(e,"htmx:sseClose",{source:t,type:"nodeMissing"});t.close();return true}}return false}function f(t,r){g.withExtensions(t,function(e){r=e.transformResponse(r,null,t)});var e=g.getSwapSpecification(t);var n=g.getTarget(t);g.swap(n,r,e)}function v(e){return g.getInternalData(e).sseEventSource!=null}})();</script>
+</body>
+</html>

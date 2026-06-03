@@ -1,0 +1,96 @@
+<!doctype html>
+<!--
+  void-os scaffold: FORM (dominant interaction: hx-post submit + hx-target ack)
+
+  COPY to panels/<slug>.html, register via page.register. Daemon serves at /p/<slug>,
+  substitutes {{VOS_SLUG}}, injects htmx. CUSTOMIZE the fields; keep the token <style>,
+  the data-vos-source attr, and the htmx wiring.
+
+  v1: the submit posts to /p/<slug>/act which returns 410 (write-back is the v1.5 seam). The
+  ack region swaps in the 410 body in v1; v1.5 returns a real confirmation fragment.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Form</title>
+<script src="/assets/htmx.min.js"></script>
+<style>
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 212.7 26.8% 83.9%;
+  --radius: 0.5rem;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 1rem; max-width: 520px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: hsl(var(--background)); color: hsl(var(--foreground));
+  -webkit-font-smoothing: antialiased; line-height: 1.5;
+}
+h1 { font-size: 1.1rem; margin: 0 0 1rem; }
+form {
+  background: hsl(var(--card)); border: 1px solid hsl(var(--border));
+  border-radius: var(--radius); padding: 1rem;
+  display: flex; flex-direction: column; gap: 0.75rem;
+}
+label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; }
+label span { color: hsl(var(--muted-foreground)); }
+input, textarea, select {
+  font: inherit; padding: 0.45rem 0.6rem;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--background)); color: hsl(var(--foreground));
+}
+input:focus, textarea:focus, select:focus { outline: none; border-color: hsl(var(--ring)); }
+textarea { min-height: 5rem; resize: vertical; }
+button {
+  font: inherit; cursor: pointer; padding: 0.5rem 0.9rem; align-self: flex-start;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid hsl(var(--primary));
+  background: hsl(var(--primary)); color: hsl(var(--primary-foreground));
+}
+#ack { margin-top: 1rem; color: hsl(var(--muted-foreground)); }
+</style>
+</head>
+<body>
+<!-- CUSTOMIZE the glob; daemon watches it for SSE reload. -->
+<div data-vos-source="work/tasks/active/*.md">
+  <h1>Form — {{VOS_SLUG}}</h1>
+
+  <!-- hx-post submit; the returned fragment swaps into #ack (410 body in v1). -->
+  <form hx-post="/p/{{VOS_SLUG}}/act" hx-target="#ack" hx-swap="innerHTML">
+    <input type="hidden" name="action" value="submit">
+    <!-- CUSTOMIZE: the fields for your entity. -->
+    <label><span>Title</span>
+      <input type="text" name="title" required autocomplete="off"></label>
+    <label><span>State</span>
+      <select name="state">
+        <option value="todo">Todo</option>
+        <option value="doing">Doing</option>
+        <option value="done">Done</option>
+      </select></label>
+    <label><span>Notes</span>
+      <textarea name="notes"></textarea></label>
+    <button type="submit">Save</button>
+  </form>
+
+  <div id="ack"></div>
+</div>
+</body>
+</html>

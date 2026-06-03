@@ -1,0 +1,106 @@
+/*
+ * kit/tokens.css — the void-os default styled kit (design TOKENS only, NOT a component library).
+ *
+ * This is the SHARED token block every scaffold inlines into its own <style> (no external
+ * stylesheet, no @import, no @hub/ui-kit — iframe-CSP-safe per the vault-mcp-v1 scaffold
+ * contract §6.1). The :root values are the render.ts UI_TOKENS block VERBATIM, which are the
+ * shadcn slate-dark HSL values from vault/standards/ui-style-spec.md §2. Keep this file in sync
+ * with src/render.ts UI_TOKENS — the contract freezes them as identical.
+ *
+ * Usage in a scaffold: paste the :root{} block + the base layer below into the scaffold's inline
+ * <style>. Reference a token as e.g. `background: hsl(var(--background));`. Tokens are raw HSL
+ * channels (no hsl() wrapper) so they compose with hsl()/hsla() at call sites (shadcn convention).
+ */
+
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 212.7 26.8% 83.9%;
+  --radius: 0.5rem;
+}
+
+/* ── Base layer ──────────────────────────────────────────────────────────────
+ * Minimal, token-derived primitives the scaffolds share. Not a framework — just
+ * enough so a copied scaffold renders on-brand before the agent customizes it.
+ * System-native font stack (ui-style-spec.md §3) — no webfont loader.
+ */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+
+a { color: hsl(var(--foreground)); }
+
+.vos-muted { color: hsl(var(--muted-foreground)); }
+
+.vos-card {
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  padding: 0.75rem;
+}
+
+.vos-btn {
+  font: inherit;
+  cursor: pointer;
+  padding: 0.4rem 0.8rem;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary));
+  color: hsl(var(--secondary-foreground));
+}
+.vos-btn:hover { border-color: hsl(var(--ring)); }
+.vos-btn--primary {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--primary));
+}
+.vos-btn--destructive {
+  background: hsl(var(--destructive));
+  color: hsl(var(--destructive-foreground));
+  border-color: hsl(var(--destructive));
+}
+
+.vos-input, .vos-textarea {
+  font: inherit;
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+.vos-input:focus, .vos-textarea:focus {
+  outline: none;
+  border-color: hsl(var(--ring));
+}
+
+.vos-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 9999px;
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}

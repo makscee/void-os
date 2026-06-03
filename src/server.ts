@@ -33,6 +33,7 @@ import {
   listVaultSkills, viewVaultSkill,
 } from "./skill-manage.ts";
 import { HTMX_MIN_JS } from "./htmx-runtime.ts";
+import { SORTABLE_MIN_JS } from "./sortable-runtime.ts";
 import { readManifest, extractDataSource, dataSourceMtime } from "./pages.ts";
 import { createVaultMcpServer } from "./vault-mcp.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -213,6 +214,11 @@ a{color:#93c5fd}</style>
   // GET /assets/htmx.min.js — vendored htmx runtime (VOS-211). Served by the daemon, not a CDN.
   app.get("/assets/htmx.min.js", (c) =>
     new Response(HTMX_MIN_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } }));
+
+  // GET /assets/sortable.min.js — vendored SortableJS runtime (VOS-227). Used by the kanban
+  // scaffold for drag-reorder. Served by the daemon, not a CDN (iframe-CSP-safe, mirrors htmx).
+  app.get("/assets/sortable.min.js", (c) =>
+    new Response(SORTABLE_MIN_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } }));
 
   // GET /s/:uuid — iframe shell wrapping the session body
   app.get("/s/:uuid", (c) => {

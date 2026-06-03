@@ -1,0 +1,92 @@
+<!doctype html>
+<!--
+  void-os scaffold: DETAIL (dominant interaction: hx-get lazy sections)
+
+  COPY to panels/<slug>.html, register via page.register. Daemon serves at /p/<slug>,
+  substitutes {{VOS_SLUG}}, injects htmx. CUSTOMIZE the marked spots; keep the token <style>,
+  the data-vos-source attr, and the htmx wiring.
+
+  READ-ONLY LIVE VIEW in v1: the header renders from the data source and re-renders on change
+  (SSE). Lazy sections hx-get from /p/<slug>/act (returns 410 in v1; v1.5 returns the section
+  fragment). They load on reveal so a heavy detail page paints fast.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Detail</title>
+<script src="/assets/htmx.min.js"></script>
+<style>
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 212.7 26.8% 83.9%;
+  --radius: 0.5rem;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 1rem; max-width: 720px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: hsl(var(--background)); color: hsl(var(--foreground));
+  -webkit-font-smoothing: antialiased; line-height: 1.5;
+}
+header {
+  background: hsl(var(--card)); border: 1px solid hsl(var(--border));
+  border-radius: var(--radius); padding: 1rem; margin-bottom: 1rem;
+}
+header h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+.badge {
+  display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.5rem;
+  border-radius: 9999px; background: hsl(var(--accent)); color: hsl(var(--accent-foreground));
+}
+section {
+  border: 1px solid hsl(var(--border)); border-radius: var(--radius);
+  padding: 0.85rem; margin-bottom: 0.75rem;
+}
+section h2 { font-size: 0.9rem; margin: 0 0 0.5rem; }
+.lazy { color: hsl(var(--muted-foreground)); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<!-- CUSTOMIZE the glob; daemon watches it for SSE reload. -->
+<div data-vos-source="work/tasks/active/*.md">
+  <!-- CUSTOMIZE the header from your entity's top-level fields. -->
+  <header>
+    <h1>Detail — {{VOS_SLUG}}</h1>
+    <span class="badge">doing</span>
+  </header>
+
+  <!-- Lazy section: hx-get on reveal (load="revealed"). Returns 410 in v1; v1.5 returns the
+       section fragment. CUSTOMIZE: one section per heavy sub-view. -->
+  <section>
+    <h2>Activity</h2>
+    <div class="lazy"
+         hx-get="/p/{{VOS_SLUG}}/act?action=section&name=activity"
+         hx-trigger="revealed"
+         hx-swap="innerHTML">Loading activity…</div>
+  </section>
+
+  <section>
+    <h2>Related</h2>
+    <div class="lazy"
+         hx-get="/p/{{VOS_SLUG}}/act?action=section&name=related"
+         hx-trigger="revealed"
+         hx-swap="innerHTML">Loading related…</div>
+  </section>
+</div>
+</body>
+</html>

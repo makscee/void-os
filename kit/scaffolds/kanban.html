@@ -1,0 +1,126 @@
+<!doctype html>
+<!--
+  void-os scaffold: KANBAN (dominant interaction: SortableJS drag + hx-trigger="end")
+
+  HOW TO USE: an agent COPIES this file to panels/<slug>.html, then registers it with
+  page.register(slug,title,"panels/<slug>.html"). The daemon serves it at /p/<slug>, which
+  substitutes {{VOS_SLUG}} and injects htmx. CUSTOMIZE the marked spots below; leave the
+  token <style>, the data-vos-source attr, and the SortableJS wiring intact.
+
+  This is a READ-ONLY LIVE VIEW in v1: it renders from the data source and re-renders on
+  change (daemon SSE). Drag emits an hx-post to /p/<slug>/act which returns 410 (write-back is
+  the v1.5 seam). Wire it now so v1.5 only flips the route.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kanban</title>
+<!-- vendored htmx (daemon asset route — never a CDN) -->
+<script src="/assets/htmx.min.js"></script>
+<!-- vendored SortableJS (daemon asset route — never a CDN) -->
+<script src="/assets/sortable.min.js"></script>
+<style>
+/* ── kit/tokens.css inlined (shadcn slate-dark, ui-style-spec §2) ── */
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 212.7 26.8% 83.9%;
+  --radius: 0.5rem;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 1rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: hsl(var(--background)); color: hsl(var(--foreground));
+  -webkit-font-smoothing: antialiased; line-height: 1.5;
+}
+h1 { font-size: 1.1rem; margin: 0 0 1rem; }
+.board { display: flex; gap: 1rem; align-items: flex-start; overflow-x: auto; }
+.col {
+  flex: 1 1 0; min-width: 220px;
+  background: hsl(var(--secondary)); border: 1px solid hsl(var(--border));
+  border-radius: var(--radius); padding: 0.6rem;
+}
+.col h2 {
+  font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: hsl(var(--muted-foreground)); margin: 0 0 0.6rem;
+}
+.cards { display: flex; flex-direction: column; gap: 0.5rem; min-height: 2rem; }
+.card {
+  background: hsl(var(--card)); color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border)); border-radius: calc(var(--radius) - 2px);
+  padding: 0.6rem; cursor: grab;
+}
+.card.sortable-ghost { opacity: 0.4; }
+</style>
+</head>
+<body>
+<!-- data-vos-source: the vault-relative glob this board renders from. The daemon file-watches
+     it and pushes an SSE reload on change (frozen attribute name: data-vos-source).
+     CUSTOMIZE: point at your data dir. -->
+<div data-vos-source="work/tasks/active/*.md">
+  <h1>Kanban — {{VOS_SLUG}}</h1>
+
+  <!-- Drag end posts to the read-only-board write-back seam (410 in v1, v1.5 flips it).
+       hx-trigger="end" fires when SortableJS dispatches the synthetic 'end' event below. -->
+  <form id="move-form" hx-post="/p/{{VOS_SLUG}}/act" hx-trigger="end" hx-swap="none">
+    <input type="hidden" name="action" value="move">
+    <input type="hidden" name="card" id="moved-card">
+    <input type="hidden" name="to" id="moved-to">
+  </form>
+
+  <div class="board">
+    <!-- CUSTOMIZE: one .col per task `state` (or your grouping field). data-col is sent on move. -->
+    <div class="col" data-col="todo">
+      <h2>Todo</h2>
+      <div class="cards" data-cards>
+        <!-- CUSTOMIZE: one .card per data row. data-id identifies it on move. -->
+        <div class="card" data-id="example-1">Example task A</div>
+        <div class="card" data-id="example-2">Example task B</div>
+      </div>
+    </div>
+    <div class="col" data-col="doing">
+      <h2>Doing</h2>
+      <div class="cards" data-cards></div>
+    </div>
+    <div class="col" data-col="done">
+      <h2>Done</h2>
+      <div class="cards" data-cards></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Wire SortableJS onto every column; on drop, stamp the hidden fields and fire htmx via 'end'.
+document.querySelectorAll(".cards").forEach((el) => {
+  new Sortable(el, {
+    group: "kanban",
+    animation: 150,
+    ghostClass: "sortable-ghost",
+    onEnd: (evt) => {
+      document.getElementById("moved-card").value = evt.item.getAttribute("data-id") || "";
+      document.getElementById("moved-to").value =
+        evt.to.closest("[data-col]")?.getAttribute("data-col") || "";
+      // htmx listens for the 'end' event on the form (hx-trigger="end").
+      htmx.trigger("#move-form", "end");
+    },
+  });
+});
+</script>
+</body>
+</html>

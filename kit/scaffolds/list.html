@@ -1,0 +1,105 @@
+<!doctype html>
+<!--
+  void-os scaffold: LIST (dominant interaction: hx-post inline-add + hx-delete row)
+
+  COPY to panels/<slug>.html, register via page.register. The daemon serves at /p/<slug>,
+  substitutes {{VOS_SLUG}}, injects htmx. CUSTOMIZE the marked spots; keep the token <style>,
+  the data-vos-source attr, and the htmx wiring.
+
+  READ-ONLY LIVE VIEW in v1: renders from the data source, re-renders on change (SSE). The
+  add/delete endpoints post to /p/<slug>/act which returns 410 (write-back is the v1.5 seam).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>List</title>
+<script src="/assets/htmx.min.js"></script>
+<style>
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 212.7 26.8% 83.9%;
+  --radius: 0.5rem;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 1rem; max-width: 640px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: hsl(var(--background)); color: hsl(var(--foreground));
+  -webkit-font-smoothing: antialiased; line-height: 1.5;
+}
+h1 { font-size: 1.1rem; margin: 0 0 1rem; }
+.add { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+input[type=text] {
+  font: inherit; flex: 1; padding: 0.45rem 0.6rem;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--background)); color: hsl(var(--foreground));
+}
+input[type=text]:focus { outline: none; border-color: hsl(var(--ring)); }
+button {
+  font: inherit; cursor: pointer; padding: 0.45rem 0.8rem;
+  border-radius: calc(var(--radius) - 2px); border: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground));
+}
+button:hover { border-color: hsl(var(--ring)); }
+ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+li {
+  display: flex; align-items: center; justify-content: space-between;
+  background: hsl(var(--card)); color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border)); border-radius: calc(var(--radius) - 2px);
+  padding: 0.55rem 0.7rem;
+}
+.del {
+  background: transparent; border: none; color: hsl(var(--muted-foreground));
+  cursor: pointer; font-size: 1rem; padding: 0 0.25rem;
+}
+.del:hover { color: hsl(var(--destructive-foreground)); }
+</style>
+</head>
+<body>
+<!-- CUSTOMIZE the glob; daemon watches it for SSE reload. -->
+<div data-vos-source="work/tasks/active/*.md">
+  <h1>List — {{VOS_SLUG}}</h1>
+
+  <!-- Inline-add: hx-post the new item, swap the returned <li> into the list (410 in v1). -->
+  <form class="add" hx-post="/p/{{VOS_SLUG}}/act" hx-target="#items" hx-swap="beforeend"
+        hx-on::after-request="this.reset()">
+    <input type="hidden" name="action" value="add">
+    <input type="text" name="title" placeholder="New item…" autocomplete="off">
+    <button type="submit">Add</button>
+  </form>
+
+  <ul id="items">
+    <!-- CUSTOMIZE: one <li> per data row. The delete button hx-delete's the row. -->
+    <li data-id="example-1">
+      <span>Example item A</span>
+      <button class="del" title="delete"
+              hx-delete="/p/{{VOS_SLUG}}/act?action=delete&id=example-1"
+              hx-target="closest li" hx-swap="outerHTML">×</button>
+    </li>
+    <li data-id="example-2">
+      <span>Example item B</span>
+      <button class="del" title="delete"
+              hx-delete="/p/{{VOS_SLUG}}/act?action=delete&id=example-2"
+              hx-target="closest li" hx-swap="outerHTML">×</button>
+    </li>
+  </ul>
+</div>
+</body>
+</html>
