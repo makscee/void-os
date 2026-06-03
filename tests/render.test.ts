@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { placeholderBody, renderDashboard, renderShell, workingPage, stoppedBody, renderChatThread, ackFragment, statusLabel } from "../src/render.ts";
+import { placeholderBody, renderDashboard, renderShell, renderPageShell, workingPage, stoppedBody, renderChatThread, ackFragment, statusLabel } from "../src/render.ts";
 import type { SessionInfo } from "../src/sessions.ts";
 
 // ── VOS-207 helpers ────────────────────────────────────────────────────────
@@ -50,6 +50,59 @@ test("dashboard shows skill chips and session rows in Option 1 style", () => {
   expect(html).toContain("relay ✓");
   expect(html).toContain("skill-chip");
   expect(html).toContain("session-row");
+});
+
+// ── VOS-228 P4: leftNav pages-group (§3.5, render.ts is the one writer) ──────
+test("dashboard leftNav lists pinned manifest pages as /p/:slug rows under a pages group", () => {
+  const html = renderDashboard(
+    [],
+    [],
+    { authed: true },
+    undefined,
+    [],
+    [{ slug: "kanban", title: "Kanban", path: "panels/kanban.html", pinned: true }],
+  );
+  // a "pages" nav group label + a row linking to /p/kanban with the manifest title
+  expect(html).toContain("pages");
+  expect(html).toContain('href="/p/kanban"');
+  expect(html).toContain("Kanban");
+});
+
+test("dashboard leftNav omits unpinned pages (exists-vs-pinned split)", () => {
+  const html = renderDashboard(
+    [], [], { authed: true }, undefined, [],
+    [
+      { slug: "shown", title: "Shown", path: "panels/a.html", pinned: true },
+      { slug: "hidden", title: "Hidden", path: "panels/b.html", pinned: false },
+    ],
+  );
+  expect(html).toContain('href="/p/shown"');
+  expect(html).not.toContain('href="/p/hidden"');
+});
+
+test("dashboard leftNav has no pages group when no pages are registered", () => {
+  const html = renderDashboard([], [], { authed: true });
+  expect(html).not.toContain('href="/p/');
+});
+
+test("renderShell leftNav also surfaces pinned pages (page reachable from a session view)", () => {
+  const html = renderShell(
+    "u1", "/vault", undefined, undefined, undefined, false, [], "working",
+    [{ slug: "board", title: "Board", path: "panels/board.html", pinned: true }],
+  );
+  expect(html).toContain('href="/p/board"');
+});
+
+test("renderPageShell embeds the page body iframe + SSE reload + leftNav with active page", () => {
+  const html = renderPageShell(
+    "kanban", [],
+    [{ slug: "kanban", title: "Kanban", path: "panels/kanban.html", pinned: true }],
+  );
+  expect(html).toContain("/p/kanban/body");      // iframe src
+  expect(html).toContain("/p/kanban/stream");     // SSE reload
+  expect(html).toContain(".left-nav");            // navigable shell (not a bare iframe)
+  // the active page row is marked active
+  expect(html).toMatch(/nav-page active[^>]*data-slug="kanban"|data-slug="kanban"[^>]*class="nav-page active"|nav-page active/);
 });
 
 test("dashboard shows error flag for errored session", () => {

@@ -12,7 +12,7 @@ import { listSessions, statusFor } from "./sessions.ts";
 import { buildLaunchArgv, buildAnswerArgv, spawnTurn, spawnRun, runTurn, readCcSessionId } from "./spawn.ts";
 import { buildAgentLaunch, type AgentLaunch } from "./agents.ts";
 import { drain, type DrainOpts } from "./drain.ts";
-import { renderDashboard, renderShell, placeholderBody, workingPage, stoppedBody, ackFragment } from "./render.ts";
+import { renderDashboard, renderShell, renderPageShell, placeholderBody, workingPage, stoppedBody, ackFragment } from "./render.ts";
 import { killProcessTree } from "./kill.ts";
 import { sessionDir, bodyPath, errorPath, readConfig, resolveRunner, pidPath, stopPath, lastOpenedPath } from "./paths.ts";
 import { homedir } from "node:os";
@@ -34,7 +34,7 @@ import {
 } from "./skill-manage.ts";
 import { HTMX_MIN_JS } from "./htmx-runtime.ts";
 import { SORTABLE_MIN_JS } from "./sortable-runtime.ts";
-import { readManifest, extractDataSource, dataSourceMtime } from "./pages.ts";
+import { readManifest, extractDataSource, dataSourceMtime, renderBoardData } from "./pages.ts";
 import { createVaultMcpServer } from "./vault-mcp.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
@@ -103,7 +103,7 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
     const status = await realDeps.vcStatus();
     const cfg = readConfig(vault);
     return c.html(
-      renderDashboard(listVaultSkills(vault), listSessions(vault, db), { authed: status.ok }, cfg, listPendingDecisions(vault)),
+      renderDashboard(listVaultSkills(vault), listSessions(vault, db), { authed: status.ok }, cfg, listPendingDecisions(vault), readManifest(vault).pages),
     );
   });
 
@@ -240,7 +240,7 @@ a{color:#93c5fd}</style>
     const resumeCmd = ccId ? `cd ${vault} && vc -- --resume ${ccId}` : undefined;
     const bp = bodyPath(vault, uuid);
     const hasReal = existsSync(bp) && bodyHasRealContent(readFileSync(bp, "utf8"));
-    return c.html(renderShell(uuid, vault, sessionName, resumeCmd, resumable, hasReal, listSessions(vault, db)));
+    return c.html(renderShell(uuid, vault, sessionName, resumeCmd, resumable, hasReal, listSessions(vault, db), "working", readManifest(vault).pages));
   });
 
   // GET /s/:uuid/body — serves the session's body.html, appends error banner if error.txt present.
@@ -780,13 +780,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     const slug = slugOf(c);
     const page = lookupPage(slug);
     if (!page) return c.text("no such page", 404);
-    return c.html(`<!doctype html><meta charset=utf8><title>${slug}</title>
-<style>html,body{margin:0;height:100%;background:#0a0f1a}iframe{border:0;width:100%;height:100vh;display:block}</style>
-<iframe id="f" src="/p/${slug}/body" sandbox="allow-scripts allow-forms allow-popups"></iframe>
-<script>
-var es=new EventSource("/p/${slug}/stream");
-es.onmessage=function(){var f=document.getElementById("f");if(f)f.contentWindow.location.replace("/p/${slug}/body");};
-</script>`);
+    // VOS-228 §3.3: serve the page inside a navigable shell (leftNav + iframe + data-source SSE).
+    return c.html(renderPageShell(slug, listSessions(vault, db), readManifest(vault).pages));
   });
 
   // GET /p/:slug/body — the panel html through the shared pipeline; missing-file → stub (never 500).
@@ -799,7 +794,11 @@ es.onmessage=function(){var f=document.getElementById("f");if(f)f.contentWindow.
       return c.html(renderPanelBody(`<p>page file missing: ${page.path}</p>`, slug));
     }
     const raw = readFileSync(abs, "utf8");
-    return c.html(renderPanelBody(raw, slug));
+    // VOS-228 §2 live-data seam: replace any example cards with REAL task cards parsed from the
+    // panel's data-vos-source glob (no-op for non-board panels). The SSE reload re-fetches this
+    // route, so editing a task file regenerates the board live (§3.4).
+    const withData = renderBoardData(vault, raw);
+    return c.html(renderPanelBody(withData, slug));
   });
 
   // GET /p/:slug/stream — SSE: emit "reload" when the page's data-source glob mtime advances.

@@ -102,6 +102,104 @@ export function dataSourceDir(vault: string, glob: string): string {
   return rel ? join(vault, rel) : vault;
 }
 
+/** A single task card derived from a vault md file's frontmatter (VOS-228 §2 live data). */
+export interface TaskCard {
+  id: string;
+  title: string;
+  state: string;
+}
+
+/**
+ * Parse the leading YAML-ish frontmatter of a task md into a board card (id/title/state).
+ * Tolerant line-scan (no YAML dep): strips surrounding quotes, keeps the rest of the value
+ * verbatim (so a title with a ':' survives). Missing fields → "". Never throws.
+ */
+export function parseTaskCard(md: string): TaskCard {
+  const out: TaskCard = { id: "", title: "", state: "" };
+  const m = md.match(/^---\n([\s\S]*?)\n---/);
+  if (!m) return out;
+  for (const line of m[1].split("\n")) {
+    const kv = line.match(/^([A-Za-z0-9_]+):\s*(.*)$/);
+    if (!kv) continue;
+    const [, k, vRaw] = kv;
+    const v = vRaw.replace(/^["']|["']$/g, "").trim();
+    if (k === "id") out.id = v;
+    else if (k === "title") out.title = v;
+    else if (k === "state") out.state = v;
+  }
+  return out;
+}
+
+/** Translate a glob basename pattern (e.g. "*.md", "VOS-*.md") into a RegExp. */
+function globToRe(pattern: string): RegExp {
+  const re = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(`^${re}$`);
+}
+
+/** List the task md files matching a data-source glob (vault-relative), sorted by name. */
+function listSourceFiles(vault: string, glob: string): string[] {
+  const dir = dataSourceDir(vault, glob);
+  if (!existsSync(dir)) return [];
+  const parts = glob.split("/");
+  const last = parts[parts.length - 1] ?? "";
+  const pat = /[*?[\]{}]/.test(last) ? last : "*"; // if last segment is the dir itself, match all
+  const re = globToRe(pat);
+  try {
+    return readdirSync(dir)
+      .filter((n) => re.test(n))
+      .sort()
+      .map((n) => join(dir, n));
+  } catch { return []; }
+}
+
+const escHtml = (s: string): string =>
+  s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+
+/**
+ * THE live-data seam (VOS-228 §2/§3 of the contract). A kanban-style panel ships with example
+ * cards inside `[data-col][... data-cards]` containers + a top-level `data-vos-source` glob. The
+ * daemon REPLACES those example cards with REAL cards parsed from the glob's task files, grouping
+ * each into the column whose `data-col` matches the task `state` (fallback: the FIRST column).
+ *
+ * No-op (returns the html unchanged) when the panel declares no `data-vos-source` or has no
+ * `data-cards` container — so non-board scaffolds (form/detail/feed) pass through untouched.
+ * Pure string transform: same input → same output for a fixed disk, so the SSE reload that
+ * re-fetches /p/:slug/body always reflects current task files (regenerate-on-change, §3.4).
+ */
+export function renderBoardData(vault: string, html: string): string {
+  const glob = extractDataSource(html);
+  if (!glob) return html;
+  if (!/data-cards/.test(html)) return html;
+
+  // discover the columns in document order: each <div ... data-col="X" ...> ... data-cards container
+  const colRe = /data-col\s*=\s*["']([^"']*)["']/g;
+  const cols: string[] = [];
+  let cm: RegExpExecArray | null;
+  while ((cm = colRe.exec(html)) !== null) cols.push(cm[1]);
+  if (cols.length === 0) return html;
+
+  // build the card list, bucketed by column
+  const buckets: Record<string, string[]> = {};
+  for (const col of cols) buckets[col] = [];
+  for (const f of listSourceFiles(vault, glob)) {
+    let card: TaskCard;
+    try { card = parseTaskCard(readFileSync(f, "utf8")); } catch { continue; }
+    if (!card.title && !card.id) continue;
+    const target = cols.includes(card.state) ? card.state : cols[0];
+    const label = card.title || card.id;
+    buckets[target].push(
+      `<div class="card" data-id="${escHtml(card.id)}">${escHtml(label)}</div>`,
+    );
+  }
+
+  // for each `data-col="X"` block, replace the inner-most data-cards container's children
+  return html.replace(
+    /(<div[^>]*data-col\s*=\s*["']([^"']*)["'][^>]*>[\s\S]*?<div[^>]*\bdata-cards\b[^>]*>)([\s\S]*?)(<\/div>)/g,
+    (_full, open: string, col: string, _children: string, close: string) =>
+      `${open}${(buckets[col] ?? []).join("")}${close}`,
+  );
+}
+
 /**
  * Newest mtime (ms) across the page's data-source dir — the freshness signal for the SSE watch.
  * Returns 0 when the dir is absent. Recurses one level into the dir (flat task dirs are the

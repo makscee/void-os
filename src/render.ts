@@ -3,6 +3,7 @@ import type { SessionInfo, SessionStatus } from "./sessions.ts";
 import { DEFAULT_RUNNERS, DEFAULT_RUNNER_LABEL } from "./paths.ts";
 import type { Runner } from "./paths.ts";
 import type { Decision } from "./decision.ts";
+import type { PageEntry } from "./pages.ts";
 
 /** Escape HTML special chars to prevent XSS in string templates. */
 export const esc = (s: string): string =>
@@ -165,6 +166,10 @@ const LEFT_NAV_CSS = `
 .nav-status{font-size:10px;color:hsl(var(--muted-foreground));font-style:italic}
 .nav-session.unseen .nav-status{color:hsl(38 92% 55%)}
 .nav-elapsed{font-size:10px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+/* VOS-228 pages group */
+.nav-pages{padding:0 .25rem}
+.nav-page{display:block;padding:.3rem .5rem;text-decoration:none;color:hsl(var(--foreground));border-radius:calc(var(--radius) - 4px);transition:background .1s;font-size:12px;overflow:hidden}
+.nav-page:hover,.nav-page.active{background:hsl(var(--secondary))}
 `;
 
 /** Client-side script that ticks elapsed-time spans (data-epoch attribute). */
@@ -195,11 +200,20 @@ const ELAPSED_TICK_SCRIPT = `<script>
  * @param sessions Recent sessions (sorted newest-first from listSessions).
  * @param activeUuid The currently-displayed session uuid (marks it active), or undefined for dashboard.
  */
-function leftNav(sessions: SessionInfo[], activeUuid?: string): string {
+function leftNav(sessions: SessionInfo[], activeUuid?: string, pages: PageEntry[] = [], activeSlug?: string): string {
   const MAX_RECENT = 8;
   const needsYou = sessions.filter((s) => s.needsAttention);
   const idle = sessions.filter((s) => (s as any).idle && !s.needsAttention);
   const recent = sessions.slice(0, MAX_RECENT);
+
+  // VOS-228 §3.5: pinned manifest pages as a "pages" nav group (render.ts = the one writer).
+  const pinned = pages.filter((p) => p.pinned);
+  const pagesGroup = pinned.length > 0
+    ? `<div class="nav-pages"><div class="nav-group-label">pages</div>`
+      + pinned.map((p) => `<a href="/p/${esc(p.slug)}" class="nav-page${p.slug === activeSlug ? " active" : ""}" data-slug="${esc(p.slug)}">`
+        + `<span class="nav-session-title">${esc(p.title)}</span></a>`).join("")
+      + `</div>`
+    : "";
 
   const btn = (s: SessionInfo) => {
     const active = s.uuid === activeUuid ? " active" : "";
@@ -223,6 +237,7 @@ function leftNav(sessions: SessionInfo[], activeUuid?: string): string {
   return `
 <nav class="left-nav">
   <a href="/" class="nav-home${activeUuid ? "" : " active"}">⌂ home</a>
+  ${pagesGroup}
   ${needsYouGroup}
   ${idleGroup}
   <div class="nav-recent"><div class="nav-group-label">recent</div>${recent.map(btn).join("")}</div>
@@ -239,6 +254,7 @@ export function renderDashboard(
   relay: { authed: boolean },
   runnerCfg: { runners: Runner[]; defaultRunner: string } = { runners: DEFAULT_RUNNERS, defaultRunner: DEFAULT_RUNNER_LABEL },
   pendingDecisions: Decision[] = [],
+  pages: PageEntry[] = [],
 ): string {
   const showSelector = runnerCfg.runners.length > 1;
   const runnerOptions = runnerCfg.runners
@@ -380,7 +396,7 @@ code{font-family:monospace;font-size:0.85em}
 </style>
 <div class="topbar"><span class="logo">void-os</span>${badge}</div>
 <div class="layout">
-${leftNav(sessions)}
+${leftNav(sessions, undefined, pages)}
 <div class="main-content">
 <div class="dash-layout">
 ${pendingDecisions.length === 0 ? "" : `
@@ -421,7 +437,7 @@ ${ELAPSED_TICK_SCRIPT}`;
  */
 // interactive-decide.ts + spawn.ts spawn-mode gates (spawn.ts:318,372) still use `interactive`
 // for wrapperMode/argv decisions — that is spawn-mode-only, never a view-affordance gate (VOS-210).
-export function renderShell(uuid: string, vault: string, name?: string, resumeCmd?: string, resumable?: boolean, hasBody?: boolean, sessions: SessionInfo[] = [], status: SessionStatus = "working"): string {
+export function renderShell(uuid: string, vault: string, name?: string, resumeCmd?: string, resumable?: boolean, hasBody?: boolean, sessions: SessionInfo[] = [], status: SessionStatus = "working", pages: PageEntry[] = []): string {
   // VOS-215 BUG C: only emit the copy-button when a real ccId-form resumeCmd is available.
   const hasCcId = resumeCmd != null;
   const shortVault = vault.length > 20 ? "…" + vault.slice(-18) : vault;
@@ -510,7 +526,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .role-user .who{color:hsl(217 70% 65%)}
 .role-assistant .who{color:hsl(142 60% 60%)}
 </style>
-${leftNav(sessions, uuid)}
+${leftNav(sessions, uuid, pages)}
 <div class="shell-main">
 <div class="shell-header">
   <a href="/" class="back-link">← all</a>
@@ -628,6 +644,44 @@ function dvRefresh(){
 }
 dvRefresh();
 dvTimer=setInterval(dvRefresh,2000);
+</script>
+${ELAPSED_TICK_SCRIPT}`;
+}
+
+/**
+ * Live-page shell (VOS-228 §3.3) — the navigable wrapper a registered page is served inside.
+ * Mirrors renderShell's left-nav + main-column layout (NOT a bare iframe), so a page is reachable
+ * from the nav and you can navigate between pages / back home. The page body itself loads in the
+ * iframe (/p/:slug/body) and reloads on the data-source SSE stream (/p/:slug/stream, §3.4).
+ */
+export function renderPageShell(slug: string, sessions: SessionInfo[] = [], pages: PageEntry[] = []): string {
+  const s = esc(slug);
+  const title = pages.find((p) => p.slug === slug)?.title ?? slug;
+  return `<!doctype html><meta charset=utf8><title>${esc(title)}</title>
+<style>
+${UI_TOKENS}
+${LEFT_NAV_CSS}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  background:hsl(var(--background));color:hsl(var(--foreground));height:100vh;overflow:hidden}
+.shell-main{margin-left:200px;display:flex;flex-direction:column;height:100vh}
+.page-header{display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;
+  background:hsl(217.2 32.6% 8%);border-bottom:1px solid hsl(var(--border));min-height:36px;flex-shrink:0}
+.page-title{font-size:12px;font-weight:600;color:hsl(var(--foreground))}
+.page-body{flex:1;min-height:0}
+.page-body iframe{border:0;width:100%;height:100%;display:block}
+</style>
+${leftNav(sessions, undefined, pages, slug)}
+<div class="shell-main">
+<div class="page-header"><a href="/" class="back-link">← all</a><span class="divider-v"></span>
+  <span class="page-title">${esc(title)}</span></div>
+<div class="page-body">
+  <iframe id="f" src="/p/${s}/body" sandbox="allow-scripts allow-forms allow-popups"></iframe>
+</div>
+</div>
+<script>
+var es=new EventSource("/p/${s}/stream");
+es.onmessage=function(){var f=document.getElementById("f");if(f)f.contentWindow.location.replace("/p/${s}/body");};
 </script>
 ${ELAPSED_TICK_SCRIPT}`;
 }
