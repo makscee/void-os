@@ -2,6 +2,8 @@
 // (VOS-206). Explicit frontmatter `interactive` flag wins; otherwise a name heuristic:
 // conversational/iterative skills run interactive, pure-worker skills run print one-shot.
 // Unknown skills default to print (conservative — preserves the pre-VOS-206 one-shot path).
+// NOTE (VOS-210): `interactive` is spawn-mode-only after VOS-210. It does NOT gate any view
+// affordances (attach, chat, message input). Those are now always rendered unconditionally.
 
 /** Conversational skills that benefit from a live multi-turn REPL. */
 const CONVERSATIONAL = new Set(["chat", "onboarding", "work"]);

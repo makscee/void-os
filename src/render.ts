@@ -386,9 +386,11 @@ ${ELAPSED_TICK_SCRIPT}`;
  * session name, and click-to-copy resume command. Option 1 style.
  * @param name Human-readable session name (e.g. skill name). Falls back to short uuid.
  */
-export function renderShell(uuid: string, vault: string, name?: string, attachCmd?: string, interactive?: boolean, sessions: SessionInfo[] = []): string {
+// interactive-decide.ts + spawn.ts spawn-mode gates (spawn.ts:318,372) still use `interactive`
+// for wrapperMode/argv decisions — that is spawn-mode-only, never a view-affordance gate (VOS-210).
+export function renderShell(uuid: string, vault: string, name?: string, resumeCmd?: string, resumable?: boolean, hasBody?: boolean, sessions: SessionInfo[] = []): string {
   // The resume command must be run from the vault dir because CC uses cwd to locate sessions.
-  const resumeCmd = attachCmd ?? `cd ${vault} && vc -- --resume ${uuid}`;
+  const cmd = resumeCmd ?? `cd ${vault} && vc -- --resume ${uuid}`;
   // Truncated display label for the copy-button (max ~40 chars from end)
   const shortVault = vault.length > 20 ? "…" + vault.slice(-18) : vault;
   const displayLabel = `${shortVault} — resume ${uuid.slice(0, 8)}…`;
@@ -397,7 +399,7 @@ export function renderShell(uuid: string, vault: string, name?: string, attachCm
   const headerName = name ? name : uuid.slice(0, 8) + "…";
 
   // Store cmd/label in data attributes to avoid inline-JS quoting issues
-  const resumeCmdAttr = esc(resumeCmd);
+  const resumeCmdAttr = esc(cmd);
   const displayLabelAttr = esc(displayLabel);
 
   return `<!doctype html><meta charset=utf8><title>session ${esc(uuid)}</title>

@@ -298,6 +298,14 @@ test("renderShell includes the fetch-interception JS unconditionally", () => {
   expect(html).toContain("requestSubmit");   // Cmd/Ctrl+Enter handler
 });
 
+// ── VOS-210 T4: grep-guard — no interactive gate in render.ts ──────────────
+
+import { readFileSync } from "node:fs";
+test("render.ts no longer gates any affordance on an `interactive` flag", () => {
+  const src = readFileSync(new URL("../src/render.ts", import.meta.url), "utf8");
+  expect(src).not.toContain("${interactive ?");
+});
+
 // ── VOS-207: left nav, needs-attention, elapsed, Cmd+Enter ─────────────────
 
 test("dashboard renders left nav with home button + recent session buttons", () => {
