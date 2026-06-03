@@ -1188,6 +1188,30 @@ test("VOS-222: /act on reaped session calls sendAfterRespawn not sendKeys", asyn
   expect(newKeys.some(([_t, l]) => l === "answer: act after respawn")).toBe(false);
 });
 
+// VOS-226 (contract §4.4): GET /audit reads the audit log with AND-ed filters.
+test("GET /audit returns filtered NDJSON from the audit log", async () => {
+  const { appendAudit, auditPath } = await import("../src/audit.ts");
+  // Fresh audit log for this vault.
+  rmSync(auditPath(vault), { force: true });
+  appendAudit(vault, { ts: 100, exec: "e1", agent: "maya", tool: "Write", path: "a.md", bytes: 1, source: "native" });
+  appendAudit(vault, { ts: 200, exec: "e2", agent: "ivy", tool: "Edit", path: "b.md", bytes: 2, source: "mcp" });
+  const app = makeApp(vault, db);
+
+  const all = await app.request("/audit");
+  expect(all.headers.get("content-type")).toContain("application/x-ndjson");
+  const allLines = (await all.text()).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  expect(allLines.length).toBe(2);
+
+  const filtered = await app.request("/audit?agent=ivy");
+  const fLines = (await filtered.text()).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  expect(fLines.length).toBe(1);
+  expect(fLines[0].path).toBe("b.md");
+
+  const since = await app.request("/audit?since=150");
+  const sLines = (await since.text()).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  expect(sLines.map((l: any) => l.ts)).toEqual([200]);
+});
+
 // Restore mock.module registrations so sibling test files (e.g. spawn.test.ts) that import
 // ../src/spawn.ts directly get the real implementation, not this file's stubs.
 afterAll(() => {

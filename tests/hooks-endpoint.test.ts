@@ -336,3 +336,120 @@ test("SessionStart does NOT write cc-actual-session.txt for non-UUID session_id 
   }, 1000);
   expect(existsSync(join(sessionDir(vault, runId), "cc-actual-session.txt"))).toBe(false);
 });
+
+// ---- Native-fs audit capture (VOS-226 / contract §4.3) ----
+
+import { auditPath, type AuditLine } from "../src/audit.ts";
+
+function readAudit(vault: string): AuditLine[] {
+  if (!existsSync(auditPath(vault))) return [];
+  return readFileSync(auditPath(vault), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+}
+
+function setupAgent() {
+  const vault = mkdtempSync(join(tmpdir(), "vos-audit-hook-"));
+  const db = openRegistry(":memory:");
+  createExecution(db, { id: "exec-9", agent: "maya", skill: "s", inputRef: null,
+    tmuxSession: "t9", now: 1000, triggerId: null, stepCeiling: null });
+  return { vault, db };
+}
+
+test("PreToolUse Edit under the vault emits exactly one well-formed native audit line", () => {
+  const { vault, db } = setupAgent();
+  handleHookEvent(db, vault, "exec-9", {
+    hook_event_name: "PreToolUse", session_id: "",
+    tool_name: "Edit", tool_input: { file_path: join(vault, "work/tasks/active/X.md"), content: "hello" },
+  }, 4242);
+  const lines = readAudit(vault);
+  expect(lines.length).toBe(1);
+  expect(lines[0]).toEqual({
+    ts: 4242, exec: "exec-9", agent: "maya", tool: "Edit",
+    path: "work/tasks/active/X.md", bytes: 5, source: "native",
+  });
+});
+
+test("PreToolUse with a vault-relative file_path resolves against the vault root", () => {
+  const { vault, db } = setupAgent();
+  handleHookEvent(db, vault, "exec-9", {
+    hook_event_name: "PreToolUse", session_id: "",
+    tool_name: "Write", tool_input: { file_path: "notes/n.md", content: "ab" },
+  }, 1);
+  const lines = readAudit(vault);
+  expect(lines.length).toBe(1);
+  expect(lines[0].path).toBe("notes/n.md");
+  expect(lines[0].tool).toBe("Write");
+  expect(lines[0].bytes).toBe(2);
+});
+
+test("PreToolUse for a non-fs tool (Bash/Read) emits NO audit line", () => {
+  const { vault, db } = setupAgent();
+  handleHookEvent(db, vault, "exec-9", {
+    hook_event_name: "PreToolUse", session_id: "",
+    tool_name: "Bash", tool_input: { command: "ls" } as any,
+  }, 1);
+  handleHookEvent(db, vault, "exec-9", {
+    hook_event_name: "PreToolUse", session_id: "", tool_name: "Read", tool_input: { file_path: join(vault, "a.md") },
+  }, 2);
+  expect(readAudit(vault).length).toBe(0);
+});
+
+test("PreToolUse fs-write OUTSIDE the vault emits NO audit line", () => {
+  const { vault, db } = setupAgent();
+  handleHookEvent(db, vault, "exec-9", {
+    hook_event_name: "PreToolUse", session_id: "",
+    tool_name: "Write", tool_input: { file_path: "/etc/passwd", content: "x" },
+  }, 1);
+  handleHookEvent(db, vault, "exec-9", {
+    hook_event_name: "PreToolUse", session_id: "",
+    tool_name: "Edit", tool_input: { file_path: join(vault, "..", "escape.md"), content: "x" },
+  }, 2);
+  expect(readAudit(vault).length).toBe(0);
+});
+
+test("PreToolUse fs-write to a SYSTEM_DENY path logs denied:true but does NOT block (audit-only)", () => {
+  const { vault, db } = setupAgent();
+  const decision = handleHookEvent(db, vault, "exec-9", {
+    hook_event_name: "PreToolUse", session_id: "",
+    tool_name: "Write", tool_input: { file_path: join(vault, "agents/maya.md"), content: "x" },
+  }, 7);
+  expect(decision).toBeUndefined();       // never blocks the native path in v1
+  const lines = readAudit(vault);
+  expect(lines.length).toBe(1);
+  expect(lines[0].denied).toBe(true);
+  expect(lines[0].path).toBe("agents/maya.md");
+});
+
+test("native audit fires on interactive runs (null step_ceiling) without touching step_count", () => {
+  const { vault, db } = setupAgent();   // exec-9 has stepCeiling null
+  handleHookEvent(db, vault, "exec-9", {
+    hook_event_name: "PreToolUse", session_id: "",
+    tool_name: "Edit", tool_input: { file_path: join(vault, "a.md"), content: "z" },
+  }, 1);
+  expect(readAudit(vault).length).toBe(1);
+  expect(getExecution(db, "exec-9")!.step_count).toBe(0);  // ceiling logic untouched
+});
+
+test("native audit co-exists with the step-ceiling path (trigger run): audit line + step counted", () => {
+  const vault = mkdtempSync(join(tmpdir(), "vos-audit-ceil-"));
+  const db = openRegistry(":memory:");
+  createExecution(db, { id: "exec-10", agent: null, skill: "s", inputRef: null,
+    tmuxSession: "t10", now: 1, triggerId: "tg", stepCeiling: 5 });
+  handleHookEvent(db, vault, "exec-10", {
+    hook_event_name: "PreToolUse", session_id: "",
+    tool_name: "Write", tool_input: { file_path: join(vault, "a.md"), content: "z" },
+  }, 1, () => {});
+  expect(readAudit(vault).length).toBe(1);
+  expect(getExecution(db, "exec-10")!.step_count).toBe(1);  // step still counted
+});
+
+test("MultiEdit is an audited fs tool; bytes best-effort 0 when no content field", () => {
+  const { vault, db } = setupAgent();
+  handleHookEvent(db, vault, "exec-9", {
+    hook_event_name: "PreToolUse", session_id: "",
+    tool_name: "MultiEdit", tool_input: { file_path: join(vault, "a.md") },
+  }, 1);
+  const lines = readAudit(vault);
+  expect(lines.length).toBe(1);
+  expect(lines[0].tool).toBe("MultiEdit");
+  expect(lines[0].bytes).toBe(0);
+});

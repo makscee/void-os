@@ -27,6 +27,7 @@ import { attachInvocation } from "./attach.ts";
 import { bodyHasRealContent, isResumable } from "./view-state.ts";
 import { fireTrigger, type SpawnFn } from "./triggers-fire.ts";
 import { listPendingDecisions } from "./decision.ts";
+import { readAudit } from "./audit.ts";
 import {
   gateCreate, gatePatch, gateEdit, gateDelete, gateWriteFile,
   listVaultSkills, viewVaultSkill,
@@ -96,6 +97,23 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
     catch { /* never fail a hook */ }
     if (decision) return c.json(decision, 200);
     return c.json({ ok: true }, 200);
+  });
+
+  // GET /audit?path=&agent=&since= — VOS-226 (contract §4.4): inspect the vault-write audit log.
+  // Filters AND-ed; `since` = epoch-ms lower bound. Returns the matching JSONL lines (one per line),
+  // file (append) order. The file IS the interface — this is a convenience reader, never a writer.
+  app.get("/audit", (c) => {
+    const path = c.req.query("path");
+    const agent = c.req.query("agent");
+    const sinceRaw = c.req.query("since");
+    const since = sinceRaw !== undefined && sinceRaw !== "" ? Number(sinceRaw) : undefined;
+    const lines = readAudit(vault, {
+      path,
+      agent,
+      since: since !== undefined && Number.isFinite(since) ? since : undefined,
+    });
+    return c.text(lines.map((l) => JSON.stringify(l)).join("\n") + (lines.length ? "\n" : ""),
+      200, { "content-type": "application/x-ndjson" });
   });
 
   // POST /launch — relay auth guard, create session dir, write placeholder, spawn tmux Run, redirect

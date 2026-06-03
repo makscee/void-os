@@ -1,12 +1,61 @@
 // hooks-endpoint.ts — pure hook handler + per-execution CC settings writer.
 // One responsibility: hook→executions mapping + settings.json generation.
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { getExecution, createExecution, setExecutionEnded, setExecutionFail, incrementStep, setOutputResult } from "./registry.ts";
 import { appendEvent, readStartEvent } from "./events.ts";
 import { wasMutatedSince } from "./output-target.ts";
 import { sessionDir } from "./paths.ts";
+import { appendAudit, isSystemDeny } from "./audit.ts";
+
+/** Native fs tools whose writes are traced (contract §4.3). Bash/Read/etc. → no audit line. */
+const FS_WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit"]);
+
+/**
+ * Resolve a PreToolUse fs-tool `tool_input.file_path` to a vault-relative path, or null if it is
+ * missing or escapes the vault. Forward-slash, no leading "./". Used to decide whether to audit.
+ */
+function vaultRelativeWrite(vault: string, filePath: unknown): string | null {
+  if (typeof filePath !== "string" || filePath.length === 0) return null;
+  const abs = isAbsolute(filePath) ? filePath : resolve(vault, filePath);
+  const rel = relative(resolve(vault), abs);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null; // escapes vault
+  return rel.split(sep).join("/");
+}
+
+/**
+ * Emit one native-fs audit line for a PreToolUse fs-write under the vault (contract §4.3).
+ * AUDIT-ONLY: a SYSTEM_DENY hit sets `denied:true` but does NOT block (v1, agreed Q3). Non-fs
+ * tools and writes outside the vault emit nothing. Never throws — a failed audit must not stall
+ * the Run (the caller already wraps handleHookEvent in try/catch, but be defensive here too).
+ */
+function auditNativeWrite(
+  vault: string,
+  exec: { agent: string | null } | null,
+  runId: string,
+  payload: HookPayload,
+  now: number,
+): void {
+  const toolName = payload.tool_name;
+  if (typeof toolName !== "string" || !FS_WRITE_TOOLS.has(toolName)) return;
+  const rel = vaultRelativeWrite(vault, payload.tool_input?.file_path);
+  if (rel === null) return;
+  const content = payload.tool_input?.content;
+  const bytes = typeof content === "string" ? Buffer.byteLength(content) : 0;
+  try {
+    appendAudit(vault, {
+      ts: now,
+      exec: runId || null,
+      agent: exec?.agent ?? null,
+      tool: toolName as "Write" | "Edit" | "MultiEdit",
+      path: rel,
+      bytes,
+      source: "native",
+      denied: isSystemDeny(rel) || undefined,
+    });
+  } catch { /* never fail a hook on an audit-write error */ }
+}
 
 /** Stable runId for a hand-launched CC session. SessionStart fires once per session;
  *  deriving the id from session_id makes row-creation idempotent and lets every later
@@ -24,6 +73,9 @@ export interface HookPayload {
   stop_hook_active?: boolean; // Stop hook field
   reason?: string;           // SessionEnd reason
   exit_code?: number;        // ProcessExit (daemon-synthetic, not a CC event)
+  // PreToolUse fields CC sends for tool invocations (VOS-226 native-fs audit, contract §4.3).
+  tool_name?: string;        // e.g. "Write" | "Edit" | "MultiEdit" | "Bash" | "Read" | ...
+  tool_input?: { file_path?: string; content?: string; [k: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -151,6 +203,9 @@ export function handleHookEvent(
       break;
     }
     case "PreToolUse": {
+      // VOS-226: native-fs audit (contract §4.3) — fires for ALL runs (interactive + trigger),
+      // independent of the step-ceiling logic below. Additive; never blocks (audit-only).
+      auditNativeWrite(vault, exec, runId, payload, now);
       if (exec.step_ceiling == null) break;       // interactive runs exempt
       const count = incrementStep(db, runId);
       appendEvent(vault, runId, { type: "step", at: now });
