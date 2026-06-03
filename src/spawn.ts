@@ -405,16 +405,18 @@ export function spawnRun(opts: SpawnRunOpts): SpawnRunResult {
 
   // VOS-206 Gap 1: for interactive sessions, wait for the REPL prompt (❯) before sending
   // the skill kickoff. A fixed 3-second delay fired before claude was ready on cold start,
-  // silently dropping the keystroke and leaving the pane idle. Poll up to 60s for ❯.
+  // silently dropping the keystroke and leaving the pane idle. Poll up to 180s for ❯.
+  // VOS-215: 60s was insufficient for Opus 4.8 cold starts through void-relay (>60s observed);
+  // 180s matches the "still working" cold-start stage in placeholderBody.
   // Fire-and-forget (void): spawnRun is synchronous; the await runs in the background.
   if (opts.interactive && opts.skill) {
     const skillLine = opts.skill.startsWith("/") ? opts.skill : `/${opts.skill}`;
     void (async () => {
-      const ready = await waitForPrompt(tmuxSession, "❯", 60_000);
+      const ready = await waitForPrompt(tmuxSession, "❯", 180_000);
       if (ready) {
         try { sendKeys(tmuxSession, skillLine); } catch { /* non-fatal: session may have been reaped */ }
       }
-      // If !ready after 60s, the session failed to initialize; do not send (leave idle for inspection).
+      // If !ready after 180s, the session failed to initialize; do not send (leave idle for inspection).
     })();
   }
 

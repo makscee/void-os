@@ -129,7 +129,9 @@ function dotClass(status: SessionStatus): string {
   if (status === "awaiting") return "await";
   if (status === "reaped") return "reaped";
   if (status === "stopped") return "stopped";
-  return ""; // working + complete = default green
+  // VOS-215: working (still running) must be visually distinct from complete (done/green).
+  if (status === "working") return "working";
+  return ""; // complete = default green
 }
 
 /** CSS for the left nav sidebar — inlined alongside the shared UI_TOKENS block. */
@@ -346,6 +348,7 @@ code{font-family:monospace;font-size:0.85em}
 .session-dot.await{background:hsl(38 92% 50%)}
 .session-dot.reaped{background:hsl(217 10% 45%)}
 .session-dot.stopped{background:hsl(0 0% 40%)}
+.session-dot.working{background:hsl(217 70% 55%)}
 .session-title{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .session-uuid{font-size:11px;font-family:monospace;color:hsl(var(--muted-foreground))}
 </style>
@@ -389,17 +392,21 @@ ${ELAPSED_TICK_SCRIPT}`;
 // interactive-decide.ts + spawn.ts spawn-mode gates (spawn.ts:318,372) still use `interactive`
 // for wrapperMode/argv decisions — that is spawn-mode-only, never a view-affordance gate (VOS-210).
 export function renderShell(uuid: string, vault: string, name?: string, resumeCmd?: string, resumable?: boolean, hasBody?: boolean, sessions: SessionInfo[] = []): string {
-  // The resume command must be run from the vault dir because CC uses cwd to locate sessions.
-  const cmd = resumeCmd ?? `cd ${vault} && vc -- --resume ${uuid}`;
+  // VOS-215 BUG C: only emit the copy-button when a real ccId-form resumeCmd is available.
+  // Before cc-actual-session.txt exists, resumeCmd is undefined — emitting --resume <runId>
+  // would give the operator a command that fails (runId is not a valid CC --resume target).
+  const hasCcId = resumeCmd != null;
   // Truncated display label for the copy-button (max ~40 chars from end)
   const shortVault = vault.length > 20 ? "…" + vault.slice(-18) : vault;
-  const displayLabel = `${shortVault} — resume ${uuid.slice(0, 8)}…`;
+  const displayLabel = hasCcId
+    ? `${shortVault} — resume ${uuid.slice(0, 8)}…`
+    : "starting…";
 
   // Header title: show the human-readable session name when available; fall back to short uuid.
   const headerName = name ? name : uuid.slice(0, 8) + "…";
 
-  // Store cmd/label in data attributes to avoid inline-JS quoting issues
-  const resumeCmdAttr = esc(cmd);
+  // Store cmd/label in data attributes to avoid inline-JS quoting issues (only used when hasCcId)
+  const resumeCmdAttr = hasCcId ? esc(resumeCmd!) : "";
   const displayLabelAttr = esc(displayLabel);
 
   return `<!doctype html><meta charset=utf8><title>session ${esc(uuid)}</title>
@@ -465,8 +472,11 @@ ${leftNav(sessions, uuid)}
   <a href="/" class="back-link">← all</a>
   <span class="divider-v"></span>
   <span class="session-name">${esc(headerName)}</span>
-  <button class="copy-btn" id="copybtn" title="Copy resume command"
-    data-cmd="${resumeCmdAttr}" data-label="${displayLabelAttr}">${displayLabelAttr}</button>
+  ${hasCcId
+    ? `<button class="copy-btn" id="copybtn" title="Copy resume command"
+    data-cmd="${resumeCmdAttr}" data-label="${displayLabelAttr}">${displayLabelAttr}</button>`
+    : `<span class="copy-btn" id="copybtn" style="cursor:default;opacity:.5" title="Resume command available once session starts">${displayLabelAttr}</span>`
+  }
   <form action="/s/${esc(uuid)}/stop" method="POST" class="stop-form" style="flex-shrink:0">
     <button type="submit" class="stop-btn" title="Stop this session">■ Stop</button>
   </form>

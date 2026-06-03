@@ -72,9 +72,11 @@ test("dashboard session dot has awaiting class when status is awaiting", () => {
   expect(html).toContain("await");
 });
 
-test("shell embeds the body iframe + SSE reload + vault-anchored resume cmd (hasBody=true)", () => {
+test("shell embeds the body iframe + SSE reload (hasBody=true)", () => {
   // hasBody=true is required for the iframe to render (VOS-212 gate)
-  const html = renderShell("u1", "/home/user/void-os", undefined, undefined, undefined, true);
+  // Pass a real resumeCmd so the copy-btn renders
+  const html = renderShell("u1", "/home/user/void-os", undefined,
+    "cd /home/user/void-os && vc -- --resume u1", undefined, true);
   expect(html).toContain('src="/s/u1/body"');
   expect(html).toContain("/s/u1/stream");
   expect(html).toContain("--resume u1");
@@ -82,13 +84,26 @@ test("shell embeds the body iframe + SSE reload + vault-anchored resume cmd (has
   expect(html).toContain("/home/user/void-os");
 });
 
-test("shell has click-to-copy button with resume command", () => {
-  const html = renderShell("u1", "/home/user/vault");
+test("shell has click-to-copy button with resume command when ccId available", () => {
+  // Pass a real ccId-form resumeCmd — copy-btn renders with clipboard JS
+  const html = renderShell("u1", "/home/user/vault", undefined,
+    "cd /home/user/vault && vc -- --resume u1");
   expect(html).toContain("copy-btn");
   expect(html).toContain("navigator.clipboard");
   expect(html).toContain("✓ copied");
-  // must contain the full resume command in JS
+  // must contain the full resume command
   expect(html).toContain("vc -- --resume u1");
+});
+
+test("shell shows starting label (no clipboard) when no resumeCmd (pre-ccId state)", () => {
+  // VOS-215 BUG C fix: no ccId = suppress the copyable command
+  const html = renderShell("u1", "/home/user/vault");
+  // The copy-btn ID is still present (as a <span>) but carries no --resume <uuid>
+  expect(html).toContain("copybtn");
+  expect(html).toContain("starting…");
+  // Must not expose --resume <runId> as a clickable command
+  expect(html).not.toContain("data-cmd=\"cd");
+  expect(html).not.toContain("--resume u1");
 });
 
 test("shell header is compact (36px min-height)", () => {
@@ -474,10 +489,13 @@ test("renderShell copy-cmd uses the ccId-form vc --resume, never a tmux target",
   expect(html).not.toContain("tmux -L vos attach");
 });
 
-test("renderShell falls back to uuid-form resume cmd when none supplied (no tmux target)", () => {
+test("renderShell suppresses copy cmd when none supplied (pre-ccId state, no tmux target)", () => {
+  // VOS-215 BUG C fix: no resumeCmd = no runId-based --resume exposed as copyable
   const html = renderShell("u1", "/home/user/vault");
-  expect(html).toContain("vc -- --resume u1");
+  expect(html).not.toContain("vc -- --resume u1");
   expect(html).not.toContain("tmux -L vos attach");
+  // Must show a non-copyable "starting…" placeholder instead
+  expect(html).toContain("starting…");
 });
 
 // ── VOS-212: iframe gate on hasBody ───────────────────────────────────────────

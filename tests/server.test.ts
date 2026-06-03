@@ -196,13 +196,12 @@ test("GET /s/:uuid/body returns 404 when no body.html", async () => {
   expect(res.status).toBe(404);
 });
 
-test("GET /s/:uuid returns the iframe shell with correct src and vault-anchored resume cmd", async () => {
+test("GET /s/:uuid returns the iframe shell with correct src", async () => {
   const html = await (await makeApp(vault, db).request("/s/u9")).text();
   expect(html).toContain('src="/s/u9/body"');
   expect(html).toContain("/s/u9/stream");
-  // Resume command must include the vault path so the user runs it from the right cwd
-  expect(html).toContain(vault);
-  expect(html).toContain("--resume");
+  // Vault path still appears in the page (e.g. session name or CSS)
+  // Note: resume cmd is suppressed when cc-actual-session.txt is absent (VOS-215 BUG C fix)
   expect(html).toContain("u9");
 });
 
@@ -1022,13 +1021,19 @@ test("GET /s/:uuid renders ccId-form vc --resume when cc-actual-session.txt exis
   expect(html).not.toContain("tmux -L vos attach");
 });
 
-test("GET /s/:uuid uses uuid-form resume cmd when cc-actual-session.txt is absent", async () => {
+test("GET /s/:uuid suppresses resume cmd when cc-actual-session.txt is absent (VOS-215 BUG C fix)", async () => {
+  // VOS-215: before ccId exists, the copy button shows "starting…" rather than
+  // emitting --resume <runId> (which is not a valid CC --resume target).
   const uuid = `vos-210-noresume-${Date.now()}`;
   const dir = sessionDir(vault, uuid);
   mkdirSync(dir, { recursive: true });
   const html = await (await makeApp(vault, db).request(`/s/${uuid}`)).text();
-  expect(html).toContain(`vc -- --resume ${uuid}`);
+  // Must NOT expose runId as a --resume target (would silently fail at the operator)
+  expect(html).not.toContain(`vc -- --resume ${uuid}`);
+  // Must not expose any tmux target either
   expect(html).not.toContain("tmux -L vos attach");
+  // Shows the "starting…" placeholder instead
+  expect(html).toContain("starting…");
 });
 
 // ── VOS-210 T3: state-derived view tests ──────────────────────────────────
