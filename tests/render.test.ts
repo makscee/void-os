@@ -420,3 +420,30 @@ test("CSS for reaped and stopped dot classes is present", () => {
   expect(html).toContain("session-dot.reaped");
   expect(html).toContain("session-dot.stopped");
 });
+
+// VOS-209 Task 1: attach + message forms must use fetch() not native POST navigation
+test("VOS-209: interactive shell intercepts attach + message forms with fetch (no native nav)", () => {
+  const html = renderShell("exec-abc", "/tmp/vault", "Chat", undefined, true, []);
+  // Both forms must have ids so the script can target them
+  expect(html).toContain('id="attachForm"');
+  expect(html).toContain('id="msgForm"');
+  // Script must intercept submit events (not rely on native form navigation)
+  expect(html).toMatch(/addEventListener\(['"]submit['"]/);
+  expect(html).toContain("e.preventDefault()");
+  // fetch() is called with the form's action attribute (dynamic URL via getAttribute)
+  expect(html).toContain("fetch(fm.getAttribute('action')");
+  // The forms have the correct action URLs embedded in HTML
+  expect(html).toContain("attach-here");
+  expect(html).toContain("/s/exec-abc/message");
+  // After attach fetch, browser must stay on page (no window.location assignment)
+  // — verified negatively: no href= on the attach button
+  expect(html).not.toMatch(/window\.location\s*=\s*[^;]*attach-here/);
+});
+
+test("VOS-209: Cmd+Enter on message input routes through requestSubmit (not native .submit())", () => {
+  const html = renderShell("exec-abc", "/tmp/vault", "Chat", undefined, true, []);
+  // requestSubmit() fires the submit event which the fetch-interceptor catches
+  // — native .submit() bypasses the submit listener
+  expect(html).toContain("requestSubmit()");
+  expect(html).not.toMatch(/\.submit\(\)(?!\s*\/\/ allowed)/);
+});

@@ -468,10 +468,10 @@ ${leftNav(sessions, uuid)}
   <form action="/s/${esc(uuid)}/stop" method="POST" class="stop-form" style="flex-shrink:0">
     <button type="submit" class="stop-btn" title="Stop this session">■ Stop</button>
   </form>${interactive ? `
-  <form action="/s/${esc(uuid)}/attach-here" method="POST" class="stop-form" style="flex-shrink:0">
+  <form id="attachForm" action="/s/${esc(uuid)}/attach-here" method="POST" class="stop-form" style="flex-shrink:0">
     <button type="submit" class="attach-btn" title="Attach terminal to this session">⤵ Attach here</button>
   </form>
-  <form action="/s/${esc(uuid)}/message" method="POST" class="msg-form">
+  <form id="msgForm" action="/s/${esc(uuid)}/message" method="POST" class="msg-form">
     <input type="text" name="text" class="msg-input" placeholder="Send message…">
     <button type="submit" class="msg-send" title="Send message to session">Send</button>
   </form>` : ""}
@@ -488,10 +488,22 @@ document.getElementById('copybtn').addEventListener('click',function(){
   setTimeout(function(){b.textContent=lbl;b.classList.remove('copied')},1800);
 });
 ${interactive ? `
+// Intercept attach + message forms with fetch() so the browser stays on the dashboard.
+// Native form POST navigates to the JSON response; fetch() stays put.
+['attachForm','msgForm'].forEach(function(id){
+  var fm=document.getElementById(id);
+  if(!fm) return;
+  fm.addEventListener('submit',function(e){
+    e.preventDefault();
+    fetch(fm.getAttribute('action'),{method:'POST',body:new FormData(fm)})
+      .then(function(r){return r.json();}).catch(function(){});
+    var inp=fm.querySelector('.msg-input'); if(inp) inp.value='';
+  });
+});
 var msgInput=document.querySelector('.msg-input');
 if(msgInput){
   msgInput.addEventListener('keydown',function(e){
-    if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();this.closest('form').submit();}
+    if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();this.closest('form').requestSubmit();}
   });
 }` : ""}
 var es=new EventSource("/s/${esc(uuid)}/stream");
