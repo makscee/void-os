@@ -107,6 +107,14 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
     );
   });
 
+  // GET /whoami — daemon identity for `void-os doctor` discovery (VOS-232).
+  // vault is the resolved ABSOLUTE path makeApp was constructed with; port is read
+  // back from the loaded config; pid is this process. Doctor probes this route on
+  // every TCP listener it finds — a non-void-os process simply won't answer it.
+  app.get("/whoami", (c) => {
+    return c.json({ vault, port: readConfig(vault).port, pid: process.pid });
+  });
+
   // POST /hook?run=<run-id> — CC HTTP hook sink. Maps a lifecycle event to a registry
   // transition. Always 200 (a hook must never see a 5xx — it would stall the Run).
   // Stop-hook nudge: if handleHookEvent returns a HookDecision, relay it so the command-hook

@@ -4,7 +4,8 @@
  * Tests: GET /, GET /s/:uuid, GET /s/:uuid/body (with + without error.txt), POST /s/:uuid/send.
  */
 import { expect, test, beforeAll, afterAll, mock } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { bodyPath, sessionDir, errorPath, pidPath, stopPath } from "../src/paths.ts";
 import { join } from "node:path";
 import { openRegistry } from "../src/registry.ts";
@@ -1242,6 +1243,20 @@ test("GET /audit returns filtered NDJSON from the audit log", async () => {
   const since = await app.request("/audit?since=150");
   const sLines = (await since.text()).split("\n").filter(Boolean).map((l) => JSON.parse(l));
   expect(sLines.map((l: any) => l.ts)).toEqual([200]);
+});
+
+// VOS-232: /whoami daemon-identity route
+test("GET /whoami returns this daemon's vault (abs), config port, and pid", async () => {
+  const whoamiVault = mkdtempSync(join(tmpdir(), "vos232-whoami-"));
+  writeFileSync(join(whoamiVault, "void-os.json"), JSON.stringify({ vault: whoamiVault, port: 4317 }));
+  const whoamiDb = openRegistry(":memory:");
+  const app = makeApp(whoamiVault, whoamiDb);
+  const res = await app.request("/whoami");
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body.vault).toBe(whoamiVault);     // absolute path, exactly what makeApp was given
+  expect(body.port).toBe(4317);             // from readConfig(vault).port
+  expect(body.pid).toBe(process.pid);       // this process
 });
 
 // Restore mock.module registrations so sibling test files (e.g. spawn.test.ts) that import
