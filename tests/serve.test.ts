@@ -3,7 +3,7 @@
  * These test the pure exported functions without starting Bun.serve.
  */
 import { expect, test } from "bun:test";
-import { resolvePort, resolveVault, handleChatBusLine, isPortInUse, guardStaleSameVault } from "../src/serve.ts";
+import { resolvePort, resolveVault, handleChatBusLine, isPortInUse, guardStaleSameVault, shouldOpenBrowser } from "../src/serve.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,35 @@ import { openRegistry, upsertTrigger } from "../src/registry.ts";
 import { chatThreadPath } from "../src/paths.ts";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+
+// --- shouldOpenBrowser (VOS-236: opt-in --open) ---
+
+test("shouldOpenBrowser returns false by default (no flags)", () => {
+  // Default: do NOT open — opt-in is required
+  expect(shouldOpenBrowser([])).toBe(false);
+});
+
+test("shouldOpenBrowser returns false with unrelated flags", () => {
+  expect(shouldOpenBrowser(["serve", "--port", "4317"])).toBe(false);
+});
+
+test("shouldOpenBrowser returns true when --open is passed", () => {
+  expect(shouldOpenBrowser(["--open"])).toBe(true);
+});
+
+test("shouldOpenBrowser returns true when --open is among other flags", () => {
+  expect(shouldOpenBrowser(["serve", "--port", "5000", "--open"])).toBe(true);
+});
+
+test("shouldOpenBrowser returns false when --no-open is passed (harmless no-op, still no open)", () => {
+  // --no-open is kept for back-compat; since default is already no-open, this is a no-op
+  expect(shouldOpenBrowser(["--no-open"])).toBe(false);
+});
+
+test("shouldOpenBrowser --no-open overrides --open when both passed", () => {
+  // If someone passes both, --no-open wins (safest default)
+  expect(shouldOpenBrowser(["--open", "--no-open"])).toBe(false);
+});
 
 // --- resolvePort ---
 

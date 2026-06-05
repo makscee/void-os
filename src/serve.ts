@@ -1,6 +1,6 @@
 // serve.ts — start the Hono server + open browser (Task 12)
 // F5: port 4317 hardcoded; --port flag or VOID_OS_PORT env override.
-// --no-open: skip browser-open (required for G6 headless E2E).
+// --open: opt-in browser-open. Default: do NOT open. --no-open: harmless no-op alias.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { makeApp } from "./server.ts";
@@ -117,6 +117,16 @@ export function resolveVault(env: Record<string, string | undefined>, cwd: strin
   return join(env.HOME ?? "/tmp", "void-os");
 }
 
+/**
+ * VOS-236: opt-in browser open. Returns true only when --open is explicitly passed
+ * AND --no-open is NOT present. --no-open is kept as a harmless no-op alias for
+ * back-compat with existing scripts that already pass it.
+ */
+export function shouldOpenBrowser(argv: string[]): boolean {
+  if (argv.includes("--no-open")) return false;
+  return argv.includes("--open");
+}
+
 export async function runServe(): Promise<void> {
   const vault = resolveVault(process.env as Record<string, string | undefined>, process.cwd());
 
@@ -220,8 +230,7 @@ export async function runServe(): Promise<void> {
   }
   console.log(`void-os serving ${vault} at ${url}`);
 
-  const noOpen = process.argv.includes("--no-open");
-  if (!noOpen) {
+  if (shouldOpenBrowser(process.argv)) {
     const opener = process.platform === "darwin" ? "open" : "xdg-open";
     Bun.spawn([opener, url]);
   }
