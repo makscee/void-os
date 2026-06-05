@@ -3,7 +3,7 @@
  * These test the pure exported functions without starting Bun.serve.
  */
 import { expect, test } from "bun:test";
-import { resolvePort, resolveVault, handleChatBusLine, isPortInUse } from "../src/serve.ts";
+import { resolvePort, resolveVault, handleChatBusLine, isPortInUse, guardStaleSameVault } from "../src/serve.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -195,4 +195,38 @@ test("handleChatBusLine returns false when inputRef file is missing (no crash)",
   const result = handleChatBusLine(vault, db, "chat", "input", join(vault, ".void-os", "bus", "nonexistent.json"), fakeSpawn as any, 1000);
   expect(result).toBe(false);
   expect(calls.length).toBe(0);
+});
+
+// VOS-232: guardStaleSameVault unit tests
+test("guardStaleSameVault kills a same-vault daemon (different pid) before bind", async () => {
+  const killed: number[] = [];
+  await guardStaleSameVault("/abs/target", {
+    selfPid: 999,
+    discover: async () => [
+      { vault: "/abs/target", port: 4317, pid: 100 }, // same vault → kill
+      { vault: "/abs/other", port: 60013, pid: 200 }, // foreign → leave
+    ],
+    kill: async (pid) => { killed.push(pid); },
+  });
+  expect(killed).toEqual([100]);
+});
+
+test("guardStaleSameVault never kills self even if self serves the same vault", async () => {
+  const killed: number[] = [];
+  await guardStaleSameVault("/abs/target", {
+    selfPid: 100,
+    discover: async () => [{ vault: "/abs/target", port: 4317, pid: 100 }],
+    kill: async (pid) => { killed.push(pid); },
+  });
+  expect(killed).toEqual([]);
+});
+
+test("guardStaleSameVault leaves a foreign-vault daemon (different port) alone", async () => {
+  const killed: number[] = [];
+  await guardStaleSameVault("/abs/target", {
+    selfPid: 999,
+    discover: async () => [{ vault: "/abs/other", port: 60013, pid: 200 }],
+    kill: async (pid) => { killed.push(pid); },
+  });
+  expect(killed).toEqual([]);
 });

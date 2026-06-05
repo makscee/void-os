@@ -14,6 +14,7 @@ import { makeSpawnFn } from "./spawn-adapter.ts";
 import { appendUserMessage } from "./chat.ts";
 import { reapIdle } from "./reaper.ts";
 import type { Database } from "bun:sqlite";
+import { discoverDaemons, isKillableDaemon, type DaemonInfo } from "./discover-daemons.ts";
 
 /**
  * Handle a drainInbox callback for a single bus line. If the persisted BusLine file at
@@ -69,6 +70,30 @@ export function isPortInUse(err: unknown): boolean {
     if (m.includes("is port") && m.includes("in use")) return true; // Bun's "Is port N in use?"
   }
   return false;
+}
+
+export interface GuardDeps {
+  selfPid: number;
+  discover: () => Promise<DaemonInfo[]>;
+  kill: (pid: number) => Promise<void>;
+}
+
+/**
+ * VOS-232: before binding, kill any *stale same-vault* daemon — a daemon already
+ * serving THIS resolved-absolute vault (a re-run pile-up / leftover zombie). Foreign-vault
+ * daemons are left alone (a daemon on a different vault/port is legitimate). Self is never
+ * killed. A same-port-but-DIFFERENT-vault collision is NOT handled here — that falls through
+ * to the existing VOS-229 EADDRINUSE clear-error path in runServe (no blind kill of a
+ * foreign-vault daemon).
+ */
+export async function guardStaleSameVault(vault: string, deps: GuardDeps): Promise<void> {
+  let daemons: DaemonInfo[];
+  try { daemons = await deps.discover(); } catch { return; } // discovery failure must never block serve
+  for (const d of daemons) {
+    if (d.vault !== vault) continue;             // foreign vault — leave alone
+    if (!isKillableDaemon(d, deps.selfPid)) continue; // never self / bogus pid
+    try { await deps.kill(d.pid); } catch { /* already gone */ }
+  }
 }
 
 /** Resolve the port: --port <n> flag > VOID_OS_PORT env > void-os.json > 4317. */
@@ -154,6 +179,21 @@ export async function runServe(): Promise<void> {
     try { reapIdle(db, vault, Date.now(), REAP_IDLE_MS); }
     catch { /* never crash serve */ }
   }, REAP_CHECK_MS).unref();
+
+  // VOS-232: clear a stale daemon already serving THIS vault before we bind, so a re-run
+  // of `serve` on a vault you're already serving doesn't pile up zombies or EADDRINUSE.
+  // Foreign-vault daemons are untouched; a same-port/different-vault collision still falls
+  // through to the VOS-229 clear-error below.
+  // VOS_DISABLE_STALE_GUARD=1 disables for real-path proof MUTATE arm.
+  if (!process.env.VOS_DISABLE_STALE_GUARD) {
+    await guardStaleSameVault(vault, {
+      selfPid: process.pid,
+      discover: () => discoverDaemons(),
+      kill: async (pid) => { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } },
+    });
+    // Give the killed daemon a beat to release the port before we bind.
+    await new Promise((r) => setTimeout(r, 300));
+  }
 
   // idleTimeout:255 prevents Bun's 10s default from killing long-lived SSE connections
   // during cold starts. 255 is Bun's max; the SSE loop also sends periodic keepalive
