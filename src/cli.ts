@@ -27,7 +27,7 @@ if (cmd === "init") {
   const { runMenu, actionToArgv, isTty } = await import("./tui.ts");
 
   if (!isTty()) {
-    console.error("usage: void-os <init|serve|list-sessions> [options]");
+    console.error("usage: void-os <init|serve|list-sessions|doctor> [options]");
     process.exit(2);
   }
 
@@ -77,8 +77,12 @@ if (cmd === "init") {
   // The daemon retargets which session is viewed via POST /s/:uuid/attach-here (switch-client).
   const { runAttach } = await import("./attach.ts");
   runAttach();
+} else if (cmd === "doctor") {
+  // VOS-232: list all running void-os daemons (pid·port·vault·stale?); --kill-stale cleans up.
+  const { runDoctor } = await import("./doctor.ts");
+  await runDoctor(process.argv.slice(3));
 } else {
   console.error(`unknown command: ${cmd}`);
-  console.error("usage: void-os <init|serve|list-sessions|trigger-fire|attach> [options]");
+  console.error("usage: void-os <init|serve|list-sessions|trigger-fire|attach|doctor> [options]");
   process.exit(2);
 }
