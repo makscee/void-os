@@ -230,3 +230,60 @@ test("guardStaleSameVault leaves a foreign-vault daemon (different port) alone",
   });
   expect(killed).toEqual([]);
 });
+
+// VOS-232: integration test — re-serving the same vault kills prior daemon
+test("re-serving the SAME vault kills the prior daemon — exactly one bound, no EADDRINUSE", async () => {
+  const vault = mkdtempSync(join(tmpdir(), "vos232-int-"));
+  const port = 14732; // fixed scratch port unlikely to collide
+  writeFileSync(join(vault, "void-os.json"), JSON.stringify({ vault, port, onboarded: true }));
+  const env = { ...process.env, VOID_OS_VAULT: vault };
+  const args = ["src/cli.ts", "serve", "--no-open", "--port", String(port)];
+
+  // Poll until the whoami at the port returns a pid that is NOT `excludePid`.
+  // This lets us confirm d2 has fully replaced d1 (d2's own pid, not d1's residual).
+  const waitWhoamiNewPid = async (excludePid: number, deadlineMs: number) => {
+    const end = Date.now() + deadlineMs;
+    while (Date.now() < end) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/whoami`, { signal: AbortSignal.timeout(500) });
+        if (r.ok) {
+          const pid = (await r.json()).pid as number;
+          if (pid !== excludePid) return pid; // new daemon answered
+        }
+      } catch { /* not up yet */ }
+      await new Promise((res) => setTimeout(res, 150));
+    }
+    throw new Error(`no new daemon (pid != ${excludePid}) answered /whoami within ${deadlineMs}ms`);
+  };
+  const waitWhoami = async (deadlineMs: number) => {
+    const end = Date.now() + deadlineMs;
+    while (Date.now() < end) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/whoami`, { signal: AbortSignal.timeout(500) });
+        if (r.ok) return (await r.json()).pid as number;
+      } catch { /* not up yet */ }
+      await new Promise((res) => setTimeout(res, 150));
+    }
+    throw new Error("daemon never answered /whoami");
+  };
+
+  const d1 = Bun.spawn(["bun", ...args], { env, stdout: "ignore", stderr: "ignore" });
+  const pid1 = await waitWhoami(15000);
+
+  // Re-serve the SAME vault — guard must kill d1, then bind cleanly.
+  // waitWhoamiNewPid waits until d2's own pid (different from d1's) is answering — proving
+  // d1 was killed and d2 bound, not just that d1 is still answering.
+  const d2 = Bun.spawn(["bun", ...args], { env, stdout: "ignore", stderr: "ignore" });
+  const pid2 = await waitWhoamiNewPid(pid1, 20000);
+
+  expect(pid2).not.toBe(pid1);          // a NEW daemon is bound
+  // The first daemon's process is gone (guard killed it).
+  let firstAlive = true;
+  try { process.kill(pid1, 0); } catch { firstAlive = false; }
+  expect(firstAlive).toBe(false);
+
+  // Teardown
+  try { process.kill(pid2, "SIGKILL"); } catch { /* */ }
+  try { d1.kill(); } catch { /* */ }
+  try { d2.kill(); } catch { /* */ }
+}, 40000);
