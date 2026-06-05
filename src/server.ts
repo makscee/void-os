@@ -30,7 +30,7 @@ import { listPendingDecisions } from "./decision.ts";
 import { readAudit } from "./audit.ts";
 import {
   gateCreate, gatePatch, gateEdit, gateDelete, gateWriteFile,
-  listVaultSkills, viewVaultSkill,
+  listVaultSkills, listVaultSkillsForDisplay, viewVaultSkill,
 } from "./skill-manage.ts";
 import { HTMX_MIN_JS } from "./htmx-runtime.ts";
 import { SORTABLE_MIN_JS } from "./sortable-runtime.ts";
@@ -103,7 +103,7 @@ export function makeApp(vault: string, db: Database, spawnFn?: SpawnFn) {
     const status = await realDeps.vcStatus();
     const cfg = readConfig(vault);
     return c.html(
-      renderDashboard(listVaultSkills(vault), listSessions(vault, db), { authed: status.ok }, cfg, listPendingDecisions(vault), readManifest(vault).pages),
+      renderDashboard(listVaultSkillsForDisplay(vault), listSessions(vault, db), { authed: status.ok }, cfg, listPendingDecisions(vault), readManifest(vault).pages),
     );
   });
 
