@@ -8,7 +8,8 @@ import { Database } from "bun:sqlite";
 import {
   gateCreate, gatePatch, gateEdit, gateDelete, gateWriteFile,
   validateStaged, activateStaged, applyApprovedTxn, dropTxn, revertSkill,
-  listVaultSkills, viewVaultSkill,
+  listVaultSkills, listVaultSkillsForDisplay, viewVaultSkill,
+  SYSTEM_PRIMITIVE_SKILLS,
   quarantineDir, vaultSkillPath, auditLogPath, manifestPath,
   writeManifest, readManifest,
   txnMetaPath, stagedSkillPath,
@@ -433,4 +434,81 @@ test("writeManifest + readManifest round-trip preserves skill bodies", () => {
   expect(manifest.length).toBe(1);
   expect(manifest[0].name).toBe("test-skill");
   expect(manifest[0].body).toContain("test-skill");
+});
+
+// ---------------------------------------------------------------------------
+// VOS-233: SYSTEM_PRIMITIVE_SKILLS filter — listVaultSkillsForDisplay
+// ---------------------------------------------------------------------------
+
+/** Plant a skill directly on disk (simulates init seeding, not the gate flow). */
+function seedSkillDirect(vault: string, name: string): void {
+  const dir = join(vault, ".claude", "skills", name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${name} skill\nversion: 1.0.0\n---\n\n## Instructions\n\nSystem primitive.\n`,
+  );
+}
+
+test("SYSTEM_PRIMITIVE_SKILLS contains skill-author and skill-manage-apply", () => {
+  expect(SYSTEM_PRIMITIVE_SKILLS.has("skill-author")).toBe(true);
+  expect(SYSTEM_PRIMITIVE_SKILLS.has("skill-manage-apply")).toBe(true);
+  expect(SYSTEM_PRIMITIVE_SKILLS.size).toBe(2);
+});
+
+test("listVaultSkillsForDisplay excludes primitives, includes user skills", () => {
+  const vault = tmpVault();
+  const db = tmpDb();
+
+  // Seed system primitives directly (as init would)
+  for (const name of SYSTEM_PRIMITIVE_SKILLS) {
+    seedSkillDirect(vault, name);
+  }
+
+  // Seed onboarding directly (as init would)
+  seedSkillDirect(vault, "onboarding");
+
+  // Add a user skill via the gate/activate flow
+  const result = gateCreate(vault, {
+    execId: "ex-vos233-user",
+    name: "my-user-skill",
+    body: GOOD_SKILL_BODY.replace("test-skill", "my-user-skill"),
+  });
+  activateStaged(vault, result.txnId, db);
+
+  const displayList = listVaultSkillsForDisplay(vault);
+  const displayNames = displayList.map((s) => s.name);
+
+  // Primitives must NOT appear
+  expect(displayNames).not.toContain("skill-author");
+  expect(displayNames).not.toContain("skill-manage-apply");
+
+  // User/catalog skills MUST appear
+  expect(displayNames).toContain("onboarding");
+  expect(displayNames).toContain("my-user-skill");
+});
+
+test("listVaultSkills (MCP path) still returns all skills including primitives", () => {
+  const vault = tmpVault();
+  const db = tmpDb();
+
+  for (const name of SYSTEM_PRIMITIVE_SKILLS) {
+    seedSkillDirect(vault, name);
+  }
+  seedSkillDirect(vault, "onboarding");
+
+  const result = gateCreate(vault, {
+    execId: "ex-vos233-mcp",
+    name: "another-skill",
+    body: GOOD_SKILL_BODY.replace("test-skill", "another-skill"),
+  });
+  activateStaged(vault, result.txnId, db);
+
+  const allNames = listVaultSkills(vault).map((s) => s.name);
+
+  // All four skills must be present (primitives are NOT filtered from listVaultSkills)
+  expect(allNames).toContain("skill-author");
+  expect(allNames).toContain("skill-manage-apply");
+  expect(allNames).toContain("onboarding");
+  expect(allNames).toContain("another-skill");
 });

@@ -9,6 +9,7 @@ import { checkPrereqs, realDeps } from "./preflight.ts";
 import { writeConfig, readConfig, expandPath } from "./paths.ts";
 import { buildVaultHookSettings } from "./hooks-endpoint.ts";
 import { hookRelayScriptPath } from "./spawn.ts";
+import { SYSTEM_PRIMITIVE_SKILLS } from "./skill-manage.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -119,7 +120,8 @@ export function seedVault(vault: string): void {
   // Seed the self-extension toolchain (VOS-203): skill-author + skill-manage-apply are system
   // primitives required for in-vault skill authoring. They are NOT user-installable catalog
   // skills and must NOT come via a bulk catalog copy — seed them explicitly alongside onboarding.
-  for (const sk of ["skill-author", "skill-manage-apply"]) {
+  // Single source of truth: SYSTEM_PRIMITIVE_SKILLS from skill-manage.ts.
+  for (const sk of SYSTEM_PRIMITIVE_SKILLS) {
     const src = join(repoRoot, "catalog", "skills", sk);
     if (existsSync(src)) cpSync(src, join(claudeDir, "skills", sk), { recursive: true });
   }

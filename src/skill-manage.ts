@@ -532,6 +532,17 @@ export interface LiveSkillSummary {
   version: string;
 }
 
+/**
+ * System-primitive skills seeded by init — NOT user/catalog skills.
+ * They stay on disk (required for in-vault authoring) but must not appear in
+ * the dashboard skill list. Single source of truth: init.ts imports this
+ * constant instead of duplicating the names.
+ */
+export const SYSTEM_PRIMITIVE_SKILLS: ReadonlySet<string> = new Set([
+  "skill-author",
+  "skill-manage-apply",
+]);
+
 /** List all skills currently installed in the vault. */
 export function listVaultSkills(vault: string): LiveSkillSummary[] {
   const skillsDir = join(vault, ".claude", "skills");
@@ -549,6 +560,17 @@ export function listVaultSkills(vault: string): LiveSkillSummary[] {
     });
   }
   return result.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Dashboard-safe skill list: identical to listVaultSkills but with
+ * SYSTEM_PRIMITIVE_SKILLS filtered out. The primitives remain on disk and
+ * are still accessible via listVaultSkills (MCP / authoring path).
+ */
+export function listVaultSkillsForDisplay(vault: string): LiveSkillSummary[] {
+  return listVaultSkills(vault).filter(
+    (s) => !SYSTEM_PRIMITIVE_SKILLS.has(s.name),
+  );
 }
 
 /** Return the raw SKILL.md body for one vault skill. */
