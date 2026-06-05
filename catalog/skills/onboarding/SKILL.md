@@ -21,9 +21,14 @@ questions into `body.html` and installing what they choose.
    - one submit button.
 3. **If your input contains `name:` and `skill_` field lines** (form-submit reply), you are
    in this step — do NOT re-render the form. Read the `name:` value for the user's name
-   and the `skill_<name>: on` lines for the selected skills. For each selected skill, copy
-   `<repo>/catalog/skills/<name>/` into this vault's `.claude/skills/<name>/`. Record the
-   user's name and chosen skills into `void-os.json` (merge; set `"onboarded": true`).
+   and the `skill_<name>: on` lines for the selected skills. For each selected skill, run:
+   ```
+   void-os install-skill <name>
+   ```
+   This is the ONLY approved install command — do NOT write rm/cp shell one-liners or
+   improvise bash to copy skills. `void-os install-skill` validates the name, creates the
+   destination directory, and copies the skill safely. Record the user's name and chosen
+   skills into `void-os.json` (merge; set `"onboarded": true`).
 4. Rewrite `body.html` to a "you're all set" summary listing the installed skills and telling
    the user to return to the dashboard with a `<a href="/" target="_top">back to dashboard</a>` link
    (the `target="_top"` is required so the link replaces the whole page instead of nesting the

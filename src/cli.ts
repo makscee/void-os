@@ -81,8 +81,31 @@ if (cmd === "init") {
   // VOS-232: list all running void-os daemons (pid·port·vault·stale?); --kill-stale cleans up.
   const { runDoctor } = await import("./doctor.ts");
   await runDoctor(process.argv.slice(3));
+} else if (cmd === "install-skill") {
+  // VOS-235: safe deterministic catalog skill installer — no shell rm of variable paths.
+  // Usage: void-os install-skill <name> [--vault <path>] [--catalog <path>]
+  // Env fallbacks: VOID_OS_VAULT, VOID_OS_CATALOG_ROOT.
+  const name = process.argv[3];
+  if (!name) {
+    console.error("usage: void-os install-skill <name>");
+    process.exit(1);
+  }
+  const { resolveVault } = await import("./serve.ts");
+  const { join, dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const { installCatalogSkill } = await import("./install-skill.ts");
+  const vault = resolveVault(process.env as Record<string, string | undefined>, process.cwd());
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const catalogRoot = (process.env as Record<string, string | undefined>).VOID_OS_CATALOG_ROOT ?? join(repoRoot, "catalog");
+  const result = installCatalogSkill({ vault, catalogRoot, name });
+  if (result.ok) {
+    console.log(`installed ${name} → ${result.destDir}`);
+  } else {
+    console.error(`install-skill failed: ${result.error}`);
+    process.exit(1);
+  }
 } else {
   console.error(`unknown command: ${cmd}`);
-  console.error("usage: void-os <init|serve|list-sessions|trigger-fire|attach|doctor> [options]");
+  console.error("usage: void-os <init|serve|list-sessions|trigger-fire|attach|doctor|install-skill> [options]");
   process.exit(2);
 }
