@@ -17,6 +17,7 @@
 <script src="/assets/htmx.min.js"></script>
 <style>
 :root {
+  color-scheme: dark;
   --background: 222.2 84% 4.9%;
   --foreground: 210 40% 98%;
   --card: 222.2 84% 4.9%;
@@ -51,6 +52,7 @@ form {
 }
 label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; }
 label span { color: hsl(var(--muted-foreground)); }
+input[type="checkbox"], input[type="radio"] { accent-color: hsl(var(--primary)); }
 input, textarea, select {
   font: inherit; padding: 0.45rem 0.6rem;
   border-radius: calc(var(--radius) - 2px);

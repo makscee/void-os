@@ -23,6 +23,7 @@
 <style>
 /* ── kit/tokens.css inlined (shadcn slate-dark, ui-style-spec §2) ── */
 :root {
+  color-scheme: dark;
   --background: 222.2 84% 4.9%;
   --foreground: 210 40% 98%;
   --card: 222.2 84% 4.9%;
@@ -50,6 +51,14 @@ body {
   -webkit-font-smoothing: antialiased; line-height: 1.5;
 }
 h1 { font-size: 1.1rem; margin: 0 0 1rem; }
+input[type="checkbox"], input[type="radio"] { accent-color: hsl(var(--primary)); }
+input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]),
+textarea, select {
+  font: inherit; background: hsl(var(--background)); color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--input)); border-radius: calc(var(--radius) - 2px);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]):focus,
+textarea:focus, select:focus { outline: none; border-color: hsl(var(--ring)); }
 .board { display: flex; gap: 1rem; align-items: flex-start; overflow-x: auto; }
 .col {
   flex: 1 1 0; min-width: 220px;

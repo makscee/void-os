@@ -12,6 +12,7 @@ export const esc = (s: string): string =>
 // Shared ui-kit tokens (shadcn slate dark) — inlined so the dashboard is self-contained.
 const UI_TOKENS = `
 :root {
+  color-scheme: dark;
   --background: 222.2 84% 4.9%;
   --foreground: 210 40% 98%;
   --card: 222.2 84% 4.9%;

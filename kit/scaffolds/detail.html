@@ -18,6 +18,7 @@
 <script src="/assets/htmx.min.js"></script>
 <style>
 :root {
+  color-scheme: dark;
   --background: 222.2 84% 4.9%;
   --foreground: 210 40% 98%;
   --card: 222.2 84% 4.9%;
@@ -44,6 +45,14 @@ body {
   background: hsl(var(--background)); color: hsl(var(--foreground));
   -webkit-font-smoothing: antialiased; line-height: 1.5;
 }
+input[type="checkbox"], input[type="radio"] { accent-color: hsl(var(--primary)); }
+input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]),
+textarea, select {
+  font: inherit; background: hsl(var(--background)); color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--input)); border-radius: calc(var(--radius) - 2px);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]):focus,
+textarea:focus, select:focus { outline: none; border-color: hsl(var(--ring)); }
 header {
   background: hsl(var(--card)); border: 1px solid hsl(var(--border));
   border-radius: var(--radius); padding: 1rem; margin-bottom: 1rem;

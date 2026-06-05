@@ -13,6 +13,7 @@
  */
 
 :root {
+  color-scheme: dark;
   --background: 222.2 84% 4.9%;
   --foreground: 210 40% 98%;
   --card: 222.2 84% 4.9%;
@@ -103,4 +104,32 @@ a { color: hsl(var(--foreground)); }
   border-radius: 9999px;
   background: hsl(var(--accent));
   color: hsl(var(--accent-foreground));
+}
+
+/* ── Native form controls ────────────────────────────────────────────────────
+ * color-scheme:dark (on :root above) makes the UA render checkboxes/radios/
+ * scrollbars dark automatically. accent-color colors the checkbox tick/fill.
+ * Explicit bg/color/border for text inputs/select/textarea covers the cases
+ * where the OS-light default still bleeds through when no class is applied.
+ */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: hsl(var(--primary));
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]),
+textarea,
+select {
+  font: inherit;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--input));
+  border-radius: calc(var(--radius) - 2px);
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]):focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: hsl(var(--ring));
 }
